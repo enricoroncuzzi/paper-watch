@@ -1,0 +1,54 @@
+# Continuous integration: the same checks run on every change, ordered cheapest
+# first so the most informative failure arrives first.
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [main]
+# Everything here only reads the repository, so grant no write scope.
+permissions:
+  contents: read
+# A new push to the same branch cancels the previous, still-running check.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.0
+      - run: uv sync --frozen
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.0
+      - run: uv sync --frozen
+      - run: uv run mypy
+  test:
+    runs-on: ubuntu-latest
+    # ubuntu-latest ships Docker, which the integration tests need to start a
+    # Postgres + pgvector container.
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.0
+      - run: uv sync --frozen
+      - run: uv run pytest
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      # Full history so gitleaks can scan past commits, not just the checkout tip.
+      - uses: actions/checkout@v7
+        with: {fetch-depth: 0}
+      - uses: astral-sh/setup-uv@v10.3.0
+      - run: uv sync --frozen
+      # Known-vulnerable dependencies. The project itself is unpublished and so
+      # cannot be audited; export the locked third-party set and audit that.
+      - run: uv export --frozen --no-emit-project --no-hashes --output-file "$RUNNER_TEMP/requirements.txt"
+      - run: uv run --with pip-audit pip-audit --strict --timeout 60 --no-deps -r "$RUNNER_TEMP/requirements.txt"
+      # Committed secrets. The token lets the action comment on the PR.
+      - uses: gitleaks/gitleaks-action@v3
+        env: {GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"}

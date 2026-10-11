@@ -1,0 +1,18 @@
+# release-please reads conventional commits on main and opens a release pull
+# request with the next semantic version and a generated changelog. Merging
+# that PR tags the release, so versioning is a consequence of history.
+name: release-please
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: write # create the tag and GitHub release
+  pull-requests: write # open and update the release pull request
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v5
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
