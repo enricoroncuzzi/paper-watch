@@ -28,6 +28,10 @@ report, because cheaper jobs finish sooner:
 5. `codeql` - static analysis for dangerous code patterns, plus a weekly scheduled scan so new
    queries reach the repository without a code change.
 
+Once retrieval exists (M1), an `eval` job joins the gate after `test`. It runs offline with the
+deterministic fake embedder against a committed metric baseline, so default CI still never calls a
+model.
+
 Dependabot keeps the `uv` lockfile and the pinned GitHub Actions current with weekly pull requests,
 so the gate stays meaningful over time. Releases are derived from history: release-please reads
 conventional commits on `main` and opens a release pull request with the next semantic version and
