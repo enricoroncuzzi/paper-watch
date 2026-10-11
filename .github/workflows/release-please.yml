@@ -5,14 +5,25 @@ name: release-please
 on:
   push:
     branches: [main]
-permissions:
-  contents: write # create the tag and GitHub release
-  pull-requests: write # open and update the release pull request
+# Nothing by default; the one job below asks only for what it needs.
+permissions: {}
+# Two quick merges must not update the release pull request at the same time:
+# queue the second run behind the first instead of cancelling it, so the
+# release PR always reflects the newest commit.
+concurrency:
+  group: release-please
+  cancel-in-progress: false
 jobs:
   release:
     runs-on: ubuntu-latest
+    # The action only makes API calls, so this is generous.
+    timeout-minutes: 5
+    permissions:
+      contents: write # create the tag and GitHub release
+      pull-requests: write # open and update the release pull request
     steps:
-      - uses: googleapis/release-please-action@v5
+      # Pinned to a full commit SHA; see the note at the top of ci.yml.
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
