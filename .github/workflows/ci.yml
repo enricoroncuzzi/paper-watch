@@ -1,5 +1,5 @@
-# Continuous integration: the same checks run on every change, ordered cheapest
-# first so the most informative failure arrives first.
+# Continuous integration: the same checks run in parallel on every change, and
+# the cheapest ones report first because they finish sooner.
 name: ci
 on:
   pull_request:

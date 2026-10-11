@@ -11,12 +11,13 @@ Accepted
 A change can break Paper Watch in ways a single test run does not catch: formatting and import
 drift, type errors, a committed secret, a dependency with a known vulnerability, a dangerous code
 pattern, or a version number updated by hand and forgotten. Each of these has a cheap automated
-check, but only if the checks run on every change and in an order that surfaces the most
-informative failure first.
+check, but only if the checks run on every change and the cheapest, most informative failure
+reports first.
 
 ## Decision
 
-Every pull request and every push to `main` runs the same ordered gate in `.github/workflows/`:
+Every pull request and every push to `main` runs the same gate in `.github/workflows/`. The jobs
+run in parallel; listed cheapest first, which is also the order in which they usually report:
 
 1. `lint` (ruff check and format) - seconds, catches the cheapest mistakes first.
 2. `typecheck` (mypy strict) - catches interface drift before tests run.
@@ -35,10 +36,15 @@ a generated changelog. `lint`, `typecheck`, `test`, and `security` become requir
 
 - A change is trustworthy when the same gate every other change passed also passes it, not because
   an author says so.
-- Ordering the gate cheapest-first means a typo fails in seconds, before the slower test and
-  security jobs start.
+- All jobs start together, so a typo still fails `lint` within seconds and reports before the
+  slower test and security jobs finish. A failing job does not stop the others.
 - Security is layered (secrets, dependencies, code patterns) because no single tool covers all three.
 - release-please makes version numbers a consequence of commit history, so versioning is not a
   manual step that can drift.
 - The gate adds CI minutes per pull request and depends on the repository allowing GitHub Actions to
   create pull requests for the release job.
+- release-please opens its release pull request with the default `GITHUB_TOKEN`, and GitHub does
+  not trigger `ci` or `codeql` for pull requests created with that token. Once the checks are
+  required, the maintainer either closes and reopens the release pull request, which runs the
+  checks under the maintainer's identity, or merges it with an admin bypass. Passing a repo-scoped
+  GitHub App token or fine-grained PAT as the action's `token` input is the later upgrade path.
