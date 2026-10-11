@@ -48,8 +48,10 @@ are derived from history: release-please reads conventional commits on `main` an
 pull request with the next semantic version and a generated changelog. Before 1.0.0 a `feat:` bumps
 the minor version rather than the major (`bump-minor-pre-major`). The release pull request also
 bumps the project's own `paperwatch` version in `uv.lock` (a TOML `extra-files` entry), so the
-lockfile still matches `pyproject.toml` and `uv sync --locked` keeps passing after a release. `lint`, `typecheck`, `test`, and `security` become required status checks on
-`main`.
+lockfile still matches `pyproject.toml` and `uv sync --locked` keeps passing after a release.
+
+`lint`, `typecheck`, `test`, `security`, `workflow-lint`, `Analyze (python)`, and
+`Analyze (actions)` become required status checks on `main`.
 
 ## Consequences
 
