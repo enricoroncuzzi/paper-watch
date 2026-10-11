@@ -13,9 +13,10 @@ on:
 permissions:
   contents: read
 # On a pull request a newer push supersedes the running check, so cancel it.
-# On main every commit keeps its own run, so two quick merges each get a verdict.
+# On main the group is keyed by commit, so no run is queued behind or cancelled
+# by another and every merge gets its own verdict, however quickly they land.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   lint:

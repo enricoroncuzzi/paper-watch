@@ -35,7 +35,8 @@ Every job installs with `uv sync --locked`, which fails when `uv.lock` no longer
 `pyproject.toml` instead of silently installing a stale lock. Checkouts do not persist the token,
 every job has a short `timeout-minutes`, and every action is pinned to a full commit SHA with its
 release in a trailing comment. On pull requests a newer push cancels the running check; on `main`
-every commit keeps its own run, so two quick merges each get a verdict.
+the concurrency group is keyed by commit, so every merge gets its own run and verdict, however
+quickly merges land.
 
 Once retrieval exists (M1), an `eval` job joins the gate after `test`. It runs offline with the
 deterministic fake embedder against a committed metric baseline, so default CI still never calls a

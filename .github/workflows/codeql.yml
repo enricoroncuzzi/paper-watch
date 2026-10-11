@@ -12,9 +12,10 @@ on:
 # Least privilege: the workflow itself only reads the repository.
 permissions:
   contents: read
-# Same rule as ci.yml: cancel superseded pull request runs, keep every main run.
+# Same rule as ci.yml: cancel superseded pull request runs, and key other runs
+# by commit so every main commit keeps its own run.
 concurrency:
-  group: codeql-${{ github.workflow }}-${{ github.ref }}
+  group: codeql-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   analyze:
