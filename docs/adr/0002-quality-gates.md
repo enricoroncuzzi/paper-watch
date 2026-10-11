@@ -17,10 +17,12 @@ reports first.
 ## Decision
 
 Every pull request and every push to `main` runs the same gate in `.github/workflows/`. The jobs
-run in parallel; listed cheapest first, which is also the order in which they usually report:
+run in parallel and are listed cheapest first, which is also the order in which they usually
+report, because cheaper jobs finish sooner:
 
-1. `lint` (ruff check and format) - seconds, catches the cheapest mistakes first.
-2. `typecheck` (mypy strict) - catches interface drift before tests run.
+1. `lint` (ruff check and format) - finishes in seconds, so the cheapest mistakes report first.
+2. `typecheck` (mypy strict) - catches interface drift, usually reporting before the slower test job
+   finishes.
 3. `test` (pytest) - the behavioral gate, including integration tests against Postgres + pgvector.
 4. `security` - pip-audit for known-vulnerable dependencies and gitleaks for committed secrets.
 5. `codeql` - static analysis for dangerous code patterns, plus a weekly scheduled scan so new
