@@ -14,6 +14,15 @@ def test_settings_read_from_environment(monkeypatch: pytest.MonkeyPatch) -> None
     assert not hasattr(s, "max_cost_eur_per_run")  # EUR accounting arrives in M4
 
 
+def test_empty_values_fall_back_to_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    # An unfilled line copied from .env.example (PW_X=) must mean "unset", not "".
+    monkeypatch.setenv("PW_MAX_TOKENS_PER_RUN", "")
+    monkeypatch.setenv("PW_LOG_LEVEL", "")
+    s = Settings()
+    assert s.max_tokens_per_run == 200_000
+    assert s.log_level == "INFO"
+
+
 def test_embedding_dim_is_single_constant() -> None:
     # Guards against the dimension drifting from the DB schema and the model.
     assert EMBEDDING_DIM == 1536

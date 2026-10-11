@@ -10,8 +10,11 @@ EMBEDDING_DIM = 1536
 
 class Settings(BaseSettings):
     # Each field is read from an env var with the PW_ prefix (database_url <- PW_DATABASE_URL),
-    # falling back to a local .env file, then to the default below. Unknown vars are ignored.
-    model_config = SettingsConfigDict(env_prefix="PW_", env_file=".env", extra="ignore")
+    # falling back to a local .env file, then to the default below. Unknown vars are ignored,
+    # and empty ones (PW_X= copied from .env.example) count as unset, so the default applies.
+    model_config = SettingsConfigDict(
+        env_prefix="PW_", env_file=".env", extra="ignore", env_ignore_empty=True
+    )
 
     # Database (default matches docker-compose.yml)
     database_url: str = "postgresql+psycopg://paperwatch:paperwatch@localhost:5432/paperwatch"
