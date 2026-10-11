@@ -1,5 +1,9 @@
 # Continuous integration: the same checks run in parallel on every change, and
 # the cheapest ones report first because they finish sooner.
+#
+# Every action is pinned to a full commit SHA (a tag can be moved to point at
+# different code, a SHA cannot); the trailing comment names the release, and
+# Dependabot's github-actions updates bump both together.
 name: ci
 on:
   pull_request:
@@ -8,47 +12,78 @@ on:
 # Everything here only reads the repository, so grant no write scope.
 permissions:
   contents: read
-# A new push to the same branch cancels the previous, still-running check.
+# On a pull request a newer push supersedes the running check, so cancel it.
+# On main every commit keeps its own run, so two quick merges each get a verdict.
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   lint:
     runs-on: ubuntu-latest
+    # Fail fast instead of the 360-minute default if a step hangs.
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.3.0
-      - run: uv sync --frozen
+      # No job pushes, so do not leave the token in .git/config.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false}
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      # --locked fails if uv.lock is out of date with pyproject.toml
+      # (--frozen would silently install the stale lock).
+      - run: uv sync --locked
       - run: uv run ruff check .
       - run: uv run ruff format --check .
   typecheck:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.3.0
-      - run: uv sync --frozen
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false}
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - run: uv sync --locked
       - run: uv run mypy
   test:
     runs-on: ubuntu-latest
+    # Longer than the others: the integration tests pull a Postgres image.
+    timeout-minutes: 20
     # ubuntu-latest ships Docker, which the integration tests need to start a
     # Postgres + pgvector container.
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.3.0
-      - run: uv sync --frozen
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false}
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - run: uv sync --locked
       - run: uv run pytest
   security:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       # Full history so gitleaks can scan past commits, not just the checkout tip.
-      - uses: actions/checkout@v7
-        with: {fetch-depth: 0}
-      - uses: astral-sh/setup-uv@v10.3.0
-      - run: uv sync --frozen
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {fetch-depth: 0, persist-credentials: false}
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - run: uv sync --locked
       # Known-vulnerable dependencies. The project itself is unpublished and so
       # cannot be audited; export the locked third-party set and audit that.
-      - run: uv export --frozen --no-emit-project --no-hashes --output-file "$RUNNER_TEMP/requirements.txt"
+      - run: uv export --locked --no-emit-project --no-hashes --output-file "$RUNNER_TEMP/requirements.txt"
       - run: uv run --with pip-audit pip-audit --strict --timeout 60 --no-deps -r "$RUNNER_TEMP/requirements.txt"
-      # Committed secrets. The token lets the action comment on the PR.
-      - uses: gitleaks/gitleaks-action@v3
-        env: {GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"}
+      # Committed secrets. The token lets the action read the pull request's
+      # commits; comments are off because this workflow cannot write to PRs.
+      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_COMMENTS: "false"
+  workflow-lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false}
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - run: uv sync --locked
+      # Run the same hooks, at the same pinned revs, as a local `git commit`.
+      # actionlint checks workflow syntax and expressions, and runs shellcheck
+      # (preinstalled on ubuntu-latest) over every `run:` block.
+      - run: uv run pre-commit run actionlint --all-files --show-diff-on-failure
+      # zizmor audits workflow security: permissions, template injection,
+      # unpinned actions, persisted credentials. It runs offline (no token).
+      - run: uv run pre-commit run zizmor --all-files --show-diff-on-failure

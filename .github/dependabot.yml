@@ -6,8 +6,34 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
-  # Keep the actions pinned in .github/workflows current.
+    # Wait a week after a release before proposing it: most compromised or
+    # broken releases are yanked within days.
+    cooldown:
+      default-days: 7
+    # One pull request for all minor and patch bumps; majors stay separate
+    # because they are the ones likely to need code changes.
+    groups:
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+  # Keep the SHA-pinned actions in .github/workflows current; each update
+  # rewrites the SHA and its version comment together.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
+    groups:
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+  # Keep the hook revs in .pre-commit-config.yaml current; the workflow-lint
+  # CI job runs actionlint and zizmor from these same revs.
+  - package-ecosystem: "pre-commit"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    groups:
+      minor-and-patch:
+        update-types: ["minor", "patch"]
