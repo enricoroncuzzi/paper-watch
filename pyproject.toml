@@ -64,4 +64,3 @@ markers = ["integration: needs a Postgres container"]
 
 [project.scripts]
 paperwatch = "paperwatch.cli:app"
-

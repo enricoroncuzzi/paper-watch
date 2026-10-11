@@ -1,0 +1,3 @@
+# How to read this repo
+
+A production repository is built so a stranger can trust a change without trusting its author. Three mechanisms do that here. Configuration lives in one typed `Settings` object read from the environment (twelve-factor app), so the same image runs locally, in staging, and in prod with different values and no code change. Every external dependency (model provider, paper sources, database) sits behind a small interface with a fake, so tests are fast, deterministic, and offline. And quality gates (lint, types, tests, evals, security scans) run on every pull request, so "it works on my machine" is replaced by "it passed the same checks every change passes".

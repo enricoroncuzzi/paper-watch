@@ -1,0 +1,14 @@
+# Checks that run on every `git commit` once installed with: uv run pre-commit install
+repos:
+  # Lint (auto-fixing what it can) and format Python.
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.0
+    hooks: [{id: ruff-check, args: [--fix]}, {id: ruff-format}]
+  # Blocks commits that contain secrets such as API keys.
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.0
+    hooks: [{id: gitleaks}]
+  # Small hygiene fixes and YAML syntax checks.
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks: [{id: end-of-file-fixer}, {id: trailing-whitespace}, {id: check-yaml}]

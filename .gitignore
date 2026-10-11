@@ -1,9 +1,19 @@
-docs/paperwatch_log.md
-.DS_Store
+# Secrets: real values live only in your local .env
+.env
+
+# Python and tool output
+.venv/
 __pycache__/
 *.py[cod]
-.coverage
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
-.venv/
+.coverage
+
+# Private notes and LinkedIn takes never enter git
+notes/
+takes/
+docs/paperwatch_log.md
+
+# macOS
+.DS_Store

@@ -1,0 +1,19 @@
+# Local Postgres with the pgvector extension. Start it with: docker compose up -d db
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      # Must match the default database_url in src/paperwatch/config.py.
+      POSTGRES_USER: paperwatch
+      POSTGRES_PASSWORD: paperwatch
+      POSTGRES_DB: paperwatch
+    ports: ["5432:5432"]
+    # Lets `docker compose up --wait` and dependent services know when Postgres accepts connections.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U paperwatch"]
+      interval: 5s
+      retries: 10
+    # Named volume: data survives container restarts; `docker compose down -v` wipes it.
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+volumes:
+  pgdata:
