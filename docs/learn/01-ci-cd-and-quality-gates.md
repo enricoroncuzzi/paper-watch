@@ -1,0 +1,3 @@
+# CI/CD and quality gates
+
+Continuous integration runs the same checks on every change, ordered cheapest-first so the most informative failure arrives first: lint, then types, then tests, then evals. Security is layered: gitleaks stops committed secrets, pip-audit stops known-vulnerable dependencies, CodeQL finds dangerous code patterns, Dependabot keeps dependencies moving. Releases are automated from conventional commits: release-please reads `feat:` and `fix:` messages, proposes the next semantic version, and writes the changelog, so versioning is a consequence of the history rather than a manual step.

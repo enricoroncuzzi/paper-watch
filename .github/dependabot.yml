@@ -1,0 +1,13 @@
+# Keep dependencies current with small, scheduled pull requests.
+version: 2
+updates:
+  # Python dependencies, including the uv lockfile (uv is a supported ecosystem).
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+  # Keep the actions pinned in .github/workflows current.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
