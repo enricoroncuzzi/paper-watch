@@ -12,7 +12,7 @@ Tier 3 is the design's "lab engineering blog" reliability tier (design section 3
 less formal than papers, so the value is the lab's own first-party writing, not something
 re-published or scraped third-hand. Scraped HTML is brittle (markup changes break the parser),
 carries unclear reuse terms, and would make the corpus depend on page structure nobody promised to
-keep stable. The design's decision 9 names candidate labs, including several Chinese labs, and
+keep stable. The design's decision 3 names candidate labs, including several Chinese labs, and
 requires each to publish an official RSS/Atom feed or documented API listing.
 
 ## Decision
