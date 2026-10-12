@@ -1,0 +1,6 @@
+# Tier-3 labs: only official RSS/Atom feeds, never scraped HTML.
+# The full lab list is being researched separately; this file grows in a follow-up.
+feeds:
+  - lab: Hugging Face
+    region: us-eu
+    url: https://huggingface.co/blog/feed.xml
