@@ -1,9 +1,12 @@
 """Explicit, testable reliability-tier admission rules (design section 3.1)."""
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Annotated
 
 import yaml
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
 
 from paperwatch.domain import Classification, Signals, SourceItem, Tier
 
@@ -18,22 +21,52 @@ class AdmissionConfig:
     lab_authors: frozenset[str]
 
 
+# A blank venue or author string would silently never match, so require non-blank.
+_NonBlank = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+
+
+class _AdmissionConfigFile(BaseModel):
+    # extra="forbid" turns a typo'd key into a clear error instead of a silent ignore.
+    model_config = ConfigDict(extra="forbid")
+
+    min_relevance: float = Field(ge=0, le=1)
+    # strict=True rejects booleans, which pydantic would otherwise coerce to 0/1.
+    min_hf_upvotes: int = Field(strict=True, ge=1)
+    min_citations: int = Field(strict=True, ge=1)
+    accepted_venues: list[_NonBlank] = Field(min_length=1)
+    lab_authors: list[_NonBlank] = Field(min_length=1)
+
+
 def load_admission(path: Path) -> AdmissionConfig:
-    # Thresholds are configuration, not code, so a policy change is a data change.
-    d = yaml.safe_load(path.read_text())
+    # Thresholds are configuration, so the file is validated like the feed list.
+    try:
+        config = _AdmissionConfigFile.model_validate(yaml.safe_load(path.read_text()))
+    except ValidationError as exc:
+        raise ValueError(f"invalid admission config in {path}: {exc}") from exc
     return AdmissionConfig(
-        float(d["min_relevance"]),
-        frozenset(d["accepted_venues"]),
-        int(d["min_hf_upvotes"]),
-        int(d["min_citations"]),
-        frozenset(d["lab_authors"]),
+        min_relevance=config.min_relevance,
+        accepted_venues=frozenset(config.accepted_venues),
+        min_hf_upvotes=config.min_hf_upvotes,
+        min_citations=config.min_citations,
+        lab_authors=frozenset(config.lab_authors),
     )
 
 
+_YEAR = re.compile(r"^(19|20)\d{2}$")
+_WORKSHOP = re.compile(r"\bworkshops?\b", re.IGNORECASE)
+
+
 def _venue_accepted(signals: Signals, cfg: AdmissionConfig) -> bool:
-    # Accept a venue name, its acronym aliases, or the first word of a year-suffixed name.
-    for name in (signals.venue, *signals.venue_aliases):
-        if name and (name in cfg.accepted_venues or name.split()[0] in cfg.accepted_venues):
+    # Exact acronym, or "<acronym> <4-digit year>". A workshop title is not the
+    # parent conference, even when one of its aliases is the bare acronym.
+    names = [name for name in (signals.venue, *signals.venue_aliases) if name]
+    if any(_WORKSHOP.search(name) for name in names):
+        return False
+    for name in names:
+        if name in cfg.accepted_venues:
+            return True
+        parts = name.split()
+        if len(parts) == 2 and parts[0] in cfg.accepted_venues and _YEAR.fullmatch(parts[1]):
             return True
     return False
 
