@@ -1,5 +1,6 @@
 """Shared pieces for every source client: the HTTP client factory and retries."""
 
+import math
 from contextlib import suppress
 from typing import Any
 
@@ -13,6 +14,9 @@ from tenacity import (
 )
 
 from paperwatch.config import Settings
+
+# A server's Retry-After cannot be allowed to stall a run for hours.
+MAX_RETRY_AFTER_S = 60.0
 
 
 def make_http_client(settings: Settings) -> httpx.Client:
@@ -35,13 +39,16 @@ def _is_retryable(exc: BaseException) -> bool:
 
 
 def _wait_for_retry(state: RetryCallState) -> float:
-    # Honor Retry-After when the server sends it, otherwise back off exponentially.
+    # Honor a sane Retry-After, otherwise back off exponentially.
     exc = state.outcome.exception() if state.outcome is not None else None
     if isinstance(exc, httpx.HTTPStatusError):
         retry_after = exc.response.headers.get("Retry-After")
         if retry_after:
             with suppress(ValueError):
-                return float(retry_after)
+                seconds = float(retry_after)
+                # Negative, NaN and infinite values are not usable waits.
+                if math.isfinite(seconds) and seconds >= 0:
+                    return min(seconds, MAX_RETRY_AFTER_S)
     return wait_exponential(multiplier=1, min=1, max=30)(state)
 
 

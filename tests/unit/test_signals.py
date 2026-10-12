@@ -8,7 +8,7 @@ from pathlib import Path
 import httpx
 import respx
 
-from paperwatch.sources.hf_daily import HF_URL, HfDailySource
+from paperwatch.sources.hf_daily import HF_URL, MAX_PAGES_PER_DAY, HfDailySource
 from paperwatch.sources.semantic_scholar import S2_BATCH_URL, SemanticScholarSource
 
 
@@ -96,6 +96,51 @@ def test_hf_clean_call_leaves_degraded_false() -> None:
 
 
 @respx.mock
+def test_hf_skips_a_row_with_non_numeric_upvotes() -> None:
+    # One bad row is skipped; the rest of the page and the day still count.
+    respx.get(HF_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                _hf_row("2510.00001", 42),
+                {"paper": {"id": "2510.00002", "upvotes": "lots"}},
+            ],
+        )
+    )
+    src = HfDailySource(httpx.Client())
+    up = src.upvotes(date(2026, 10, 9), date(2026, 10, 9))
+    assert up == {"2510.00001": 42}
+    assert src.degraded is False
+
+
+@respx.mock
+def test_hf_stops_when_a_full_page_adds_nothing() -> None:
+    # A server that ignores p returns the same full page forever; the day is
+    # degraded instead of looping.
+    rows = [_hf_row(f"2510.{i:05d}") for i in range(100)]
+    route = respx.get(HF_URL).mock(return_value=httpx.Response(200, json=rows))
+    src = HfDailySource(httpx.Client())
+    up = src.upvotes(date(2026, 10, 9), date(2026, 10, 9))
+    assert route.call_count == 2
+    assert len(up) == 100
+    assert src.degraded is True
+
+
+@respx.mock
+def test_hf_page_cap_bounds_a_day() -> None:
+    # Distinct full pages never end on their own; the named cap bounds the day.
+    def responder(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params["p"])
+        return httpx.Response(200, json=[_hf_row(f"2510.{page:02d}{i:04d}") for i in range(100)])
+
+    route = respx.get(HF_URL).mock(side_effect=responder)
+    src = HfDailySource(httpx.Client())
+    src.upvotes(date(2026, 10, 9), date(2026, 10, 9))
+    assert route.call_count == MAX_PAGES_PER_DAY
+    assert src.degraded is True
+
+
+@respx.mock
 def test_s2_lookup_handles_nulls_and_empty_venue() -> None:
     # The fixture is hand-authored to the documented batch shape: one venue, one
     # arXiv.org preprint, one null.
@@ -113,6 +158,30 @@ def test_s2_lookup_handles_nulls_and_empty_venue() -> None:
     assert "2510.09999" not in out
     assert src.degraded is False
     assert src.failure is None
+
+
+@respx.mock
+def test_s2_ignores_non_list_alternate_names() -> None:
+    # A malformed alternate_names string must not be split into characters.
+    respx.post(S2_BATCH_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {
+                    "venue": "International Conference on Learning Representations",
+                    "publicationVenue": {
+                        "name": "International Conference on Learning Representations",
+                        "alternate_names": "ICLR",
+                    },
+                    "citationCount": 3,
+                }
+            ],
+        )
+    )
+    out = SemanticScholarSource(httpx.Client(), None, pause_s=0).lookup(["2510.00001"])
+    aliases = out["2510.00001"].venue_aliases
+    assert aliases == ("International Conference on Learning Representations",)
+    assert "I" not in aliases
 
 
 @respx.mock
@@ -207,10 +276,27 @@ def test_s2_does_not_retry_a_4xx(monkeypatch) -> None:
 
 
 @respx.mock
-def test_s2_paces_after_a_failed_chunk(monkeypatch) -> None:
+def test_s2_paces_between_chunks_after_a_failure(monkeypatch) -> None:
     sleeps: list[float] = []
     monkeypatch.setattr(time, "sleep", lambda seconds: sleeps.append(seconds))
-    respx.post(S2_BATCH_URL).mock(return_value=httpx.Response(503))
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        count = len(json.loads(request.content)["ids"])
+        if count == 500:
+            return httpx.Response(503)
+        return httpx.Response(200, json=[None] * count)
+
+    respx.post(S2_BATCH_URL).mock(side_effect=responder)
+    ids = [f"2510.{i:05d}" for i in range(501)]
+    SemanticScholarSource(httpx.Client(), None, pause_s=1.5).lookup(ids)
+    # One pause between chunks, even though the first failed, and none after the last.
+    assert sleeps.count(1.5) == 1
+
+
+@respx.mock
+def test_s2_does_not_pause_after_the_last_chunk(monkeypatch) -> None:
+    sleeps: list[float] = []
+    monkeypatch.setattr(time, "sleep", lambda seconds: sleeps.append(seconds))
+    respx.post(S2_BATCH_URL).mock(return_value=httpx.Response(200, json=[None]))
     SemanticScholarSource(httpx.Client(), None, pause_s=1.5).lookup(["2510.00001"])
-    # The finally-block pause runs even when the chunk failed.
-    assert 1.5 in sleeps
+    assert 1.5 not in sleeps

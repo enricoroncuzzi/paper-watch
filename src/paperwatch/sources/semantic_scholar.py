@@ -30,6 +30,7 @@ class SemanticScholarSource:
         out: dict[str, Signals] = {}
         for i in range(0, len(arxiv_ids), BATCH_SIZE):
             chunk = arxiv_ids[i : i + BATCH_SIZE]
+            has_more = i + BATCH_SIZE < len(arxiv_ids)
             try:
                 resp = send_with_retries(
                     self._client,
@@ -45,10 +46,13 @@ class SemanticScholarSource:
                         continue
                     venue = (paper.get("venue") or "").strip() or None
                     pv = paper.get("publicationVenue") or {}
+                    # Some venues carry alternate_names as a bare string; only a list
+                    # is trustworthy, otherwise unpacking would split it into letters.
+                    alternate = pv.get("alternate_names")
+                    if not isinstance(alternate, list):
+                        alternate = []
                     # Keep the venue name and every alternate name, e.g. "ICLR".
-                    aliases = tuple(
-                        a for a in [pv.get("name"), *(pv.get("alternate_names") or [])] if a
-                    )
+                    aliases = tuple(a for a in [pv.get("name"), *alternate] if a)
                     out[aid] = Signals(
                         venue=venue,
                         venue_aliases=aliases,
@@ -61,6 +65,7 @@ class SemanticScholarSource:
                 self.failure = f"s2 chunk at {i}: {exc}"
                 log.warning("s2_lookup_failed", error=str(exc), count=len(chunk))
             finally:
-                # Pace every chunk, including a failed one, so retries do not hammer.
-                time.sleep(self._pause_s)
+                # Pace between chunks, even after a failure, but not after the last one.
+                if has_more:
+                    time.sleep(self._pause_s)
         return out
