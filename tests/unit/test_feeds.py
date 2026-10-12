@@ -264,6 +264,15 @@ def test_load_feeds_rejects_a_non_url(tmp_path: Path) -> None:
         load_feeds(path)
 
 
+def test_load_feeds_rejects_a_non_https_url(tmp_path: Path) -> None:
+    # Official feeds are verified over TLS; http must fail the same rule as the test below.
+    path = _write_feeds(
+        tmp_path, "feeds:\n  - lab: X\n    region: us-eu\n    url: http://example.com/feed\n"
+    )
+    with pytest.raises(ValueError, match="https"):
+        load_feeds(path)
+
+
 def test_load_feeds_rejects_an_extra_key(tmp_path: Path) -> None:
     path = _write_feeds(
         tmp_path,

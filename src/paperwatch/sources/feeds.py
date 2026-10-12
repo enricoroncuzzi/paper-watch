@@ -11,7 +11,14 @@ from typing import Annotated, Any, Literal
 import feedparser
 import httpx
 import yaml
-from pydantic import BaseModel, ConfigDict, HttpUrl, StringConstraints, ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    HttpUrl,
+    StringConstraints,
+    ValidationError,
+    field_validator,
+)
 
 from paperwatch.domain import RejectedEntry, SourceItem
 from paperwatch.sources.base import send_with_retries
@@ -46,6 +53,14 @@ class _FeedConfig(BaseModel):
     # Only the two regions the corpus uses; a new region is a deliberate code change.
     region: Literal["us-eu", "cn"]
     url: HttpUrl
+
+    @field_validator("url")
+    @classmethod
+    def _require_https(cls, value: HttpUrl) -> HttpUrl:
+        # Official feeds are verified over TLS, so an http URL is a configuration mistake.
+        if value.scheme != "https":
+            raise ValueError(f"feed URL must be https, got {value}")
+        return value
 
 
 class _FeedsConfig(BaseModel):
