@@ -57,6 +57,15 @@ class Classification:
 
 
 @dataclass(frozen=True)
+class RejectedEntry:
+    """A source entry that could not be parsed; Task 9 records it as a dead letter."""
+
+    source: str
+    ref: str
+    error: str
+
+
+@dataclass(frozen=True)
 class Profile:
     """A topic profile read from config/profiles.yaml."""
 

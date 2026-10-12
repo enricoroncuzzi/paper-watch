@@ -12,15 +12,17 @@ from typing import Any
 
 import feedparser
 import httpx
+import structlog
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from paperwatch.domain import Profile, SourceItem
+from paperwatch.domain import Profile, RejectedEntry, SourceItem
 
 ARXIV_URL = "https://export.arxiv.org/api/query"
 # arXiv appends a version to every id (v1, v2, ...); identity is the base id.
 _VERSION = re.compile(r"v\d+$")
 # The API refuses start values past this ceiling, so paging must stop before it.
 _MAX_START = 30_000
+log = structlog.get_logger()
 
 
 def arxiv_base_id(raw: str) -> str:
@@ -74,6 +76,8 @@ class ArxivSource:
     ) -> None:
         self._client, self._profiles = client, profiles
         self._page_size, self._pause_s = page_size, pause_s
+        # Entries skipped during the most recent fetch, for the run to dead-letter.
+        self.rejected: list[RejectedEntry] = []
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=3, max=30), reraise=True)
     def _get(self, params: dict[str, str | int]) -> str:
@@ -99,6 +103,8 @@ class ArxivSource:
         )
 
     def fetch(self, since: datetime, until: datetime) -> list[SourceItem]:
+        # rejected describes one fetch; clear it so callers never read stale rows.
+        self.rejected = []
         seen: dict[str, SourceItem] = {}
         # Highest version number stored per base id, to pick the newest body.
         versions: dict[str, int] = {}
@@ -121,10 +127,15 @@ class ArxivSource:
                     try:
                         item = self._item(e)
                     except (AttributeError, KeyError, TypeError, ValueError) as exc:
-                        # Name the entry so Task 9's dead-letter row is actionable.
-                        raise ValueError(
-                            f"malformed arXiv entry id={e.get('id')!r}: {exc}"
-                        ) from exc
+                        # A deterministic bad entry must not block the whole source, so
+                        # skip it and record the id: Task 9 writes a dead letter, marks
+                        # the run partial, and still advances the cursor.
+                        ref = e.get("id") or "<missing id>"
+                        self.rejected.append(
+                            RejectedEntry(source=self.name, ref=ref, error=str(exc))
+                        )
+                        log.warning("arxiv_entry_rejected", ref=ref, error=str(exc))
+                        continue
                     # Replace the stored body when a higher version of the same base id
                     # arrives, independent of the order pages happen to return.
                     version = _version_of(e.id)
@@ -134,6 +145,14 @@ class ArxivSource:
                 # Pacing: one request every pause_s seconds, retries included.
                 time.sleep(self._pause_s)
                 if not entries:
+                    # An empty page ends paging only when the total is unknown or
+                    # reached; otherwise it is a transient gap and returning early
+                    # would silently lose the rest of the window.
+                    if total is not None and start < total:
+                        raise ValueError(
+                            f"arXiv returned an empty page at start={start} "
+                            f"but totalResults={total}"
+                        )
                     break
                 if total is not None and start + len(entries) >= total:
                     # totalResults says we have the whole window.

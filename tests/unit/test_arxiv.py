@@ -8,7 +8,7 @@ import httpx
 import pytest
 import respx
 
-from paperwatch.domain import load_profiles
+from paperwatch.domain import RejectedEntry, load_profiles
 from paperwatch.sources.arxiv import ARXIV_URL, ArxivSource, arxiv_base_id
 
 # The recorded Atom response; tests never touch the network.
@@ -17,21 +17,29 @@ FIXTURE = Path("tests/fixtures/arxiv_week.xml").read_text()
 PROFILES = load_profiles(Path("config/profiles.yaml"))[:1]
 
 
-def _atom(total: int, *ids: str) -> str:
-    # Minimal Atom feed with an opensearch total, used to drive the paging branches.
-    entries = "".join(
+def _entry(i: str) -> str:
+    # A well-formed entry, publishing date included, for paging/dedupe feeds.
+    return (
         f"<entry><id>http://arxiv.org/abs/{i}</id>"
         f"<title>title {i}</title><summary>abstract of {i}</summary>"
         f"<author><name>Author</name></author>"
         f"<published>2026-10-08T17:59:59Z</published></entry>"
-        for i in ids
     )
+
+
+def _feed(total: int, *entries: str) -> str:
+    # Minimal Atom feed with an opensearch total; entries can be raw or from _entry.
     return (
         '<?xml version="1.0" encoding="UTF-8"?>'
         '<feed xmlns="http://www.w3.org/2005/Atom" '
         'xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/">'
-        f"<opensearch:totalResults>{total}</opensearch:totalResults>{entries}</feed>"
+        f"<opensearch:totalResults>{total}</opensearch:totalResults>" + "".join(entries) + "</feed>"
     )
+
+
+def _atom(total: int, *ids: str) -> str:
+    # Convenience wrapper used by the tests that only vary the entry ids.
+    return _feed(total, *(_entry(i) for i in ids))
 
 
 def test_base_id_strips_version() -> None:
@@ -124,15 +132,44 @@ def test_short_page_with_higher_total_raises() -> None:
 
 
 @respx.mock
-def test_malformed_entry_raises_with_id() -> None:
-    # No published date: parsing fails, and the error must name the entry.
-    xml = (
-        '<?xml version="1.0" encoding="UTF-8"?>'
-        '<feed xmlns="http://www.w3.org/2005/Atom">'
-        "<entry><id>http://arxiv.org/abs/2510.00099v1</id>"
-        "<title>broken</title><summary>no date</summary></entry></feed>"
+def test_empty_page_before_total_raises() -> None:
+    # A full first page, then a transient empty second page while totalResults says
+    # more exist: returning early would silently drop the rest of the window.
+    def responder(request: httpx.Request) -> httpx.Response:
+        start = int(request.url.params["start"])
+        ids = ["2510.00050v1"] if start == 0 else []
+        return httpx.Response(200, text=_atom(2, *ids))
+
+    respx.get(ARXIV_URL).mock(side_effect=responder)
+    src = ArxivSource(httpx.Client(), PROFILES, page_size=1, pause_s=0)
+    with pytest.raises(ValueError, match="empty"):
+        src.fetch(datetime(2025, 1, 1, tzinfo=UTC), datetime(2030, 1, 1, tzinfo=UTC))
+
+
+@respx.mock
+def test_malformed_entry_is_rejected_not_fatal() -> None:
+    # One bad entry must not block the source: the good one is returned and the bad
+    # one is recorded for Task 9 to dead-letter.
+    bad = (
+        "<entry><id>http://arxiv.org/abs/2510.00041v1</id>"
+        "<title>broken</title><summary>no date</summary></entry>"
     )
+    xml = _feed(2, _entry("2510.00040v1"), bad)
     respx.get(ARXIV_URL).mock(return_value=httpx.Response(200, text=xml))
     src = ArxivSource(httpx.Client(), PROFILES, page_size=100, pause_s=0)
-    with pytest.raises(ValueError, match=r"2510\.00099v1"):
-        src.fetch(datetime(2025, 1, 1, tzinfo=UTC), datetime(2030, 1, 1, tzinfo=UTC))
+    items = src.fetch(datetime(2025, 1, 1, tzinfo=UTC), datetime(2030, 1, 1, tzinfo=UTC))
+    assert [i.external_id for i in items] == ["2510.00040"]
+    assert len(src.rejected) == 1
+    assert src.rejected[0].source == "arxiv"
+    assert "2510.00041v1" in src.rejected[0].ref
+    assert src.rejected[0].error
+
+
+@respx.mock
+def test_rejected_is_reset_each_fetch() -> None:
+    # rejected belongs to one fetch; a later clean fetch must not inherit it.
+    respx.get(ARXIV_URL).mock(return_value=httpx.Response(200, text=_atom(1, "2510.00060v1")))
+    src = ArxivSource(httpx.Client(), PROFILES, page_size=100, pause_s=0)
+    src.rejected.append(RejectedEntry(source="arxiv", ref="old", error="stale"))
+    src.fetch(datetime(2025, 1, 1, tzinfo=UTC), datetime(2030, 1, 1, tzinfo=UTC))
+    assert src.rejected == []
