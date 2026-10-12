@@ -36,9 +36,9 @@ class SourceItem:
     licence: str = "unknown"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class Signals:
-    """Quality evidence used to admit or promote a preprint (always pass by keyword)."""
+    """Quality evidence used to admit or promote a preprint (keyword-only)."""
 
     venue: str | None = None
     citation_count: int = 0

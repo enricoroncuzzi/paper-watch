@@ -8,6 +8,7 @@ never the PDF.
 import re
 import time
 from datetime import UTC, datetime
+from typing import Any
 
 import feedparser
 import httpx
@@ -18,11 +19,19 @@ from paperwatch.domain import Profile, SourceItem
 ARXIV_URL = "https://export.arxiv.org/api/query"
 # arXiv appends a version to every id (v1, v2, ...); identity is the base id.
 _VERSION = re.compile(r"v\d+$")
+# The API refuses start values past this ceiling, so paging must stop before it.
+_MAX_START = 30_000
 
 
 def arxiv_base_id(raw: str) -> str:
     """Return the version-free arXiv id, accepting a URL or a bare id."""
     return _VERSION.sub("", raw.rstrip("/").split("/abs/")[-1])
+
+
+def _version_of(raw: str) -> int:
+    # Trailing "vN" ranks versions so the newest body wins; a bare id ranks 0.
+    match = _VERSION.search(raw.rstrip("/"))
+    return int(match.group()[1:]) if match else 0
 
 
 def _utc(parsed: tuple[int, ...]) -> datetime:
@@ -31,12 +40,25 @@ def _utc(parsed: tuple[int, ...]) -> datetime:
     return datetime(year, month, day, hour, minute, second, tzinfo=UTC)
 
 
+def _stamp(value: datetime) -> str:
+    # submittedDate is GMT: an aware value converts, a naive one is already UTC.
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return f"{value.astimezone(UTC):%Y%m%d%H%M}"
+
+
 def _profile_query(p: Profile, since: datetime, until: datetime) -> str:
     # Build one query per profile: category filter AND term filter AND date window.
     cats = " OR ".join(f"cat:{c}" for c in p.categories)
     terms = " OR ".join(f'all:"{t}"' for t in p.terms)
-    window = f"submittedDate:[{since:%Y%m%d%H%M} TO {until:%Y%m%d%H%M}]"
+    window = f"submittedDate:[{_stamp(since)} TO {_stamp(until)}]"
     return f"({cats}) AND ({terms}) AND {window}"
+
+
+def _total_results(feed: Any) -> int | None:
+    # opensearch:totalResults is how many entries the whole window holds.
+    raw = feed.get("opensearch_totalresults")
+    return int(raw) if raw else None
 
 
 class ArxivSource:
@@ -60,9 +82,26 @@ class ArxivSource:
         resp.raise_for_status()
         return resp.text
 
+    def _item(self, e: Any) -> SourceItem:
+        # Feedparser entries are dict-like; a missing field raises and is re-labelled.
+        base = arxiv_base_id(e.id)
+        return SourceItem(
+            source=self.name,
+            external_id=base,
+            # Normalise whitespace: Atom carries newlines in titles/summaries.
+            title=" ".join(e.title.split()),
+            authors=tuple(a.name for a in e.get("authors", [])),
+            text=" ".join(e.summary.split()),
+            url=f"https://arxiv.org/abs/{base}",
+            published_at=_utc(e.published_parsed),
+            categories=tuple(t.term for t in e.get("tags", [])),
+            licence="CC0-1.0 (metadata)",
+        )
+
     def fetch(self, since: datetime, until: datetime) -> list[SourceItem]:
-        # setdefault keeps the first (usually newest) version seen for a base id.
         seen: dict[str, SourceItem] = {}
+        # Highest version number stored per base id, to pick the newest body.
+        versions: dict[str, int] = {}
         for profile in self._profiles:
             start = 0
             while True:
@@ -75,27 +114,42 @@ class ArxivSource:
                         "max_results": self._page_size,
                     }
                 )
-                entries = feedparser.parse(text).entries
+                feed = feedparser.parse(text)
+                entries = feed.entries
+                total = _total_results(feed.feed)
                 for e in entries:
-                    base = arxiv_base_id(e.id)
-                    seen.setdefault(
-                        base,
-                        SourceItem(
-                            source=self.name,
-                            external_id=base,
-                            # Normalise whitespace: Atom carries newlines in titles/summaries.
-                            title=" ".join(e.title.split()),
-                            authors=tuple(a.name for a in e.get("authors", [])),
-                            text=" ".join(e.summary.split()),
-                            url=f"https://arxiv.org/abs/{base}",
-                            published_at=_utc(e.published_parsed),
-                            categories=tuple(t.term for t in e.get("tags", [])),
-                            licence="CC0-1.0 (metadata)",
-                        ),
-                    )
+                    try:
+                        item = self._item(e)
+                    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+                        # Name the entry so Task 9's dead-letter row is actionable.
+                        raise ValueError(
+                            f"malformed arXiv entry id={e.get('id')!r}: {exc}"
+                        ) from exc
+                    # Replace the stored body when a higher version of the same base id
+                    # arrives, independent of the order pages happen to return.
+                    version = _version_of(e.id)
+                    if item.external_id not in seen or version > versions[item.external_id]:
+                        seen[item.external_id] = item
+                        versions[item.external_id] = version
                 # Pacing: one request every pause_s seconds, retries included.
                 time.sleep(self._pause_s)
+                if not entries:
+                    break
+                if total is not None and start + len(entries) >= total:
+                    # totalResults says we have the whole window.
+                    break
                 if len(entries) < self._page_size:
+                    # A short page is an ending only when no total is known; with a
+                    # total that says more exist it is a truncated response, so fail
+                    # loudly and let the run dead-letter and replay the window.
+                    if total is not None:
+                        raise ValueError(
+                            f"arXiv returned a short page ({len(entries)}) at "
+                            f"start={start} but totalResults={total}"
+                        )
                     break
                 start += self._page_size
+                if start >= _MAX_START:
+                    # Past the API ceiling we cannot page further; stop rather than loop.
+                    break
         return list(seen.values())
