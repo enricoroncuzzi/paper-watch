@@ -244,7 +244,9 @@ def test_naive_window_raises() -> None:
 
 
 def test_load_feeds_reads_the_configured_list() -> None:
-    # The one verified feed is present; the rest of the list arrives later.
+    # Wave 1 is active; the commented wave 2 (Hugging Face, Qwen) is not parsed.
     feeds = load_feeds(Path("config/feeds.yaml"))
-    assert any(f.lab == "Hugging Face" and "huggingface.co" in f.url for f in feeds)
+    assert len(feeds) == 14
+    assert any(f.lab == "Microsoft Agent Framework" and "agent-framework" in f.url for f in feeds)
     assert all(f.region for f in feeds)
+    assert not any(f.lab == "Hugging Face" for f in feeds)
