@@ -6,11 +6,12 @@ from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from html import unescape
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any, Literal
 
 import feedparser
 import httpx
 import yaml
+from pydantic import BaseModel, ConfigDict, HttpUrl, StringConstraints, ValidationError
 
 from paperwatch.domain import RejectedEntry, SourceItem
 from paperwatch.sources.base import send_with_retries
@@ -33,9 +34,39 @@ class Feed:
     region: str
 
 
+# A blank lab name would make tier-3 items anonymous, so strip and require one char.
+_LabName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+
+
+class _FeedConfig(BaseModel):
+    # extra="forbid" turns a typo'd or stray key into a clear error, not a silent ignore.
+    model_config = ConfigDict(extra="forbid")
+
+    lab: _LabName
+    # Only the two regions the corpus uses; a new region is a deliberate code change.
+    region: Literal["us-eu", "cn"]
+    url: HttpUrl
+
+
+class _FeedsConfig(BaseModel):
+    # The file has one top-level key, so a stray key there is a mistake too.
+    model_config = ConfigDict(extra="forbid")
+
+    feeds: list[_FeedConfig]
+
+
 def load_feeds(path: Path) -> list[Feed]:
-    # Feeds are configuration, not code, so the lab list is data in YAML.
-    return [Feed(**f) for f in yaml.safe_load(path.read_text())["feeds"]]
+    # Feeds are configuration, not code, so the lab list is validated YAML data.
+    try:
+        config = _FeedsConfig.model_validate(yaml.safe_load(path.read_text()))
+    except ValidationError as exc:
+        raise ValueError(f"invalid feed list in {path}: {exc}") from exc
+    urls = [str(feed.url) for feed in config.feeds]
+    if len(urls) != len(set(urls)):
+        # A duplicate URL would fetch and store the same posts twice.
+        duplicates = sorted({url for url in urls if urls.count(url) > 1})
+        raise ValueError(f"duplicate feed URLs in {path}: {duplicates}")
+    return [Feed(lab=feed.lab, url=str(feed.url), region=feed.region) for feed in config.feeds]
 
 
 def _looks_like_feed(content: bytes) -> bool:

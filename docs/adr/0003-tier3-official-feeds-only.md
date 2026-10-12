@@ -170,3 +170,7 @@ Face, Mistral AI, Google Research and several wave-2 feeds sit outside the focus
   team names, and the few with neither stay uncovered by design rather than by scraping.
 - Summary-only and title-only feeds are accepted as pointer sources, not as text the answer can
   quote.
+- Most feeds expose only their last 10-20 posts, so an outage longer than that window loses the
+  posts published before it: once they scroll off the feed, the next run cannot fetch them.
+- A post the lab later edits is not refreshed: feed items carry version 1 only, so the stored row
+  keeps the first version even after the source changes.

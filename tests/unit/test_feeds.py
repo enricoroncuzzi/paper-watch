@@ -243,10 +243,51 @@ def test_naive_window_raises() -> None:
         FeedSource(httpx.Client(), [FEED]).fetch(datetime(2026, 1, 1), datetime(2030, 1, 1))
 
 
+def _write_feeds(tmp_path: Path, body: str) -> Path:
+    # Write a small feed list so validation failures can be exercised offline.
+    path = tmp_path / "feeds.yaml"
+    path.write_text(body)
+    return path
+
+
+def test_load_feeds_rejects_a_bad_region(tmp_path: Path) -> None:
+    path = _write_feeds(
+        tmp_path, "feeds:\n  - lab: X\n    region: mars\n    url: https://example.com/feed\n"
+    )
+    with pytest.raises(ValueError, match="region"):
+        load_feeds(path)
+
+
+def test_load_feeds_rejects_a_non_url(tmp_path: Path) -> None:
+    path = _write_feeds(tmp_path, "feeds:\n  - lab: X\n    region: us-eu\n    url: not-a-url\n")
+    with pytest.raises(ValueError, match="url"):
+        load_feeds(path)
+
+
+def test_load_feeds_rejects_an_extra_key(tmp_path: Path) -> None:
+    path = _write_feeds(
+        tmp_path,
+        "feeds:\n  - lab: X\n    region: us-eu\n    url: https://example.com/feed\n    extra: 1\n",
+    )
+    with pytest.raises(ValueError, match="extra"):
+        load_feeds(path)
+
+
+def test_load_feeds_rejects_a_duplicate_url(tmp_path: Path) -> None:
+    path = _write_feeds(
+        tmp_path,
+        "feeds:\n"
+        "  - lab: X\n    region: us-eu\n    url: https://example.com/feed\n"
+        "  - lab: Y\n    region: cn\n    url: https://example.com/feed\n",
+    )
+    with pytest.raises(ValueError, match="duplicate"):
+        load_feeds(path)
+
+
 def test_load_feeds_reads_the_configured_list() -> None:
-    # Wave 1 is active; the commented wave 2 (Hugging Face, Qwen) is not parsed.
+    # Properties of the real file, not its size: enabling a wave-2 feed must not break this.
     feeds = load_feeds(Path("config/feeds.yaml"))
-    assert len(feeds) == 14
-    assert any(f.lab == "Microsoft Agent Framework" and "agent-framework" in f.url for f in feeds)
-    assert all(f.region for f in feeds)
-    assert not any(f.lab == "Hugging Face" for f in feeds)
+    assert feeds
+    assert all(f.url.startswith("https://") for f in feeds)
+    assert len({f.url for f in feeds}) == len(feeds)
+    assert all(f.region in {"us-eu", "cn"} for f in feeds)
