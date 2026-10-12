@@ -1,3 +1,5 @@
 # Sources and licensing
 
 Data you build on must be data you may use. arXiv dedicates its descriptive metadata, abstracts included, to the public domain (CC0), so abstracts may be stored, embedded, and quoted; the PDFs stay under each author's licence, so this system never downloads them. arXiv asks for at most one API request every three seconds on one connection; a polite client enforces that in code rather than hoping the volume stays low. A paper can appear in several versions (`v1`, `v2`): identity is the base id without the version, otherwise the same paper is stored twice.
+
+A preprint is not peer-reviewed, so reliability needs evidence. Two signals are cheap and honest: community attention (Hugging Face daily papers, a curated list of arXiv ids with upvotes) and scholarly uptake (Semantic Scholar's venue of publication and citation count). Semantic Scholar's data carries its own licences and requires attribution when displayed; this system uses it for ranking and labelling, never as quoted text.

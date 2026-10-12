@@ -30,3 +30,7 @@ Configuration comes from `PW_*` environment variables; see [`.env.example`](.env
 - [`docs/learn/`](docs/learn/): one lesson per technology, starting with
   [how to read this repo](docs/learn/00-how-to-read-this-repo.md).
 - [`docs/adr/`](docs/adr/): architecture decision records.
+
+## Data sources
+
+Venue and citation data from Semantic Scholar (https://www.semanticscholar.org).
