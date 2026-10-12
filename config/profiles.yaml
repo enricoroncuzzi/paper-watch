@@ -1,0 +1,16 @@
+# Topic profiles drive which arXiv papers are fetched and how they are weighted.
+# categories are arXiv category filters; terms are broad OR-ed query terms;
+# weight sets the profile's priority when an item matches more than one profile.
+profiles:
+  - name: agentic-engineering
+    weight: 1.0
+    categories: [cs.AI, cs.CL, cs.MA, cs.SE, cs.LG]
+    terms: ["agent", "agentic", "tool use", "tool-use", "multi-agent", "harness", "coding agent", "LLM agent", "agent evaluation", "planning", "memory", "bot"]
+  - name: ai-forensics
+    weight: 0.7
+    categories: [cs.CV, cs.CR, cs.MM]
+    terms: ["synthetic image", "deepfake", "image forensics", "generated image detection", "provenance", "watermark"]
+  - name: ml-architectures
+    weight: 0.4
+    categories: [cs.LG, stat.ML]
+    terms: ["architecture", "state space model", "mixture of experts", "transformer alternative", "attention"]
