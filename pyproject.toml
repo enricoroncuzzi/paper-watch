@@ -9,6 +9,7 @@ authors = [
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "alembic>=1.14",
+    "fastembed>=0.9",
     "feedparser>=6.0.11",
     "httpx>=0.28",
     "openai>=1.60",
@@ -59,8 +60,12 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra --strict-markers --cov=paperwatch --cov-report=term-missing"
-markers = ["integration: needs a Postgres container"]
+# Real-model tests are opt-in (`uv run pytest -m model`): default CI stays offline and light.
+addopts = "-ra --strict-markers --cov=paperwatch --cov-report=term-missing -m 'not model'"
+markers = [
+    "integration: needs a Postgres container",
+    "model: loads the real local embedding model (downloads about 180 MB once)",
+]
 
 [project.scripts]
 paperwatch = "paperwatch.cli:app"

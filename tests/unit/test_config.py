@@ -1,6 +1,7 @@
 import pytest
+from pydantic import ValidationError
 
-from paperwatch.config import EMBEDDING_DIM, Settings
+from paperwatch.config import EMBEDDING_DIM, LOCAL_EMBEDDING_MODEL, Settings
 
 
 def test_settings_read_from_environment(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -25,4 +26,40 @@ def test_empty_values_fall_back_to_defaults(monkeypatch: pytest.MonkeyPatch) -> 
 
 def test_embedding_dim_is_single_constant() -> None:
     # Guards against the dimension drifting from the DB schema and the model.
-    assert EMBEDDING_DIM == 1536
+    assert EMBEDDING_DIM == 384
+
+
+def test_model_providers_default_to_local_and_need_no_key() -> None:
+    s = Settings()
+    assert (s.embedding_provider, s.classifier_provider) == ("local", "embedding")
+    assert s.local_embedding_model == LOCAL_EMBEDDING_MODEL
+    assert (s.local_embedding_threads, s.local_embedding_batch) == (2, 1)
+    assert s.local_embedding_cpu_arena is False and s.local_embedding_cache_dir is None
+
+
+def test_model_settings_read_from_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PW_EMBEDDING_PROVIDER", "azure")
+    monkeypatch.setenv("PW_CLASSIFIER_PROVIDER", "keyword")
+    monkeypatch.setenv("PW_LOCAL_EMBEDDING_CACHE_DIR", "/models")
+    monkeypatch.setenv("PW_LOCAL_EMBEDDING_BATCH", "4")
+    s = Settings()
+    assert (s.embedding_provider, s.classifier_provider) == ("azure", "keyword")
+    assert (s.local_embedding_cache_dir, s.local_embedding_batch) == ("/models", 4)
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("PW_EMBEDDING_PROVIDER", "openrouter"),
+        ("PW_CLASSIFIER_PROVIDER", "llm"),
+        ("PW_LOCAL_EMBEDDING_BATCH", "0"),
+        ("PW_LOCAL_EMBEDDING_THREADS", "0"),
+    ],
+)
+def test_unknown_provider_or_non_positive_size_is_refused(
+    monkeypatch: pytest.MonkeyPatch, name: str, value: str
+) -> None:
+    # A typo must fail at startup, not silently pick a default provider.
+    monkeypatch.setenv(name, value)
+    with pytest.raises(ValidationError):
+        Settings()

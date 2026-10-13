@@ -85,12 +85,41 @@ class Profile:
     weight: float
     categories: tuple[str, ...]
     terms: tuple[str, ...]
+    # The text embedded as the profile's vector, and the cosine similarity at or above which an
+    # item matches it; read by the embedding classifier, calibrated together for one model.
+    description: str
+    relevance_threshold: float
+
+
+def _threshold(name: object, value: object, path: Path) -> float:
+    # bool is an int subclass, so True would pass as 1.0 without the first check. Both ends are
+    # excluded: 0 would match everything, and 1 only an identical text.
+    if isinstance(value, bool) or not isinstance(value, int | float) or not 0 < value < 1:
+        raise ValueError(
+            f"profile {name!r} in {path}: relevance_threshold must be a number strictly "
+            f"between 0 and 1, got {value!r}"
+        )
+    return float(value)
 
 
 def load_profiles(path: Path) -> list[Profile]:
-    # Profiles are configuration, not code, so they load at startup from YAML.
+    # Profiles are configuration, not code, so they load at startup from YAML. A missing
+    # description or threshold is refused here: either would make the embedding classifier
+    # admit everything or nothing without any error.
     data = yaml.safe_load(path.read_text())
-    return [
-        Profile(p["name"], float(p["weight"]), tuple(p["categories"]), tuple(p["terms"]))
-        for p in data["profiles"]
-    ]
+    profiles = []
+    for p in data["profiles"]:
+        description = p.get("description")
+        if not isinstance(description, str) or not description.strip():
+            raise ValueError(f"profile {p['name']!r} in {path} needs a non-blank description")
+        profiles.append(
+            Profile(
+                p["name"],
+                float(p["weight"]),
+                tuple(p["categories"]),
+                tuple(p["terms"]),
+                description.strip(),
+                _threshold(p["name"], p.get("relevance_threshold"), path),
+            )
+        )
+    return profiles

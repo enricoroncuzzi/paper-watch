@@ -26,12 +26,14 @@ class _StubEmbeddings:
         self, *, dim: int = EMBEDDING_DIM, reverse: bool = False, usage: int | None = None
     ) -> None:
         self.calls: list[list[str]] = []
+        self.dimensions: list[int] = []
         self._dim = dim
         self._reverse = reverse
         self._usage = usage
 
-    def create(self, model: str, input: list[str]) -> object:
+    def create(self, model: str, input: list[str], dimensions: int) -> object:
         self.calls.append(input)
+        self.dimensions.append(dimensions)
         # Each vector encodes its input's length, so a caller can check order and dimension.
         data = [
             type("D", (), {"embedding": [float(len(t))] * self._dim, "index": i})()
@@ -131,6 +133,13 @@ def test_azure_embedder_returns_vectors_in_input_order() -> None:
     )
     # Each vector encodes its input's length; the response was deliberately reversed.
     assert [v[0] for v in vectors] == [2.0, 4.0, 6.0]
+
+
+def test_azure_embedder_asks_for_the_schema_dimension() -> None:
+    # text-embedding-3 models answer 1536 by default; the column holds EMBEDDING_DIM.
+    stub = _StubEmbeddings()
+    AzureEmbedder(_embedding_client(stub), "emb", Ledger(10**9)).embed(["text"])
+    assert stub.dimensions == [EMBEDDING_DIM]
 
 
 def test_azure_embedder_rejects_a_vector_of_the_wrong_length() -> None:

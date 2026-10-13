@@ -1,11 +1,19 @@
 """All runtime configuration. The only module that names models and deployments."""
 
 from functools import lru_cache
+from typing import Literal
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Vector size of the embedding model; the DB column and the model must agree on it.
-EMBEDDING_DIM = 1536
+# Vector size of the embedding model; the DB column and the model must agree on it. 384 is the
+# local production model below and both of its same-size fallbacks (bge-small-en-v1.5,
+# all-MiniLM-L6-v2), so a fallback needs a re-embed but no schema change.
+EMBEDDING_DIM = 384
+# The corpus embedding model (Apache-2.0, run locally through fastembed on ONNX Runtime; captain
+# decision 2026-10-13). The relevance thresholds in config/profiles.yaml are calibrated for this
+# exact model, so the embedding classifier refuses to run on any other.
+LOCAL_EMBEDDING_MODEL = "ibm-granite/granite-embedding-small-english-r2"
 
 
 class Settings(BaseSettings):
@@ -18,6 +26,22 @@ class Settings(BaseSettings):
 
     # Database (default matches docker-compose.yml)
     database_url: str = "postgresql+psycopg://paperwatch:paperwatch@localhost:5432/paperwatch"
+
+    # Which embedder and which relevance classifier a live run uses. Local needs no key, no
+    # network after the model download, and no token budget; azure is kept for the Azure proof.
+    embedding_provider: Literal["local", "azure"] = "local"
+    classifier_provider: Literal["embedding", "keyword", "azure"] = "embedding"
+
+    # Local embedding model. The cache dir is where fastembed keeps the downloaded model; set it
+    # to a pre-filled directory (for example one baked into the image) so a run never downloads.
+    # Unset means fastembed's default, a folder in the system temp directory.
+    local_embedding_model: str = LOCAL_EMBEDDING_MODEL
+    local_embedding_cache_dir: str | None = None
+    # Sized for the 2-vCPU, 1.9 GB VPS: memory grows with the batch, so embed one text at a time,
+    # and the ONNX Runtime arena (which keeps freed memory for reuse) stays off.
+    local_embedding_threads: int = Field(default=2, ge=1)
+    local_embedding_batch: int = Field(default=1, ge=1)
+    local_embedding_cpu_arena: bool = False
 
     # Azure OpenAI: endpoint and key have no default, so they must come from the environment.
     azure_openai_endpoint: str | None = None

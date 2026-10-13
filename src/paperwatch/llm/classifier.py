@@ -1,12 +1,20 @@
-"""Relevance classifier: profile and score for one item, fake plus Azure structured output."""
+"""Relevance classifier: profile and score for one item.
 
+Three implementations behind one protocol: embedding similarity to each profile's
+description (production, local), keyword match (offline tests and a cheap fallback),
+and Azure structured output. `make_classifier` picks one from settings.
+"""
+
+import math
 import re
 from typing import Protocol
 
 import openai
 from pydantic import BaseModel, Field
 
+from paperwatch.config import LOCAL_EMBEDDING_MODEL, Settings
 from paperwatch.domain import Classification, Profile, SourceItem
+from paperwatch.llm.embedder import Embedder, embedding_text, make_azure_client
 from paperwatch.llm.ledger import Ledger
 
 
@@ -83,3 +91,69 @@ class AzureClassifier:
         if out.profile is not None and out.profile not in self._names:
             raise RuntimeError(f"classifier returned unknown profile {out.profile!r}")
         return Classification(out.profile, out.relevance, out.reason)
+
+
+def calibrated_relevance(similarity: float, threshold: float) -> float:
+    # Rescale a cosine to 0-1 so the profile's calibrated threshold lands exactly on 0.5,
+    # linear on each side. Scores then compare across profiles with different thresholds, and
+    # "matches its profile" means relevance >= 0.5, the same scale as the keyword classifier
+    # and admission's min_relevance. The threshold is strictly between 0 and 1 (load_profiles).
+    if similarity >= threshold:
+        return min(1.0, 0.5 + 0.5 * (similarity - threshold) / (1.0 - threshold))
+    return max(0.0, 0.5 * similarity / threshold)
+
+
+def _cosine(u: list[float], v: list[float]) -> float:
+    dot = sum(a * b for a, b in zip(u, v, strict=True))
+    norms = math.sqrt(sum(a * a for a in u)) * math.sqrt(sum(b * b for b in v))
+    return dot / norms if norms else 0.0
+
+
+class EmbeddingClassifier:
+    """Relevance by meaning: the item's similarity to each profile's description.
+
+    Each profile vector is embedded once, here; each item costs one embedding.
+    """
+
+    def __init__(self, embedder: Embedder, profiles: list[Profile]) -> None:
+        self._embedder, self._profiles = embedder, profiles
+        self._vectors = embedder.embed([p.description for p in profiles])
+
+    def classify(self, item: SourceItem) -> Classification:
+        [vector] = self._embedder.embed([embedding_text(item)])
+        best, best_relevance, best_similarity = self._profiles[0], -1.0, 0.0
+        for profile, profile_vector in zip(self._profiles, self._vectors, strict=True):
+            similarity = _cosine(vector, profile_vector)
+            relevance = calibrated_relevance(similarity, profile.relevance_threshold)
+            # Strictly greater: on a tie the earlier profile in the file wins, as with keywords.
+            if relevance > best_relevance:
+                best, best_relevance, best_similarity = profile, relevance, similarity
+        reason = (
+            f"cosine {best_similarity:.3f} to {best.name}, threshold {best.relevance_threshold:.2f}"
+        )
+        # Below every threshold: no profile, but the closest score is kept for inspection.
+        name = best.name if best_relevance >= 0.5 else None
+        return Classification(name, best_relevance, reason)
+
+
+def make_classifier(
+    settings: Settings, ledger: Ledger, profiles: list[Profile], embedder: Embedder
+) -> Classifier:
+    # One switch for every live command; only the Azure classifier spends ledger tokens.
+    if settings.classifier_provider == "keyword":
+        return FakeClassifier(profiles)
+    if settings.classifier_provider == "azure":
+        client = make_azure_client(settings)
+        return AzureClassifier(client, settings.classifier_deployment, profiles, ledger)
+    # Thresholds are cosines of one model: on another model's vectors (bge-small or MiniLM put
+    # the same papers near 0.3-0.7) they would admit nothing, or everything, without an error.
+    if (
+        settings.embedding_provider != "local"
+        or settings.local_embedding_model != LOCAL_EMBEDDING_MODEL
+    ):
+        raise ValueError(
+            f"the relevance thresholds in config/profiles.yaml are calibrated for "
+            f"{LOCAL_EMBEDDING_MODEL} run locally; recalibrate them before classifying with "
+            f"another embedding model, or set PW_CLASSIFIER_PROVIDER=keyword"
+        )
+    return EmbeddingClassifier(embedder, profiles)

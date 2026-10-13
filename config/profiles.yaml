@@ -1,16 +1,39 @@
 # Topic profiles drive which arXiv papers are fetched and how they are weighted.
 # categories are arXiv category filters; terms are broad OR-ed query terms;
 # weight sets the profile's priority when an item matches more than one profile.
+#
+# description is the text the embedding classifier embeds as the profile's vector, and
+# relevance_threshold is the cosine similarity (with LOCAL_EMBEDDING_MODEL in
+# src/paperwatch/config.py) at or above which an item matches the profile. The two are calibrated
+# together for that one model: change a description or the model and recalibrate the thresholds.
+# Provenance: 0.81 is the zero-cost scout's F1-optimal threshold for granite-embedding-small-r2
+# (2026-10-13, data/awakening-zero-cost-scout/report.md section 2.2: chosen on 71 hand-labelled
+# arXiv abstracts, macro F1 0.866 on 68 held out). The scout's exact description strings were not
+# kept, so these descriptions are rewritten from its labelling criteria (section 2.1) and the
+# threshold is a starting point until the relevance eval recalibrates it.
 profiles:
   - name: agentic-engineering
     weight: 1.0
     categories: [cs.AI, cs.CL, cs.MA, cs.SE, cs.LG]
     terms: ["agent", "agentic", "tool use", "tool-use", "multi-agent", "harness", "coding agent", "LLM agent", "agent evaluation", "planning", "memory", "bot"]
+    description: >-
+      Building, evaluating or analysing LLM agents: agent harnesses, tool use, multi-agent
+      systems, coding agents, agent memory and planning, agent benchmarks and evaluation, and bots.
+    relevance_threshold: 0.81
   - name: ai-forensics
     weight: 0.7
     categories: [cs.CV, cs.CR, cs.MM]
     terms: ["synthetic image", "deepfake", "image forensics", "generated image detection", "provenance", "watermark"]
+    description: >-
+      Detecting, attributing, watermarking or tracing the provenance of synthetic or manipulated
+      media: deepfake detection, AI-generated image, audio, video and text detection, and
+      watermarking of generated content.
+    relevance_threshold: 0.81
   - name: ml-architectures
     weight: 0.4
     categories: [cs.LG, stat.ML]
     terms: ["architecture", "state space model", "mixture of experts", "transformer alternative", "attention"]
+    description: >-
+      New neural network architectures and core building blocks: state space models, mixture of
+      experts, attention variants, transformer alternatives, and diffusion transformers.
+    relevance_threshold: 0.81
