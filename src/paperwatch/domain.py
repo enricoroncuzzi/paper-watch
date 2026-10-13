@@ -20,6 +20,18 @@ class Tier(StrEnum):
     LAB_BLOG = "lab_blog"
 
 
+class AdmissionBasis(StrEnum):
+    # Which admission rule produced an item's current tier, so a lab's own report stays
+    # distinguishable from community-vetted work (captain decision 2026-10-13).
+    VENUE = "venue"
+    HF_UPVOTES = "hf_upvotes"
+    CITATIONS = "citations"
+    LAB_AUTHOR = "lab_author"
+    FEED = "feed"
+    # SEED is written only by the test and eval seeding helper, never by the pipeline.
+    SEED = "seed"
+
+
 @dataclass(frozen=True)
 class SourceItem:
     """One normalised record as returned by any source client, before admission."""

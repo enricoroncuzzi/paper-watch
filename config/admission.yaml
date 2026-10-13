@@ -1,10 +1,61 @@
 min_relevance: 0.5
 min_hf_upvotes: 10
 min_citations: 5
-accepted_venues: [NeurIPS, ICLR, ICML, ACL, EMNLP, NAACL, COLM, AAAI, IJCAI, CVPR, ICCV, ECCV, TMLR, JMLR]
-# Exact arXiv author strings (case- and spelling-sensitive), verified against arXiv on
-# 2026-10-12 for labs without an official feed; see ADR 0003. "Bytedance" is arXiv's casing.
-lab_authors: ["Google DeepMind", "OpenAI", "Anthropic", "Meta FAIR",
-              "DeepSeek-AI", "Qwen", "Qwen Team", "Kimi Team", "Team GLM", "GLM-4.5 Team",
-              "MiniMax", "Bytedance Seed", "Tencent Hunyuan Team", "StepFun", "MiniCPM Team",
-              "Ant Group", "Ling Team", "Xiaomi LLM-Core Team"]
+# Accepted Semantic Scholar venue or alias strings, compared exact and case-sensitive; see
+# ADR 0003 for the venues deliberately left out and why. COLM is inactive: S2 has no COLM
+# venue entity yet, kept here so it works as soon as one is indexed.
+accepted_venues:
+  - NeurIPS
+  - ICLR
+  - ICML
+  - ACL
+  - EMNLP
+  - NAACL
+  - AAAI
+  - IJCAI
+  - CVPR
+  - ICCV
+  - ECCV
+  - TACL
+  - EACL
+  - COLING
+  - SIGIR
+  - KDD
+  - WWW
+  - MLSys
+  - ICSE
+  - ASE
+  - ISSTA
+  - ICASSP
+  - Interspeech
+  - CCS
+  - "S&P"
+  - ACM Multimedia
+  - USENIX Security Symposium
+  - IEEE Transactions on Information Forensics and Security
+  - IEEE Transactions on Pattern Analysis and Machine Intelligence
+  - Trans. Mach. Learn. Res.
+  - Journal of Machine Learning Research
+  - Journal of machine learning research
+  - COLM
+# Exact arXiv team-name strings (case- and spelling-sensitive) that vet arXiv papers by lab
+# teams. They cover labs without a tier-3 feed, and also vet papers from labs that do have
+# one (the feed covers their blog, the author string their arXiv papers). Verified against
+# arXiv on 2026-10-13; see ADR 0003.
+lab_authors:
+  - OpenAI
+  - DeepSeek-AI
+  - Qwen
+  - Qwen Team
+  - Kimi Team
+  - MiniMax
+  - Bytedance Seed
+  - ByteDance Seed
+  - Gemini Team
+  - Gemma Team
+  - Tencent Hunyuan Team
+  - StepFun
+  - MiniCPM Team
+  - Ant Group
+  - Ling Team
+  - Xiaomi LLM-Core Team

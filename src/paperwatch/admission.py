@@ -8,7 +8,14 @@ from typing import Annotated
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
 
-from paperwatch.domain import Classification, Signals, SourceItem, Tier
+from paperwatch.domain import AdmissionBasis, Classification, Signals, SourceItem, Tier
+
+
+@dataclass(frozen=True)
+class Admission:
+    # The tier an item earns and the rule that gave it to it, so the reason is stored.
+    tier: Tier
+    basis: AdmissionBasis
 
 
 @dataclass(frozen=True)
@@ -29,7 +36,7 @@ class _AdmissionConfigFile(BaseModel):
     # extra="forbid" turns a typo'd key into a clear error instead of a silent ignore.
     model_config = ConfigDict(extra="forbid")
 
-    min_relevance: float = Field(ge=0, le=1)
+    min_relevance: float = Field(strict=True, ge=0, le=1)
     # strict=True rejects booleans, which pydantic would otherwise coerce to 0/1.
     min_hf_upvotes: int = Field(strict=True, ge=1)
     min_citations: int = Field(strict=True, ge=1)
@@ -42,6 +49,9 @@ def load_admission(path: Path) -> AdmissionConfig:
     try:
         config = _AdmissionConfigFile.model_validate(yaml.safe_load(path.read_text()))
     except ValidationError as exc:
+        raise ValueError(f"invalid admission config in {path}: {exc}") from exc
+    except (yaml.YAMLError, OSError) as exc:
+        # Bad YAML or a missing file also names the path rather than failing opaquely.
         raise ValueError(f"invalid admission config in {path}: {exc}") from exc
     return AdmissionConfig(
         min_relevance=config.min_relevance,
@@ -57,12 +67,14 @@ _WORKSHOP = re.compile(r"\bworkshops?\b", re.IGNORECASE)
 
 
 def _venue_accepted(signals: Signals, cfg: AdmissionConfig) -> bool:
-    # Exact acronym, or "<acronym> <4-digit year>". A workshop title is not the
-    # parent conference, even when one of its aliases is the bare acronym.
-    names = [name for name in (signals.venue, *signals.venue_aliases) if name]
-    if any(_WORKSHOP.search(name) for name in names):
+    # A workshop is not the parent conference: reject only when the paper's own venue says so.
+    # S2's venue entities carry workshop aliases from unrelated venues (ICCV, CCS, WACV), so
+    # an alias containing "workshop" must not reject a real conference paper.
+    if signals.venue and _WORKSHOP.search(signals.venue):
         return False
-    for name in names:
+    for name in (signals.venue, *signals.venue_aliases):
+        if not name or _WORKSHOP.search(name):
+            continue
         if name in cfg.accepted_venues:
             return True
         parts = name.split()
@@ -73,22 +85,30 @@ def _venue_accepted(signals: Signals, cfg: AdmissionConfig) -> bool:
 
 def admit(
     item: SourceItem, cls: Classification, signals: Signals, cfg: AdmissionConfig
-) -> Tier | None:
-    # Relevance gates everything: an unprofiled or low-score item is not stored.
+) -> Admission | None:
+    # Relevance gates everything: an unprofiled or low-score item is not stored. The first
+    # rule that fires wins, in this order: feed, venue, upvotes, citations, lab author.
     if cls.profile is None or cls.relevance < cfg.min_relevance:
         return None
     if item.source == "feed":
         # Feed items are tier 3 by construction, whatever paper signals they carry.
-        return Tier.LAB_BLOG
+        return Admission(Tier.LAB_BLOG, AdmissionBasis.FEED)
     if _venue_accepted(signals, cfg):
-        return Tier.PEER_REVIEWED
+        return Admission(Tier.PEER_REVIEWED, AdmissionBasis.VENUE)
     if (signals.hf_upvotes or 0) >= cfg.min_hf_upvotes:
-        return Tier.VETTED_PREPRINT
+        return Admission(Tier.VETTED_PREPRINT, AdmissionBasis.HF_UPVOTES)
     if signals.citation_count >= cfg.min_citations:
-        return Tier.VETTED_PREPRINT
+        return Admission(Tier.VETTED_PREPRINT, AdmissionBasis.CITATIONS)
     if cfg.lab_authors.intersection(item.authors):
-        return Tier.VETTED_PREPRINT
+        return Admission(Tier.VETTED_PREPRINT, AdmissionBasis.LAB_AUTHOR)
     return None
+
+
+def basis_improves(current: AdmissionBasis | None, proposed: AdmissionBasis) -> bool:
+    # Lab authorship is the weakest basis; community evidence for the same tier upgrades it.
+    if current is not None and current is not AdmissionBasis.LAB_AUTHOR:
+        return False
+    return proposed in (AdmissionBasis.HF_UPVOTES, AdmissionBasis.CITATIONS)
 
 
 # Order of paper tiers; lab_blog belongs to feed items only and is never ranked against them.

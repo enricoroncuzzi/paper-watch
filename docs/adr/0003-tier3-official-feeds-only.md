@@ -142,13 +142,51 @@ foundation-model arm were outside the Decision 3 set. The evidence so far predic
 
 ### Labs without a feed: the arXiv team-name route
 
-The Chinese labs and Anthropic are covered through verified arXiv author strings in the admission
-config, not through feeds. Verified names: `DeepSeek-AI`, `Qwen`, `Qwen Team`, `Kimi Team`,
-`Team GLM`, `GLM-4.5 Team`, `MiniMax`, `Bytedance Seed`, `Tencent Hunyuan Team`, `StepFun`,
-`MiniCPM Team`, `Ant Group`, `Ling Team`, `Xiaomi LLM-Core Team`. The existing Western names
-(`Google DeepMind`, `OpenAI`, `Anthropic`, `Meta FAIR`) stay. Anthropic reports normally list
-individual authors, so its author string may not fire: that is an accepted gap, not an exception to
-the no-feed rule. Baidu and 01.AI have no matching team string and stay uncovered.
+Some labs publish no tier-3 feed, so they are covered through verified arXiv team-name strings in
+`lab_authors`, never by scraping. The route is uneven by nature, and that is an accepted limit:
+Chinese labs sign papers with a team name (`DeepSeek-AI`, `Qwen` and `Qwen Team`, `Kimi Team`,
+`MiniMax`, `Bytedance Seed` / `ByteDance Seed`, `Tencent Hunyuan Team`, `StepFun`, `MiniCPM Team`,
+`Ant Group`, `Ling Team`, `Xiaomi LLM-Core Team`), while Western labs usually list individual
+authors, so their group strings fire mostly on large technical reports. `OpenAI` still appears as a
+group author. `Google DeepMind`, `Anthropic`, `Meta FAIR`, `Team GLM` and `GLM-4.5 Team` were
+removed on 2026-10-13: no arXiv paper uses the first three as an author string, `Team GLM` last
+fired in 2024-06, and arXiv prints the GLM string as `GLM-4. 5 Team`. Anthropic, Meta and Zhipu are
+therefore uncovered by the author route, and Baidu and 01.AI have no matching team string: both
+gaps are accepted rather than solved by scraping. `Gemini Team` and `Gemma Team` were added for
+Google DeepMind's team signatures.
+
+Team authorship is an authority signal, not independent proof of quality. It earns a tier-2
+`vetted_preprint` as same-day admission for a lab's own report, before the upvotes or citations it
+would collect anyway, and the recorded `AdmissionBasis.LAB_AUTHOR` keeps that weaker basis
+distinguishable from community evidence; a later upvote or citation re-admits the same item with
+`HF_UPVOTES` or `CITATIONS` as its basis. Labs that do have a tier-3 feed still keep an author
+string: the feed covers their blog, the author string vets their arXiv papers.
+
+### Accepted venues and their exact S2 strings (2026-10-13)
+
+`accepted_venues` lists the exact, case-sensitive Semantic Scholar venue or alias strings that make
+a paper tier 1. A venue scout checked the S2 records behind the list on 2026-10-13 and the list was
+updated: TMLR is matched as `Trans. Mach. Learn. Res.` (S2 never returns the acronym `TMLR`), JMLR
+as both `Journal of Machine Learning Research` (its alias) and `Journal of machine learning
+research` (its venue, which differs in case), and acronyms S2 does not carry were replaced by the
+strings it does: `S&P`, `ACM Multimedia`, `USENIX Security Symposium`, `IEEE Transactions on
+Information Forensics and Security`, `IEEE Transactions on Pattern Analysis and Machine
+Intelligence`. Main-track venues were added: TACL, EACL, COLING, SIGIR, KDD, WWW, MLSys, ICSE,
+ASE, ISSTA, ICASSP, Interspeech, CCS. COLM stays although S2 has no COLM record yet, so it works
+once one is indexed.
+
+Deliberately left out, all of which remain admissible at tier 2 through upvotes, citations or a
+known lab: `Findings` (S2 collapses every Findings track across conferences into one lower-tier
+string with no conference or year), FSE (S2 merges Foundations of Software Engineering with the
+Fast Software Encryption Workshop), WACV (its S2 entity is still named "IEEE Workshop/Winter
+Conference..."), CIKM, WSDM, OSDI, SOSP and EuroSys (out of the three topic profiles), and AISTATS
+and UAI (their recent "agent" records are classical RL, planning and bandits, not LLM-agent
+engineering).
+
+The workshop guard now rejects a record only when the paper's own venue string mentions a workshop,
+and never accepts a matched name that itself mentions a workshop. It no longer rejects a paper
+because one alias of the venue entity mentions a workshop, which had wrongly rejected every ICCV
+and CCS paper: S2's ICCV entity carries the alias `ICCV Workshops`.
 
 ### Content quality
 
