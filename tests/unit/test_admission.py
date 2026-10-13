@@ -145,6 +145,14 @@ def test_community_evidence_outranks_lab_authorship() -> None:
     assert out == Admission(Tier.VETTED_PREPRINT, HF_UPVOTES)
 
 
+def test_citations_and_upvotes_outrank_lab_authorship() -> None:
+    # The rule order is upvotes, then citations, then lab author; both outrank authorship.
+    cited = admit(item(authors=("DeepSeek-AI",)), REL, Signals(citation_count=5), CFG)
+    assert cited == Admission(Tier.VETTED_PREPRINT, CITATIONS)
+    both = admit(item(authors=("DeepSeek-AI",)), REL, Signals(hf_upvotes=10, citation_count=5), CFG)
+    assert both == Admission(Tier.VETTED_PREPRINT, HF_UPVOTES)
+
+
 @pytest.mark.parametrize("name", ["ByteDance Seed", "Gemini Team", "Gemma Team"])
 def test_added_lab_author_strings_admit(name: str) -> None:
     assert admit(item(authors=(name,)), REL, Signals(), CFG) == Admission(
@@ -225,6 +233,8 @@ def test_basis_improves_only_to_community_evidence() -> None:
         (LAB_AUTHOR, FEED),
         (HF_UPVOTES, CITATIONS),
         (CITATIONS, HF_UPVOTES),
+        (HF_UPVOTES, LAB_AUTHOR),
+        (CITATIONS, LAB_AUTHOR),
         (VENUE, HF_UPVOTES),
         (FEED, CITATIONS),
         (None, VENUE),
@@ -308,6 +318,15 @@ def test_load_admission_wraps_invalid_yaml(tmp_path: Path) -> None:
 
 def test_load_admission_wraps_a_missing_file(tmp_path: Path) -> None:
     path = tmp_path / "missing.yaml"
+    with pytest.raises(ValueError) as excinfo:
+        load_admission(path)
+    assert "invalid admission config" in str(excinfo.value) and str(path) in str(excinfo.value)
+
+
+def test_load_admission_wraps_a_non_utf8_file(tmp_path: Path) -> None:
+    # UnicodeDecodeError is a ValueError, not an OSError, so the path must be wrapped.
+    path = tmp_path / "admission.yaml"
+    path.write_bytes(b"\xff\xfe")
     with pytest.raises(ValueError) as excinfo:
         load_admission(path)
     assert "invalid admission config" in str(excinfo.value) and str(path) in str(excinfo.value)

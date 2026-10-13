@@ -50,8 +50,9 @@ def load_admission(path: Path) -> AdmissionConfig:
         config = _AdmissionConfigFile.model_validate(yaml.safe_load(path.read_text()))
     except ValidationError as exc:
         raise ValueError(f"invalid admission config in {path}: {exc}") from exc
-    except (yaml.YAMLError, OSError) as exc:
-        # Bad YAML or a missing file also names the path rather than failing opaquely.
+    except (yaml.YAMLError, OSError, UnicodeDecodeError) as exc:
+        # Bad YAML, a missing file, or a non-UTF-8 file also names the path rather than
+        # failing opaquely (UnicodeDecodeError is a ValueError, not an OSError).
         raise ValueError(f"invalid admission config in {path}: {exc}") from exc
     return AdmissionConfig(
         min_relevance=config.min_relevance,

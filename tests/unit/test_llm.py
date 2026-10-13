@@ -91,7 +91,8 @@ def _validation_error() -> ValidationError:
 
 
 def test_long_text_is_clipped_below_the_model_limit() -> None:
-    # A full-text blog post of 50,000 characters, with multi-byte characters near the cut.
+    # The 8000-byte cut lands in this ASCII prefix; the multi-byte cut is covered by
+    # test_clip_handles_empty_multibyte_and_partial_characters.
     post = ("Agent harness design. " * 2200) + "é" * 3000
     clipped = clip_for_embedding(post)
     assert len(clipped.encode("utf-8")) <= EMBED_MAX_BYTES
