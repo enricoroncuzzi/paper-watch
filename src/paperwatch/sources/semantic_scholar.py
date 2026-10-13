@@ -1,5 +1,7 @@
 """Semantic Scholar: venue and citation signals for arXiv papers."""
 
+import random
+import re
 import time
 
 import httpx
@@ -11,22 +13,43 @@ from paperwatch.sources.base import send_with_retries
 S2_BATCH_URL = "https://api.semanticscholar.org/graph/v1/paper/batch"
 # The batch endpoint rejects more than 500 ids in one request body.
 BATCH_SIZE = 500
+# Keyless first attempts are refused about a third of the time with no Retry-After, so a
+# fourth refusal is common and five attempts with a 5 s to 60 s backoff clears most chunks.
+S2_ATTEMPTS = 5
+S2_MIN_WAIT_S = 5.0
+S2_MAX_WAIT_S = 60.0
+# Keyless capacity is congestion-limited, not average-limited: a slow pacing floor avoids
+# the shared API Gateway throttle. Jitter keeps concurrent runs from synchronizing.
+S2_PAUSE_S = 10.0
+S2_JITTER = 0.2
+_VERSION = re.compile(r"v\d+$")
 log = structlog.get_logger()
 
 
+def _base_id(arxiv_id: str) -> str:
+    # S2 answers a versioned id with HTTP 400 for the whole chunk, so strip vN here too.
+    return _VERSION.sub("", arxiv_id)
+
+
 class SemanticScholarSource:
-    def __init__(self, client: httpx.Client, api_key: str | None, pause_s: float = 1.0) -> None:
+    def __init__(
+        self, client: httpx.Client, api_key: str | None, pause_s: float = S2_PAUSE_S
+    ) -> None:
         self._client, self._pause_s = client, pause_s
         # An API key raises the rate limit; the endpoint works without one.
         self._headers = {"x-api-key": api_key} if api_key else {}
         # Task 9 reads these to record a dead letter and mark the run partial.
         self.degraded = False
         self.failure: str | None = None
+        # Ids whose chunk S2 answered with 200, so Task 9 can tell "checked, nothing new"
+        # from "not checked". Reset on every call.
+        self.checked_ids: set[str] = set()
 
     def lookup(self, arxiv_ids: list[str]) -> dict[str, Signals]:
         # The health flags describe this call only.
         self.degraded = False
         self.failure = None
+        self.checked_ids = set()
         out: dict[str, Signals] = {}
         for i in range(0, len(arxiv_ids), BATCH_SIZE):
             chunk = arxiv_ids[i : i + BATCH_SIZE]
@@ -38,9 +61,13 @@ class SemanticScholarSource:
                     S2_BATCH_URL,
                     headers=self._headers,
                     params={"fields": "externalIds,venue,publicationVenue,citationCount"},
-                    json={"ids": [f"ARXIV:{a}" for a in chunk]},
+                    json={"ids": [f"ARXIV:{_base_id(a)}" for a in chunk]},
+                    attempts=S2_ATTEMPTS,
+                    min_wait_s=S2_MIN_WAIT_S,
+                    max_wait_s=S2_MAX_WAIT_S,
                 )
-                # S2 answers one element per requested id, null for an unknown id.
+                # S2 answers one element per requested id, null for an unknown id. The
+                # results are mapped back to the caller's ids, version suffix and all.
                 for aid, paper in zip(chunk, resp.json(), strict=True):
                     if paper is None:
                         continue
@@ -58,6 +85,7 @@ class SemanticScholarSource:
                         venue_aliases=aliases,
                         citation_count=int(paper.get("citationCount") or 0),
                     )
+                self.checked_ids.update(chunk)
             except (httpx.HTTPError, ValueError, TypeError, AttributeError) as exc:
                 # Optional enrichment: keep earlier chunks, record the failure, and
                 # let ingestion continue. A 4xx is a bug, never a retry.
@@ -65,7 +93,9 @@ class SemanticScholarSource:
                 self.failure = f"s2 chunk at {i}: {exc}"
                 log.warning("s2_lookup_failed", error=str(exc), count=len(chunk))
             finally:
-                # Pace between chunks, even after a failure, but not after the last one.
+                # Pace between chunks with a small jitter, even after a failure, but not
+                # after the last one. Jitter need not be cryptographic, hence S311.
                 if has_more:
-                    time.sleep(self._pause_s)
+                    factor = random.uniform(1 - S2_JITTER, 1 + S2_JITTER)  # noqa: S311
+                    time.sleep(self._pause_s * factor)
         return out

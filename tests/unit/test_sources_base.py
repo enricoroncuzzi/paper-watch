@@ -3,6 +3,7 @@
 import time
 
 import httpx
+import pytest
 import respx
 
 from paperwatch.config import Settings
@@ -66,3 +67,32 @@ def test_retry_after_infinite_falls_back_to_backoff(monkeypatch) -> None:
 @respx.mock
 def test_retry_after_http_date_falls_back_to_backoff(monkeypatch) -> None:
     assert _sleeps_for_retry_after(monkeypatch, "Wed, 21 Oct 2026 07:28:00 GMT") == [1.0, 2.0]
+
+
+@respx.mock
+def test_send_with_retries_defaults_to_three_attempts(monkeypatch) -> None:
+    # Other sources keep today's behaviour unless they ask for more attempts.
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    route = respx.get("https://example.test/x").mock(return_value=httpx.Response(503))
+    with pytest.raises(httpx.HTTPStatusError):
+        send_with_retries(httpx.Client(), "GET", "https://example.test/x")
+    assert route.call_count == 3
+
+
+@respx.mock
+def test_send_with_retries_honors_a_higher_attempt_floor(monkeypatch) -> None:
+    # The S2 client asks for five attempts and a 5 s floor; here only the limits matter.
+    sleeps: list[float] = []
+    monkeypatch.setattr(time, "sleep", lambda seconds: sleeps.append(seconds))
+    route = respx.get("https://example.test/x").mock(return_value=httpx.Response(503))
+    with pytest.raises(httpx.HTTPStatusError):
+        send_with_retries(
+            httpx.Client(),
+            "GET",
+            "https://example.test/x",
+            attempts=5,
+            min_wait_s=5.0,
+            max_wait_s=60.0,
+        )
+    assert route.call_count == 5
+    assert sleeps == [5.0, 10.0, 20.0, 40.0]

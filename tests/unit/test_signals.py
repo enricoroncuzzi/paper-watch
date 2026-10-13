@@ -290,7 +290,7 @@ def test_s2_paces_between_chunks_after_a_failure(monkeypatch) -> None:
     ids = [f"2510.{i:05d}" for i in range(501)]
     SemanticScholarSource(httpx.Client(), None, pause_s=1.5).lookup(ids)
     # One pause between chunks, even though the first failed, and none after the last.
-    assert sleeps.count(1.5) == 1
+    assert len([s for s in sleeps if 1.2 <= s <= 1.8]) == 1
 
 
 @respx.mock
@@ -299,4 +299,90 @@ def test_s2_does_not_pause_after_the_last_chunk(monkeypatch) -> None:
     monkeypatch.setattr(time, "sleep", lambda seconds: sleeps.append(seconds))
     respx.post(S2_BATCH_URL).mock(return_value=httpx.Response(200, json=[None]))
     SemanticScholarSource(httpx.Client(), None, pause_s=1.5).lookup(["2510.00001"])
-    assert 1.5 not in sleeps
+    assert sleeps == []
+
+
+@respx.mock
+def test_s2_pause_has_bounded_jitter(monkeypatch) -> None:
+    # Ten chunks give nine inter-chunk pauses, each within +/-20% of pause_s.
+    sleeps: list[float] = []
+    monkeypatch.setattr(time, "sleep", lambda seconds: sleeps.append(seconds))
+    respx.post(S2_BATCH_URL).mock(return_value=httpx.Response(200, json=[None] * 500))
+    ids = [f"2510.{i:05d}" for i in range(500 * 10)]
+    SemanticScholarSource(httpx.Client(), None, pause_s=10.0).lookup(ids)
+    assert len(sleeps) == 9
+    assert all(8.0 <= s <= 12.0 for s in sleeps)
+    assert len(set(sleeps)) > 1  # The jitter actually varies.
+
+
+@respx.mock
+def test_s2_five_attempts_succeed(monkeypatch) -> None:
+    # A fourth refusal needs a fifth attempt; the keyless pool made this common.
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    route = respx.post(S2_BATCH_URL).mock(
+        side_effect=[
+            httpx.Response(429),
+            httpx.Response(429),
+            httpx.Response(429),
+            httpx.Response(429),
+            httpx.Response(200, json=[{"venue": "arXiv.org", "citationCount": 0}]),
+        ]
+    )
+    src = SemanticScholarSource(httpx.Client(), None, pause_s=0)
+    out = src.lookup(["2510.00001"])
+    assert route.call_count == 5
+    assert out["2510.00001"].venue == "arXiv.org"
+    assert src.degraded is False
+
+
+@respx.mock
+def test_s2_five_refusals_degrade_and_skip_checked_ids(monkeypatch) -> None:
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    route = respx.post(S2_BATCH_URL).mock(return_value=httpx.Response(429))
+    src = SemanticScholarSource(httpx.Client(), None, pause_s=0)
+    out = src.lookup(["2510.00001"])
+    assert route.call_count == 5
+    assert out == {}
+    assert src.degraded is True
+    assert src.checked_ids == set()
+
+
+@respx.mock
+def test_s2_strips_version_suffix_and_maps_back(monkeypatch) -> None:
+    # S2 returns HTTP 400 for a versioned id, so the client strips vN itself.
+    seen: list[list[str]] = []
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content)["ids"])
+        return httpx.Response(200, json=[{"venue": "arXiv.org", "citationCount": 2}])
+
+    respx.post(S2_BATCH_URL).mock(side_effect=responder)
+    src = SemanticScholarSource(httpx.Client(), None, pause_s=0)
+    out = src.lookup(["2510.00001v2"])
+    assert seen == [["ARXIV:2510.00001"]]
+    assert out["2510.00001v2"].citation_count == 2
+    assert src.checked_ids == {"2510.00001v2"}
+
+
+@respx.mock
+def test_s2_checked_ids_include_null_answers() -> None:
+    # A null answer means S2 checked the id and found nothing, so it still counts.
+    respx.post(S2_BATCH_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json=[None, {"venue": "arXiv.org", "citationCount": 1}],
+        )
+    )
+    src = SemanticScholarSource(httpx.Client(), None, pause_s=0)
+    out = src.lookup(["2510.00001", "2510.00002"])
+    assert "2510.00002" in out
+    assert src.checked_ids == {"2510.00001", "2510.00002"}
+
+
+@respx.mock
+def test_s2_checked_ids_reset_each_call() -> None:
+    respx.post(S2_BATCH_URL).mock(return_value=httpx.Response(200, json=[None]))
+    src = SemanticScholarSource(httpx.Client(), None, pause_s=0)
+    src.lookup(["2510.00001"])
+    src.lookup(["2510.00002"])
+    assert src.checked_ids == {"2510.00002"}

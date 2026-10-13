@@ -2,6 +2,7 @@
 
 import math
 from contextlib import suppress
+from functools import partial
 from typing import Any
 
 import httpx
@@ -38,8 +39,8 @@ def _is_retryable(exc: BaseException) -> bool:
     return isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in (429, 503)
 
 
-def _wait_for_retry(state: RetryCallState) -> float:
-    # Honor a sane Retry-After, otherwise back off exponentially.
+def _wait_for_retry(state: RetryCallState, *, min_wait_s: float, max_wait_s: float) -> float:
+    # Honor a sane Retry-After, otherwise back off exponentially between the given bounds.
     exc = state.outcome.exception() if state.outcome is not None else None
     if isinstance(exc, httpx.HTTPStatusError):
         retry_after = exc.response.headers.get("Retry-After")
@@ -49,18 +50,30 @@ def _wait_for_retry(state: RetryCallState) -> float:
                 # Negative, NaN and infinite values are not usable waits.
                 if math.isfinite(seconds) and seconds >= 0:
                     return min(seconds, MAX_RETRY_AFTER_S)
-    return wait_exponential(multiplier=1, min=1, max=30)(state)
+    return wait_exponential(multiplier=min_wait_s, min=min_wait_s, max=max_wait_s)(state)
 
 
-def send_with_retries(client: httpx.Client, method: str, url: str, **kwargs: Any) -> httpx.Response:
+def send_with_retries(
+    client: httpx.Client,
+    method: str,
+    url: str,
+    *,
+    attempts: int = 3,
+    min_wait_s: float = 1.0,
+    max_wait_s: float = 30.0,
+    **kwargs: Any,
+) -> httpx.Response:
     """Send one request, retrying 429/503 and transport errors, and raise on failure.
 
-    Other 4xx responses fail on the first attempt. After three attempts the last
-    exception is re-raised so the caller can degrade visibly.
+    Other 4xx responses fail on the first attempt. The defaults (three attempts, a 1 s
+    exponential floor capped at 30 s) keep every source that does not override them;
+    Semantic Scholar asks for five attempts from a 5 s floor capped at 60 s. Retry-After
+    is honored when present. After the last attempt the last exception is re-raised so the
+    caller can degrade visibly.
     """
     for attempt in Retrying(
-        stop=stop_after_attempt(3),
-        wait=_wait_for_retry,
+        stop=stop_after_attempt(attempts),
+        wait=partial(_wait_for_retry, min_wait_s=min_wait_s, max_wait_s=max_wait_s),
         retry=retry_if_exception(_is_retryable),
         reraise=True,
     ):
