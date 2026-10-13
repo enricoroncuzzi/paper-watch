@@ -1,5 +1,6 @@
 """Relevance classifier: profile and score for one item, fake plus Azure structured output."""
 
+import re
 from typing import Protocol
 
 import openai
@@ -13,6 +14,11 @@ class Classifier(Protocol):
     def classify(self, item: SourceItem) -> Classification: ...
 
 
+def _term_hit(text: str, term: str) -> bool:
+    # Whole word, with an optional plural "s": "bot" hits "bot"/"bots", never "both"/"robot".
+    return re.search(rf"(?<!\w){re.escape(term.lower())}s?(?!\w)", text) is not None
+
+
 class FakeClassifier:
     """Keyword-match stand-in: the best profile by term hits, no model call."""
 
@@ -23,7 +29,7 @@ class FakeClassifier:
         text = f"{item.title} {item.text}".lower()
         best, hits = None, 0
         for p in self._profiles:
-            n = sum(1 for t in p.terms if t.lower() in text)
+            n = sum(1 for t in p.terms if _term_hit(text, t))
             if n > hits:
                 best, hits = p.name, n
         return Classification(best, min(1.0, hits / 2), f"{hits} term hits")
@@ -70,7 +76,10 @@ class AzureClassifier:
         usage = resp.usage.total_tokens if resp.usage else estimate
         self._ledger.charge(self._deployment, max(0, usage - estimate))
         out = resp.choices[0].message.parsed
-        # A null or unknown profile is treated as "no match", never leaked to the caller.
-        if out is None or (out.profile is not None and out.profile not in self._names):
-            return Classification(None, 0.0, "unparseable or unknown profile")
+        # A refusal or empty body is unusable: raise so the pipeline dead-letters and retries
+        # the item, rather than storing it as a permanent irrelevant judgment.
+        if out is None:
+            raise RuntimeError("classifier returned no parseable answer")
+        if out.profile is not None and out.profile not in self._names:
+            raise RuntimeError(f"classifier returned unknown profile {out.profile!r}")
         return Classification(out.profile, out.relevance, out.reason)

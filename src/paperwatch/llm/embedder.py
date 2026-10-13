@@ -50,14 +50,17 @@ class FakeEmbedder:
 
 
 def make_azure_client(settings: Settings) -> openai.AzureOpenAI:
-    # The SDK retries transient failures itself; the ledger caps the spend either way.
-    if not (settings.azure_openai_endpoint and settings.azure_openai_api_key):
+    # A whitespace-only key is as useless as an empty one, so strip before the check.
+    key = settings.azure_openai_api_key
+    if not (settings.azure_openai_endpoint and key and key.strip()):
         raise RuntimeError("PW_AZURE_OPENAI_ENDPOINT and PW_AZURE_OPENAI_API_KEY are required")
     return openai.AzureOpenAI(
         azure_endpoint=settings.azure_openai_endpoint,
-        api_key=settings.azure_openai_api_key,
+        api_key=key,
         api_version=settings.azure_openai_api_version,
         max_retries=3,
+        # One embedding or classification, not the SDK default of 10 minutes per read.
+        timeout=30.0,
     )
 
 
@@ -69,11 +72,18 @@ class AzureEmbedder:
         out: list[list[float]] = []
         for i in range(0, len(texts), EMBED_BATCH):
             batch = [clip_for_embedding(t) for t in texts[i : i + EMBED_BATCH]]
-            # Estimate before the call so the budget stops a runaway loop early; the provider's
-            # reported usage then tops the ledger up to the real cost.
-            estimate = sum(len(t) for t in batch) // 3
+            # Reserve at least one token so a ledger already at its cap cannot charge 0 and
+            # still reach the API; the provider's reported usage then tops the ledger up to
+            # the real cost.
+            estimate = max(1, sum(len(t) for t in batch) // 3)
             self._ledger.charge(self._deployment, estimate)
             resp = self._client.embeddings.create(model=self._deployment, input=batch)
             self._ledger.charge(self._deployment, max(0, resp.usage.total_tokens - estimate))
-            out.extend(d.embedding for d in resp.data)
+            # The SDK may answer out of order; restore input order and refuse a bad shape.
+            for embedding in sorted(resp.data, key=lambda d: d.index):
+                if len(embedding.embedding) != EMBEDDING_DIM:
+                    raise ValueError(
+                        f"expected {EMBEDDING_DIM} dimensions, got {len(embedding.embedding)}"
+                    )
+                out.append(embedding.embedding)
         return out
