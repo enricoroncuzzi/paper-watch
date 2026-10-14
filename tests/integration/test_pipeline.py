@@ -419,8 +419,9 @@ def test_source_failure_records_dead_letter_and_partial_run(db_session: Session)
     src.feeds.fetch_one.side_effect = RuntimeError("HTTP 500")
     res = run(db_session, src)
     assert res.status == "partial" and res.counts["stored"] == 1
-    dl = db_session.scalars(select(DeadLetter)).one()
-    assert dl.ref == FEED.url and dl.window_end == NOW
+    # The parked-letter row for the fetched paper is resolved; the feed failure is the open one.
+    dl = db_session.scalars(select(DeadLetter).where(DeadLetter.ref == FEED.url)).one()
+    assert dl.window_end == NOW
 
 
 def test_failed_source_window_is_replayed_next_run(db_session: Session) -> None:
@@ -440,12 +441,18 @@ def test_failed_source_window_is_replayed_next_run(db_session: Session) -> None:
 
 
 def test_admission_failure_is_retried_next_run(db_session: Session) -> None:
-    emb = FlakyEmbedder(failures=1)
+    emb = FlakyEmbedder(failures=2)
     src = fake_sources([paper("2510.6", "Agent harness")])
     first = run(db_session, src, embedder=emb)
     assert first.status == "partial" and first.counts["failed"] == 1
     assert row(db_session, "2510.6").status == "candidate"
+    # The failed embed rolls the S2 check time back with the item, so the paper stays due.
+    assert row(db_session, "2510.6").s2_checked_at is None
     src.arxiv.fetch.return_value = []
+    # Even one hour later (inside the daily cadence) the paper is looked up again.
+    run(db_session, src, now=NOW + timedelta(hours=1), embedder=emb)
+    [ids] = src.s2.lookup.call_args.args
+    assert ids == ["2510.6"]
     second = run(db_session, src, now=NOW + timedelta(days=1), embedder=emb)
     assert second.status == "succeeded" and second.counts["admitted_late"] == 1
 
@@ -462,7 +469,10 @@ def test_item_that_always_fails_admission_gives_up(db_session: Session) -> None:
     r = row(db_session, "2510.6")
     assert r.status == "candidate" and r.admit_attempts == MAX_ITEM_ATTEMPTS
     assert "503" in (r.last_error or "")
-    dl = db_session.scalars(select(DeadLetter).where(DeadLetter.ref == "2510.6")).one()
+    # The parked letter carries a payload; the give-up letter has none.
+    dl = db_session.scalars(
+        select(DeadLetter).where(DeadLetter.ref == "2510.6", DeadLetter.payload.is_(None))
+    ).one()
     assert dl.resolved_at is None and "gave up" in dl.error
 
 
@@ -510,6 +520,83 @@ def test_budget_exhaustion_stops_run_cleanly(db_session: Session) -> None:
     assert later.counts["admitted_late"] == 1
 
 
+def test_budget_stop_during_classification_skips_recheck(db_session: Session) -> None:
+    class CostlyClassifier(FakeClassifier):
+        def __init__(self, ledger: Ledger, charge: int) -> None:
+            super().__init__(PROFILES)
+            self.ledger, self.charge = ledger, charge
+
+        def classify(self, item: SourceItem) -> Classification:
+            self.ledger.charge("classify", self.charge)
+            return super().classify(item)
+
+    class CheapEmbedder(FakeEmbedder):
+        calls = 0
+
+        def __init__(self, ledger: Ledger, charge: int) -> None:
+            super().__init__()
+            self.ledger, self.charge = ledger, charge
+
+        def embed(self, texts: list[str]) -> list[list[float]]:
+            CheapEmbedder.calls += 1
+            self.ledger.charge("embed", self.charge)
+            return super().embed(texts)
+
+    ledger = Ledger(1500)
+    src = fake_sources([paper("2510.1", "Agent harness"), paper("2510.2", "Coding agent")])
+    res = run(
+        db_session,
+        src,
+        classifier=CostlyClassifier(ledger, 1000),
+        embedder=CheapEmbedder(ledger, 100),
+        ledger=ledger,
+    )
+    assert res.status == "budget_exhausted"
+    assert CheapEmbedder.calls == 0  # phase 3 must not run after a phase-2 budget stop
+    assert ledger.tokens_used == 1000  # the charge that was refused added nothing
+    assert res.counts["new"] == 1  # only the item actually written counts as new
+    assert sorted(db_session.scalars(select(Item.status))) == ["candidate"]
+    letters = Repository(db_session).open_item_dead_letters()
+    assert len(letters) == 1 and letters[0][1] is not None
+    assert db_session.get(DeadLetter, letters[0][0]).attempts == 0
+
+
+def test_crash_after_fetch_commit_resumes_and_finishes(db_session: Session) -> None:
+    class Crash(FakeClassifier):
+        def classify(self, item: SourceItem) -> Classification:
+            raise SystemExit("process killed")
+
+    # Submitted 10 days before NOW: inside the first 14-day window, outside tomorrow's overlap.
+    old = dataclasses.replace(
+        paper("2510.old", "Agent harness"), published_at=NOW - timedelta(days=10)
+    )
+    src = fake_sources([old])
+    with pytest.raises(SystemExit):
+        run(db_session, src, classifier=Crash(PROFILES))
+    crashed = db_session.scalars(select(Run).where(Run.status == "failed")).one()
+    assert crashed.finished_at is not None  # the row is closed, not left 'running'
+    # The next run's arXiv window no longer covers the paper; the parked letter resumes it.
+    src.arxiv.fetch.return_value = []
+    res = run(db_session, src, now=NOW + timedelta(days=1))
+    assert res.status == "succeeded"
+    assert row(db_session, "2510.old").status == "admitted"
+
+
+def test_corrupt_dead_letter_payload_is_counted_not_fatal(db_session: Session) -> None:
+    repo = Repository(db_session)
+    rid = repo.start_run(NOW, NOW + timedelta(days=1))
+    # A payload missing a required key, as a bug or an older writer would leave it.
+    repo.add_dead_letter(rid, "arxiv", "2510.bad", "corrupt", payload={"source": "arxiv"})
+    db_session.commit()
+    src = fake_sources([])
+    first = run(db_session, src, now=NOW + timedelta(days=1))
+    assert first.status == "partial" and first.counts["failed"] == 1
+    assert first.counts["given_up"] == 0
+    # At the attempt cap the corrupt letter is given up instead of failing every run.
+    last = run(db_session, src, now=NOW + timedelta(days=2))
+    assert last.counts["given_up"] == 1
+
+
 def test_arxiv_refetch_overlaps_announcement_lag(db_session: Session) -> None:
     # A paper submitted before the cursor but announced after it must still be fetched.
     src = fake_sources([paper("2510.1", "Agent harness")])
@@ -536,7 +623,9 @@ def test_malformed_arxiv_entry_is_dead_lettered_once_and_cursor_advances(
     # The lag overlap re-reads the same bad entry tomorrow: it is not recorded twice.
     second = run(db_session, src, now=NOW + timedelta(days=1))
     assert second.status == "succeeded" and second.counts["malformed"] == 0
-    assert len(db_session.scalars(select(DeadLetter)).all()) == 1
+    # Exactly one open malformed letter: the parked letter for the good paper is resolved.
+    malformed = db_session.scalars(select(DeadLetter).where(DeadLetter.payload.is_(None))).all()
+    assert len(malformed) == 1 and malformed[0].ref == "http://arxiv.org/abs/2510.9v1"
 
 
 def test_malformed_feed_entry_is_dead_lettered_once_and_cursor_advances(
@@ -555,7 +644,11 @@ def test_malformed_feed_entry_is_dead_lettered_once_and_cursor_advances(
     assert Repository(db_session).cursor(f"feed:{FEED.url}") == NOW
     second = run(db_session, src, now=NOW + timedelta(days=1))
     assert second.counts["malformed"] == 0
-    assert len(db_session.scalars(select(DeadLetter).where(DeadLetter.source == "feed")).all()) == 1
+    # The malformed entry is the one open feed letter; parked letters for stored posts resolve.
+    letters = db_session.scalars(
+        select(DeadLetter).where(DeadLetter.source == "feed", DeadLetter.payload.is_(None))
+    ).all()
+    assert len(letters) == 1 and letters[0].ref == bad.ref
 
 
 def test_feed_post_published_before_the_cursor_is_still_stored(db_session: Session) -> None:

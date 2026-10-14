@@ -38,6 +38,18 @@ def _require_live(live: bool) -> None:
         raise typer.Exit(2)
 
 
+def _parse_since(value: str | None) -> datetime | None:
+    # Click's datetime parser rejects a trailing "Z" and numeric offsets, so parse the text
+    # ourselves. A naive value is UTC; an aware one is converted, so a cursor is always UTC.
+    if value is None:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise typer.BadParameter(f"--since must be ISO 8601: {exc}") from exc
+    return parsed.replace(tzinfo=parsed.tzinfo or UTC).astimezone(UTC)
+
+
 def _models(ledger: Ledger) -> tuple[Classifier, Embedder]:
     # Providers come from settings (Task 7b): local by default, so a live run needs no API key.
     # The classifier shares the embedder, so the local model is loaded once per run.
@@ -48,7 +60,7 @@ def _models(ledger: Ledger) -> tuple[Classifier, Embedder]:
 
 
 @app.command()
-def ingest(live: bool = LIVE, since: datetime | None = SINCE) -> None:
+def ingest(live: bool = LIVE, since: str | None = SINCE) -> None:
     _require_live(live)
     s = get_settings()
     configure_logging(s.log_level)
@@ -73,7 +85,7 @@ def ingest(live: bool = LIVE, since: datetime | None = SINCE) -> None:
         ledger,
         load_admission(Path("config/admission.yaml")),
         datetime.now(UTC),
-        since_override=since.replace(tzinfo=since.tzinfo or UTC) if since else None,
+        since_override=_parse_since(since),
     )
     typer.echo(f"{res.status}: {res.counts} tokens={res.tokens}")
     raise typer.Exit(0 if res.status in {"succeeded", "partial"} else 1)
