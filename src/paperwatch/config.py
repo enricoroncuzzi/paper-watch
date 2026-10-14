@@ -26,6 +26,23 @@ S2_CADENCE = (
     (timedelta(days=90), timedelta(days=7)),
     (timedelta(days=365), timedelta(days=30)),
 )
+# arXiv announces papers hours to ~3 days after submission (longer over holidays), and its
+# query filters on submission date, so each run re-reads this much before the arXiv cursor.
+ARXIV_ANNOUNCEMENT_LAG = timedelta(days=7)
+# A feed post can appear after its own date (CDN cache, feed regeneration, scheduled posts
+# dated at drafting, zone-less dates read as UTC), so each feed is re-read this far back too.
+FEED_OVERLAP = timedelta(days=7)
+# A feed that answers but has published nothing for this long is probably dead or moved.
+FEED_STALE_AFTER = timedelta(days=90)
+# Venue acceptance typically lands 4-9 months after the preprint, so venue and citations are
+# re-checked for a year after submission; peer-reviewed papers are never re-checked.
+S2_RECHECK_HORIZON = timedelta(days=365)
+# Hugging Face listing dates re-read by every run (about 31-62 requests whatever the corpus
+# size); upvotes found there apply to any re-check target, whatever its age.
+HF_RECHECK_HORIZON = timedelta(days=30)
+# Keyless Semantic Scholar: at most this many due papers are looked up per run (25 batches of
+# 500, at least 10 s apart); the most overdue go first and the rest stay due for the next run.
+S2_MAX_PAPERS_PER_RUN = 12_500
 
 
 class Settings(BaseSettings):

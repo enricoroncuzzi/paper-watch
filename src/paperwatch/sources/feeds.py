@@ -123,6 +123,59 @@ class FeedSource:
         self._client, self._feeds = client, feeds
         # Task 9 reads this to dead-letter a bad entry without pinning the cursor.
         self.rejected: list[RejectedEntry] = []
+        # Newest entry date per feed URL, whatever the window; Task 9 flags a stale feed.
+        self.newest: dict[str, datetime] = {}
+
+    def fetch_one(self, feed: Feed, since: datetime, until: datetime) -> list[SourceItem]:
+        """Fetch one feed; raise on a whole-feed failure, append bad entries to rejected."""
+        if since.tzinfo is None or until.tzinfo is None:
+            raise ValueError("since and until must be timezone-aware")
+        resp = send_with_retries(self._client, "GET", feed.url)
+        if not _looks_like_feed(resp.content):
+            # A maintenance page or error document is a failure, not a quiet day.
+            content_type = resp.headers.get("content-type", "unknown")
+            raise ValueError(f"{feed.url} returned {content_type}, not a feed")
+        items: list[SourceItem] = []
+        for e in feedparser.parse(resp.content).entries:
+            ref = e.get("id") or e.get("link") or "<missing id>"
+            try:
+                when = _when(e)
+                self.newest[feed.url] = max(when, self.newest.get(feed.url, when))
+                if not since <= when < until:
+                    continue
+                title = e.get("title")
+                if not title:
+                    raise ValueError("entry has no title")
+                link = e.get("link")
+                raw_id = e.get("id") or link
+                if not raw_id:
+                    raise ValueError("entry has no id or link")
+                url = link or raw_id
+                if not str(url).startswith(("http://", "https://")):
+                    raise ValueError(f"entry has no usable URL: {url!r}")
+                # Scope the id with the feed URL: two labs can reuse a guid.
+                external_id = f"{feed.url} {raw_id}"
+                if len(external_id) > _MAX_ID_LEN:
+                    raise ValueError(f"scoped id is {len(external_id)} chars (max {_MAX_ID_LEN})")
+                content = e.get("content")
+                body = (content[0].get("value") if content else None) or e.get("summary") or ""
+                items.append(
+                    SourceItem(
+                        source=self.name,
+                        external_id=external_id,
+                        title=" ".join(str(title).split()),
+                        # Tier 3 has no per-author data; the lab is the author.
+                        authors=(feed.lab,),
+                        text=_text(body),
+                        url=str(url),
+                        published_at=when,
+                        licence="copyright (private search only)",
+                    )
+                )
+            except (AttributeError, KeyError, TypeError, ValueError) as exc:
+                # One bad entry must not fail the feed or pin its cursor.
+                self.rejected.append(RejectedEntry(source=self.name, ref=str(ref), error=str(exc)))
+        return items
 
     def fetch(
         self, since: datetime, until: datetime
@@ -136,55 +189,8 @@ class FeedSource:
         failures: list[tuple[str, str]] = []
         for feed in self._feeds:
             try:
-                resp = send_with_retries(self._client, "GET", feed.url)
-                if not _looks_like_feed(resp.content):
-                    # A maintenance page or error document is a failure, not a quiet day.
-                    content_type = resp.headers.get("content-type", "unknown")
-                    raise ValueError(f"{feed.url} returned {content_type}, not a feed")
+                items += self.fetch_one(feed, since, until)
             except (httpx.HTTPError, ValueError) as exc:
                 # A down feed is recorded and skipped; the other feeds still run.
                 failures.append((feed.url, str(exc)))
-                continue
-            for e in feedparser.parse(resp.content).entries:
-                ref = e.get("id") or e.get("link") or "<missing id>"
-                try:
-                    when = _when(e)
-                    if not since <= when < until:
-                        continue
-                    title = e.get("title")
-                    if not title:
-                        raise ValueError("entry has no title")
-                    link = e.get("link")
-                    raw_id = e.get("id") or link
-                    if not raw_id:
-                        raise ValueError("entry has no id or link")
-                    url = link or raw_id
-                    if not str(url).startswith(("http://", "https://")):
-                        raise ValueError(f"entry has no usable URL: {url!r}")
-                    # Scope the id with the feed URL: two labs can reuse a guid.
-                    external_id = f"{feed.url} {raw_id}"
-                    if len(external_id) > _MAX_ID_LEN:
-                        raise ValueError(
-                            f"scoped id is {len(external_id)} chars (max {_MAX_ID_LEN})"
-                        )
-                    content = e.get("content")
-                    body = (content[0].get("value") if content else None) or e.get("summary") or ""
-                    items.append(
-                        SourceItem(
-                            source=self.name,
-                            external_id=external_id,
-                            title=" ".join(str(title).split()),
-                            # Tier 3 has no per-author data; the lab is the author.
-                            authors=(feed.lab,),
-                            text=_text(body),
-                            url=str(url),
-                            published_at=when,
-                            licence="copyright (private search only)",
-                        )
-                    )
-                except (AttributeError, KeyError, TypeError, ValueError) as exc:
-                    # One bad entry must not fail the feed or pin its cursor.
-                    self.rejected.append(
-                        RejectedEntry(source=self.name, ref=str(ref), error=str(exc))
-                    )
         return items, failures

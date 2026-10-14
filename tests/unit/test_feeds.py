@@ -105,6 +105,26 @@ def test_empty_feed_is_a_success_with_no_items() -> None:
 
 
 @respx.mock
+def test_fetch_one_records_the_newest_entry_date_outside_the_window() -> None:
+    # A feed that answers but has not published lately must be visible as stale.
+    respx.get(FEED.url).mock(
+        return_value=httpx.Response(
+            200,
+            text=_rss(
+                _item("a", "Old post", "Mon, 01 Jun 2026 10:00:00 +0000", "https://lab.example/a"),
+                _item(
+                    "b", "Older post", "Fri, 01 May 2026 10:00:00 +0000", "https://lab.example/b"
+                ),
+            ),
+        )
+    )
+    src = FeedSource(httpx.Client(), [FEED])
+    items = src.fetch_one(FEED, datetime(2026, 10, 1, tzinfo=UTC), UNTIL)
+    assert items == []
+    assert src.newest == {FEED.url: datetime(2026, 6, 1, 10, 0, tzinfo=UTC)}
+
+
+@respx.mock
 def test_bad_entry_is_rejected_and_other_entries_continue() -> None:
     # A title-less entry is isolated; the good entries and the next feed survive.
     doc = _rss(
