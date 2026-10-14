@@ -244,7 +244,12 @@ class Repository:
         interval = case(
             *((Item.published_at >= now - max_age, every) for max_age, every in S2_CADENCE)
         )
-        due = or_(Item.s2_checked_at.is_(None), Item.s2_checked_at + interval <= now)
+        # An age that matches no band has no interval, so the paper is never due, even when it
+        # was never checked. A checked paper could not satisfy the comparison against NULL anyway.
+        due = and_(
+            interval.is_not(None),
+            or_(Item.s2_checked_at.is_(None), Item.s2_checked_at + interval <= now),
+        )
         # Most overdue first, so a capped run reaches them and carries the rest to the next run.
         stmt = (
             select(Item)

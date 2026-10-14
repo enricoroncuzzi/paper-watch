@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from paperwatch.config import MAX_ITEM_ATTEMPTS
 from paperwatch.domain import AdmissionBasis, Signals, SourceItem, Tier
 from paperwatch.llm.embedder import FakeEmbedder
-from paperwatch.store.models import DeadLetter, Item, TierHistory
+from paperwatch.store.models import DeadLetter, Item, Run, TierHistory
 from paperwatch.store.repository import Repository
 
 pytestmark = pytest.mark.integration
@@ -32,9 +32,20 @@ VEC = FakeEmbedder().embed([ITEM.text])[0]
 def test_upsert_is_idempotent_on_source_and_external_id(db_session: Session) -> None:
     repo = Repository(db_session)
     a = repo.upsert_item(ITEM, Tier.VETTED_PREPRINT, "agentic-engineering", 0.9, Signals(), VEC)
-    b = repo.upsert_item(ITEM, Tier.VETTED_PREPRINT, "agentic-engineering", 0.9, Signals(), VEC)
+    # A second upsert with a stronger claim must not admit again or add a history row.
+    b = repo.upsert_item(
+        ITEM,
+        Tier.PEER_REVIEWED,
+        "agentic-engineering",
+        0.95,
+        Signals(venue="ICLR", citation_count=10),
+        VEC,
+    )
     assert a == b
     assert repo.existing_ids("arxiv", ["2510.00001", "2510.00002"]) == {"2510.00001"}
+    hist = db_session.scalars(select(TierHistory).where(TierHistory.item_id == a)).all()
+    assert len(hist) == 1
+    assert db_session.get_one(Item, a).tier == Tier.VETTED_PREPRINT.value
 
 
 def test_candidate_is_stored_without_tier_or_embedding(db_session: Session) -> None:
@@ -55,8 +66,12 @@ def test_admitted_item_without_embedding_is_refused(db_session: Session) -> None
             item_id, Tier.VETTED_PREPRINT, AdmissionBasis.HF_UPVOTES, None, Signals(), NOW
         )
     row = db_session.get_one(Item, item_id)
-    row.status = "admitted"  # bypassing the repository must still be refused by the database
-    with pytest.raises(IntegrityError):
+    # Bypassing the repository must still be refused by the database. With tier and basis set,
+    # ck_items_admitted_has_embedding is the only constraint that can refuse this write.
+    row.status = "admitted"
+    row.tier = Tier.VETTED_PREPRINT.value
+    row.admission_basis = AdmissionBasis.HF_UPVOTES.value
+    with pytest.raises(IntegrityError, match="ck_items_admitted_has_embedding"):
         db_session.flush()
 
 
@@ -209,6 +224,16 @@ def test_recheck_follows_the_age_cadence(db_session: Session) -> None:
     assert {t.id for t in second} == {weekly, daily, post}
 
 
+def test_recheck_never_due_past_the_last_cadence_band(db_session: Session) -> None:
+    # A paper older than the last cadence band has no re-check interval, so it is never due even
+    # when it was never checked. A horizon wider than that band must not pull it back in.
+    repo = Repository(db_session)
+    old = dataclasses.replace(ITEM, external_id="past-band", published_at=NOW - timedelta(days=400))
+    old_id = repo.record_classified(old, "candidate", "agentic-engineering", 0.9)
+    targets = repo.recheck_targets(NOW, timedelta(days=500))
+    assert old_id not in {t.id for t in targets}
+
+
 def test_cursor_advances_per_key(db_session: Session) -> None:
     repo = Repository(db_session)
     assert repo.cursor("arxiv") is None
@@ -216,6 +241,24 @@ def test_cursor_advances_per_key(db_session: Session) -> None:
     repo.advance_cursor("arxiv", datetime(2026, 10, 15, tzinfo=UTC))
     assert repo.cursor("arxiv") == datetime(2026, 10, 15, tzinfo=UTC)
     assert repo.cursor("feed:https://lab.example/feed.xml") is None
+
+
+def test_finish_run_persists_status_counts_tokens_and_health(db_session: Session) -> None:
+    repo = Repository(db_session)
+    run_id = repo.start_run(NOW, NOW + timedelta(days=7))
+    repo.finish_run(
+        run_id, "ok", {"fetched": 3, "admitted": 1}, 1234, {"healthy": True, "problems": []}
+    )
+    row = db_session.get_one(Run, run_id)
+    assert row.status == "ok"
+    assert row.counts == {"fetched": 3, "admitted": 1}
+    assert row.tokens == 1234
+    assert row.health == {"healthy": True, "problems": []}
+    assert row.finished_at is not None and row.finished_at.tzinfo is not None
+    # A later run finished without a verdict stores SQL NULL, not the JSON value null.
+    second = repo.start_run(NOW, NOW + timedelta(days=7))
+    repo.finish_run(second, "partial", {}, 0, None)
+    assert db_session.get_one(Run, second).health is None
 
 
 def test_item_dead_letters_open_until_resolved(db_session: Session) -> None:

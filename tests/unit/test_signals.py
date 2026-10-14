@@ -6,6 +6,7 @@ from datetime import date
 from pathlib import Path
 
 import httpx
+import pytest
 import respx
 
 from paperwatch.sources.hf_daily import HF_URL, MAX_PAGES_PER_DAY, HfDailySource
@@ -217,6 +218,7 @@ def test_s2_degraded_on_non_json(monkeypatch) -> None:
     src = SemanticScholarSource(httpx.Client(), None, pause_s=0)
     assert src.lookup(["2510.00001"]) == {}
     assert src.degraded is True
+    assert src.checked_ids == set()
 
 
 @respx.mock
@@ -232,6 +234,52 @@ def test_s2_degraded_on_short_array(monkeypatch) -> None:
     assert out["2510.00001"].venue == "arXiv.org"
     assert "2510.00002" not in out
     assert src.degraded is True
+    assert src.checked_ids == set()
+
+
+@respx.mock
+def test_s2_degraded_on_a_longer_array(monkeypatch) -> None:
+    # More rows than ids: zip(strict=True) refuses, so no id is marked checked.
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    respx.post(S2_BATCH_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {"venue": "arXiv.org", "citationCount": 0},
+                {"venue": "arXiv.org", "citationCount": 0},
+            ],
+        )
+    )
+    src = SemanticScholarSource(httpx.Client(), None, pause_s=0)
+    src.lookup(["2510.00001"])
+    assert src.degraded is True
+    assert src.checked_ids == set()
+
+
+@respx.mock
+def test_s2_degraded_on_a_non_dict_element(monkeypatch) -> None:
+    # A scalar where a paper object belongs cannot be read; the chunk fails as a whole.
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    respx.post(S2_BATCH_URL).mock(return_value=httpx.Response(200, json=[42]))
+    src = SemanticScholarSource(httpx.Client(), None, pause_s=0)
+    src.lookup(["2510.00001"])
+    assert src.degraded is True
+    assert src.checked_ids == set()
+
+
+@respx.mock
+def test_s2_degraded_on_a_json_null_body(monkeypatch) -> None:
+    # A top-level JSON null is not a list of rows, so the chunk fails instead of being trusted.
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    respx.post(S2_BATCH_URL).mock(
+        return_value=httpx.Response(
+            200, content=b"null", headers={"content-type": "application/json"}
+        )
+    )
+    src = SemanticScholarSource(httpx.Client(), None, pause_s=0)
+    src.lookup(["2510.00001"])
+    assert src.degraded is True
+    assert src.checked_ids == set()
 
 
 @respx.mock
@@ -348,7 +396,16 @@ def test_s2_five_refusals_degrade_and_skip_checked_ids(monkeypatch) -> None:
 
 
 @respx.mock
-def test_s2_strips_version_suffix_and_maps_back(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    ("caller_id", "sent_id"),
+    [
+        ("2510.00001v1", "ARXIV:2510.00001"),
+        ("2510.00001v12", "ARXIV:2510.00001"),
+        ("hep-th/9901001v2", "ARXIV:hep-th/9901001"),
+        ("2510.00001", "ARXIV:2510.00001"),  # a bare id is sent unchanged
+    ],
+)
+def test_s2_strips_version_suffix_and_maps_back(caller_id: str, sent_id: str) -> None:
     # S2 returns HTTP 400 for a versioned id, so the client strips vN itself.
     seen: list[list[str]] = []
 
@@ -358,10 +415,10 @@ def test_s2_strips_version_suffix_and_maps_back(monkeypatch) -> None:
 
     respx.post(S2_BATCH_URL).mock(side_effect=responder)
     src = SemanticScholarSource(httpx.Client(), None, pause_s=0)
-    out = src.lookup(["2510.00001v2"])
-    assert seen == [["ARXIV:2510.00001"]]
-    assert out["2510.00001v2"].citation_count == 2
-    assert src.checked_ids == {"2510.00001v2"}
+    out = src.lookup([caller_id])
+    assert seen == [[sent_id]]
+    assert out[caller_id].citation_count == 2
+    assert src.checked_ids == {caller_id}
 
 
 @respx.mock
@@ -386,3 +443,43 @@ def test_s2_checked_ids_reset_each_call() -> None:
     src.lookup(["2510.00001"])
     src.lookup(["2510.00002"])
     assert src.checked_ids == {"2510.00002"}
+
+
+@respx.mock
+def test_s2_two_versions_of_one_id_keep_their_own_rows() -> None:
+    # Both caller ids strip to one ARXIV: id, so each response row maps back to the id that asked
+    # for it rather than to a shared base id.
+    respx.post(S2_BATCH_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {"venue": "arXiv.org", "citationCount": 5},
+                {"venue": "arXiv.org", "citationCount": 9},
+            ],
+        )
+    )
+    src = SemanticScholarSource(httpx.Client(), None, pause_s=0)
+    out = src.lookup(["2106.09685v1", "2106.09685v2"])
+    assert out["2106.09685v1"].citation_count == 5
+    assert out["2106.09685v2"].citation_count == 9
+    assert src.checked_ids == {"2106.09685v1", "2106.09685v2"}
+
+
+@respx.mock
+def test_s2_checked_ids_keep_answered_chunks_only(monkeypatch) -> None:
+    # 501 ids split into 500 + 1; the answered chunk is checked, the refused one is not.
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        count = len(json.loads(request.content)["ids"])
+        if count == 500:
+            return httpx.Response(200, json=[None] * count)
+        return httpx.Response(503)
+
+    respx.post(S2_BATCH_URL).mock(side_effect=responder)
+    ids = [f"2510.{i:05d}" for i in range(501)]
+    src = SemanticScholarSource(httpx.Client(), None, pause_s=0)
+    src.lookup(ids)
+    assert src.degraded is True
+    assert src.checked_ids == set(ids[:500])
+    assert ids[500] not in src.checked_ids
