@@ -85,6 +85,16 @@ def test_dedupe_keeps_highest_version_when_v1_first() -> None:
 
 
 @respx.mock
+def test_item_carries_its_arxiv_version() -> None:
+    # The fixture has 2510.00001 as v2 and v1; the kept body is v2 and says so.
+    respx.get(ARXIV_URL).mock(return_value=httpx.Response(200, text=FIXTURE))
+    src = ArxivSource(httpx.Client(), PROFILES, page_size=100, pause_s=0)
+    items = src.fetch(datetime(2025, 1, 1, tzinfo=UTC), datetime(2030, 1, 1, tzinfo=UTC))
+    versions = {i.external_id: i.version for i in items}
+    assert versions["2510.00001"] == 2 and versions["2510.00002"] == 1
+
+
+@respx.mock
 def test_query_carries_submitted_date_window() -> None:
     route = respx.get(ARXIV_URL).mock(return_value=httpx.Response(200, text=FIXTURE))
     profiles = load_profiles(Path("config/profiles.yaml"))[:1]

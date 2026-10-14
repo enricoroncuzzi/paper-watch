@@ -100,6 +100,7 @@ class ArxivSource:
             published_at=_utc(e.published_parsed),
             categories=tuple(t.term for t in e.get("tags", [])),
             licence="CC0-1.0 (metadata)",
+            version=_version_of(e.id),
         )
 
     def fetch(self, since: datetime, until: datetime) -> list[SourceItem]:

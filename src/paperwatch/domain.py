@@ -46,6 +46,9 @@ class SourceItem:
     categories: tuple[str, ...] = ()
     # Licence of the stored text, not the PDF: arXiv metadata/abstracts are CC0.
     licence: str = "unknown"
+    # arXiv version of this text (2 for "2510.01234v2"); feed items keep 1. The store replaces
+    # a paper's text only when a fetched version is higher than the stored one.
+    version: int = 1
 
 
 @dataclass(frozen=True, kw_only=True)
