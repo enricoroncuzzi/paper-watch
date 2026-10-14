@@ -1,6 +1,7 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
+import pytest
 from typer.testing import CliRunner
 
 from paperwatch import cli
@@ -18,9 +19,19 @@ def test_parse_since_accepts_naive_z_and_offset() -> None:
     assert cli._parse_since("2026-10-12T06:00:00") == datetime(2026, 10, 12, 6, tzinfo=UTC)
     assert cli._parse_since("2026-10-12T04:00:00Z") == datetime(2026, 10, 12, 4, tzinfo=UTC)
     assert cli._parse_since("2026-10-12T08:00:00+02:00") == datetime(2026, 10, 12, 6, tzinfo=UTC)
+    # Aware datetimes compare equal across zones, so assert the offset is truly UTC.
+    assert cli._parse_since("2026-10-12T08:00:00+02:00").utcoffset() == timedelta(0)
 
 
-def test_live_ingest_builds_models_through_models(monkeypatch) -> None:
+def test_invalid_since_exits_before_building_anything(monkeypatch: pytest.MonkeyPatch) -> None:
+    called = []
+    monkeypatch.setattr(cli, "get_settings", lambda: called.append(True) or object())
+    result = CliRunner().invoke(app, ["ingest", "--live", "--since", "garbage"])
+    assert result.exit_code == 2 and "ISO 8601" in result.output
+    assert called == []  # parsing happens before any model, client or engine is built
+
+
+def test_live_ingest_builds_models_through_models(monkeypatch: pytest.MonkeyPatch) -> None:
     # A live run must actually reach make_embedder and make_classifier through _models.
     built = {"embedder": False, "classifier": False}
 

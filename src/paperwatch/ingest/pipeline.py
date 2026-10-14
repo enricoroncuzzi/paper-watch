@@ -85,101 +85,112 @@ def run_ingestion(
         return since_override or repo.cursor(key) or now - default_lookback
 
     keys = ["arxiv", *(f"feed:{f.url}" for f in sources.feed_list)]
+    # Close rows a previous process left 'running'; one instance runs at a time.
+    repo.fail_open_runs()
     run_id = repo.start_run(min(window(k) for k in keys), now)
     session.commit()
-    counts = {
-        "fetched": 0,
-        "fetched_arxiv": 0,
-        "new": 0,
-        "irrelevant": 0,
-        "stored": 0,
-        "admitted_late": 0,
-        "promoted": 0,
-        "basis_improved": 0,
-        "rechecked": 0,
-        "s2_unchecked": 0,
-        "text_updated": 0,
-        "malformed": 0,
-        "signal_failures": 0,
-        "failed": 0,
-        "retried": 0,
-        "given_up": 0,
-        "duplicate_url": 0,
-    }
-    degraded = False
-    stuck: list[str] = []  # cursors that could not advance this run, for the health verdict
-    fetched: list[SourceItem] = []
 
-    # Phase 1: fetch. Each source keeps its own cursor and fails alone.
-    arxiv_from = window("arxiv")
-    # submittedDate filters on submission, but a paper is visible only after announcement
-    # (hours to days later), so re-read the lag before the cursor; an explicit --since wins.
-    arxiv_since = arxiv_from if since_override else arxiv_from - ARXIV_ANNOUNCEMENT_LAG
+    # A crash after this commit (a killed process, SystemExit) must not leave the run row
+    # 'running'. Close it as failed and re-raise; phase-1 parked letters let the next run resume.
     try:
-        papers = sources.arxiv.fetch(arxiv_since, now)
-        fetched += papers
-        counts["fetched_arxiv"] = len(papers)
-        for bad in sources.arxiv.rejected:
-            # Record each unparseable entry once; the lag overlap re-reads it for days.
+        counts = {
+            "fetched": 0,
+            "fetched_arxiv": 0,
+            "new": 0,
+            "irrelevant": 0,
+            "stored": 0,
+            "admitted_late": 0,
+            "promoted": 0,
+            "basis_improved": 0,
+            "rechecked": 0,
+            "s2_unchecked": 0,
+            "text_updated": 0,
+            "malformed": 0,
+            "signal_failures": 0,
+            "failed": 0,
+            "retried": 0,
+            "given_up": 0,
+            "duplicate_url": 0,
+        }
+        degraded = False
+        stuck: list[str] = []  # cursors that could not advance this run, for the health verdict
+        fetched: list[SourceItem] = []
+        # Keys phase 1 parked this run; resolving one is not a retry.
+        parked: set[tuple[str, str]] = set()
+
+        # Phase 1: fetch. Each source keeps its own cursor and fails alone.
+        arxiv_from = window("arxiv")
+        # submittedDate filters on submission, but a paper is visible only after announcement
+        # (hours to days later), so re-read the lag before the cursor; an explicit --since wins.
+        arxiv_since = arxiv_from if since_override else arxiv_from - ARXIV_ANNOUNCEMENT_LAG
+        try:
+            papers = sources.arxiv.fetch(arxiv_since, now)
+            fetched += papers
+            counts["fetched_arxiv"] = len(papers)
+            for bad in sources.arxiv.rejected:
+                # Record each unparseable entry once; the lag overlap re-reads it for days.
+                if not repo.has_open_dead_letter(bad.source, bad.ref):
+                    repo.add_dead_letter(run_id, bad.source, bad.ref, bad.error)
+                    counts["malformed"] += 1
+                    degraded = True
+            repo.advance_cursor("arxiv", now)  # advances even past a bad entry: no poison pill
+        except Exception as exc:  # noqa: BLE001 - one source must not abort the run
+            degraded = True
+            stuck.append("arxiv")
+            repo.add_dead_letter(run_id, "arxiv", "window", repr(exc), window=(arxiv_since, now))
+            if repo.cursor("arxiv") is None:
+                # Pin the un-lagged start, so repeated failures do not push the window back.
+                repo.advance_cursor("arxiv", arxiv_from)
+        sources.feeds.rejected = []  # filled by fetch_one across every feed of this run
+        sources.feeds.newest = {}  # newest entry date per feed, for the stale-feed warning
+        stale: list[str] = []
+        for feed in sources.feed_list:
+            key = f"feed:{feed.url}"
+            feed_from = window(key)
+            # Same reason as arXiv: a post can appear after its date. The unique key absorbs it.
+            since = feed_from if since_override else feed_from - FEED_OVERLAP
+            try:
+                fetched += sources.feeds.fetch_one(feed, since, now)
+                repo.advance_cursor(key, now)
+                newest = sources.feeds.newest.get(feed.url)
+                if newest is None or now - newest > FEED_STALE_AFTER:
+                    # Answers, but publishes nothing: looks like a quiet day unless flagged.
+                    stale.append(feed.url)
+            except Exception as exc:  # noqa: BLE001
+                degraded = True
+                stuck.append(key)
+                repo.add_dead_letter(run_id, "feed", feed.url, repr(exc), window=(since, now))
+                if repo.cursor(key) is None:
+                    repo.advance_cursor(key, feed_from)  # pin the un-lagged start
+        for bad in sources.feeds.rejected:
+            # Same rule as arXiv: one dead letter per bad entry while open, the cursor still moves.
             if not repo.has_open_dead_letter(bad.source, bad.ref):
                 repo.add_dead_letter(run_id, bad.source, bad.ref, bad.error)
                 counts["malformed"] += 1
                 degraded = True
-        repo.advance_cursor("arxiv", now)  # advances even past a bad entry: no poison pill
-    except Exception as exc:  # noqa: BLE001 - one source must not abort the run
-        degraded = True
-        stuck.append("arxiv")
-        repo.add_dead_letter(run_id, "arxiv", "window", repr(exc), window=(arxiv_since, now))
-        if repo.cursor("arxiv") is None:
-            # Pin the un-lagged start, so repeated failures do not push the window back.
-            repo.advance_cursor("arxiv", arxiv_from)
-    sources.feeds.rejected = []  # filled by fetch_one across every feed of this run
-    sources.feeds.newest = {}  # newest entry date per feed, for the stale-feed warning
-    stale: list[str] = []
-    for feed in sources.feed_list:
-        key = f"feed:{feed.url}"
-        feed_from = window(key)
-        # Same reason as arXiv: a post can appear after its date. The unique key absorbs it.
-        since = feed_from if since_override else feed_from - FEED_OVERLAP
-        try:
-            fetched += sources.feeds.fetch_one(feed, since, now)
-            repo.advance_cursor(key, now)
-            newest = sources.feeds.newest.get(feed.url)
-            if newest is None or now - newest > FEED_STALE_AFTER:
-                # Answers, but publishes nothing: looks like a quiet day unless flagged.
-                stale.append(feed.url)
-        except Exception as exc:  # noqa: BLE001
-            degraded = True
-            stuck.append(key)
-            repo.add_dead_letter(run_id, "feed", feed.url, repr(exc), window=(since, now))
-            if repo.cursor(key) is None:
-                repo.advance_cursor(key, feed_from)  # pin the un-lagged start
-    for bad in sources.feeds.rejected:
-        # Same rule as arXiv: one dead letter per bad entry while open, the cursor still moves.
-        if not repo.has_open_dead_letter(bad.source, bad.ref):
-            repo.add_dead_letter(run_id, bad.source, bad.ref, bad.error)
-            counts["malformed"] += 1
-            degraded = True
-    # Park every not-yet-stored fetched item before the cursors commit, so a process that dies
-    # before phase 2 stores it does not lose it when it falls outside the next overlap. They are
-    # attempts=0 letters: phase 2 loads them as pending and resolves each letter on success.
-    for item in fetched:
-        if repo.stored(item.source, item.external_id) is None and not repo.has_open_dead_letter(
-            item.source, item.external_id
-        ):
-            repo.add_dead_letter(
-                run_id,
-                item.source,
-                item.external_id,
-                "fetched, not yet stored",
-                payload=item_to_payload(item),
-                attempts=0,
-            )
-    session.commit()
+        # Park every not-yet-stored fetched item before the cursors commit, so a process that
+        # dies before phase 2 stores it does not lose it when it falls outside the next overlap.
+        # They are attempts=0 letters: phase 2 loads them as pending and resolves each on success.
+        for item in fetched:
+            if item.source == "feed" and repo.has_item_url("feed", item.url):
+                # A moved feed gives old posts new ids; its link shows they are already stored,
+                # so do not park (and resolve) a letter for it on every run.
+                continue
+            item_key = (item.source, item.external_id)
+            if repo.stored(item.source, item.external_id) is None and not repo.has_open_dead_letter(
+                item.source, item.external_id
+            ):
+                repo.add_dead_letter(
+                    run_id,
+                    item.source,
+                    item.external_id,
+                    "fetched, not yet stored",
+                    payload=item_to_payload(item),
+                    attempts=0,
+                )
+                parked.add(item_key)
+        session.commit()
 
-    # A crash after the fetch commit (a killed process, SystemExit) must not leave the run row
-    # 'running'. Close it as failed and re-raise; the parked letters let the next run resume.
-    try:
         # One entry per item: an item both re-fetched by the overlap and waiting in a dead letter
         # is processed once, as its newest version, and that one attempt resolves or counts.
         retry_dl: dict[tuple[str, str], int] = {}
@@ -194,6 +205,8 @@ def run_ingestion(
                 counts["failed"] += 1
                 if repo.record_retry_failure(open_id, repr(exc)) >= MAX_ITEM_ATTEMPTS:
                     counts["given_up"] += 1
+                # Commit now: a later item's rollback must not undo this letter's attempt count.
+                session.commit()
                 continue
             retry_dl[(item.source, item.external_id)] = open_id
             pending[(item.source, item.external_id)] = item
@@ -207,7 +220,7 @@ def run_ingestion(
         status = "succeeded"
         new_ids: list[uuid.UUID] = []  # this run's new candidates, admitted in phase 3
         items = list(pending.values())
-        for idx, item in enumerate(items):
+        for item in items:
             k = (item.source, item.external_id)
             dl_id = retry_dl.get(k)
             try:
@@ -237,7 +250,8 @@ def run_ingestion(
                         counts["text_updated"] += 1
                     if dl_id is not None:
                         repo.resolve_dead_letter(dl_id)
-                        counts["retried"] += 1
+                        if k not in parked:
+                            counts["retried"] += 1
                     session.commit()
                     continue
                 cls = classifier.classify(item)
@@ -250,7 +264,8 @@ def run_ingestion(
                 counts["new"] += 1
                 if dl_id is not None:
                     repo.resolve_dead_letter(dl_id)
-                    counts["retried"] += 1
+                    if k not in parked:
+                        counts["retried"] += 1
                 session.commit()
                 if relevant:
                     new_ids.append(item_id)
@@ -259,20 +274,8 @@ def run_ingestion(
             except BudgetExceeded:
                 session.rollback()
                 status = "budget_exhausted"
-                # Cursors already moved past these items: park every unclassified one, so the
-                # next run classifies it. A budget stop is not the item's fault (attempts=0).
-                for rest in items[idx:]:
-                    rk = (rest.source, rest.external_id)
-                    if rk not in retry_dl and repo.stored(*rk) is None:
-                        repo.add_dead_letter(
-                            run_id,
-                            rest.source,
-                            rest.external_id,
-                            "budget_exhausted",
-                            payload=item_to_payload(rest),
-                            attempts=0,
-                        )
-                session.commit()
+                # Unclassified items are already parked as attempts=0 letters by phase 1, so a
+                # later run resumes them; another letter here would restart a given-up item.
                 break
             except Exception as exc:  # noqa: BLE001 - one item must not abort the run
                 session.rollback()

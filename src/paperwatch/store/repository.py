@@ -276,6 +276,16 @@ class Repository:
             )
             self._s.flush()
 
+    def fail_open_runs(self) -> None:
+        # A single-instance daily job closes rows a crash (`kill -9`) left 'running', so the
+        # run table never accumulates rows that look in-flight forever.
+        self._s.execute(
+            update(Run)
+            .where(Run.status == "running")
+            .values(status="failed", finished_at=func.now())
+        )
+        self._s.flush()
+
     def start_run(self, window_start: datetime, window_end: datetime) -> uuid.UUID:
         run = Run(window_start=window_start, window_end=window_end, status="running")
         self._s.add(run)

@@ -139,6 +139,15 @@ class Run(Base):
 
 class DeadLetter(Base):
     __tablename__ = "dead_letters"
+    __table_args__ = (
+        # Partial index for the open-dead-letter lookup; only unresolved rows are ever queried.
+        Index(
+            "ix_dead_letters_open",
+            "source",
+            "ref",
+            postgresql_where=text("resolved_at IS NULL"),
+        ),
+    )
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"))
     source: Mapped[str] = mapped_column(String(32))

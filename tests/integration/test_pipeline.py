@@ -169,6 +169,8 @@ def test_stores_admitted_items(db_session: Session) -> None:
         fake_sources([paper("2510.1", "Agent harness"), paper("2510.2", "Coding agent")]),
     )
     assert res.status == "succeeded" and res.counts["stored"] == 2
+    # A clean run resolves every parked letter it wrote.
+    assert Repository(db_session).open_item_dead_letters() == []
 
 
 def test_rerun_is_idempotent_and_refreshes_signals(db_session: Session) -> None:
@@ -561,6 +563,59 @@ def test_budget_stop_during_classification_skips_recheck(db_session: Session) ->
     assert db_session.get(DeadLetter, letters[0][0]).attempts == 0
 
 
+def test_budget_stop_does_not_resurrect_given_up_items(db_session: Session) -> None:
+    class Boom(FakeClassifier):
+        def classify(self, item: SourceItem) -> Classification:
+            raise RuntimeError("model 500")
+
+    # Three classification failures give the poison paper up: one open letter at the cap.
+    poison = paper("2510.poison", "Agent harness")
+    src = fake_sources([poison])
+    for day in range(MAX_ITEM_ATTEMPTS):
+        run(db_session, src, now=NOW + timedelta(days=day), classifier=Boom(PROFILES))
+    [letter] = db_session.scalars(select(DeadLetter).where(DeadLetter.ref == "2510.poison")).all()
+    assert letter.attempts == MAX_ITEM_ATTEMPTS
+
+    class Stop(FakeClassifier):
+        def __init__(self, ledger: Ledger) -> None:
+            super().__init__(PROFILES)
+            self.ledger = ledger
+
+        def classify(self, item: SourceItem) -> Classification:
+            self.ledger.charge("classify", 10)
+            return super().classify(item)
+
+    ledger = Ledger(1)
+    trigger = paper("2510.trigger", "Coding agent")
+    # The trigger comes first, so a budget loop over the rest would see the poison paper.
+    src.arxiv.fetch.return_value = [trigger, poison]
+    res = run(
+        db_session,
+        src,
+        now=NOW + timedelta(days=3),
+        classifier=Stop(ledger),
+        ledger=ledger,
+    )
+    assert res.status == "budget_exhausted"
+    letters = db_session.scalars(select(DeadLetter).where(DeadLetter.ref == "2510.poison")).all()
+    assert len(letters) == 1 and letters[0].attempts == MAX_ITEM_ATTEMPTS
+
+
+def test_retried_counts_only_real_retries(db_session: Session) -> None:
+    class Boom(FakeClassifier):
+        def classify(self, item: SourceItem) -> Classification:
+            raise RuntimeError("model 500")
+
+    src = fake_sources([paper("2510.1", "Agent harness")])
+    first = run(db_session, src)
+    assert first.counts["new"] == 1 and first.counts["retried"] == 0
+    # A failure before the row exists leaves an open letter; succeeding later is a real retry.
+    poison = fake_sources([paper("2510.2", "Coding agent")])
+    run(db_session, poison, classifier=Boom(PROFILES))
+    second = run(db_session, poison, now=NOW + timedelta(days=1))
+    assert second.counts["retried"] == 1
+
+
 def test_crash_after_fetch_commit_resumes_and_finishes(db_session: Session) -> None:
     class Crash(FakeClassifier):
         def classify(self, item: SourceItem) -> Classification:
@@ -583,18 +638,60 @@ def test_crash_after_fetch_commit_resumes_and_finishes(db_session: Session) -> N
 
 
 def test_corrupt_dead_letter_payload_is_counted_not_fatal(db_session: Session) -> None:
+    class Boom(FakeClassifier):
+        def classify(self, item: SourceItem) -> Classification:
+            raise RuntimeError("model 500")
+
     repo = Repository(db_session)
     rid = repo.start_run(NOW, NOW + timedelta(days=1))
     # A payload missing a required key, as a bug or an older writer would leave it.
     repo.add_dead_letter(rid, "arxiv", "2510.bad", "corrupt", payload={"source": "arxiv"})
     db_session.commit()
-    src = fake_sources([])
-    first = run(db_session, src, now=NOW + timedelta(days=1))
-    assert first.status == "partial" and first.counts["failed"] == 1
+    src = fake_sources([paper("2510.1", "Agent harness")])
+    # A regular item fails in the same run, so its rollback must not undo the corrupt count.
+    first = run(db_session, src, now=NOW + timedelta(days=1), classifier=Boom(PROFILES))
+    assert first.status == "partial" and first.counts["failed"] == 2
     assert first.counts["given_up"] == 0
+    corrupt = db_session.scalars(select(DeadLetter).where(DeadLetter.ref == "2510.bad")).one()
+    assert corrupt.attempts == 2  # the increment survived the failing item's rollback
     # At the attempt cap the corrupt letter is given up instead of failing every run.
-    last = run(db_session, src, now=NOW + timedelta(days=2))
+    last = run(db_session, src, now=NOW + timedelta(days=2), classifier=Boom(PROFILES))
     assert last.counts["given_up"] == 1
+    db_session.refresh(corrupt)
+    assert corrupt.attempts == MAX_ITEM_ATTEMPTS
+
+
+def test_crash_during_fetch_finishes_the_run(db_session: Session) -> None:
+    src = fake_sources([])
+    src.arxiv.fetch.side_effect = SystemExit("killed during fetch")
+    with pytest.raises(SystemExit):
+        run(db_session, src)
+    crashed = db_session.scalars(select(Run).where(Run.status == "failed")).one()
+    assert crashed.finished_at is not None
+
+
+def test_hard_kill_left_running_run_is_closed_next_run(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Crash(FakeClassifier):
+        def classify(self, item: SourceItem) -> Classification:
+            raise SystemExit("killed")
+
+    old = dataclasses.replace(
+        paper("2510.old", "Agent harness"), published_at=NOW - timedelta(days=10)
+    )
+    src = fake_sources([old])
+    # A hard kill cannot run the handler: finish_run never records the crash.
+    monkeypatch.setattr(Repository, "finish_run", lambda *args, **kwargs: None)
+    with pytest.raises(SystemExit):
+        run(db_session, src, classifier=Crash(PROFILES))
+    monkeypatch.undo()
+    stale = db_session.scalars(select(Run).where(Run.status == "running")).one()
+    assert stale.finished_at is None
+    src.arxiv.fetch.return_value = []
+    run(db_session, src, now=NOW + timedelta(days=1))
+    db_session.refresh(stale)
+    assert stale.status == "failed" and stale.finished_at is not None
 
 
 def test_arxiv_refetch_overlaps_announcement_lag(db_session: Session) -> None:
@@ -672,6 +769,19 @@ def test_moved_feed_does_not_store_its_posts_twice(db_session: Session) -> None:
     res = run(db_session, src, now=NOW + timedelta(days=1))
     assert res.counts["duplicate_url"] == 1 and res.counts["new"] == 0
     assert len(db_session.scalars(select(Item).where(Item.source == "feed")).all()) == 1
+
+
+def test_moved_feed_posts_are_not_parked_every_run(db_session: Session) -> None:
+    src = fake_sources([], feed_items=[blog("p1")])
+    run(db_session, src)
+    moved = dataclasses.replace(blog("p1"), external_id="https://lab.example/new-feed.xml p1")
+    src.feeds.fetch_one.return_value = [moved]
+    run(db_session, src, now=NOW + timedelta(days=1))
+    # The moved post's link is already stored, so it gets no dead-letter row at all.
+    letters = db_session.scalars(
+        select(DeadLetter).where(DeadLetter.ref == moved.external_id)
+    ).all()
+    assert letters == []
 
 
 def test_stale_feed_is_flagged_in_health(db_session: Session) -> None:

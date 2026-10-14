@@ -62,6 +62,8 @@ def _models(ledger: Ledger) -> tuple[Classifier, Embedder]:
 @app.command()
 def ingest(live: bool = LIVE, since: str | None = SINCE) -> None:
     _require_live(live)
+    # Parse before any model, client or engine is built, so a typo fails fast and cheap.
+    since_override = _parse_since(since)
     s = get_settings()
     configure_logging(s.log_level)
     http = make_http_client(s)
@@ -85,7 +87,7 @@ def ingest(live: bool = LIVE, since: str | None = SINCE) -> None:
         ledger,
         load_admission(Path("config/admission.yaml")),
         datetime.now(UTC),
-        since_override=_parse_since(since),
+        since_override=since_override,
     )
     typer.echo(f"{res.status}: {res.counts} tokens={res.tokens}")
     raise typer.Exit(0 if res.status in {"succeeded", "partial"} else 1)
