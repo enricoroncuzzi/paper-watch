@@ -5,7 +5,9 @@ from unittest.mock import DEFAULT, MagicMock
 
 import pytest
 from sqlalchemy import Engine, select, text
+from sqlalchemy.engine import Connection
 from sqlalchemy.orm import Session
+from structlog.testing import capture_logs
 
 from paperwatch.admission import load_admission
 from paperwatch.config import (
@@ -860,7 +862,7 @@ def test_daily_runs_over_a_week_lose_nothing(db_session: Session) -> None:
     assert len(db_session.scalars(select(Item).where(Item.source == "feed")).all()) == 1
 
 
-def test_second_run_is_skipped_while_the_lock_is_held(db_session: Session) -> None:
+def test_second_run_is_skipped_while_the_lock_is_held(db_session: Session, engine: Engine) -> None:
     repo = Repository(db_session)
     # A run a hard kill left 'running' must be left untouched by a skipped run.
     stale = repo.start_run(NOW, NOW + timedelta(days=1), at=NOW)
@@ -870,12 +872,19 @@ def test_second_run_is_skipped_while_the_lock_is_held(db_session: Session) -> No
         held = lock_conn.scalar(text("SELECT pg_try_advisory_lock(:k)"), {"k": INGEST_LOCK_KEY})
         assert held is True
         src = fake_sources([paper("2510.1", "Agent harness")])
-        res = run(db_session, src)
+        before = engine.pool.checkedout()
+        with capture_logs() as logs:
+            res = run(db_session, src)
+        after = engine.pool.checkedout()
     finally:
         lock_conn.scalar(text("SELECT pg_advisory_unlock(:k)"), {"k": INGEST_LOCK_KEY})
         lock_conn.close()
     assert res.status == "skipped" and res.run_id is None
     assert res.counts == {} and res.tokens == 0
+    # The skipped run opens its lock connection and closes it again, so the pool is unchanged.
+    assert after == before
+    # The skip leaves one log event, so M4's log-based alerts can see a lock that never frees.
+    assert [event["event"] for event in logs] == ["ingestion_skipped"]
     # No run row was written, the stale row is untouched, and no source was called.
     assert len(db_session.scalars(select(Run)).all()) == 1
     assert db_session.get_one(Run, stale).status == "running"
@@ -1075,3 +1084,87 @@ def test_lock_is_held_for_the_whole_run(db_session: Session, engine: Engine) -> 
     assert inner.status == "skipped" and inner.run_id is None
     assert seen["feed_calls"] == 0
     assert seen["run_rows"] == 1
+
+
+def kill_lock_holders(killer: Session) -> None:
+    # Terminate the advisory-lock holder's backend from a second session, so the run's unlock
+    # later runs against a dead connection.
+    for pid in killer.execute(
+        text("SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND granted")
+    ).scalars():
+        killer.execute(text("SELECT pg_terminate_backend(:p)"), {"p": pid})
+    killer.commit()
+
+
+def test_dead_lock_connection_still_returns_succeeded(db_session: Session, engine: Engine) -> None:
+    src = fake_sources([paper("2510.1", "Agent harness")])
+    killer = make_session_factory(engine)()
+    before = engine.pool.checkedout()
+
+    def kill_mid_run(*args: object) -> list[SourceItem]:
+        kill_lock_holders(killer)
+        return [paper("2510.1", "Agent harness")]
+
+    src.arxiv.fetch.side_effect = kill_mid_run
+    try:
+        assert run(db_session, src).status == "succeeded"
+    finally:
+        killer.close()
+    # The unlock on the dead connection is suppressed and its connection closed: no leak.
+    assert engine.pool.checkedout() == before
+
+
+def test_dead_lock_connection_keeps_the_runs_own_error(
+    db_session: Session, engine: Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    src = fake_sources([paper("2510.1", "Agent harness")])
+    killer = make_session_factory(engine)()
+    before = engine.pool.checkedout()
+
+    def kill_mid_run(*args: object) -> list[SourceItem]:
+        kill_lock_holders(killer)
+        return [paper("2510.1", "Agent harness")]
+
+    def boom(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("run boom")
+
+    src.arxiv.fetch.side_effect = kill_mid_run
+    monkeypatch.setattr(Repository, "recheck_targets", boom)
+    try:
+        # The unlock error on the dead connection must not replace the run's own error.
+        with pytest.raises(RuntimeError, match="run boom"):
+            run(db_session, src)
+    finally:
+        killer.close()
+    assert engine.pool.checkedout() == before
+
+
+def test_raising_try_lock_closes_its_connection(
+    db_session: Session, engine: Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    before = engine.pool.checkedout()
+    opened: list[Connection] = []
+    original_connect = Engine.connect
+    original_scalar = Connection.scalar
+
+    def capture_connect(eng: Engine, *args: object, **kwargs: object) -> Connection:
+        # Hold a reference to every connection the run opens, so a missing close cannot hide
+        # behind the garbage collector returning a leaked connection to the pool.
+        conn = original_connect(eng, *args, **kwargs)
+        opened.append(conn)
+        return conn
+
+    def raise_on_try_lock(
+        conn: Connection, statement: object, *args: object, **kwargs: object
+    ) -> object:
+        if "pg_try_advisory_lock" in str(statement):
+            raise RuntimeError("try-lock boom")
+        return original_scalar(conn, statement, *args, **kwargs)
+
+    monkeypatch.setattr(Engine, "connect", capture_connect)
+    monkeypatch.setattr(Connection, "scalar", raise_on_try_lock)
+    with pytest.raises(RuntimeError, match="try-lock boom"):
+        run(db_session, fake_sources([]))
+    # A failing try-lock still closes the connection it opened.
+    assert opened and all(conn.closed for conn in opened)
+    assert engine.pool.checkedout() == before
