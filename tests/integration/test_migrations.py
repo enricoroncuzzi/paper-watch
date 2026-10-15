@@ -30,6 +30,7 @@ def test_hnsw_index_definition_matches_the_search_predicate(engine: Engine) -> N
             text("SELECT indexdef FROM pg_indexes WHERE indexname = 'ix_items_embedding_hnsw'")
         )
     assert indexdef is not None
+    assert "USING hnsw" in indexdef
     assert "vector_cosine_ops" in indexdef
     # Postgres normalises the varchar comparison to text, so the stored predicate is
     # `WHERE ((status)::text = 'admitted'::text)`, not the source form `status = 'admitted'`.

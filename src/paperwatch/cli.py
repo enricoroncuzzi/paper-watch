@@ -5,7 +5,7 @@ import typer
 
 from paperwatch.admission import load_admission
 from paperwatch.config import get_settings
-from paperwatch.domain import load_profiles
+from paperwatch.domain import Tier, load_profiles
 from paperwatch.ingest.pipeline import Sources, run_ingestion
 from paperwatch.llm.classifier import Classifier, make_classifier
 from paperwatch.llm.embedder import Embedder, make_embedder
@@ -24,6 +24,12 @@ LIVE = typer.Option(False, "--live", help="Use real sources and the configured m
 SINCE = typer.Option(None, "--since", help="ISO datetime; overrides every source cursor")
 TIERS = typer.Option(None, "--tier")
 PROFILES_OPT = typer.Option(None, "--profile")
+# `search` runs no sources, so its `--live` help names only the model and the database.
+SEARCH_LIVE = typer.Option(
+    False, "--live", help="Use the configured embedding model and the database"
+)
+K = typer.Option(10, min=1)
+_TIER_VALUES = frozenset(t.value for t in Tier)
 
 
 @app.callback()
@@ -101,16 +107,27 @@ def ingest(live: bool = LIVE, since: str | None = SINCE) -> None:
 @app.command()
 def search(
     query: str,
-    k: int = 10,
+    k: int = K,
     tier: list[str] | None = TIERS,
     profile: list[str] | None = PROFILES_OPT,
-    live: bool = LIVE,
+    live: bool = SEARCH_LIVE,
 ) -> None:
     _require_live(live)
+    # Validate before building anything, so a bad argument is a usage error (exit 2).
+    if not query.strip():
+        raise typer.BadParameter("query must not be blank")
+    unknown = [t for t in tier or [] if t not in _TIER_VALUES]
+    if unknown:
+        raise typer.BadParameter(
+            f"--tier must be one of {', '.join(sorted(_TIER_VALUES))}; got {', '.join(unknown)}"
+        )
     s = get_settings()
     # Only the embedder: building the classifier would embed every profile description for nothing.
     embedder = make_embedder(s, Ledger(s.max_tokens_per_run))
     session = make_session_factory(make_engine(s.database_url))()
-    f = Filters(frozenset(tier) if tier else None, frozenset(profile) if profile else None)
-    for h in hybrid_search(session, embedder, query, k=k, filters=f):
-        typer.echo(f"{h.score:.4f}  [{h.tier}]  {h.title}\n        {h.url}")
+    try:
+        f = Filters(frozenset(tier) if tier else None, frozenset(profile) if profile else None)
+        for h in hybrid_search(session, embedder, query, k=k, filters=f):
+            typer.echo(f"{h.score:.4f}  [{h.tier}]  {h.title}\n        {h.url}")
+    finally:
+        session.close()

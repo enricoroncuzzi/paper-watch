@@ -76,3 +76,50 @@ def test_ingest_prints_the_skip_and_exits_zero(monkeypatch: pytest.MonkeyPatch) 
     result = CliRunner().invoke(cli.app, ["ingest", "--live"])
     assert result.exit_code == 0
     assert "skip" in result.output.lower()
+
+
+def test_search_is_a_subcommand_and_requires_live() -> None:
+    result = CliRunner().invoke(app, ["search", "SWE-bench"])
+    assert result.exit_code == 2 and "pass --live" in result.output
+
+
+def test_search_rejects_a_blank_query_and_an_unknown_tier() -> None:
+    # Both must be usage errors (exit 2) raised before any model or connection is built.
+    blank = CliRunner().invoke(app, ["search", "   ", "--live"])
+    assert blank.exit_code == 2 and "blank" in blank.output.lower()
+    tier = CliRunner().invoke(app, ["search", "SWE-bench", "--live", "--tier", "bogus"])
+    assert tier.exit_code == 2 and "tier" in tier.output.lower()
+
+
+def test_live_search_builds_only_the_embedder_and_prints_hits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    built: list[str] = []
+
+    def fake_embedder(settings: object, ledger: object) -> object:
+        built.append("embedder")
+        return object()
+
+    def fake_classifier(*args: object, **kwargs: object) -> object:
+        built.append("classifier")
+        return object()
+
+    closed: list[bool] = []
+    session = SimpleNamespace(close=lambda: closed.append(True))
+    monkeypatch.setattr(cli, "make_embedder", fake_embedder)
+    monkeypatch.setattr(cli, "make_classifier", fake_classifier)
+    monkeypatch.setattr(cli, "make_engine", lambda url: object())
+    monkeypatch.setattr(cli, "make_session_factory", lambda engine: lambda: session)
+    monkeypatch.setattr(
+        cli,
+        "hybrid_search",
+        lambda *args, **kwargs: [
+            SimpleNamespace(score=0.5, tier="vetted_preprint", title="A title", url="https://x/1")
+        ],
+    )
+    result = CliRunner().invoke(cli.app, ["search", "SWE-bench", "--live"])
+    assert result.exit_code == 0
+    assert "A title" in result.output and "https://x/1" in result.output
+    # Search builds only the embedder (never the classifier) and closes its session.
+    assert built == ["embedder"]
+    assert closed == [True]

@@ -20,6 +20,11 @@ from paperwatch.store.models import ADMITTED_SQL, Item
 
 @dataclass(frozen=True)
 class Filters:
+    """Narrow the candidates of both branches. None means no filter; an empty
+
+    frozenset matches nothing (the filter is applied, and no value is in it).
+    """
+
     tiers: frozenset[str] | None = None
     profiles: frozenset[str] | None = None
     since: datetime | None = None
@@ -38,14 +43,15 @@ class Hit:
 
 
 def _filtered(stmt: Select[Any], f: Filters) -> Select[Any]:
-    # Written as literal SQL identical to the partial index's predicate: a bound parameter
-    # (status = $1) does not let Postgres prove the match under a cached generic plan.
+    # A literal predicate, identical to the partial index's, keeps a constant the planner
+    # can match to the index (a bound parameter is not provably equal under a cached plan).
     stmt = stmt.where(text(f"items.{ADMITTED_SQL}"))
-    if f.tiers:
+    # `is not None`, not truthiness: an empty frozenset is a filter that matches nothing.
+    if f.tiers is not None:
         stmt = stmt.where(Item.tier.in_(f.tiers))
-    if f.profiles:
+    if f.profiles is not None:
         stmt = stmt.where(Item.profile.in_(f.profiles))
-    if f.since:
+    if f.since is not None:
         stmt = stmt.where(Item.published_at >= f.since)
     return stmt
 
@@ -54,7 +60,9 @@ _NO_FILTERS = Filters()
 
 
 def vector_query(qvec: list[float], filters: Filters, limit: int) -> Select[Any]:
-    # Separate so a test can EXPLAIN exactly the statement search runs.
+    # Separate so a test can EXPLAIN exactly the statement search runs. A secondary sort key
+    # here would stop the planner using the partial HNSW index, so the distance order is left
+    # alone; strict_order keeps its exact order and the fusion breaks its remaining ties.
     return _filtered(
         select(Item.id).order_by(Item.embedding.cosine_distance(qvec)).limit(limit), filters
     )
@@ -73,6 +81,21 @@ def hybrid_search(
         raise ValueError("query must not be blank")
     if k < 1:
         raise ValueError("k must be >= 1")
+    if candidates < 1:
+        raise ValueError("candidates must be >= 1")
+    if rrf_k < 0:
+        raise ValueError("rrf_k must be >= 0")
+    # An HNSW scan returns at most hnsw.ef_search rows and applies other filters after the
+    # scan, so a large or filtered candidate set would under-fill. Transaction-local settings
+    # widen the scan to `candidates` and let iterative_scan fetch more when a filter rejects a
+    # row; strict_order keeps the exact distance order that RRF's ranks rely on.
+    session.execute(
+        text(
+            "SELECT set_config('hnsw.ef_search', :n, true), "
+            "set_config('hnsw.iterative_scan', 'strict_order', true)"
+        ),
+        {"n": str(max(candidates, 40))},
+    )
     qvec = embedder.embed([query])[0]
     vec_ids = list(session.scalars(vector_query(qvec, filters, candidates)))
     tsq = func.websearch_to_tsquery("english", query)
@@ -81,7 +104,7 @@ def hybrid_search(
             _filtered(
                 select(Item.id)
                 .where(Item.tsv.op("@@")(tsq))
-                .order_by(func.ts_rank_cd(Item.tsv, tsq).desc())
+                .order_by(func.ts_rank_cd(Item.tsv, tsq).desc(), Item.id)
                 .limit(candidates),
                 filters,
             )
@@ -91,7 +114,8 @@ def hybrid_search(
     for ranked in (vec_ids, txt_ids):
         for rank, item_id in enumerate(ranked, start=1):
             scores[item_id] = scores.get(item_id, 0.0) + 1.0 / (rrf_k + rank)
-    top = sorted(scores, key=lambda i: scores[i], reverse=True)[:k]
+    # Item.id breaks equal-score ties, so the fused order is deterministic too.
+    top = sorted(scores, key=lambda i: (-scores[i], str(i)))[:k]
     rows = {r.id: r for r in session.scalars(select(Item).where(Item.id.in_(top)))}
     return [_hit(rows[i], scores[i]) for i in top]
 
