@@ -1,1 +1,1 @@
-"""Retrieval evals; the harness and data arrive in Task 11."""
+"""Evals: retrieval quality and relevance calibration, each on a committed labelled set."""

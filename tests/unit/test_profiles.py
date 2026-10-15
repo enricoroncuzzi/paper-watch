@@ -1,9 +1,11 @@
 """Topic profile loading: the description and threshold the embedding classifier depends on."""
 
+import json
 from pathlib import Path
 
 import pytest
 
+from paperwatch.config import LOCAL_EMBEDDING_MODEL
 from paperwatch.domain import load_profiles
 
 
@@ -16,10 +18,38 @@ def _write(tmp_path: Path, extra: str) -> Path:
     return path
 
 
-def test_committed_profiles_carry_a_description_and_the_scout_threshold() -> None:
+def test_committed_profiles_pin_the_calibrated_descriptions_and_thresholds() -> None:
+    # A description and its threshold are calibrated together, so changing either is a
+    # recalibration (python -m evals.relevance_eval --write) that updates this test on purpose.
     profiles = load_profiles(Path("config/profiles.yaml"))
-    assert [p.name for p in profiles] == ["agentic-engineering", "ai-forensics", "ml-architectures"]
-    assert all(p.description and p.relevance_threshold == 0.81 for p in profiles)
+    assert [(p.name, p.description, p.relevance_threshold) for p in profiles] == [
+        (
+            "agentic-engineering",
+            "Building, evaluating or analysing LLM agents: agent harnesses, tool use, multi-agent "
+            "systems, coding agents, agent memory and planning, agent benchmarks and evaluation, "
+            "and bots.",
+            0.813,
+        ),
+        (
+            "ai-forensics",
+            "Detecting, attributing, watermarking or tracing the provenance of synthetic or "
+            "manipulated media: deepfake detection, AI-generated image, audio, video and text "
+            "detection, and watermarking of generated content.",
+            0.799,
+        ),
+        (
+            "ml-architectures",
+            "A new neural network architecture or building block for deep learning models: "
+            "attention mechanisms, linear attention and recurrent memory, state space models, "
+            "mixture-of-experts layers and routing, positional encodings, and looped or hybrid "
+            "transformer designs.",
+            0.816,
+        ),
+    ]
+    # Provenance: the run that chose these thresholds, with which model, on which data.
+    baseline = json.loads(Path("evals/relevance_baseline.json").read_text())
+    assert (baseline["calibrated_on"], baseline["model"]) == ("2026-10-13", LOCAL_EMBEDDING_MODEL)
+    assert baseline["thresholds"] == {p.name: p.relevance_threshold for p in profiles}
 
 
 def test_description_is_stripped_and_threshold_read_as_float(tmp_path: Path) -> None:

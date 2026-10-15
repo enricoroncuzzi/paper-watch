@@ -33,6 +33,7 @@ With the database running and migrated (above):
 uv run paperwatch ingest --live              # fetch, classify, admit and embed new items
 uv run paperwatch search "agent memory" --live  # hybrid retrieval over the corpus
 uv run paperwatch eval                       # retrieval metrics against the committed baseline
+uv run python -m evals.relevance_eval        # recalibrate relevance thresholds
 ```
 
 The eval runs in a uniquely named throwaway database on the configured server: it creates it,
@@ -47,6 +48,11 @@ The live commands need no API key: embeddings and the relevance classifier run l
 pinned `ibm-granite/granite-embedding-small-english-r2` model (384 dimensions, about 180 MB
 downloaded once on first use). Set `PW_LOCAL_EMBEDDING_CACHE_DIR` to a persistent directory to
 keep that download, for example one baked into a deployed image.
+
+`relevance_eval` recalibrates the relevance thresholds after changing a profile description or the
+embedding model (`--write` updates `config/profiles.yaml` and `evals/relevance_baseline.json`). The
+labelled abstracts and their criteria are in `evals/data/relevance/`; the real-model gate runs in
+the `model-evals` workflow.
 
 **CV line (true as of M1):** Built a tiered AI-research corpus with hybrid (pgvector + full-text)
 retrieval and retrieval evals.
