@@ -5,16 +5,25 @@
 {"question": "AgentBench autonomous systems evaluation", "relevant": ["ag-05"], "kind": "exact_name"}
 {"question": "Model Context Protocol tool servers", "relevant": ["ag-08"], "kind": "exact_name"}
 {"question": "Plan-and-Solve decomposed planning steps", "relevant": ["ag-09"], "kind": "exact_name"}
-{"question": "prompt injection defence untrusted content instructions", "relevant": ["ag-16"], "kind": "exact_name"}
+{"question": "How do you keep instructions hidden inside a web page from being obeyed?", "relevant": ["ag-16"], "kind": "paraphrase"}
 {"question": "How do you stop a program from touching files it should not read or write?", "relevant": ["ag-06"], "kind": "paraphrase"}
 {"question": "What keeps an assistant from spending past its allowance on paid requests?", "relevant": ["ag-11"], "kind": "paraphrase"}
 {"question": "A risky step waits until a person agrees before it continues", "relevant": ["ag-12"], "kind": "paraphrase"}
 {"question": "How does an assistant click and scroll through a changing page and recover?", "relevant": ["ag-07"], "kind": "paraphrase"}
 {"question": "Why do assistants drift away from their goal during extended runs?", "relevant": ["ag-14"], "kind": "paraphrase"}
 {"question": "How does a system fetch useful passages before the model answers?", "relevant": ["ag-17"], "kind": "paraphrase"}
-{"question": "Watermarking generated text provenance detector", "relevant": ["af-02"], "kind": "exact_name"}
+{"question": "How can a hidden signal in machine output be recovered later?", "relevant": ["af-02"], "kind": "paraphrase"}
 {"question": "Can a program tell that a picture was produced by a generator?", "relevant": ["af-01"], "kind": "paraphrase"}
 {"question": "Spotting fake voices from people the checker has never heard", "relevant": ["af-04"], "kind": "paraphrase"}
 {"question": "RoPE positional encodings context length", "relevant": ["ml-04"], "kind": "exact_name"}
 {"question": "A system that reads a sequence with a fixed amount of memory", "relevant": ["ml-02"], "kind": "paraphrase"}
 {"question": "Why do rare words get chopped into smaller pieces?", "relevant": ["ml-06"], "kind": "paraphrase"}
+{"question": "What is it about NimbusBench for me?", "relevant": ["dc-01"], "kind": "exact_name"}
+{"question": "What is it about PilotEval for me?", "relevant": ["dc-02"], "kind": "exact_name"}
+{"question": "What is it about LedgerGuard for me?", "relevant": ["dc-03"], "kind": "exact_name"}
+{"question": "llama 3.1 8b", "relevant": ["nm-01"], "kind": "exact_name"}
+{"question": "qwen 2.5", "relevant": ["nm-02"], "kind": "exact_name"}
+{"question": "RAG agentic", "relevant": ["nm-03"], "kind": "exact_name"}
+{"question": "ToolBench and AgentBench evaluation suites", "relevant": ["ag-02", "ag-05"], "kind": "exact_name"}
+{"question": "How robust are hidden marks against compression?", "relevant": ["af-02", "af-05"], "kind": "paraphrase"}
+{"question": "NimbusBench or long tool chains", "relevant": ["dc-01"], "kind": "exact_name"}

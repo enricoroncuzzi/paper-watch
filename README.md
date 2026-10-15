@@ -35,6 +35,10 @@ uv run paperwatch search "agent memory" --live  # hybrid retrieval over the corp
 uv run paperwatch eval                       # retrieval metrics against the committed baseline
 ```
 
+The eval seeds its own synthetic corpus and needs an empty database (or the CI service): it
+refuses a store that already holds other items, so a populated development database cannot report
+a false regression.
+
 The live commands need no API key: embeddings and the relevance classifier run locally with the
 pinned `ibm-granite/granite-embedding-small-english-r2` model (384 dimensions, about 180 MB
 downloaded once on first use). Set `PW_LOCAL_EMBEDDING_CACHE_DIR` to a persistent directory to

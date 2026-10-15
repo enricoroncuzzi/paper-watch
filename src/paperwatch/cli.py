@@ -30,6 +30,11 @@ SEARCH_LIVE = typer.Option(
 )
 K = typer.Option(10, min=1)
 _TIER_VALUES = frozenset(t.value for t in Tier)
+# The repository root: this module is src/paperwatch/cli.py, so parents[2] is the root. Data paths
+# resolve from here, not the current directory, so `paperwatch eval` works from any directory.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_EVAL_DATA = _REPO_ROOT / "evals" / "data"
+_BASELINE_PATH = _REPO_ROOT / "evals" / "baseline.json"
 
 
 @app.callback()
@@ -140,10 +145,10 @@ def eval_cmd(
     import json
     import sys
 
-    # src/paperwatch/cli.py: parents[2] is the repository root. The console script's path
-    # contains src, not the root, so the top-level evals package is invisible without this.
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-    from evals.retrieval_eval import OVERALL, evaluate, gate
+    # The console script's path contains src, not the repository root, so the top-level evals
+    # package is invisible without adding the root (the same base the data paths use).
+    sys.path.insert(0, str(_REPO_ROOT))
+    from evals.retrieval_eval import GATED, DatabaseNotEmpty, evaluate, gate
 
     s = get_settings()
     session = make_session_factory(make_engine(s.database_url))()
@@ -151,20 +156,23 @@ def eval_cmd(
         m = evaluate(
             session,
             FakeEmbedder(),
-            Path("evals/data/corpus.jsonl"),
-            Path("evals/data/questions.jsonl"),
+            _EVAL_DATA / "corpus.jsonl",
+            _EVAL_DATA / "questions.jsonl",
         )
+    except DatabaseNotEmpty as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(2) from exc
     finally:
-        # The eval only reads back its own seeded rows; roll them back so the database is untouched.
+        # The eval seeds items only to rank them; roll them back so the database is untouched.
         session.rollback()
         session.close()
     typer.echo(json.dumps(m, indent=2))
     if write_baseline:
-        # Only the overall metrics are committed: the gate compares exactly these keys.
-        baseline = {name: m[name] for name in OVERALL}
-        Path("evals/baseline.json").write_text(json.dumps(baseline, indent=2) + "\n")
+        # Only the gated metrics are committed: the gate validates exactly these keys.
+        baseline = {name: m[name] for name in GATED}
+        _BASELINE_PATH.write_text(json.dumps(baseline, indent=2) + "\n")
         return
-    failures = gate(m, json.loads(Path("evals/baseline.json").read_text()))
+    failures = gate(m, json.loads(_BASELINE_PATH.read_text()))
     for fail in failures:
         typer.echo(f"REGRESSION: {fail}")
     raise typer.Exit(1 if failures else 0)

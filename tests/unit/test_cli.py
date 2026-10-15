@@ -1,9 +1,13 @@
+import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from typer.testing import CliRunner
 
+import evals.retrieval_eval as retrieval_eval
+from evals.retrieval_eval import GATED, DatabaseNotEmpty
 from paperwatch import cli
 from paperwatch.cli import app
 from paperwatch.retrieval.hybrid import Filters
@@ -146,3 +150,50 @@ def test_search_help_does_not_mention_sources() -> None:
     result = CliRunner().invoke(app, ["search", "--help"])
     assert result.exit_code == 0
     assert "sources" not in result.output.lower()
+
+
+def _stub_eval(monkeypatch: pytest.MonkeyPatch, evaluate_fn: object) -> None:
+    # The command builds an engine and a session; stub both so no database is touched.
+    session = SimpleNamespace(rollback=lambda: None, close=lambda: None)
+    monkeypatch.setattr(cli, "make_engine", lambda url: object())
+    monkeypatch.setattr(cli, "make_session_factory", lambda engine: lambda: session)
+    monkeypatch.setattr(retrieval_eval, "evaluate", evaluate_fn)
+
+
+def test_eval_passes_when_the_gate_holds(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_eval(monkeypatch, lambda *args, **kwargs: {name: 1.0 for name in GATED})
+    monkeypatch.setattr(retrieval_eval, "gate", lambda metrics, baseline: [])
+    result = CliRunner().invoke(app, ["eval"])
+    assert result.exit_code == 0
+
+
+def test_eval_reports_a_regression_and_exits_one(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_eval(monkeypatch, lambda *args, **kwargs: {name: 1.0 for name in GATED})
+    monkeypatch.setattr(
+        retrieval_eval, "gate", lambda metrics, baseline: ["recall_at_k dropped from 0.8 to 0.5"]
+    )
+    result = CliRunner().invoke(app, ["eval"])
+    assert result.exit_code == 1
+    assert "REGRESSION: recall_at_k dropped from 0.8 to 0.5" in result.output
+
+
+def test_eval_write_baseline_writes_only_the_gated_keys(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # The written baseline must hold exactly the gated keys, because gate validates that set.
+    _stub_eval(monkeypatch, lambda *args, **kwargs: {name: 1.0 for name in GATED})
+    monkeypatch.setattr(cli, "_BASELINE_PATH", tmp_path / "baseline.json")
+    result = CliRunner().invoke(app, ["eval", "--write-baseline"])
+    assert result.exit_code == 0
+    written = json.loads((tmp_path / "baseline.json").read_text())
+    assert set(written) == set(GATED)
+
+
+def test_eval_refuses_a_non_empty_database(monkeypatch: pytest.MonkeyPatch) -> None:
+    def refuse(*args: object, **kwargs: object) -> object:
+        raise DatabaseNotEmpty("the eval needs an empty database or the CI service")
+
+    _stub_eval(monkeypatch, refuse)
+    result = CliRunner().invoke(app, ["eval"])
+    assert result.exit_code == 2
+    assert "empty database" in result.output
