@@ -43,10 +43,16 @@ _TIER_VALUES = frozenset(t.value for t in Tier)
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _EVAL_DATA = _REPO_ROOT / "evals" / "data"
 _BASELINE_PATH = _REPO_ROOT / "evals" / "baseline.json"
-# The throwaway database's name: the generator in `_with_throwaway_database`, the sweep's SQL
-# pattern and the sweep's Python parse all describe this one shape, so they stay in step. The
-# first group is the creation epoch, which is what makes a leftover recognisable as stale.
-_EVAL_DB_RE = re.compile(r"^paperwatch_eval_([0-9]+)_[0-9a-f]{32}$")
+# The throwaway database's name. The name is built only through `_eval_db_name`, and the sweep's
+# SQL pattern and Python parse both use `_EVAL_DB_RE`, so the generator and the matcher cannot
+# drift apart. The first group is the creation epoch (10 digits, until the year 2286), which is
+# what makes a leftover recognisable as stale.
+_EVAL_DB_RE = re.compile(r"^paperwatch_eval_([0-9]{10})_[0-9a-f]{32}$")
+
+
+def _eval_db_name(now: float) -> str:
+    # The one place the name is built, so its output always matches `_EVAL_DB_RE`.
+    return f"paperwatch_eval_{int(now)}_{uuid.uuid4().hex}"
 
 
 class EvalDatabaseError(RuntimeError):
@@ -117,7 +123,7 @@ def _with_throwaway_database[T](run: Callable[[Session], T]) -> T:
     # change the vector branch's answers and can end in a false regression. Each eval run gets its
     # own database, so the index always starts clean and is dropped in the finally.
     url = make_url(get_settings().database_url)
-    name = f"paperwatch_eval_{int(time.time())}_{uuid.uuid4().hex}"
+    name = _eval_db_name(time.time())
     admin = make_engine(url.render_as_string(hide_password=False)).execution_options(
         isolation_level="AUTOCOMMIT"
     )

@@ -1,6 +1,7 @@
 """Integration tests for the eval's throwaway database: it is fresh, migrated, used, and dropped."""
 
 import logging
+import socket
 import time
 from pathlib import Path
 from uuid import uuid4
@@ -53,6 +54,9 @@ def test_throwaway_database_is_fresh_and_dropped(
     cli._with_throwaway_database(body)
     configured = make_url(db_url).database
     assert seen[0].startswith("paperwatch_eval_")
+    # The sweep matches `_EVAL_DB_RE`, so the generated names must always fullmatch it.
+    assert cli._EVAL_DB_RE.fullmatch(seen[0])
+    assert cli._EVAL_DB_RE.fullmatch(seen[1])
     assert seen[0] != seen[1]
     assert seen[1] != configured
     remaining = _database_names(db_url)
@@ -217,11 +221,15 @@ def test_sweep_tolerates_a_failing_drop(db_url: str, monkeypatch: pytest.MonkeyP
 
 def test_a_closed_port_says_could_not_reach(
     monkeypatch: pytest.MonkeyPatch,
-) -> (
-    None
-):  # A connection failure is not a missing privilege, so the message must not blame CREATEDB.
+) -> None:
+    # A connection failure is not a missing privilege, so the message must not blame CREATEDB.
+    # Bind a socket to get a free port, then close it: nothing listens there, so the connect is
+    # refused, and no hard-coded port can ever be in use by accident.
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
     _settings_for(
-        monkeypatch, "postgresql+psycopg://paperwatch:paperwatch@localhost:55999/paperwatch"
+        monkeypatch, f"postgresql+psycopg://paperwatch:paperwatch@localhost:{port}/paperwatch"
     )
     with pytest.raises(cli.EvalDatabaseError) as info:
         cli._with_throwaway_database(lambda session: None)

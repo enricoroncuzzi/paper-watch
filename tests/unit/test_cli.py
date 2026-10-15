@@ -238,3 +238,13 @@ def test_eval_names_the_createdb_privilege_when_it_cannot_create(
     result = CliRunner().invoke(app, ["eval"])
     assert result.exit_code == 2
     assert "CREATEDB" in result.stderr
+
+
+def test_eval_db_name_always_matches_the_sweep_pattern() -> None:
+    # The sweep drops names matching `_EVAL_DB_RE`, so the generator must always fullmatch it; a
+    # changed separator, a dashed uuid or a millisecond epoch would silently stop the sweep.
+    name = cli._eval_db_name(1792070000.0)
+    assert cli._EVAL_DB_RE.fullmatch(name)
+    assert name.startswith("paperwatch_eval_1792070000_")
+    # A fractional `now` is truncated to whole seconds, keeping the 10-digit epoch group.
+    assert cli._EVAL_DB_RE.fullmatch(cli._eval_db_name(1792070000.987))
