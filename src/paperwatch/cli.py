@@ -11,6 +11,7 @@ from paperwatch.llm.classifier import Classifier, make_classifier
 from paperwatch.llm.embedder import Embedder, make_embedder
 from paperwatch.llm.ledger import Ledger
 from paperwatch.logging import configure_logging
+from paperwatch.retrieval.hybrid import Filters, hybrid_search
 from paperwatch.sources.arxiv import ArxivSource
 from paperwatch.sources.base import make_http_client
 from paperwatch.sources.feeds import FeedSource, load_feeds
@@ -95,3 +96,21 @@ def ingest(live: bool = LIVE, since: str | None = SINCE) -> None:
         raise typer.Exit(0)
     typer.echo(f"{res.status}: {res.counts} tokens={res.tokens}")
     raise typer.Exit(0 if res.status in {"succeeded", "partial"} else 1)
+
+
+@app.command()
+def search(
+    query: str,
+    k: int = 10,
+    tier: list[str] | None = TIERS,
+    profile: list[str] | None = PROFILES_OPT,
+    live: bool = LIVE,
+) -> None:
+    _require_live(live)
+    s = get_settings()
+    # Only the embedder: building the classifier would embed every profile description for nothing.
+    embedder = make_embedder(s, Ledger(s.max_tokens_per_run))
+    session = make_session_factory(make_engine(s.database_url))()
+    f = Filters(frozenset(tier) if tier else None, frozenset(profile) if profile else None)
+    for h in hybrid_search(session, embedder, query, k=k, filters=f):
+        typer.echo(f"{h.score:.4f}  [{h.tier}]  {h.title}\n        {h.url}")

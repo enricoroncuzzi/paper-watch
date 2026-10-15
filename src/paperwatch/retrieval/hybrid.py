@@ -1,0 +1,103 @@
+"""Hybrid search over the corpus: vector similarity and full-text, fused with RRF.
+
+The vector branch runs cosine distance over the partial HNSW index and the text branch ranks
+Postgres full-text matches; their ranked id lists are fused with Reciprocal Rank Fusion, which
+needs no score calibration between the two systems. Filters shape the candidates inside both
+queries, and only admitted items are searchable.
+"""
+
+import uuid
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Any
+
+from sqlalchemy import Select, func, select, text
+from sqlalchemy.orm import Session
+
+from paperwatch.llm.embedder import Embedder
+from paperwatch.store.models import ADMITTED_SQL, Item
+
+
+@dataclass(frozen=True)
+class Filters:
+    tiers: frozenset[str] | None = None
+    profiles: frozenset[str] | None = None
+    since: datetime | None = None
+
+
+@dataclass(frozen=True)
+class Hit:
+    item_id: uuid.UUID
+    title: str
+    url: str
+    tier: str
+    # The admission rule behind the tier (AdmissionBasis value), e.g. "lab_author".
+    basis: str
+    score: float
+    snippet: str
+
+
+def _filtered(stmt: Select[Any], f: Filters) -> Select[Any]:
+    # Written as literal SQL identical to the partial index's predicate: a bound parameter
+    # (status = $1) does not let Postgres prove the match under a cached generic plan.
+    stmt = stmt.where(text(f"items.{ADMITTED_SQL}"))
+    if f.tiers:
+        stmt = stmt.where(Item.tier.in_(f.tiers))
+    if f.profiles:
+        stmt = stmt.where(Item.profile.in_(f.profiles))
+    if f.since:
+        stmt = stmt.where(Item.published_at >= f.since)
+    return stmt
+
+
+_NO_FILTERS = Filters()
+
+
+def vector_query(qvec: list[float], filters: Filters, limit: int) -> Select[Any]:
+    # Separate so a test can EXPLAIN exactly the statement search runs.
+    return _filtered(
+        select(Item.id).order_by(Item.embedding.cosine_distance(qvec)).limit(limit), filters
+    )
+
+
+def hybrid_search(
+    session: Session,
+    embedder: Embedder,
+    query: str,
+    k: int = 10,
+    filters: Filters = _NO_FILTERS,
+    candidates: int = 50,
+    rrf_k: int = 60,
+) -> list[Hit]:
+    if not query.strip():
+        raise ValueError("query must not be blank")
+    if k < 1:
+        raise ValueError("k must be >= 1")
+    qvec = embedder.embed([query])[0]
+    vec_ids = list(session.scalars(vector_query(qvec, filters, candidates)))
+    tsq = func.websearch_to_tsquery("english", query)
+    txt_ids = list(
+        session.scalars(
+            _filtered(
+                select(Item.id)
+                .where(Item.tsv.op("@@")(tsq))
+                .order_by(func.ts_rank_cd(Item.tsv, tsq).desc())
+                .limit(candidates),
+                filters,
+            )
+        )
+    )
+    scores: dict[uuid.UUID, float] = {}
+    for ranked in (vec_ids, txt_ids):
+        for rank, item_id in enumerate(ranked, start=1):
+            scores[item_id] = scores.get(item_id, 0.0) + 1.0 / (rrf_k + rank)
+    top = sorted(scores, key=lambda i: scores[i], reverse=True)[:k]
+    rows = {r.id: r for r in session.scalars(select(Item).where(Item.id.in_(top)))}
+    return [_hit(rows[i], scores[i]) for i in top]
+
+
+def _hit(row: Item, score: float) -> Hit:
+    # Only admitted rows are searchable, and the check constraints give every admitted row a
+    # tier and a basis; the assert narrows the column types for mypy and guards that invariant.
+    assert row.tier is not None and row.admission_basis is not None
+    return Hit(row.id, row.title, row.url, row.tier, row.admission_basis, score, row.text[:300])

@@ -1,0 +1,5 @@
+# RAG retrieval and hybrid search
+
+Retrieval-augmented generation answers from text retrieved at question time, so the quality ceiling is set by retrieval, not by the model. Vector search finds meaning ("tools for autonomous coding") but blurs exact names ("SWE-bench", "Qwen3"); keyword search finds exact names but misses paraphrase. Hybrid search runs both and fuses the two ranked lists with Reciprocal Rank Fusion: each item scores the sum of 1/(60 + rank) over the lists it appears in. RRF needs no score calibration between the two systems, which is why it is the standard first fusion method. Filters (tier, profile, date) are applied inside both queries so they shape the candidates, not just the final list. Only admitted items are searchable: candidates and irrelevant items live in the same table without an embedding, and the vector index covers admitted rows only.
+
+The implementation is `src/paperwatch/retrieval/hybrid.py`, run by `paperwatch search QUERY --live` and covered by `tests/integration/test_hybrid.py`, which pins the fusion, the filters, the two rejection paths and the partial-index match.

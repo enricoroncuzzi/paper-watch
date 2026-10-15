@@ -25,8 +25,8 @@ def db_url() -> Iterator[str]:
 
 @pytest.fixture(scope="session")
 def engine(db_url: str) -> Iterator[Engine]:
-    # One engine for the whole session: a fresh engine per test (as `db_session` used to build)
-    # leaves each pool undisposed. Disposing after the last test closes every connection.
+    # One engine for the whole session: a fresh engine per test would leave each pool
+    # undisposed. Disposing after the last test closes every connection.
     eng = make_engine(db_url)
     yield eng
     eng.dispose()
