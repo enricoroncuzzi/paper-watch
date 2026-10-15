@@ -1,7 +1,13 @@
+import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
 import typer
+from sqlalchemy import Engine, text
+from sqlalchemy.engine import make_url
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session
 
 from paperwatch.admission import load_admission
 from paperwatch.config import get_settings
@@ -35,6 +41,65 @@ _TIER_VALUES = frozenset(t.value for t in Tier)
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _EVAL_DATA = _REPO_ROOT / "evals" / "data"
 _BASELINE_PATH = _REPO_ROOT / "evals" / "baseline.json"
+
+
+class EvalDatabaseError(RuntimeError):
+    """The throwaway eval database could not be created, migrated, or reached."""
+
+
+def _create_database(engine: Engine, name: str) -> None:
+    with engine.connect() as conn:
+        conn.execute(text(f'CREATE DATABASE "{name}"'))
+
+
+def _drop_database(engine: Engine, name: str) -> None:
+    # FORCE disconnects any lingering session (Postgres 13+), so the drop cannot hang or fail.
+    with engine.connect() as conn:
+        conn.execute(text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
+
+
+def _upgrade_schema(url: str) -> None:
+    from alembic import command
+    from alembic.config import Config
+
+    cfg = Config(str(_REPO_ROOT / "alembic.ini"))
+    cfg.set_main_option("sqlalchemy.url", url)
+    command.upgrade(cfg, "head")
+
+
+def _with_throwaway_database[T](run: Callable[[Session], T]) -> T:
+    # A rolled-back seed leaves dead HNSW entries behind, so dozens of runs on one database slowly
+    # change the vector branch's answers and can end in a false regression. Each eval run gets its
+    # own database, so the index always starts clean and is dropped in the finally.
+    url = make_url(get_settings().database_url)
+    name = f"paperwatch_eval_{uuid.uuid4().hex}"
+    admin = make_engine(url.render_as_string(hide_password=False)).execution_options(
+        isolation_level="AUTOCOMMIT"
+    )
+    try:
+        _create_database(admin, name)
+    except SQLAlchemyError as exc:
+        admin.dispose()
+        raise EvalDatabaseError(
+            f"could not create the throwaway eval database ({exc}); "
+            "the database role needs the CREATEDB privilege"
+        ) from exc
+    try:
+        temp_url = url.set(database=name).render_as_string(hide_password=False)
+        _upgrade_schema(temp_url)
+        engine = make_engine(temp_url)
+        try:
+            session = make_session_factory(engine)()
+            try:
+                return run(session)
+            finally:
+                session.rollback()
+                session.close()
+        finally:
+            engine.dispose()
+    finally:
+        _drop_database(admin, name)
+        admin.dispose()
 
 
 @app.callback()
@@ -150,22 +215,20 @@ def eval_cmd(
     sys.path.insert(0, str(_REPO_ROOT))
     from evals.retrieval_eval import GATED, DatabaseNotEmpty, evaluate, gate
 
-    s = get_settings()
-    session = make_session_factory(make_engine(s.database_url))()
-    try:
-        m = evaluate(
+    def run(session: Session) -> dict[str, float]:
+        return evaluate(
             session,
             FakeEmbedder(),
             _EVAL_DATA / "corpus.jsonl",
             _EVAL_DATA / "questions.jsonl",
         )
-    except DatabaseNotEmpty as exc:
-        typer.echo(str(exc))
+
+    try:
+        m = _with_throwaway_database(run)
+    except (DatabaseNotEmpty, EvalDatabaseError) as exc:
+        # A refusal is an error, so it goes to stderr rather than into the metrics stream.
+        typer.echo(str(exc), err=True)
         raise typer.Exit(2) from exc
-    finally:
-        # The eval seeds items only to rank them; roll them back so the database is untouched.
-        session.rollback()
-        session.close()
     typer.echo(json.dumps(m, indent=2))
     if write_baseline:
         # Only the gated metrics are committed: the gate validates exactly these keys.

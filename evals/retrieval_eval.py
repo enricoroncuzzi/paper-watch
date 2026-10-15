@@ -116,22 +116,30 @@ def evaluate(
     for q in qs:
         relevant = set(q["relevant"])
         kind = q["kind"]
-        # The hybrid list is the production path; the branch lists are the same public queries it
-        # fuses, so a regression in either branch (or its ordering) shows up on its own.
+        # Request one extra hybrid hit: a tie at the k-th place would make the top k depend on the
+        # fusion's random-id tie-break, so the eval refuses to score a question that ties there.
+        hits = hybrid.hybrid_search(session, embedder, q["question"], k=k + 1)
+        scores = [round(h.score, 12) for h in hits]
+        if len(scores) != len(set(scores)):
+            raise ValueError(
+                f"fused scores tie within the top {k + 1} for {q['question']!r}; "
+                "change the question or the data so the ranking is id-independent"
+            )
+        # The branch lists are the same public queries the fusion uses. The vector branch is run
+        # under the same transaction-local settings hybrid_search set (shared helper), not by
+        # luck of call order.
         qvec = embedder.embed([q["question"]])[0]
+        hybrid.set_search_settings(session, k)
+        vector_ranked = [
+            by_item.get(i) for i in session.scalars(hybrid.vector_query(qvec, hybrid.Filters(), k))
+        ]
         branch_lists = {
-            "hybrid": [
-                by_url.get(h.url)
-                for h in hybrid.hybrid_search(session, embedder, q["question"], k=k)
-            ],
+            "hybrid": [by_url.get(h.url) for h in hits[:k]],
             "text_only": [
                 by_item.get(i)
                 for i in session.scalars(hybrid.text_query(q["question"], hybrid.Filters(), k))
             ],
-            "vector_only": [
-                by_item.get(i)
-                for i in session.scalars(hybrid.vector_query(qvec, hybrid.Filters(), k))
-            ],
+            "vector_only": vector_ranked,
         }
         for branch, ranked in branch_lists.items():
             # Hybrid keys carry no suffix; a branch-only key names the branch, then the kind.
@@ -169,7 +177,7 @@ def evaluate(
 
 
 def gate(
-    metrics: dict[str, float], baseline: dict[str, float], tolerance: float = 0.02
+    metrics: dict[str, float], baseline: dict[str, float], tolerance: float = 0.01
 ) -> list[str]:
     # The committed baseline must carry exactly the gated keys, so a metric cannot be added to (or
     # silently dropped from) the gate without a visible diff, and a non-finite metric is refused
@@ -184,7 +192,10 @@ def gate(
     for name in GATED:
         if not math.isfinite(metrics[name]):
             raise ValueError(f"{name} is not finite: {metrics[name]!r}")
-    # A metric may drift down by up to `tolerance` (rounding, a corpus rethink) without failing.
+    # A metric may drift down by up to `tolerance` without failing. With 29+ questions one rank
+    # slip on one question costs about 0.017 MRR/nDCG and one lost relevant hit about 0.017 recall,
+    # so 0.01 fails either; the embedder and the data are deterministic on a fresh database, so the
+    # sharper tolerance cannot flake in CI.
     return [
         f"{name} dropped from {baseline[name]:.3f} to {metrics[name]:.3f}"
         for name in GATED

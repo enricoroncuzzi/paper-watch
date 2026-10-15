@@ -153,10 +153,10 @@ def test_search_help_does_not_mention_sources() -> None:
 
 
 def _stub_eval(monkeypatch: pytest.MonkeyPatch, evaluate_fn: object) -> None:
-    # The command builds an engine and a session; stub both so no database is touched.
+    # The command runs the eval in a throwaway database; stub that with a session so nothing is
+    # created, and stub evaluate so the metrics are fixed.
     session = SimpleNamespace(rollback=lambda: None, close=lambda: None)
-    monkeypatch.setattr(cli, "make_engine", lambda url: object())
-    monkeypatch.setattr(cli, "make_session_factory", lambda engine: lambda: session)
+    monkeypatch.setattr(cli, "_with_throwaway_database", lambda run: run(session))
     monkeypatch.setattr(retrieval_eval, "evaluate", evaluate_fn)
 
 
@@ -180,13 +180,42 @@ def test_eval_reports_a_regression_and_exits_one(monkeypatch: pytest.MonkeyPatch
 def test_eval_write_baseline_writes_only_the_gated_keys(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    # The written baseline must hold exactly the gated keys, because gate validates that set.
-    _stub_eval(monkeypatch, lambda *args, **kwargs: {name: 1.0 for name in GATED})
+    # The stub returns extra keys; the written baseline must hold exactly GATED, because gate
+    # validates that set.
+    _stub_eval(
+        monkeypatch,
+        lambda *args, **kwargs: {**{name: 1.0 for name in GATED}, "text_nonempty": 0.9},
+    )
     monkeypatch.setattr(cli, "_BASELINE_PATH", tmp_path / "baseline.json")
     result = CliRunner().invoke(app, ["eval", "--write-baseline"])
     assert result.exit_code == 0
     written = json.loads((tmp_path / "baseline.json").read_text())
     assert set(written) == set(GATED)
+
+
+def test_eval_data_paths_are_repo_rooted(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # Running from another directory must still find the data, so the paths are absolute and
+    # anchored on the repository root, not the current directory.
+    captured: dict[str, Path] = {}
+
+    def fake_evaluate(
+        session: object, embedder: object, corpus: Path, questions: Path
+    ) -> dict[str, float]:
+        captured["corpus"], captured["questions"] = corpus, questions
+        return {name: 1.0 for name in GATED}
+
+    monkeypatch.setattr(
+        cli,
+        "_with_throwaway_database",
+        lambda run: run(SimpleNamespace(rollback=lambda: None, close=lambda: None)),
+    )
+    monkeypatch.setattr(retrieval_eval, "evaluate", fake_evaluate)
+    monkeypatch.setattr(retrieval_eval, "gate", lambda metrics, baseline: [])
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(app, ["eval"])
+    assert result.exit_code == 0
+    assert captured["corpus"] == cli._REPO_ROOT / "evals" / "data" / "corpus.jsonl"
+    assert captured["questions"] == cli._REPO_ROOT / "evals" / "data" / "questions.jsonl"
 
 
 def test_eval_refuses_a_non_empty_database(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -197,3 +226,15 @@ def test_eval_refuses_a_non_empty_database(monkeypatch: pytest.MonkeyPatch) -> N
     result = CliRunner().invoke(app, ["eval"])
     assert result.exit_code == 2
     assert "empty database" in result.output
+
+
+def test_eval_names_the_createdb_privilege_when_it_cannot_create(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def refuse(run: object) -> object:
+        raise cli.EvalDatabaseError("the database role needs the CREATEDB privilege")
+
+    monkeypatch.setattr(cli, "_with_throwaway_database", refuse)
+    result = CliRunner().invoke(app, ["eval"])
+    assert result.exit_code == 2
+    assert "CREATEDB" in result.output

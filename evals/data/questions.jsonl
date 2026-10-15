@@ -27,3 +27,5 @@
 {"question": "ToolBench and AgentBench evaluation suites", "relevant": ["ag-02", "ag-05"], "kind": "exact_name"}
 {"question": "How robust are hidden marks against compression?", "relevant": ["af-02", "af-05"], "kind": "paraphrase"}
 {"question": "NimbusBench or long tool chains", "relevant": ["dc-01"], "kind": "exact_name"}
+{"question": "PilotEval or browser automation", "relevant": ["dc-02"], "kind": "exact_name"}
+{"question": "LedgerGuard or budget overruns", "relevant": ["dc-03"], "kind": "exact_name"}

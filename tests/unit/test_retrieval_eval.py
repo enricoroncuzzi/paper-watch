@@ -86,10 +86,10 @@ def _corpus() -> list[dict[str, object]]:
 
 def test_dataset_item_and_question_counts() -> None:
     corpus, questions = _corpus(), _questions()
-    assert len(corpus) == 39
-    assert len(questions) == 29
+    assert len(corpus) == 41
+    assert len(questions) == 31
     profiles = {row["external_id"]: row["profile"] for row in corpus}
-    assert sum(p == "agentic-engineering" for p in profiles.values()) == 25
+    assert sum(p == "agentic-engineering" for p in profiles.values()) == 27
     assert sum(p == "ai-forensics" for p in profiles.values()) == 6
     assert sum(p == "ml-architectures" for p in profiles.values()) == 8
 

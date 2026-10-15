@@ -3,6 +3,7 @@
 import json
 from datetime import UTC, datetime
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import false, select
@@ -53,6 +54,40 @@ def test_metrics_in_range_and_gate_passes(db_session: Session) -> None:
     assert set(m) == KEYS
     assert all(0.0 <= v <= 1.0 for v in m.values())
     assert gate(m, json.loads(BASELINE.read_text())) == []
+
+
+def test_metrics_are_pinned_to_the_committed_values(db_session: Session) -> None:
+    m = evaluate(db_session, FakeEmbedder(), CORPUS, QUESTIONS, k=5)
+    baseline = json.loads(BASELINE.read_text())
+    # Two-sided and tight: the fake embedder and the data are deterministic on a fresh database,
+    # so the committed values can be pinned exactly. This kills a metric accumulated with the
+    # wrong helper (for example nDCG or per-kind MRR computed as recall).
+    for name in GATED:
+        assert m[name] == pytest.approx(baseline[name], abs=1e-9)
+    assert m["text_nonempty"] == pytest.approx(15 / 31)
+    assert m["text_nonempty:paraphrase"] == pytest.approx(1 / 13)
+    assert m["recall_at_k:text_only:exact_name"] == pytest.approx(14 / 18)
+    assert m["mrr:paraphrase"] == pytest.approx(7 / 13)
+
+
+def test_evaluate_is_stable_across_two_runs(db_session: Session) -> None:
+    # A second run in the same transaction reuses the seeded rows and must return the same dict.
+    first = evaluate(db_session, FakeEmbedder(), CORPUS, QUESTIONS, k=5)
+    second = evaluate(db_session, FakeEmbedder(), CORPUS, QUESTIONS, k=5)
+    assert first == second
+
+
+def test_a_fused_tie_is_rejected(db_session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A tie at the k-th place would make the top k depend on the fusion's random-id tie-break.
+    def tied(*args: object, **kwargs: object) -> list[hybrid.Hit]:
+        return [
+            hybrid.Hit(uuid4(), "a", "https://x/a", "vetted_preprint", "seed", 1 / 61, "s"),
+            hybrid.Hit(uuid4(), "b", "https://x/b", "vetted_preprint", "seed", 1 / 61, "s"),
+        ]
+
+    monkeypatch.setattr(hybrid, "hybrid_search", tied)
+    with pytest.raises(ValueError, match="tie"):
+        evaluate(db_session, FakeEmbedder(), CORPUS, QUESTIONS, k=5)
 
 
 def test_broken_text_branch_fails_the_gate(
