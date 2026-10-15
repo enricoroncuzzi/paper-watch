@@ -10,7 +10,7 @@ from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from sqlalchemy import and_, case, func, or_, select, update
+from sqlalchemy import and_, case, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -281,18 +281,18 @@ class Repository:
             )
             self._s.flush()
 
-    def fail_open_runs(self) -> None:
+    def fail_open_runs(self, *, at: datetime) -> None:
         # A single-instance daily job closes rows a crash (`kill -9`) left 'running', so the
-        # run table never accumulates rows that look in-flight forever.
+        # run table never accumulates rows that look in-flight forever. The close is stamped
+        # from the run's `now`, like every other business timestamp.
         self._s.execute(
-            update(Run)
-            .where(Run.status == "running")
-            .values(status="failed", finished_at=func.now())
+            update(Run).where(Run.status == "running").values(status="failed", finished_at=at)
         )
         self._s.flush()
 
-    def start_run(self, window_start: datetime, window_end: datetime) -> uuid.UUID:
-        run = Run(window_start=window_start, window_end=window_end, status="running")
+    def start_run(self, window_start: datetime, window_end: datetime, *, at: datetime) -> uuid.UUID:
+        # started_at is the run's `now`, not the database clock: time enters only through `now`.
+        run = Run(window_start=window_start, window_end=window_end, status="running", started_at=at)
         self._s.add(run)
         self._s.flush()
         return run.id
@@ -304,10 +304,12 @@ class Repository:
         counts: dict[str, int],
         tokens: int,
         health: dict[str, object] | None = None,
+        *,
+        at: datetime,
     ) -> None:
         run = self._s.get_one(Run, run_id)
         run.status, run.counts, run.tokens, run.health = status, counts, tokens, health
-        run.finished_at = func.now()
+        run.finished_at = at
         self._s.flush()
 
     def cursor(self, key: str) -> datetime | None:
@@ -380,13 +382,30 @@ class Repository:
             is not None
         )
 
-    def resolve_dead_letter(self, dead_letter_id: int) -> None:
+    def resolve_dead_letter(self, dead_letter_id: int, *, at: datetime) -> None:
         dl = self._s.get_one(DeadLetter, dead_letter_id)
-        dl.resolved_at = func.now()
+        dl.resolved_at = at
         # Resolving means "fixed, try again": a given-up stored item re-enters the re-check.
         item = self._s.scalar(
             select(Item).where(Item.source == dl.source, Item.external_id == dl.ref)
         )
         if item is not None:
             item.admit_attempts, item.last_error = 0, None
+        self._s.flush()
+
+    def resolve_open_dead_letters(self, source: str, ref: str, *, at: datetime) -> None:
+        # A recovered source (or a healthy signal source) closes its own outage letters. Only
+        # letters with a null payload for this exact (source, ref) match: an item letter carries
+        # a payload, and a feed's malformed-entry letters have their own refs, so neither is
+        # closed here. Unlike resolve_dead_letter, this never touches a stored item.
+        self._s.execute(
+            update(DeadLetter)
+            .where(
+                DeadLetter.source == source,
+                DeadLetter.ref == ref,
+                DeadLetter.resolved_at.is_(None),
+                DeadLetter.payload.is_(None),
+            )
+            .values(resolved_at=at)
+        )
         self._s.flush()

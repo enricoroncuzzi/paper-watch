@@ -4,7 +4,7 @@ from pathlib import Path
 from unittest.mock import DEFAULT, MagicMock
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from paperwatch.admission import load_admission
@@ -12,6 +12,7 @@ from paperwatch.config import (
     ARXIV_ANNOUNCEMENT_LAG,
     FEED_OVERLAP,
     HF_RECHECK_HORIZON,
+    INGEST_LOCK_KEY,
     MAX_ITEM_ATTEMPTS,
 )
 from paperwatch.domain import (
@@ -643,7 +644,7 @@ def test_corrupt_dead_letter_payload_is_counted_not_fatal(db_session: Session) -
             raise RuntimeError("model 500")
 
     repo = Repository(db_session)
-    rid = repo.start_run(NOW, NOW + timedelta(days=1))
+    rid = repo.start_run(NOW, NOW + timedelta(days=1), at=NOW)
     # A payload missing a required key, as a bug or an older writer would leave it.
     repo.add_dead_letter(rid, "arxiv", "2510.bad", "corrupt", payload={"source": "arxiv"})
     db_session.commit()
@@ -856,3 +857,116 @@ def test_daily_runs_over_a_week_lose_nothing(db_session: Session) -> None:
     )
     assert admitted == [eid for eid, _, _ in catalogue]
     assert len(db_session.scalars(select(Item).where(Item.source == "feed")).all()) == 1
+
+
+def test_second_run_is_skipped_while_the_lock_is_held(db_session: Session) -> None:
+    repo = Repository(db_session)
+    # A run a hard kill left 'running' must be left untouched by a skipped run.
+    stale = repo.start_run(NOW, NOW + timedelta(days=1), at=NOW)
+    db_session.commit()
+    lock_conn = db_session.get_bind().engine.connect()
+    try:
+        held = lock_conn.scalar(text("SELECT pg_try_advisory_lock(:k)"), {"k": INGEST_LOCK_KEY})
+        assert held is True
+        src = fake_sources([paper("2510.1", "Agent harness")])
+        res = run(db_session, src)
+    finally:
+        lock_conn.scalar(text("SELECT pg_advisory_unlock(:k)"), {"k": INGEST_LOCK_KEY})
+        lock_conn.close()
+    assert res.status == "skipped" and res.run_id is None
+    assert res.counts == {} and res.tokens == 0
+    # No run row was written, the stale row is untouched, and no source was called.
+    assert len(db_session.scalars(select(Run)).all()) == 1
+    assert db_session.get_one(Run, stale).status == "running"
+    assert db_session.get_one(Run, stale).finished_at is None
+    src.arxiv.fetch.assert_not_called()
+    src.feeds.fetch_one.assert_not_called()
+
+
+def test_failed_run_releases_the_lock(db_session: Session) -> None:
+    src = fake_sources([])
+    src.arxiv.fetch.side_effect = SystemExit("killed during fetch")
+    with pytest.raises(SystemExit):
+        run(db_session, src)
+    # The finally released the lock, so a following run is not skipped.
+    src.arxiv.fetch.side_effect = None
+    res = run(db_session, src, now=NOW + timedelta(minutes=1))
+    assert res.status == "succeeded"
+
+
+def test_degraded_signal_letter_is_written_once_and_closed_on_recovery(
+    db_session: Session,
+) -> None:
+    src = fake_sources([paper("2510.1", "Agent harness")])
+    src.s2.degraded, src.s2.failure = True, "HTTP 429 after 5 attempts"
+    for day in range(3):  # three degraded runs leave one open letter, not three
+        res = run(db_session, src, now=NOW + timedelta(days=day))
+        assert res.status == "partial" and res.counts["signal_failures"] == 1
+    letters = db_session.scalars(select(DeadLetter).where(DeadLetter.source == "s2")).all()
+    assert len(letters) == 1 and letters[0].resolved_at is None
+    # The next run reaches Semantic Scholar healthy, so the letter closes.
+    src.s2.degraded, src.s2.failure = False, None
+    res = run(db_session, src, now=NOW + timedelta(days=3))
+    assert res.status == "succeeded" and res.counts["signal_failures"] == 0
+    db_session.refresh(letters[0])
+    assert letters[0].resolved_at == NOW + timedelta(days=3)
+
+
+def test_arxiv_outage_letter_is_written_once_and_closed_on_recovery(db_session: Session) -> None:
+    src = fake_sources([paper("2510.1", "Agent harness")])
+    src.arxiv.fetch.side_effect = RuntimeError("arXiv 503")
+    assert run(db_session, src).status == "partial"
+    assert run(db_session, src, now=NOW + timedelta(days=1)).status == "partial"
+    window = db_session.scalars(
+        select(DeadLetter).where(DeadLetter.source == "arxiv", DeadLetter.ref == "window")
+    ).all()
+    assert len(window) == 1 and window[0].resolved_at is None
+    # A good fetch closes the outage letter.
+    src.arxiv.fetch.side_effect = None
+    src.arxiv.fetch.return_value = [paper("2510.2", "Coding agent")]
+    res = run(db_session, src, now=NOW + timedelta(days=2))
+    assert res.status == "succeeded"
+    db_session.refresh(window[0])
+    assert window[0].resolved_at == NOW + timedelta(days=2)
+
+
+def test_feed_outage_letter_closes_but_a_malformed_entry_stays_open(db_session: Session) -> None:
+    src = fake_sources([paper("2510.1", "Agent harness")])
+    src.feeds.fetch_one.side_effect = RuntimeError("HTTP 503")
+    assert run(db_session, src).status == "partial"
+    assert run(db_session, src, now=NOW + timedelta(days=1)).status == "partial"
+    outage = db_session.scalars(
+        select(DeadLetter).where(DeadLetter.source == "feed", DeadLetter.ref == FEED.url)
+    ).all()
+    assert len(outage) == 1 and outage[0].resolved_at is None
+
+    # The feed answers again but carries one malformed entry.
+    bad = RejectedEntry(source="feed", ref="https://lab.example/p2", error="entry has no title")
+
+    def good_feed(feed: Feed, since: datetime, until: datetime) -> list[SourceItem]:
+        src.feeds.rejected.append(bad)
+        src.feeds.newest[feed.url] = until
+        return [blog("p1")]
+
+    src.feeds.fetch_one.side_effect = good_feed
+    res = run(db_session, src, now=NOW + timedelta(days=2))
+    assert res.counts["malformed"] == 1
+    db_session.refresh(outage[0])
+    assert outage[0].resolved_at == NOW + timedelta(days=2)
+    # The malformed-entry letter has a different ref, so the source-level resolver never closes it.
+    malformed = db_session.scalars(
+        select(DeadLetter).where(DeadLetter.source == "feed", DeadLetter.ref == bad.ref)
+    ).all()
+    assert len(malformed) == 1 and malformed[0].resolved_at is None
+
+
+def test_run_timestamps_come_from_the_run_clock(db_session: Session) -> None:
+    future = NOW + timedelta(days=90)  # far from the wall clock: the run's now, not the database's
+    src = fake_sources([paper("2510.1", "Agent harness")])
+    res = run(db_session, src, now=future)
+    assert res.run_id is not None
+    run_row = db_session.get_one(Run, res.run_id)
+    assert run_row.started_at == future and run_row.finished_at == future
+    # The letter phase 1 parked for the stored paper was resolved with the run's clock.
+    resolved = db_session.scalars(select(DeadLetter).where(DeadLetter.ref == "2510.1")).one()
+    assert resolved.resolved_at == future

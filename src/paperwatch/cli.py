@@ -89,5 +89,9 @@ def ingest(live: bool = LIVE, since: str | None = SINCE) -> None:
         datetime.now(UTC),
         since_override=since_override,
     )
+    if res.status == "skipped":
+        # Another run holds the lock: this invocation did nothing and exits cleanly.
+        typer.echo("skipped: another ingestion run is active")
+        raise typer.Exit(0)
     typer.echo(f"{res.status}: {res.counts} tokens={res.tokens}")
     raise typer.Exit(0 if res.status in {"succeeded", "partial"} else 1)

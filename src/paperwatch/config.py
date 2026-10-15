@@ -43,6 +43,11 @@ HF_RECHECK_HORIZON = timedelta(days=30)
 # Keyless Semantic Scholar: at most this many due papers are looked up per run (25 batches of
 # 500, at least 10 s apart); the most overdue go first and the rest stay due for the next run.
 S2_MAX_PAPERS_PER_RUN = 12_500
+# Single-key Postgres advisory lock (`pg_try_advisory_lock`) that lets one ingestion run at a
+# time: a session-level lock on a dedicated connection survives the run's many commits, so a
+# second overlapping run sees it held and skips instead of closing the first run's row or
+# spending the same token budget. The value is ASCII "PAPRWTCK", arbitrary but fixed.
+INGEST_LOCK_KEY = 0x5041_5052_5754_434B
 
 
 class Settings(BaseSettings):

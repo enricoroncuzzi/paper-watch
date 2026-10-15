@@ -57,3 +57,22 @@ def test_live_ingest_builds_models_through_models(monkeypatch: pytest.MonkeyPatc
     result = CliRunner().invoke(cli.app, ["ingest", "--live"])
     assert result.exit_code == 0
     assert built == {"embedder": True, "classifier": True}
+
+
+def test_ingest_prints_the_skip_and_exits_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Another run holds the lock: the command is a successful no-op, not a failure.
+    monkeypatch.setattr(cli, "make_embedder", lambda settings, ledger: object())
+    monkeypatch.setattr(
+        cli, "make_classifier", lambda settings, ledger, profiles, embedder: object()
+    )
+    monkeypatch.setattr(cli, "make_http_client", lambda settings: object())
+    monkeypatch.setattr(cli, "make_engine", lambda url: object())
+    monkeypatch.setattr(cli, "make_session_factory", lambda engine: lambda: object())
+    monkeypatch.setattr(
+        cli,
+        "run_ingestion",
+        lambda *args, **kwargs: SimpleNamespace(status="skipped", counts={}, tokens=0),
+    )
+    result = CliRunner().invoke(cli.app, ["ingest", "--live"])
+    assert result.exit_code == 0
+    assert "skip" in result.output.lower()

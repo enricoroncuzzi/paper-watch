@@ -191,10 +191,10 @@ def test_recheck_targets_respect_status_horizon_and_attempts(db_session: Session
     assert sorted(t.id for t in targets) == sorted([young, vetted, feed, old_new])
     assert db_session.get_one(Item, poison).last_error == "embedding input too long"
     # A human resolving the item's dead letter puts it back into the re-check.
-    rid = repo.start_run(NOW, NOW)
+    rid = repo.start_run(NOW, NOW, at=NOW)
     repo.add_dead_letter(rid, "arxiv", "poison", "gave up after 3 admission attempts")
     dl_id = db_session.scalars(select(DeadLetter.id).where(DeadLetter.ref == "poison")).one()
-    repo.resolve_dead_letter(dl_id)
+    repo.resolve_dead_letter(dl_id, at=NOW)
     assert poison in {t.id for t in repo.recheck_targets(NOW, timedelta(days=365))}
 
 
@@ -258,9 +258,14 @@ def test_cursor_advances_per_key(db_session: Session) -> None:
 
 def test_finish_run_persists_status_counts_tokens_and_health(db_session: Session) -> None:
     repo = Repository(db_session)
-    run_id = repo.start_run(NOW, NOW + timedelta(days=7))
+    run_id = repo.start_run(NOW, NOW + timedelta(days=7), at=NOW)
     repo.finish_run(
-        run_id, "ok", {"fetched": 3, "admitted": 1}, 1234, {"healthy": True, "problems": []}
+        run_id,
+        "ok",
+        {"fetched": 3, "admitted": 1},
+        1234,
+        {"healthy": True, "problems": []},
+        at=NOW,
     )
     row = db_session.get_one(Run, run_id)
     assert row.status == "ok"
@@ -269,27 +274,69 @@ def test_finish_run_persists_status_counts_tokens_and_health(db_session: Session
     assert row.health == {"healthy": True, "problems": []}
     assert row.finished_at is not None and row.finished_at.tzinfo is not None
     # A later run finished without a verdict stores SQL NULL, not the JSON value null.
-    second = repo.start_run(NOW, NOW + timedelta(days=7))
-    repo.finish_run(second, "partial", {}, 0, None)
+    second = repo.start_run(NOW, NOW + timedelta(days=7), at=NOW)
+    repo.finish_run(second, "partial", {}, 0, None, at=NOW)
     assert db_session.get_one(Run, second).health is None
+
+
+def test_run_clock_stamps_run_and_resolved_letter(db_session: Session) -> None:
+    repo = Repository(db_session)
+    future = NOW + timedelta(days=90)  # far from the wall clock: the run's now, not the database's
+    run_id = repo.start_run(NOW, NOW + timedelta(days=1), at=future)
+    repo.add_dead_letter(run_id, "arxiv", "2510.9", "boom", payload={"external_id": "2510.9"})
+    [(dl_id, _)] = repo.open_item_dead_letters()
+    repo.resolve_dead_letter(dl_id, at=future)
+    repo.finish_run(run_id, "succeeded", {}, 0, None, at=future)
+    row = db_session.get_one(Run, run_id)
+    assert row.started_at == future and row.finished_at == future
+    assert db_session.get_one(DeadLetter, dl_id).resolved_at == future
+
+
+def test_fail_open_runs_uses_the_run_clock(db_session: Session) -> None:
+    repo = Repository(db_session)
+    future = NOW + timedelta(days=90)
+    # A row a hard kill left 'running' is closed with the run's now, not the database clock.
+    run_id = repo.start_run(NOW, NOW, at=NOW)
+    repo.fail_open_runs(at=future)
+    assert db_session.get_one(Run, run_id).finished_at == future
+
+
+def test_resolve_open_dead_letters_closes_only_source_letters(db_session: Session) -> None:
+    repo = Repository(db_session)
+    feed_url = "https://lab.example/feed.xml"
+    later = NOW + timedelta(days=2)
+    run_id = repo.start_run(NOW, NOW + timedelta(days=1), at=NOW)
+    repo.add_dead_letter(run_id, "feed", feed_url, "HTTP 503")  # a source outage: no payload
+    repo.add_dead_letter(run_id, "feed", "https://lab.example/p2", "no title")  # malformed
+    repo.add_dead_letter(run_id, "feed", "p1", "boom", payload={"external_id": "p1"})  # item
+    repo.resolve_open_dead_letters("feed", feed_url, at=later)
+    open_refs = set(
+        db_session.scalars(select(DeadLetter.ref).where(DeadLetter.resolved_at.is_(None)))
+    )
+    # Only the source outage for this exact ref closes; the malformed and item letters stay open.
+    assert open_refs == {"https://lab.example/p2", "p1"}
 
 
 def test_item_dead_letters_open_until_resolved(db_session: Session) -> None:
     repo = Repository(db_session)
-    rid = repo.start_run(datetime(2026, 10, 1, tzinfo=UTC), datetime(2026, 10, 8, tzinfo=UTC))
+    rid = repo.start_run(
+        datetime(2026, 10, 1, tzinfo=UTC), datetime(2026, 10, 8, tzinfo=UTC), at=NOW
+    )
     repo.add_dead_letter(rid, "arxiv", "window", "HTTP 503")  # a source failure, no payload
     repo.add_dead_letter(rid, "arxiv", "2510.7", "boom", payload={"external_id": "2510.7"})
     [(dl_id, payload)] = repo.open_item_dead_letters()
     assert payload["external_id"] == "2510.7"
     assert repo.has_open_dead_letter("arxiv", "2510.7")
-    repo.resolve_dead_letter(dl_id)
+    repo.resolve_dead_letter(dl_id, at=NOW)
     assert repo.open_item_dead_letters() == []
     assert not repo.has_open_dead_letter("arxiv", "2510.7")
 
 
 def test_dead_letter_retries_stop_at_the_attempt_cap(db_session: Session) -> None:
     repo = Repository(db_session)
-    rid = repo.start_run(datetime(2026, 10, 1, tzinfo=UTC), datetime(2026, 10, 8, tzinfo=UTC))
+    rid = repo.start_run(
+        datetime(2026, 10, 1, tzinfo=UTC), datetime(2026, 10, 8, tzinfo=UTC), at=NOW
+    )
     repo.add_dead_letter(rid, "arxiv", "2510.8", "boom", payload={"external_id": "2510.8"})
     [(dl_id, _)] = repo.open_item_dead_letters()
     counts = [repo.record_retry_failure(dl_id, "boom again") for _ in range(MAX_ITEM_ATTEMPTS - 1)]

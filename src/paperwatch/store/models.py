@@ -102,6 +102,8 @@ class Item(Base):
             persisted=True,
         ),
     )
+    # Audit columns, on purpose the database clock (not the run's `now`): they record the real
+    # wall-clock time of the write, while every business timestamp is stamped from `now`.
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -138,6 +140,8 @@ class Run(Base):
     tokens: Mapped[int] = mapped_column(Integer, default=0)
     # Health verdict written when the run finishes: {"healthy": bool, "problems": [...]}.
     health: Mapped[dict[str, object] | None] = mapped_column(JSON(none_as_null=True))
+    # Set from the run's `now` when the run starts, never the database clock; the server default
+    # is only a fallback for a row inserted outside the repository.
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
