@@ -1,0 +1,20 @@
+{"question": "SWE-bench Verified harness for coding agents", "relevant": ["ag-01"], "kind": "exact_name"}
+{"question": "ToolBench function calling benchmark", "relevant": ["ag-02"], "kind": "exact_name"}
+{"question": "AgentCoord multi-agent coordination plan", "relevant": ["ag-03"], "kind": "exact_name"}
+{"question": "MemGPT long-term memory conversation", "relevant": ["ag-04"], "kind": "exact_name"}
+{"question": "AgentBench autonomous systems evaluation", "relevant": ["ag-05"], "kind": "exact_name"}
+{"question": "Model Context Protocol tool servers", "relevant": ["ag-08"], "kind": "exact_name"}
+{"question": "Plan-and-Solve decomposed planning steps", "relevant": ["ag-09"], "kind": "exact_name"}
+{"question": "prompt injection defence untrusted content instructions", "relevant": ["ag-16"], "kind": "exact_name"}
+{"question": "How do you stop a program from touching files it should not read or write?", "relevant": ["ag-06"], "kind": "paraphrase"}
+{"question": "What keeps an assistant from spending past its allowance on paid requests?", "relevant": ["ag-11"], "kind": "paraphrase"}
+{"question": "A risky step waits until a person agrees before it continues", "relevant": ["ag-12"], "kind": "paraphrase"}
+{"question": "How does an assistant click and scroll through a changing page and recover?", "relevant": ["ag-07"], "kind": "paraphrase"}
+{"question": "Why do assistants drift away from their goal during extended runs?", "relevant": ["ag-14"], "kind": "paraphrase"}
+{"question": "How does a system fetch useful passages before the model answers?", "relevant": ["ag-17"], "kind": "paraphrase"}
+{"question": "Watermarking generated text provenance detector", "relevant": ["af-02"], "kind": "exact_name"}
+{"question": "Can a program tell that a picture was produced by a generator?", "relevant": ["af-01"], "kind": "paraphrase"}
+{"question": "Spotting fake voices from people the checker has never heard", "relevant": ["af-04"], "kind": "paraphrase"}
+{"question": "RoPE positional encodings context length", "relevant": ["ml-04"], "kind": "exact_name"}
+{"question": "A system that reads a sequence with a fixed amount of memory", "relevant": ["ml-02"], "kind": "paraphrase"}
+{"question": "Why do rare words get chopped into smaller pieces?", "relevant": ["ml-06"], "kind": "paraphrase"}

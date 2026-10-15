@@ -25,6 +25,24 @@ uv run pytest                 # run the test suite
 
 Configuration comes from `PW_*` environment variables; see [`.env.example`](.env.example).
 
+## M1: what you can do now
+
+With the database running and migrated (above):
+
+```bash
+uv run paperwatch ingest --live              # fetch, classify, admit and embed new items
+uv run paperwatch search "agent memory" --live  # hybrid retrieval over the corpus
+uv run paperwatch eval                       # retrieval metrics against the committed baseline
+```
+
+The live commands need no API key: embeddings and the relevance classifier run locally with the
+pinned `ibm-granite/granite-embedding-small-english-r2` model (384 dimensions, about 180 MB
+downloaded once on first use). Set `PW_LOCAL_EMBEDDING_CACHE_DIR` to a persistent directory to
+keep that download, for example one baked into a deployed image.
+
+**CV line (true as of M1):** Built a tiered AI-research corpus with hybrid (pgvector + full-text)
+retrieval and retrieval evals.
+
 ## Documentation
 
 - [`docs/learn/`](docs/learn/): one lesson per technology, starting with

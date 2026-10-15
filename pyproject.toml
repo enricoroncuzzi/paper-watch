@@ -60,6 +60,9 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# `evals/` sits at the repository root, outside the installed `src` package, so pytest must add
+# the root to sys.path for `from evals.retrieval_eval import ...` to import.
+pythonpath = ["."]
 # Real-model tests are opt-in (`uv run pytest -m model`): default CI stays offline and light.
 addopts = "-ra --strict-markers --cov=paperwatch --cov-report=term-missing -m 'not model'"
 markers = [

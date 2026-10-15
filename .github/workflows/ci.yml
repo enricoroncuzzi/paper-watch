@@ -54,6 +54,27 @@ jobs:
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
       - run: uv sync --locked
       - run: uv run pytest
+  eval:
+    # Runs the retrieval eval against a real pgvector Postgres on every change, so a quality
+    # drop fails CI, not just a behaviour change.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: test
+    services:
+      db:
+        # Pinned like tests/conftest.py and docker-compose.yml: the search settings need pgvector 0.8+.
+        image: pgvector/pgvector:0.8.7-pg16
+        env: {POSTGRES_USER: paperwatch, POSTGRES_PASSWORD: paperwatch, POSTGRES_DB: paperwatch}
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U paperwatch" --health-interval 5s --health-retries 10
+    steps:
+      # Same pins and hardening as the jobs already in ci.yml, or the zizmor workflow gate fails.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false}
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - run: uv sync --locked
+      - run: uv run alembic upgrade head
+      - run: uv run paperwatch eval
   security:
     runs-on: ubuntu-latest
     timeout-minutes: 10

@@ -8,7 +8,7 @@ from paperwatch.config import get_settings
 from paperwatch.domain import Tier, load_profiles
 from paperwatch.ingest.pipeline import Sources, run_ingestion
 from paperwatch.llm.classifier import Classifier, make_classifier
-from paperwatch.llm.embedder import Embedder, make_embedder
+from paperwatch.llm.embedder import Embedder, FakeEmbedder, make_embedder
 from paperwatch.llm.ledger import Ledger
 from paperwatch.logging import configure_logging
 from paperwatch.retrieval.hybrid import Filters, hybrid_search
@@ -131,3 +131,40 @@ def search(
             typer.echo(f"{h.score:.4f}  [{h.tier}]  {h.title}\n        {h.url}")
     finally:
         session.close()
+
+
+@app.command(name="eval")
+def eval_cmd(
+    write_baseline: bool = typer.Option(False, "--write-baseline"),
+) -> None:
+    import json
+    import sys
+
+    # src/paperwatch/cli.py: parents[2] is the repository root. The console script's path
+    # contains src, not the root, so the top-level evals package is invisible without this.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from evals.retrieval_eval import OVERALL, evaluate, gate
+
+    s = get_settings()
+    session = make_session_factory(make_engine(s.database_url))()
+    try:
+        m = evaluate(
+            session,
+            FakeEmbedder(),
+            Path("evals/data/corpus.jsonl"),
+            Path("evals/data/questions.jsonl"),
+        )
+    finally:
+        # The eval only reads back its own seeded rows; roll them back so the database is untouched.
+        session.rollback()
+        session.close()
+    typer.echo(json.dumps(m, indent=2))
+    if write_baseline:
+        # Only the overall metrics are committed: the gate compares exactly these keys.
+        baseline = {name: m[name] for name in OVERALL}
+        Path("evals/baseline.json").write_text(json.dumps(baseline, indent=2) + "\n")
+        return
+    failures = gate(m, json.loads(Path("evals/baseline.json").read_text()))
+    for fail in failures:
+        typer.echo(f"REGRESSION: {fail}")
+    raise typer.Exit(1 if failures else 0)
