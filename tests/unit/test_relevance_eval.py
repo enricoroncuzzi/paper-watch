@@ -120,13 +120,18 @@ def test_gate_flags_only_a_gated_score_that_drops_beyond_the_tolerance() -> None
     ]
 
 
-def test_bootstrap_interval_is_deterministic_and_inside_the_unit_interval() -> None:
-    predicted = ["p"] * 8 + [NONE] * 8
+def test_bootstrap_interval_is_deterministic_and_brackets_the_point_estimate() -> None:
+    # 8 positives, 8 "none" and 4 wrong answers: the band has width, so a different seed or a
+    # non-deterministic generator would move it.
+    predicted = ["p"] * 6 + [NONE] * 2 + ["p"] * 2 + [NONE] * 6
     gold = ["p"] * 8 + [NONE] * 8
-    lo, hi = relevance_eval.bootstrap_macro_f1(predicted, gold, ["p"], resamples=200)
-    assert 0.0 <= lo <= 1.0 <= hi <= 1.0
-    # A fixed seed: the printed interval must not move between runs of the same eval.
-    assert relevance_eval.bootstrap_macro_f1(predicted, gold, ["p"], resamples=200) == (lo, hi)
+    lo, hi = relevance_eval.bootstrap_macro_f1(predicted, gold, ["p"])
+    assert lo < hi
+    assert lo <= relevance_eval._macro_f1(predicted, gold, ["p"]) <= hi
+    # Pinned to the seed-0 result, so a changed seed or resampling is a deliberate edit.
+    assert (round(lo, 3), round(hi, 3)) == (0.444, 0.941)
+    # The same seed gives the same pair: the printed interval is reproducible.
+    assert relevance_eval.bootstrap_macro_f1(predicted, gold, ["p"]) == (lo, hi)
 
 
 def _axis(i: int, off: float = 0.0) -> list[float]:
@@ -147,13 +152,27 @@ class _ByTitle:
 
 
 def test_evaluate_calibrates_on_validation_and_scores_the_test_split(tmp_path: Path) -> None:
-    # p0 and p1 are the first two axes; positives sit near their axis, "none" papers on axis 2.
+    # p0 and p1 are the first two axes; "none" papers sit on axis 2 unless noted. Calibration
+    # reads the three validation rows; the test half adds a hard negative on p0's own axis, so
+    # its macro F1 is below 1 and the bootstrap band has width.
     vectors = {"about p0": _axis(0), "about p1": _axis(1)}
     rows = []
-    for split in ("validation", "test"):
-        ids = _ids(split, 3)
-        for label, vector in (("p0", _axis(0, 0.2)), ("p1", _axis(1, 0.2)), (NONE, _axis(0, 3.0))):
-            title = f"{label} {split}"
+    splits = (
+        ("validation", (("p0", _axis(0, 0.2)), ("p1", _axis(1, 0.2)), (NONE, _axis(0, 3.0)))),
+        (
+            "test",
+            (
+                ("p0", _axis(0, 0.2)),
+                ("p1", _axis(1, 0.2)),
+                (NONE, _axis(0, 3.0)),
+                (NONE, _axis(0)),  # cos 1.0 to p0: admitted to the wrong profile
+            ),
+        ),
+    )
+    for split, items in splits:
+        ids = _ids(split, len(items))
+        for n, (label, vector) in enumerate(items):
+            title = f"{label} {split} {n}"
             vectors[title] = vector
             rows.append(_row(next(ids), title, label))
     data = tmp_path / "abstracts.jsonl"
@@ -163,14 +182,16 @@ def test_evaluate_calibrates_on_validation_and_scores_the_test_split(tmp_path: P
     # cos(positive, its axis) = 1/sqrt(1.04) = 0.981 and cos("none", axis 0) = 1/sqrt(10) = 0.316,
     # so p0's cut sits halfway between them; p1's sits halfway between 0 and 0.981.
     assert c.thresholds == {"p0": 0.648, "p1": 0.49}
-    assert (c.n_validation, c.n_test) == (3, 3)
-    assert c.test.macro_f1 == 1.0 and c.test.routing_accuracy == 1.0
-    # The previous 0.99 is above every positive's cosine, so it admitted nothing.
+    assert (c.n_validation, c.n_test) == (3, 4)
+    # p0 is predicted twice (its own abstract and the hard negative): precision 0.5, F1 2/3.
+    assert c.test.macro_f1 == pytest.approx(0.8333, abs=1e-4)
+    assert c.test.routing_accuracy == pytest.approx(0.75)
+    # The previous 0.99 is above every positive's cosine, so it admitted only the hard negative.
     assert c.previous_test.admitted_precision == 0.0
     assert c.fingerprint == fingerprint("stub", profiles, data)
-    # Every test abstract is routed right, so the point estimate sits inside the bootstrap band.
+    # On this imperfect data the point estimate sits inside the band, which can just fail.
     lo, hi = c.test_macro_f1_interval
-    assert 0.0 <= lo <= c.test.macro_f1 <= hi <= 1.0
+    assert lo < c.test.macro_f1 < hi
     report = relevance_eval.format_report(c, profiles)
     assert "95% bootstrap interval" in report
 

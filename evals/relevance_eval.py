@@ -17,7 +17,6 @@ import json
 import math
 import random
 import re
-from collections import Counter
 from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -218,13 +217,8 @@ def score(classifier: Classifier, examples: list[Example], names: list[str]) -> 
 
 
 def _macro_f1(predicted: list[str], gold: list[str], names: list[str]) -> float:
-    pred_counts, gold_counts = Counter(predicted), Counter(gold)
-    correct = Counter(p for p, g in zip(predicted, gold, strict=True) if p == g)
-    total = 0.0
-    for name in names:
-        n_predicted, support = pred_counts[name], gold_counts[name]
-        total += 2 * correct[name] / (n_predicted + support) if n_predicted + support else 0.0
-    return total / len(names)
+    # One implementation of macro F1, shared with Scores, so the two cannot drift apart.
+    return sum(s.f1 for s in _per_profile(predicted, gold, names).values()) / len(names)
 
 
 def bootstrap_macro_f1(

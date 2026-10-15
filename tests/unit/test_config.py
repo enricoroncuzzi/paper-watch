@@ -29,7 +29,19 @@ def test_embedding_dim_is_single_constant() -> None:
     assert EMBEDDING_DIM == 384
 
 
-def test_model_providers_default_to_local_and_need_no_key() -> None:
+def test_model_providers_default_to_local_and_need_no_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The caller's environment must not leak into a defaults test, for example
+    # PW_LOCAL_EMBEDDING_CACHE_DIR exported before a real-model run.
+    for name in (
+        "PW_EMBEDDING_PROVIDER",
+        "PW_CLASSIFIER_PROVIDER",
+        "PW_LOCAL_EMBEDDING_MODEL",
+        "PW_LOCAL_EMBEDDING_CACHE_DIR",
+        "PW_LOCAL_EMBEDDING_THREADS",
+        "PW_LOCAL_EMBEDDING_BATCH",
+        "PW_LOCAL_EMBEDDING_CPU_ARENA",
+    ):
+        monkeypatch.delenv(name, raising=False)
     s = Settings()
     assert (s.embedding_provider, s.classifier_provider) == ("local", "embedding")
     assert s.local_embedding_model == LOCAL_EMBEDDING_MODEL
