@@ -71,7 +71,8 @@ def test_tie_guard_rejects_equal_fused_scores() -> None:
         return Hit(uuid4(), "t", "https://x/i", "vetted_preprint", "seed", score, "s")
 
     with pytest.raises(ValueError, match="tie"):
-        _check_no_ties([hit(1 / 61), hit(1 / 62), hit(1 / 61)], "q", 2)
+        # The tie is exactly at the k-th and (k+1)-th hits, for k = 2.
+        _check_no_ties([hit(1 / 61), hit(1 / 62), hit(1 / 62)], "q", 2)
     # Distinct scores are accepted, and a tie outside the requested hits does not matter.
     _check_no_ties([hit(1 / 61), hit(1 / 62)], "q", 1)
 

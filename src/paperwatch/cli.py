@@ -1,3 +1,4 @@
+import re
 import time
 import uuid
 from collections.abc import Callable
@@ -42,6 +43,10 @@ _TIER_VALUES = frozenset(t.value for t in Tier)
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _EVAL_DATA = _REPO_ROOT / "evals" / "data"
 _BASELINE_PATH = _REPO_ROOT / "evals" / "baseline.json"
+# The throwaway database's name: the generator in `_with_throwaway_database`, the sweep's SQL
+# pattern and the sweep's Python parse all describe this one shape, so they stay in step. The
+# first group is the creation epoch, which is what makes a leftover recognisable as stale.
+_EVAL_DB_RE = re.compile(r"^paperwatch_eval_([0-9]+)_[0-9a-f]{32}$")
 
 
 class EvalDatabaseError(RuntimeError):
@@ -61,21 +66,26 @@ def _drop_database(engine: Engine, name: str) -> None:
 
 def _sweep_stale_databases(engine: Engine, now: int) -> None:
     # A SIGTERM or SIGKILL cannot run the finally, so a killed run can leave its database behind.
-    # The name carries the creation time, so a leftover older than a day is dropped here; a recent
-    # one is left alone in case another eval is running in parallel.
-    stmt = text("SELECT datname FROM pg_database WHERE datname LIKE 'paperwatch_eval_%'")
+    # The query matches only this code's exact name (the regex above is the one source of truth),
+    # only databases this role owns and never the configured one, so a look-alike or another
+    # user's database is never dropped. A leftover older than a day is swept; a recent one is left
+    # for a concurrent eval.
+    stmt = text(
+        "SELECT datname FROM pg_database "
+        "WHERE datname ~ :pattern AND NOT datistemplate "
+        "AND datname <> current_database() AND pg_get_userbyid(datdba) = current_user"
+    ).bindparams(pattern=_EVAL_DB_RE.pattern)
     with engine.connect() as conn:
         names = list(conn.scalars(stmt))
     for name in names:
-        try:
-            created = int(name.split("_")[2])
-        except (IndexError, ValueError):
+        match = _EVAL_DB_RE.match(name)
+        # The SQL filter and this parse share one pattern, so match can only be None defensively.
+        if match is None or now - int(match.group(1)) <= 86400:
             continue
-        if now - created > 86400:
-            try:
-                _drop_database(engine, name)
-            except SQLAlchemyError:
-                continue  # not ours to drop; leave it for its owner
+        try:
+            _drop_database(engine, name)
+        except SQLAlchemyError:
+            continue  # not ours to drop; leave it for its owner
 
 
 def _eval_database_error(exc: SQLAlchemyError) -> EvalDatabaseError:
