@@ -28,7 +28,7 @@ The headline figures describe this set, not a live stream:
 
 - The profile descriptions were chosen after two looks at the test half, so the test figures are slightly optimistic as held-out numbers. The thresholds themselves are chosen on the validation half only.
 - The set is about 40 percent positive by design (131 of 328 abstracts; 41.6 percent of the test half), because positives were deliberately oversampled. Admitted precision is therefore a relative measure for comparing configurations, not a live precision estimate: on a stream with 5-10 percent relevant papers it would be far lower.
-- The 95 percent bootstrap interval for test macro F1 is about 0.65 to 0.82 (`python -m evals.relevance_eval` prints the current interval); a single score moves by about 0.07 either way, so read differences under that with care and compare two configurations on the same rows with a paired bootstrap.
+- The 95 percent bootstrap interval for test macro F1 is about 0.65 to 0.82 (`python -m evals.relevance_eval` prints the current interval), so the interval's half-width is about 0.09; read differences under that with care and compare two configurations on the same rows with a paired bootstrap.
 
 The committed baseline was computed on arm64 (Apple M2). Linux x86-64 numerics are to be confirmed by one manual `model-evals` run before the gate is relied on: the 0.03 tolerance absorbs a flipped abstract or two, and if that first Linux run fails by a small margin, recalibrate there and commit its baseline instead of widening the tolerance.
 

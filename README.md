@@ -46,7 +46,7 @@ eval databases older than a day.
 The relevance calibration needs no database:
 
 ```bash
-uv run python -m evals.relevance_eval        # print thresholds and scores (--write updates; see "Reading the scores")
+uv run python -m evals.relevance_eval        # print thresholds and scores (--write updates the config and baseline)
 ```
 
 `relevance_eval` recalibrates the relevance thresholds after changing a profile description or the
