@@ -1,15 +1,15 @@
 from datetime import UTC, datetime, timedelta
-from typing import Any
 from uuid import UUID
 
 import pytest
-from sqlalchemy import Select, func, select, text
+from sqlalchemy import Engine, text
 from sqlalchemy.orm import Session
 
 from paperwatch.config import EMBEDDING_DIM
-from paperwatch.domain import Signals, SourceItem, Tier
+from paperwatch.domain import AdmissionBasis, Signals, SourceItem, Tier
 from paperwatch.llm.embedder import FakeEmbedder
-from paperwatch.retrieval.hybrid import Filters, _filtered, hybrid_search, vector_query
+from paperwatch.retrieval.hybrid import Filters, hybrid_search, text_query, vector_query
+from paperwatch.store.db import make_session_factory
 from paperwatch.store.models import Item
 from paperwatch.store.repository import Repository
 
@@ -138,19 +138,37 @@ def external_id(session: Session, item_id: UUID) -> str:
     return session.get_one(Item, item_id).external_id
 
 
-def text_query(tsq: Any, filters: Filters) -> Select[Any]:
-    # The statement shape hybrid_search runs for its text branch, so a test can inspect it.
-    return _filtered(
-        select(Item.id)
-        .where(Item.tsv.op("@@")(tsq))
-        .order_by(func.ts_rank_cd(Item.tsv, tsq).desc()),
-        filters,
+def admitted_with_id(
+    session: Session, item_id: UUID, eid: str, body: str, embedding: list[float]
+) -> None:
+    # A chosen id, so a tie-order assertion never depends on uuid4 luck. This writes the same
+    # admitted row the repository writes, without a tier-history row.
+    session.add(
+        Item(
+            id=item_id,
+            source="arxiv",
+            external_id=eid,
+            status="admitted",
+            tier=Tier.VETTED_PREPRINT.value,
+            admission_basis=AdmissionBasis.SEED.value,
+            profile="p1",
+            relevance=0.9,
+            title=body,
+            authors=["A"],
+            text=body,
+            url=f"https://arxiv.org/abs/{eid}",
+            published_at=datetime(2026, 10, 1, tzinfo=UTC),
+            licence="unknown",
+            embedding=embedding,
+        )
     )
 
 
 def test_vector_branch_fills_candidates_under_a_filter(db_session: Session) -> None:
     # More admitted rows than candidates, and only a fifth match the profile filter, so a scan
-    # capped at hnsw.ef_search rows and filtered afterwards would return far fewer than 50.
+    # capped at hnsw.ef_search rows and filtered afterwards would return far fewer than 50. A
+    # bitmap scan plus sort would return all 50 even with the fix removed, so disable that too:
+    # the EXPLAIN then fails loudly if the planner drifts away from the HNSW index.
     at = datetime(2026, 10, 1, tzinfo=UTC)
     for i in range(60):
         admitted(db_session, f"match{i}", f"harness number {i}", "agentic-engineering", at)
@@ -158,14 +176,14 @@ def test_vector_branch_fills_candidates_under_a_filter(db_session: Session) -> N
         admitted(db_session, f"other{i}", f"harness number {i}", "ml-architectures", at)
     db_session.flush()
     db_session.execute(text("SET LOCAL enable_seqscan = off"))
-    hits = hybrid_search(
-        db_session,
-        E,
-        "zzzunmatchedzzz",
-        k=100,
-        candidates=50,
-        filters=Filters(profiles=frozenset({"agentic-engineering"})),
+    db_session.execute(text("SET LOCAL enable_bitmapscan = off"))
+    filters = Filters(profiles=frozenset({"agentic-engineering"}))
+    sql = vector_query(E.embed(["zzzunmatchedzzz"])[0], filters, 50).compile(
+        db_session.get_bind(), compile_kwargs={"literal_binds": True}
     )
+    plan = "\n".join(db_session.execute(text(f"EXPLAIN {sql}")).scalars())
+    assert "ix_items_embedding_hnsw" in plan  # the scan this test is about
+    hits = hybrid_search(db_session, E, "zzzunmatchedzzz", k=100, candidates=50, filters=filters)
     # The text branch matches nothing, so the vector branch alone must fill the 50 candidates.
     assert len(hits) == 50
 
@@ -199,7 +217,6 @@ def test_filters_restrict_both_branches(db_session: Session) -> None:
     admitted(db_session, "3", "agents harness gamma", "p1", at - timedelta(days=10))
     db_session.flush()
     query = "agents harness"
-    tsq = func.websearch_to_tsquery("english", query)
     qvec = E.embed([query])[0]
     cases = (
         (Filters(profiles=frozenset({"p2"})), {"2"}),
@@ -210,7 +227,9 @@ def test_filters_restrict_both_branches(db_session: Session) -> None:
         vec_ids = {
             external_id(db_session, i) for i in db_session.scalars(vector_query(qvec, filters, 50))
         }
-        txt_ids = {external_id(db_session, i) for i in db_session.scalars(text_query(tsq, filters))}
+        txt_ids = {
+            external_id(db_session, i) for i in db_session.scalars(text_query(query, filters, 50))
+        }
         hybrid = {
             h.url.rsplit("/", 1)[1]
             for h in hybrid_search(db_session, E, query, k=10, filters=filters)
@@ -218,10 +237,56 @@ def test_filters_restrict_both_branches(db_session: Session) -> None:
         assert vec_ids == txt_ids == hybrid == expected
 
 
-def test_empty_filter_set_matches_nothing(db_session: Session) -> None:
+@pytest.mark.parametrize("key", ["tiers", "profiles"])
+def test_empty_filter_set_matches_nothing(db_session: Session, key: str) -> None:
     seed(db_session)
-    hits = hybrid_search(db_session, E, "agents", k=3, filters=Filters(tiers=frozenset()))
-    assert hits == []
+    filters = Filters(**{key: frozenset()})
+    assert hybrid_search(db_session, E, "agents", k=3, filters=filters) == []
+
+
+def test_text_ties_come_back_in_id_order(db_session: Session) -> None:
+    near = [1.0] + [0.0] * (EMBEDDING_DIM - 1)
+    far = [0.0, 1.0] + [0.0] * (EMBEDDING_DIM - 2)
+    # Three identical bodies tie on ts_rank, and their chosen ids make insertion order differ
+    # from id order, so only the text branch's id tie-break can produce the asserted order.
+    for item_id in (UUID(int=3), UUID(int=1), UUID(int=2)):
+        admitted_with_id(db_session, item_id, f"t{item_id.int}", "tietoken body", far)
+    # Nearer items fill the three candidate slots, so the tied rows are text-only and their
+    # fused order is exactly the text branch's order.
+    for i in range(3):
+        admitted_with_id(db_session, UUID(int=100 + i), f"v{i}", "vector body", near)
+    db_session.flush()
+    hits = hybrid_search(db_session, QueryEmbedder(near), "tietoken", k=6, candidates=3)
+    text_only = [h.item_id for h in hits if h.item_id in {UUID(int=1), UUID(int=2), UUID(int=3)}]
+    assert text_only == [UUID(int=1), UUID(int=2), UUID(int=3)]
+
+
+def test_equal_fused_scores_come_back_in_id_order(db_session: Session) -> None:
+    near = [1.0] + [0.0] * (EMBEDDING_DIM - 1)
+    far = [0.0, 1.0] + [0.0] * (EMBEDDING_DIM - 2)
+    # A vector-only item and a text-only item both rank first in their list, so they tie at
+    # 1/61. The vector one has the larger id, so only the fusion sort's id tie-break can put
+    # the text one first.
+    admitted_with_id(db_session, UUID(int=20), "vector", "vector body", near)
+    admitted_with_id(db_session, UUID(int=10), "text", "tietoken body", far)
+    db_session.flush()
+    hits = hybrid_search(db_session, QueryEmbedder(near), "tietoken", k=2, candidates=1)
+    assert [h.item_id for h in hits] == [UUID(int=10), UUID(int=20)]
+
+
+def test_search_settings_are_transaction_local(engine: Engine) -> None:
+    # A fresh session on a pooled connection, not the savepoint fixture: after the commit
+    # ends the transaction, the settings must be at their defaults, so they cannot leak.
+    session = make_session_factory(engine)()
+    try:
+        hybrid_search(session, E, "agents", k=1)
+        session.commit()
+        iterative = session.scalar(text("SHOW hnsw.iterative_scan"))
+        ef = session.scalar(text("SHOW hnsw.ef_search"))
+    finally:
+        session.close()
+    assert iterative == "off"
+    assert ef == "40"
 
 
 def test_k_below_one_rejected(db_session: Session) -> None:

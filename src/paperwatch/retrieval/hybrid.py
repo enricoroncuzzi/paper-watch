@@ -61,10 +61,24 @@ _NO_FILTERS = Filters()
 
 def vector_query(qvec: list[float], filters: Filters, limit: int) -> Select[Any]:
     # Separate so a test can EXPLAIN exactly the statement search runs. A secondary sort key
-    # here would stop the planner using the partial HNSW index, so the distance order is left
-    # alone; strict_order keeps its exact order and the fusion breaks its remaining ties.
+    # here would stop the planner using the partial HNSW index; ties inside the vector branch
+    # follow the index order, and the fusion sort breaks only equal fused scores by id.
     return _filtered(
         select(Item.id).order_by(Item.embedding.cosine_distance(qvec)).limit(limit), filters
+    )
+
+
+def text_query(query: str, filters: Filters, limit: int) -> Select[Any]:
+    # Separate like vector_query, so a test inspects this statement instead of a drifting copy.
+    # The id tie-break makes equal ts_rank order deterministic; this statement sorts anyway, so
+    # it never affects the GIN index the full-text predicate uses.
+    tsq = func.websearch_to_tsquery("english", query)
+    return _filtered(
+        select(Item.id)
+        .where(Item.tsv.op("@@")(tsq))
+        .order_by(func.ts_rank_cd(Item.tsv, tsq).desc(), Item.id)
+        .limit(limit),
+        filters,
     )
 
 
@@ -98,18 +112,7 @@ def hybrid_search(
     )
     qvec = embedder.embed([query])[0]
     vec_ids = list(session.scalars(vector_query(qvec, filters, candidates)))
-    tsq = func.websearch_to_tsquery("english", query)
-    txt_ids = list(
-        session.scalars(
-            _filtered(
-                select(Item.id)
-                .where(Item.tsv.op("@@")(tsq))
-                .order_by(func.ts_rank_cd(Item.tsv, tsq).desc(), Item.id)
-                .limit(candidates),
-                filters,
-            )
-        )
-    )
+    txt_ids = list(session.scalars(text_query(query, filters, candidates)))
     scores: dict[uuid.UUID, float] = {}
     for ranked in (vec_ids, txt_ids):
         for rank, item_id in enumerate(ranked, start=1):

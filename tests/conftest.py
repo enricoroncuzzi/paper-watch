@@ -15,7 +15,9 @@ from paperwatch.store.db import make_engine, make_session_factory
 @pytest.fixture(scope="session")
 def db_url() -> Iterator[str]:
     # One container for the whole test session: starting Postgres and migrating is the slow part.
-    with PostgresContainer("pgvector/pgvector:pg16", driver="psycopg") as pg:
+    # Pin the pgvector release the search settings need: hnsw.iterative_scan needs 0.8 or later,
+    # so an older image would make every search raise, not silently degrade.
+    with PostgresContainer("pgvector/pgvector:0.8.7-pg16", driver="psycopg") as pg:
         url = pg.get_connection_url()
         cfg = Config("alembic.ini")
         cfg.set_main_option("sqlalchemy.url", url)
