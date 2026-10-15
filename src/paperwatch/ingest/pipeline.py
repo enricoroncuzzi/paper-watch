@@ -1,5 +1,7 @@
 import dataclasses
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -71,6 +73,33 @@ def payload_to_item(p: dict[str, object]) -> SourceItem:
     )
 
 
+@contextmanager
+def _single_run_lock(session: Session) -> Iterator[bool]:
+    """Hold the single-run advisory lock for the lifetime of the `with` block.
+
+    A session-level lock lives on one dedicated connection, so it survives the run's many
+    commits; an autocommit connection keeps the holder out of an idle-in-transaction state that
+    a managed Postgres could kill, silently dropping the lock.
+    """
+    lock_conn = session.get_bind().engine.connect().execution_options(isolation_level="AUTOCOMMIT")
+    try:
+        held = bool(
+            lock_conn.scalar(text("SELECT pg_try_advisory_lock(:key)"), {"key": INGEST_LOCK_KEY})
+        )
+        try:
+            yield held
+        finally:
+            if held:
+                # A dead connection already dropped the lock; suppress the unlock error so it
+                # never replaces the run's own exception.
+                with suppress(Exception):
+                    lock_conn.scalar(
+                        text("SELECT pg_advisory_unlock(:key)"), {"key": INGEST_LOCK_KEY}
+                    )
+    finally:
+        lock_conn.close()
+
+
 def run_ingestion(
     session: Session,
     sources: Sources,
@@ -83,17 +112,11 @@ def run_ingestion(
     since_override: datetime | None = None,
 ) -> RunResult:
     repo = Repository(session)
-
-    # One ingestion at a time. A session-level advisory lock on a dedicated connection lives
-    # through the run's many commits (a lock on the session's own connection would be lost when
-    # that connection returns to the pool), so a second overlapping run skips instead of closing
-    # this run's row or spending the same token budget. The finally below always frees it.
-    lock_conn = session.get_bind().engine.connect()
-    held = lock_conn.scalar(text("SELECT pg_try_advisory_lock(:key)"), {"key": INGEST_LOCK_KEY})
-    if not held:
-        lock_conn.close()
-        return RunResult(None, "skipped", {}, 0)
-    try:
+    with _single_run_lock(session) as held:
+        if not held:
+            # One ingestion at a time: leave a trace for log-based alerts, then do nothing.
+            log.warning("ingestion_skipped", reason="another run holds the lock")
+            return RunResult(None, "skipped", {}, 0)
 
         def window(key: str) -> datetime:
             return since_override or repo.cursor(key) or now - default_lookback
@@ -463,7 +486,3 @@ def run_ingestion(
             **counts,
         )
         return RunResult(run_id, status, counts, ledger.tokens_used)
-    finally:
-        # Free the lock on every exit, so a crashed run cannot block the next one.
-        lock_conn.scalar(text("SELECT pg_advisory_unlock(:key)"), {"key": INGEST_LOCK_KEY})
-        lock_conn.close()

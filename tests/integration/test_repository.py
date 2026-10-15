@@ -307,14 +307,29 @@ def test_resolve_open_dead_letters_closes_only_source_letters(db_session: Sessio
     later = NOW + timedelta(days=2)
     run_id = repo.start_run(NOW, NOW + timedelta(days=1), at=NOW)
     repo.add_dead_letter(run_id, "feed", feed_url, "HTTP 503")  # a source outage: no payload
+    # An item letter that shares the outage's exact (source, ref) and differs only by payload.
+    repo.add_dead_letter(run_id, "feed", feed_url, "boom", payload={"external_id": "x"})
     repo.add_dead_letter(run_id, "feed", "https://lab.example/p2", "no title")  # malformed
     repo.add_dead_letter(run_id, "feed", "p1", "boom", payload={"external_id": "p1"})  # item
     repo.resolve_open_dead_letters("feed", feed_url, at=later)
-    open_refs = set(
-        db_session.scalars(select(DeadLetter.ref).where(DeadLetter.resolved_at.is_(None)))
+    open_null = set(
+        db_session.scalars(
+            select(DeadLetter.ref).where(
+                DeadLetter.resolved_at.is_(None), DeadLetter.payload.is_(None)
+            )
+        )
     )
-    # Only the source outage for this exact ref closes; the malformed and item letters stay open.
-    assert open_refs == {"https://lab.example/p2", "p1"}
+    open_payload = set(
+        db_session.scalars(
+            select(DeadLetter.ref).where(
+                DeadLetter.resolved_at.is_(None), DeadLetter.payload.is_not(None)
+            )
+        )
+    )
+    # Only the outage letter closes; a payload letter for the same ref and the malformed-entry
+    # letter (another ref) stay open, so the payload filter is load-bearing.
+    assert open_null == {"https://lab.example/p2"}
+    assert open_payload == {feed_url, "p1"}
 
 
 def test_item_dead_letters_open_until_resolved(db_session: Session) -> None:

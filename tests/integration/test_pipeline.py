@@ -4,7 +4,7 @@ from pathlib import Path
 from unittest.mock import DEFAULT, MagicMock
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import Engine, select, text
 from sqlalchemy.orm import Session
 
 from paperwatch.admission import load_admission
@@ -23,11 +23,12 @@ from paperwatch.domain import (
     Tier,
     load_profiles,
 )
-from paperwatch.ingest.pipeline import RunResult, Sources, run_ingestion
+from paperwatch.ingest.pipeline import RunResult, Sources, item_to_payload, run_ingestion
 from paperwatch.llm.classifier import Classifier, FakeClassifier
 from paperwatch.llm.embedder import Embedder, FakeEmbedder
 from paperwatch.llm.ledger import Ledger
 from paperwatch.sources.feeds import Feed
+from paperwatch.store.db import make_session_factory
 from paperwatch.store.models import DeadLetter, Item, Run, TierHistory
 from paperwatch.store.repository import Repository
 
@@ -888,6 +889,9 @@ def test_failed_run_releases_the_lock(db_session: Session) -> None:
     src.arxiv.fetch.side_effect = SystemExit("killed during fetch")
     with pytest.raises(SystemExit):
         run(db_session, src)
+    # The failed row is closed with the run's clock, not the database's.
+    failed = db_session.scalars(select(Run).where(Run.status == "failed")).one()
+    assert failed.started_at == NOW and failed.finished_at == NOW
     # The finally released the lock, so a following run is not skipped.
     src.arxiv.fetch.side_effect = None
     res = run(db_session, src, now=NOW + timedelta(minutes=1))
@@ -970,3 +974,104 @@ def test_run_timestamps_come_from_the_run_clock(db_session: Session) -> None:
     # The letter phase 1 parked for the stored paper was resolved with the run's clock.
     resolved = db_session.scalars(select(DeadLetter).where(DeadLetter.ref == "2510.1")).one()
     assert resolved.resolved_at == future
+
+
+def test_stale_running_row_is_closed_with_the_run_clock(db_session: Session) -> None:
+    repo = Repository(db_session)
+    stale_id = repo.start_run(NOW, NOW, at=NOW)  # a run a hard kill left 'running'
+    db_session.commit()
+    later = NOW + timedelta(days=3)
+    run(db_session, fake_sources([paper("2510.1", "Agent harness")]), now=later)
+    stale = db_session.get_one(Run, stale_id)
+    assert stale.status == "failed" and stale.finished_at == later
+
+
+def test_duplicate_url_resolution_uses_the_run_clock(db_session: Session) -> None:
+    src = fake_sources([], feed_items=[blog("p1")])
+    run(db_session, src)  # stores p1's link
+    moved = dataclasses.replace(blog("p1"), external_id="https://lab.example/new-feed.xml p1")
+    # An earlier run left an open letter for the moved id, for example a classification failure.
+    repo = Repository(db_session)
+    rid = repo.start_run(NOW, NOW, at=NOW)
+    repo.add_dead_letter(
+        rid, "feed", moved.external_id, "fetched, not yet stored", payload=item_to_payload(moved)
+    )
+    db_session.commit()
+    src.feeds.fetch_one.return_value = [moved]
+    later = NOW + timedelta(days=1)
+    res = run(db_session, src, now=later)
+    assert res.counts["duplicate_url"] == 1
+    letter = db_session.scalars(select(DeadLetter).where(DeadLetter.ref == moved.external_id)).one()
+    assert letter.resolved_at == later
+
+
+def test_stored_item_retry_resolution_uses_the_run_clock(db_session: Session) -> None:
+    emb = FlakyEmbedder(failures=0)
+    src = fake_sources([paper("2510.1", "Agent harness")])
+    run(db_session, src, embedder=emb)  # stored and admitted
+    v2 = dataclasses.replace(paper("2510.1", "Agent harness", version=2), text="Rewritten.")
+    src.arxiv.fetch.return_value = [v2]
+    emb.failures = 1
+    run(db_session, src, now=NOW + timedelta(days=1), embedder=emb)  # re-embedding fails: letter
+    letter = db_session.scalars(
+        select(DeadLetter).where(DeadLetter.ref == "2510.1", DeadLetter.resolved_at.is_(None))
+    ).one()
+    later = NOW + timedelta(days=2)
+    run(db_session, src, now=later, embedder=emb)  # the retry succeeds and resolves the letter
+    db_session.refresh(letter)
+    assert letter.resolved_at == later
+
+
+def test_lock_holder_is_not_idle_in_transaction(db_session: Session) -> None:
+    src = fake_sources([paper("2510.1", "Agent harness")])
+    states: list[str] = []
+
+    def peek(*args: object) -> list[SourceItem]:
+        # The advisory lock holder is this run, mid-flight: it must not sit in a transaction.
+        states.extend(
+            db_session.execute(
+                text(
+                    "SELECT a.state FROM pg_locks l JOIN pg_stat_activity a USING (pid) "
+                    "WHERE l.locktype = 'advisory' AND l.granted"
+                )
+            ).scalars()
+        )
+        return [paper("2510.1", "Agent harness")]
+
+    src.arxiv.fetch.side_effect = peek
+    assert run(db_session, src).status == "succeeded"
+    assert states  # the lock is taken while the run is in flight
+    assert "idle in transaction" not in states
+
+
+def test_lock_is_held_for_the_whole_run(db_session: Session, engine: Engine) -> None:
+    outer = fake_sources([paper("2510.1", "Agent harness")])
+    seen: dict[str, object] = {}
+    probing = True
+
+    def probe_second_run(*args: object) -> list[SourceItem]:
+        # Mid-run, on its own connection, a second run must still see the lock held.
+        nonlocal probing
+        if not probing:
+            return [paper("2510.1", "Agent harness")]
+        probing = False
+        second = make_session_factory(engine)()
+        try:
+            before = outer.feeds.fetch_one.call_count
+            result = run(second, outer, now=NOW + timedelta(minutes=1))
+            seen["result"] = result
+            seen["feed_calls"] = outer.feeds.fetch_one.call_count - before
+            # Count through db_session: the outer run's row is not yet committed to the DB.
+            seen["run_rows"] = len(db_session.scalars(select(Run)).all())
+        finally:
+            second.close()
+        return [paper("2510.1", "Agent harness")]
+
+    outer.arxiv.fetch.side_effect = probe_second_run
+    result = run(db_session, outer)
+    assert result.status == "succeeded"
+    inner = seen["result"]
+    assert isinstance(inner, RunResult)
+    assert inner.status == "skipped" and inner.run_id is None
+    assert seen["feed_calls"] == 0
+    assert seen["run_rows"] == 1
