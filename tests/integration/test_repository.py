@@ -75,6 +75,19 @@ def test_admitted_item_without_embedding_is_refused(db_session: Session) -> None
         db_session.flush()
 
 
+def test_admit_item_refuses_an_irrelevant_item(db_session: Session) -> None:
+    # An irrelevant item has no tier or embedding; admitting it would make it searchable.
+    repo = Repository(db_session)
+    item_id = repo.record_classified(ITEM, "irrelevant", None, 0.0)
+    with pytest.raises(ValueError, match="was classified irrelevant and cannot be admitted"):
+        repo.admit_item(
+            item_id, Tier.VETTED_PREPRINT, AdmissionBasis.HF_UPVOTES, VEC, Signals(), NOW
+        )
+    # Nothing was written before the refusal, so no tier history row exists for the item.
+    assert db_session.scalars(select(TierHistory).where(TierHistory.item_id == item_id)).all() == []
+    assert db_session.get_one(Item, item_id).status == "irrelevant"
+
+
 def test_admission_and_promotion_are_recorded_with_evidence(db_session: Session) -> None:
     repo = Repository(db_session)
     item_id = repo.record_classified(ITEM, "candidate", "agentic-engineering", 0.9)

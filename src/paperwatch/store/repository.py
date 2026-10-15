@@ -164,6 +164,11 @@ class Repository:
         at: datetime,
     ) -> None:
         row = self._s.get_one(Item, item_id)
+        # An irrelevant item was classified off-topic on purpose; admitting it would put it back
+        # into search. The only caller admits candidates and vetted preprints, so a code guard is
+        # proportionate (a database trigger is deliberately not used).
+        if row.status == "irrelevant":
+            raise ValueError(f"{row.external_id} was classified irrelevant and cannot be admitted")
         if embedding is None and row.embedding is None:
             raise ValueError(f"first admission of {row.external_id} needs an embedding")
         self._s.add(

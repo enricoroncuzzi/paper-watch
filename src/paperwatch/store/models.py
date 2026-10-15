@@ -110,6 +110,11 @@ class Item(Base):
 
 class TierHistory(Base):
     __tablename__ = "tier_history"
+    __table_args__ = (
+        # Postgres does not index foreign keys on its own; without this, reading one item's tier
+        # history and the ON DELETE CASCADE from `items` would scan the whole child table.
+        Index("ix_tier_history_item_id", "item_id"),
+    )
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     item_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("items.id", ondelete="CASCADE"))
     # None on first admission (from candidate, or at first sight).
@@ -147,6 +152,9 @@ class DeadLetter(Base):
             "ref",
             postgresql_where=text("resolved_at IS NULL"),
         ),
+        # Postgres does not index foreign keys on its own; the ON DELETE CASCADE from `runs`
+        # would otherwise scan the whole child table.
+        Index("ix_dead_letters_run_id", "run_id"),
     )
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"))
