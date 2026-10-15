@@ -162,6 +162,8 @@ def test_profile_vectors_are_embedded_once_and_items_as_title_plus_text() -> Non
 def test_embedding_classifier_picks_the_profile_that_clears_its_threshold() -> None:
     out = _classifier(_vec(0.2, 0.9, 0.1), 0.81, 0.81, 0.81).classify(_item("it"))
     assert out.profile == "p1" and out.relevance > 0.5 and "cosine" in out.reason
+    # The threshold prints to three decimals, matching the stored 0.816 and 0.813 values.
+    assert "threshold 0.810" in out.reason
 
 
 def test_embedding_classifier_returns_no_profile_below_every_threshold() -> None:

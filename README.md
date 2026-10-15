@@ -33,7 +33,12 @@ With the database running and migrated (above):
 uv run paperwatch ingest --live              # fetch, classify, admit and embed new items
 uv run paperwatch search "agent memory" --live  # hybrid retrieval over the corpus
 uv run paperwatch eval                       # retrieval metrics against the committed baseline
-uv run python -m evals.relevance_eval        # recalibrate relevance thresholds
+```
+
+The relevance calibration needs no database:
+
+```bash
+uv run python -m evals.relevance_eval        # print thresholds and held-out scores (--write updates)
 ```
 
 The eval runs in a uniquely named throwaway database on the configured server: it creates it,

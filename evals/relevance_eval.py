@@ -15,7 +15,9 @@ import argparse
 import hashlib
 import json
 import math
+import random
 import re
+from collections import Counter
 from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -25,7 +27,7 @@ import yaml
 
 from paperwatch.config import get_settings
 from paperwatch.domain import Profile, SourceItem, load_profiles
-from paperwatch.llm.classifier import Classifier, EmbeddingClassifier, FakeClassifier
+from paperwatch.llm.classifier import Classifier, EmbeddingClassifier, FakeClassifier, cosine
 from paperwatch.llm.embedder import Embedder, LocalEmbedder, embedding_text, make_local_model
 
 DATA = Path("evals/data/relevance/abstracts.jsonl")
@@ -96,6 +98,8 @@ class Calibration:
     keyword_test: Scores
     n_validation: int
     n_test: int
+    # The 95% bootstrap interval for test macro F1: printed for the report, not a committed score.
+    test_macro_f1_interval: tuple[float, float]
 
 
 def load_examples(path: Path, profile_names: list[str]) -> list[Example]:
@@ -106,7 +110,10 @@ def load_examples(path: Path, profile_names: list[str]) -> list[Example]:
         if not line.strip():
             continue
         row = json.loads(line)
-        example = Example(row["arxiv_id"], row["title"], row["abstract"], row["label"])
+        try:
+            example = Example(row["arxiv_id"], row["title"], row["abstract"], row["label"])
+        except KeyError as e:
+            raise ValueError(f"{path}:{n}: missing key {e.args[0]!r}") from None
         if example.label not in allowed:
             raise ValueError(f"{path}:{n}: unknown label {example.label!r}")
         if example.arxiv_id in seen:
@@ -132,10 +139,16 @@ class _Memo:
         return [self._cache[t] for t in texts]
 
 
-def _cosine(u: list[float], v: list[float]) -> float:
-    dot = sum(a * b for a, b in zip(u, v, strict=True))
-    norms = math.sqrt(sum(a * a for a in u)) * math.sqrt(sum(b * b for b in v))
-    return dot / norms if norms else 0.0
+def _round_inside(midpoint: float, below: float, cut: float) -> float:
+    # Keep the 3-decimal cut inside (below, cut], so rounding never admits a rejected score or
+    # rejects the cut's own positive; fall back to the unrounded midpoint when nothing fits.
+    rounded = round(midpoint, 3)
+    if below < rounded <= cut:
+        return rounded
+    candidate = (math.floor(below * 1000) + 1) / 1000
+    if below < candidate <= cut:
+        return candidate
+    return midpoint
 
 
 def best_threshold(scores: list[float], positives: list[bool]) -> float:
@@ -153,7 +166,9 @@ def best_threshold(scores: list[float], positives: list[bool]) -> float:
             best_f1, best = f1, i
     # Halfway down to the highest rejected score: the most room on both sides for new papers.
     below = ordered[best - 1] if best else ordered[best]
-    return min(0.999, max(0.001, round((below + ordered[best]) / 2, 3)))
+    midpoint = (below + ordered[best]) / 2
+    # Clamp to the open unit interval: 0 would match everything and 1 only an identical text.
+    return min(0.999, max(0.001, _round_inside(midpoint, below, ordered[best])))
 
 
 def calibrate(
@@ -164,15 +179,15 @@ def calibrate(
     item_vectors = embedder.embed([embedding_text(e.item()) for e in examples])
     return {
         p.name: best_threshold(
-            [_cosine(v, pv) for v in item_vectors], [e.label == p.name for e in examples]
+            [cosine(v, pv) for v in item_vectors], [e.label == p.name for e in examples]
         )
         for p, pv in zip(profiles, profile_vectors, strict=True)
     }
 
 
-def score(classifier: Classifier, examples: list[Example], names: list[str]) -> Scores:
-    predicted = [classifier.classify(e.item()).profile or NONE for e in examples]
-    gold = [e.label for e in examples]
+def _per_profile(
+    predicted: list[str], gold: list[str], names: list[str]
+) -> dict[str, ProfileScore]:
     per: dict[str, ProfileScore] = {}
     for name in names:
         tp = sum(1 for p, g in zip(predicted, gold, strict=True) if p == g == name)
@@ -181,6 +196,11 @@ def score(classifier: Classifier, examples: list[Example], names: list[str]) -> 
         recall = tp / support if support else 0.0
         f1 = 2 * tp / (n_predicted + support) if n_predicted + support else 0.0
         per[name] = ProfileScore(precision, recall, f1, support)
+    return per
+
+
+def _scores(predicted: list[str], gold: list[str], names: list[str]) -> Scores:
+    per = _per_profile(predicted, gold, names)
     admitted = [(p, g) for p, g in zip(predicted, gold, strict=True) if p != NONE]
     return Scores(
         macro_precision=sum(s.precision for s in per.values()) / len(per),
@@ -190,6 +210,42 @@ def score(classifier: Classifier, examples: list[Example], names: list[str]) -> 
         routing_accuracy=sum(p == g for p, g in zip(predicted, gold, strict=True)) / len(gold),
         profiles=per,
     )
+
+
+def score(classifier: Classifier, examples: list[Example], names: list[str]) -> Scores:
+    predicted = [classifier.classify(e.item()).profile or NONE for e in examples]
+    return _scores(predicted, [e.label for e in examples], names)
+
+
+def _macro_f1(predicted: list[str], gold: list[str], names: list[str]) -> float:
+    pred_counts, gold_counts = Counter(predicted), Counter(gold)
+    correct = Counter(p for p, g in zip(predicted, gold, strict=True) if p == g)
+    total = 0.0
+    for name in names:
+        n_predicted, support = pred_counts[name], gold_counts[name]
+        total += 2 * correct[name] / (n_predicted + support) if n_predicted + support else 0.0
+    return total / len(names)
+
+
+def bootstrap_macro_f1(
+    predicted: list[str],
+    gold: list[str],
+    names: list[str],
+    *,
+    seed: int = 0,
+    resamples: int = 5000,
+) -> tuple[float, float]:
+    # Resample the test rows together, so the printed interval is about the classifier on this
+    # set of papers. A fixed seed keeps the report reproducible run to run. S311: this randomness
+    # is a reproducibility seed, not a security decision.
+    rng = random.Random(seed)  # noqa: S311
+    n = len(gold)
+    values = []
+    for _ in range(resamples):
+        idx = [rng.randrange(n) for _ in range(n)]
+        values.append(_macro_f1([predicted[i] for i in idx], [gold[i] for i in idx], names))
+    values.sort()
+    return values[int(0.025 * resamples)], values[min(resamples - 1, int(0.975 * resamples))]
 
 
 def fingerprint(model: str, profiles: list[Profile], data: Path) -> str:
@@ -218,12 +274,16 @@ def evaluate(embedder: Embedder, model: str, profiles: list[Profile], data: Path
     memo = _Memo(embedder)
     thresholds = calibrate(memo, profiles, validation)
     calibrated = _with_thresholds(profiles, thresholds)
+    classifier = EmbeddingClassifier(memo, calibrated)
+    test_predicted = [classifier.classify(e.item()).profile or NONE for e in test]
+    test_gold = [e.label for e in test]
     return Calibration(
         model=model,
         fingerprint=fingerprint(model, profiles, data),
         thresholds=thresholds,
-        validation=score(EmbeddingClassifier(memo, calibrated), validation, names),
-        test=score(EmbeddingClassifier(memo, calibrated), test, names),
+        validation=score(classifier, validation, names),
+        test=_scores(test_predicted, test_gold, names),
+        test_macro_f1_interval=bootstrap_macro_f1(test_predicted, test_gold, names),
         previous_test=score(EmbeddingClassifier(memo, profiles), test, names),
         keyword_test=score(FakeClassifier(profiles), test, names),
         n_validation=len(validation),
@@ -291,6 +351,8 @@ def format_report(c: Calibration, profiles: list[Profile]) -> str:
         "",
         _row("validation", c.validation),
         _row("test", c.test),
+        f"test macro F1 95% bootstrap interval "
+        f"{c.test_macro_f1_interval[0]:.3f} to {c.test_macro_f1_interval[1]:.3f}",
         _row("test, previous", c.previous_test),
         _row("test, keyword", c.keyword_test),
     ]
@@ -317,6 +379,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.write:
         write_thresholds(PROFILES, calibration.thresholds)
         record = {"calibrated_on": date.today().isoformat(), **_rounded(asdict(calibration))}
+        # The bootstrap interval is report-only, so the committed baseline keeps its shape.
+        record.pop("test_macro_f1_interval", None)
         BASELINE.write_text(json.dumps(record, indent=2) + "\n")
         print(f"\nwrote {PROFILES} and {BASELINE}")
     return 0

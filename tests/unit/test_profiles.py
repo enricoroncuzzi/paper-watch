@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from evals.relevance_eval import BASELINE, DATA, fingerprint
 from paperwatch.config import LOCAL_EMBEDDING_MODEL
 from paperwatch.domain import load_profiles
 
@@ -46,9 +47,11 @@ def test_committed_profiles_pin_the_calibrated_descriptions_and_thresholds() -> 
             0.816,
         ),
     ]
-    # Provenance: the run that chose these thresholds, with which model, on which data.
-    baseline = json.loads(Path("evals/relevance_baseline.json").read_text())
-    assert (baseline["calibrated_on"], baseline["model"]) == ("2026-10-13", LOCAL_EMBEDDING_MODEL)
+    # Provenance: the committed descriptions, model and labelled set, bound by one fingerprint
+    # (not the calendar date, so a later identical recalibration does not fail the test).
+    baseline = json.loads(BASELINE.read_text())
+    assert baseline["model"] == LOCAL_EMBEDDING_MODEL
+    assert baseline["fingerprint"] == fingerprint(LOCAL_EMBEDDING_MODEL, profiles, DATA)
     assert baseline["thresholds"] == {p.name: p.relevance_threshold for p in profiles}
 
 

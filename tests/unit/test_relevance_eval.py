@@ -70,6 +70,20 @@ def test_threshold_needs_a_positive_example() -> None:
         best_threshold([0.9, 0.1], [False, False])
 
 
+def test_threshold_stays_inside_its_interval_when_scores_are_closer_than_the_rounding() -> None:
+    # The midpoint rounds below the highest rejected score and no 3-decimal value fits the
+    # window, so the unrounded midpoint stands instead of admitting a rejected abstract.
+    assert best_threshold([0.9, 0.8134, 0.8131, 0.2], [True, True, False, False]) == 0.81325
+    assert best_threshold([0.7, 0.6004, 0.6001, 0.2], [True, True, False, False]) == 0.60025
+    # A lone score is its own window; rounding up would reject its only positive.
+    assert best_threshold([0.8136], [True]) == 0.8136
+
+
+def test_threshold_rounds_to_the_smallest_value_inside_its_interval() -> None:
+    # below 0.8129, cut 0.8134: 0.813 is the smallest 3-decimal value in (0.8129, 0.8134].
+    assert best_threshold([0.9, 0.8134, 0.8129, 0.2], [True, True, False, False]) == 0.813
+
+
 class _Fixed:
     """A classifier that gives each abstract a fixed answer by arXiv id."""
 
@@ -104,6 +118,15 @@ def test_gate_flags_only_a_gated_score_that_drops_beyond_the_tolerance() -> None
     assert gate(s, {"macro_f1": 1.05, "admitted_precision": 1.0}) == [
         "macro_f1 dropped from 1.050 to 1.000"
     ]
+
+
+def test_bootstrap_interval_is_deterministic_and_inside_the_unit_interval() -> None:
+    predicted = ["p"] * 8 + [NONE] * 8
+    gold = ["p"] * 8 + [NONE] * 8
+    lo, hi = relevance_eval.bootstrap_macro_f1(predicted, gold, ["p"], resamples=200)
+    assert 0.0 <= lo <= 1.0 <= hi <= 1.0
+    # A fixed seed: the printed interval must not move between runs of the same eval.
+    assert relevance_eval.bootstrap_macro_f1(predicted, gold, ["p"], resamples=200) == (lo, hi)
 
 
 def _axis(i: int, off: float = 0.0) -> list[float]:
@@ -145,6 +168,11 @@ def test_evaluate_calibrates_on_validation_and_scores_the_test_split(tmp_path: P
     # The previous 0.99 is above every positive's cosine, so it admitted nothing.
     assert c.previous_test.admitted_precision == 0.0
     assert c.fingerprint == fingerprint("stub", profiles, data)
+    # Every test abstract is routed right, so the point estimate sits inside the bootstrap band.
+    lo, hi = c.test_macro_f1_interval
+    assert 0.0 <= lo <= c.test.macro_f1 <= hi <= 1.0
+    report = relevance_eval.format_report(c, profiles)
+    assert "95% bootstrap interval" in report
 
 
 def test_load_examples_refuses_an_unknown_label_a_duplicate_id_and_blank_text(
@@ -159,6 +187,13 @@ def test_load_examples_refuses_an_unknown_label_a_duplicate_id_and_blank_text(
         load_examples(path, ["p"])
     path.write_text(_row("1", "t", "p", abstract=" ") + "\n")
     with pytest.raises(ValueError, match="blank"):
+        load_examples(path, ["p"])
+
+
+def test_load_examples_names_the_line_when_a_key_is_missing(tmp_path: Path) -> None:
+    path = tmp_path / "set.jsonl"
+    path.write_text(_row("1", "t", "p") + "\n" + json.dumps({"arxiv_id": "2", "label": "p"}) + "\n")
+    with pytest.raises(ValueError, match=r"set\.jsonl:2: missing key 'title'"):
         load_examples(path, ["p"])
 
 
@@ -213,11 +248,14 @@ def test_command_prints_and_writes_a_consistent_calibration(
 
     out = capsys.readouterr().out
     assert "8 validation and 8 test abstracts" in out and "test, keyword" in out
+    assert "95% bootstrap interval" in out
     baseline = json.loads(BASELINE.read_text())
     written = load_profiles(PROFILES)
     assert {p.name: p.relevance_threshold for p in written} == baseline["thresholds"]
     assert baseline["fingerprint"] == fingerprint(LOCAL_EMBEDDING_MODEL, written, DATA)
     assert set(baseline["test"]) >= {"macro_f1", "admitted_precision", "profiles"}
+    # The bootstrap interval is printed, not committed: the baseline keeps its existing shape.
+    assert "test_macro_f1_interval" not in baseline
 
 
 def test_committed_set_labels_every_profile_in_both_splits() -> None:

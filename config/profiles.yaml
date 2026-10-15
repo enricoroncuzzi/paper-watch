@@ -13,6 +13,9 @@
 # and rewrites the threshold lines below, and evals/relevance_baseline.json records the date, the
 # model, a fingerprint of the descriptions and the data, and the held-out scores. After changing a
 # description or the model, rerun it: the unit tests fail until the two agree again.
+# The committed baseline was computed on arm64 (Apple M2); Linux x86-64 numerics are confirmed by
+# one manual `model-evals` run before the gate is relied on. The 0.03 tolerance absorbs a flipped
+# abstract or two.
 profiles:
   - name: agentic-engineering
     weight: 1.0

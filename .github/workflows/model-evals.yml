@@ -1,7 +1,7 @@
 # Real-model checks: the opt-in `model` tests, including the relevance gate, run with the local
-# embedding model. Kept out of ci.yml so the default checks stay offline and model-free; this
-# workflow runs only when a change can move a relevance score, every Monday (to notice an
-# upstream model or runtime change), and by hand.
+# embedding model. Kept out of ci.yml so the default checks stay offline and model-free. This
+# workflow runs on pull requests that can move a relevance score, every Monday (with a fresh model
+# download, so it also notices a republished model or a changed runner image), and by hand.
 name: model-evals
 on:
   pull_request:
@@ -34,12 +34,24 @@ jobs:
         with: {persist-credentials: false}
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
       - run: uv sync --locked
-      # The model download (about 200 MB) happens once per cache entry, not once per run.
-      # Bump the key's suffix to force a fresh download.
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      # The model download (about 180 MB) is cached, not repeated every run. Pull requests and
+      # manual runs restore the cache. The weekly run deliberately skips the restore, so it
+      # downloads the current upstream model files instead of replaying a fixed cache key that
+      # actions/cache never overwrites. Bump the key's suffix to force a fresh download elsewhere.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: model-cache
+        if: github.event_name != 'schedule'
         with:
           path: ${{ runner.temp }}/fastembed
           key: fastembed-granite-embedding-small-english-r2-${{ runner.os }}-v1
       - run: uv run pytest -m model --no-cov
         env:
           PW_LOCAL_EMBEDDING_CACHE_DIR: ${{ runner.temp }}/fastembed
+      # Save even when the tests fail, so a red first run does not re-download on every retry.
+      # The scheduled run saves nothing: it downloaded fresh files to check, it did not fill the
+      # cache, and it must not overwrite the entry the pull-request runs use.
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: always() && github.event_name != 'schedule' && steps.model-cache.outputs.cache-hit != 'true'
+        with:
+          path: ${{ runner.temp }}/fastembed
+          key: fastembed-granite-embedding-small-english-r2-${{ runner.os }}-v1

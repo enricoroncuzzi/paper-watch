@@ -103,7 +103,7 @@ def calibrated_relevance(similarity: float, threshold: float) -> float:
     return max(0.0, 0.5 * similarity / threshold)
 
 
-def _cosine(u: list[float], v: list[float]) -> float:
+def cosine(u: list[float], v: list[float]) -> float:
     dot = sum(a * b for a, b in zip(u, v, strict=True))
     norms = math.sqrt(sum(a * a for a in u)) * math.sqrt(sum(b * b for b in v))
     return dot / norms if norms else 0.0
@@ -123,13 +123,13 @@ class EmbeddingClassifier:
         [vector] = self._embedder.embed([embedding_text(item)])
         best, best_relevance, best_similarity = self._profiles[0], -1.0, 0.0
         for profile, profile_vector in zip(self._profiles, self._vectors, strict=True):
-            similarity = _cosine(vector, profile_vector)
+            similarity = cosine(vector, profile_vector)
             relevance = calibrated_relevance(similarity, profile.relevance_threshold)
             # Strictly greater: on a tie the earlier profile in the file wins, as with keywords.
             if relevance > best_relevance:
                 best, best_relevance, best_similarity = profile, relevance, similarity
         reason = (
-            f"cosine {best_similarity:.3f} to {best.name}, threshold {best.relevance_threshold:.2f}"
+            f"cosine {best_similarity:.3f} to {best.name}, threshold {best.relevance_threshold:.3f}"
         )
         # Below every threshold: no profile, but the closest score is kept for inspection.
         name = best.name if best_relevance >= 0.5 else None
