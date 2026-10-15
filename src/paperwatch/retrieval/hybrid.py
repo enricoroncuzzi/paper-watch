@@ -82,7 +82,7 @@ def text_query(query: str, filters: Filters, limit: int) -> Select[Any]:
     )
 
 
-def set_search_settings(session: Session, candidates: int = 0) -> None:
+def set_search_settings(session: Session, candidates: int) -> None:
     # An HNSW scan returns at most hnsw.ef_search rows and applies other filters after the scan, so
     # a large or filtered candidate set would under-fill. Transaction-local settings widen the scan
     # to `candidates` (never below 40) and let iterative_scan fetch more when a filter rejects a

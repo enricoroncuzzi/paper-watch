@@ -10,15 +10,17 @@ from paperwatch.store.models import Base
 # access to the values within the .ini file in use.
 config = context.config
 
-# Interpret the config file for Python logging.
-# This line sets up loggers basically.
-if config.config_file_name is not None:
+# Interpret the config file for Python logging, unless a caller (the eval) asked to keep its own
+# output clean by setting the `configure_logger` attribute to False.
+if config.config_file_name is not None and config.attributes.get("configure_logger", True):
     fileConfig(config.config_file_name)
 
-# A test fixture sets `sqlalchemy.url` on the Config so migrations run against its own throwaway
-# database; only when it is unset (empty in alembic.ini) does the app's Settings supply the URL.
+# A test fixture or the eval sets `sqlalchemy.url` on the Config so migrations run against its own
+# throwaway database; only when it is unset (empty in alembic.ini) does the app's Settings supply
+# the URL. The value is re-escaped for ConfigParser so a percent-encoded password survives.
 config.set_main_option(
-    "sqlalchemy.url", config.get_main_option("sqlalchemy.url") or get_settings().database_url
+    "sqlalchemy.url",
+    (config.get_main_option("sqlalchemy.url") or get_settings().database_url).replace("%", "%%"),
 )
 
 target_metadata = Base.metadata

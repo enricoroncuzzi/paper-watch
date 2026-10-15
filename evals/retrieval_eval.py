@@ -48,6 +48,19 @@ def _load(path: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
+def _check_no_ties(hits: list[hybrid.Hit], question: str, k: int) -> None:
+    # A fused tie at the k-th place makes the top k depend on the fusion's random-id tie-break.
+    # This is a tripwire, not a proof: it sees only this run's ids, so a data edit that introduces
+    # a tie can still pass when the ids happen to order it, and ties inside a branch (ts_rank or
+    # the vector index) are not covered. It turns a silent drift into a loud stop.
+    scores = [round(h.score, 12) for h in hits]
+    if len(scores) != len(set(scores)):
+        raise ValueError(
+            f"fused scores tie within the top {k + 1} for {question!r}; a branch ordering may "
+            "have changed, or the data needs a change so the ranking is id-independent"
+        )
+
+
 def _recall(ranked: list[str | None], relevant: set[str]) -> float:
     return len(relevant.intersection(ranked)) / len(relevant)
 
@@ -72,14 +85,13 @@ def evaluate(
     corpus: Path,
     questions: Path,
     k: int = 5,
+    candidates: int = 50,
 ) -> dict[str, float]:
-    # A real item would compete with the eval corpus in the ranking, so refuse a populated store
-    # instead of reporting a false regression. CI runs against its own empty service.
+    # The CLI evaluates a freshly created throwaway database, so this guards direct callers and
+    # tests: a real item would compete with the eval corpus and change the ranking.
     foreign = session.scalar(select(func.count()).select_from(Item).where(Item.source != "eval"))
     if foreign:
-        raise DatabaseNotEmpty(
-            f"the eval needs an empty database or the CI service; found {foreign} non-eval items"
-        )
+        raise DatabaseNotEmpty(f"the eval needs an empty database; found {foreign} non-eval items")
     repo = Repository(session)
     by_url: dict[str, str] = {}
     by_item: dict[uuid.UUID, str] = {}
@@ -116,30 +128,25 @@ def evaluate(
     for q in qs:
         relevant = set(q["relevant"])
         kind = q["kind"]
-        # Request one extra hybrid hit: a tie at the k-th place would make the top k depend on the
-        # fusion's random-id tie-break, so the eval refuses to score a question that ties there.
-        hits = hybrid.hybrid_search(session, embedder, q["question"], k=k + 1)
-        scores = [round(h.score, 12) for h in hits]
-        if len(scores) != len(set(scores)):
-            raise ValueError(
-                f"fused scores tie within the top {k + 1} for {q['question']!r}; "
-                "change the question or the data so the ranking is id-independent"
-            )
-        # The branch lists are the same public queries the fusion uses. The vector branch is run
-        # under the same transaction-local settings hybrid_search set (shared helper), not by
-        # luck of call order.
+        # Request one extra hybrid hit so a tie at the k-th place is seen. The candidates count
+        # matches production's default, so the branch lists and the hybrid path agree.
+        hits = hybrid.hybrid_search(
+            session, embedder, q["question"], k=k + 1, candidates=candidates
+        )
+        _check_no_ties(hits, q["question"], k)
+        # The branch lists are the same public queries the fusion uses, limited like production and
+        # then cut to k so the metrics are recall@k and MRR@k. The vector branch runs under the
+        # same transaction-local settings hybrid_search set (shared helper), not by call order.
         qvec = embedder.embed([q["question"]])[0]
-        hybrid.set_search_settings(session, k)
-        vector_ranked = [
-            by_item.get(i) for i in session.scalars(hybrid.vector_query(qvec, hybrid.Filters(), k))
-        ]
+        hybrid.set_search_settings(session, candidates)
+        vector_ids = list(session.scalars(hybrid.vector_query(qvec, hybrid.Filters(), candidates)))
+        text_ids = list(
+            session.scalars(hybrid.text_query(q["question"], hybrid.Filters(), candidates))
+        )
         branch_lists = {
             "hybrid": [by_url.get(h.url) for h in hits[:k]],
-            "text_only": [
-                by_item.get(i)
-                for i in session.scalars(hybrid.text_query(q["question"], hybrid.Filters(), k))
-            ],
-            "vector_only": vector_ranked,
+            "text_only": [by_item.get(i) for i in text_ids[:k]],
+            "vector_only": [by_item.get(i) for i in vector_ids[:k]],
         }
         for branch, ranked in branch_lists.items():
             # Hybrid keys carry no suffix; a branch-only key names the branch, then the kind.
@@ -192,10 +199,10 @@ def gate(
     for name in GATED:
         if not math.isfinite(metrics[name]):
             raise ValueError(f"{name} is not finite: {metrics[name]!r}")
-    # A metric may drift down by up to `tolerance` without failing. With 29+ questions one rank
-    # slip on one question costs about 0.017 MRR/nDCG and one lost relevant hit about 0.017 recall,
-    # so 0.01 fails either; the embedder and the data are deterministic on a fresh database, so the
-    # sharper tolerance cannot flake in CI.
+    # A metric may drift down by up to `tolerance` without failing. Measured on this set, one
+    # rank-1 slip on one question costs about 0.016 MRR and 0.012 nDCG, so 0.01 fails it; the
+    # embedder and the data are deterministic on a fresh database, so the sharper tolerance cannot
+    # flake in CI. A slip lower in the list can still pass on nDCG.
     return [
         f"{name} dropped from {baseline[name]:.3f} to {metrics[name]:.3f}"
         for name in GATED

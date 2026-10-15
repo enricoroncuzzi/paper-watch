@@ -38,7 +38,9 @@ uv run paperwatch eval                       # retrieval metrics against the com
 The eval runs in a uniquely named throwaway database on the configured server: it creates it,
 migrates it, seeds its own synthetic corpus there and drops it afterwards, so repeated local runs
 never accumulate index state and a populated development database cannot report a false
-regression. The database role needs the `CREATEDB` privilege (the CI service user has it).
+regression. The database role needs the `CREATEDB` privilege and, because the first migration adds
+the `vector` extension, superuser (or the extension installed in `template1`); the CI service user
+is a superuser.
 
 The live commands need no API key: embeddings and the relevance classifier run locally with the
 pinned `ibm-granite/granite-embedding-small-english-r2` model (384 dimensions, about 180 MB

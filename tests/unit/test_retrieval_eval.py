@@ -3,16 +3,19 @@
 import json
 import math
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 
 from evals.retrieval_eval import (
     GATED,
+    _check_no_ties,
     _ndcg,
     _recall,
     _reciprocal_rank,
     gate,
 )
+from paperwatch.retrieval.hybrid import Hit
 
 DATA = Path(__file__).resolve().parents[2] / "evals" / "data"
 
@@ -52,8 +55,25 @@ def test_gate_flags_a_drop_beyond_tolerance() -> None:
 
 
 def test_gate_allows_a_drop_within_tolerance() -> None:
-    # 0.79 is 0.01 under an 0.8 baseline, inside the 0.02 tolerance.
+    # A drop of exactly 0.01 is the tolerance boundary, so it still passes.
     assert gate(_metrics(recall_at_k=0.79), _metrics(recall_at_k=0.8)) == []
+
+
+def test_gate_tolerance_is_001() -> None:
+    baseline = _metrics()  # all 1.0
+    # A 0.012 drop fails, a 0.008 drop passes: the boundary is the documented 0.01.
+    assert gate(_metrics(recall_at_k=0.988), baseline) != []
+    assert gate(_metrics(recall_at_k=0.992), baseline) == []
+
+
+def test_tie_guard_rejects_equal_fused_scores() -> None:
+    def hit(score: float) -> Hit:
+        return Hit(uuid4(), "t", "https://x/i", "vetted_preprint", "seed", score, "s")
+
+    with pytest.raises(ValueError, match="tie"):
+        _check_no_ties([hit(1 / 61), hit(1 / 62), hit(1 / 61)], "q", 2)
+    # Distinct scores are accepted, and a tie outside the requested hits does not matter.
+    _check_no_ties([hit(1 / 61), hit(1 / 62)], "q", 1)
 
 
 def test_gate_requires_exactly_the_gated_baseline_keys() -> None:

@@ -1,3 +1,4 @@
+import time
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -58,12 +59,46 @@ def _drop_database(engine: Engine, name: str) -> None:
         conn.execute(text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
 
 
+def _sweep_stale_databases(engine: Engine, now: int) -> None:
+    # A SIGTERM or SIGKILL cannot run the finally, so a killed run can leave its database behind.
+    # The name carries the creation time, so a leftover older than a day is dropped here; a recent
+    # one is left alone in case another eval is running in parallel.
+    stmt = text("SELECT datname FROM pg_database WHERE datname LIKE 'paperwatch_eval_%'")
+    with engine.connect() as conn:
+        names = list(conn.scalars(stmt))
+    for name in names:
+        try:
+            created = int(name.split("_")[2])
+        except (IndexError, ValueError):
+            continue
+        if now - created > 86400:
+            try:
+                _drop_database(engine, name)
+            except SQLAlchemyError:
+                continue  # not ours to drop; leave it for its owner
+
+
+def _eval_database_error(exc: SQLAlchemyError) -> EvalDatabaseError:
+    # 42501 is insufficient_privilege, the one permission reason a CREATE DATABASE is refused;
+    # anything else is a connection, authentication or server failure, not a missing privilege.
+    if getattr(getattr(exc, "orig", None), "sqlstate", None) == "42501":
+        return EvalDatabaseError(
+            f"could not create the throwaway eval database ({exc}); "
+            "the database role needs the CREATEDB privilege"
+        )
+    return EvalDatabaseError(f"could not reach the database to create the eval database ({exc})")
+
+
 def _upgrade_schema(url: str) -> None:
     from alembic import command
     from alembic.config import Config
 
     cfg = Config(str(_REPO_ROOT / "alembic.ini"))
-    cfg.set_main_option("sqlalchemy.url", url)
+    # Alembic's Config is a ConfigParser: a percent-encoded URL (a password with %XX) must be
+    # escaped before it is stored, or % starts an interpolation and the migration crashes.
+    cfg.set_main_option("sqlalchemy.url", url.replace("%", "%%"))
+    # Keep this run's output to the JSON and the REGRESSION lines, not Alembic's INFO logging.
+    cfg.attributes["configure_logger"] = False
     command.upgrade(cfg, "head")
 
 
@@ -72,21 +107,25 @@ def _with_throwaway_database[T](run: Callable[[Session], T]) -> T:
     # change the vector branch's answers and can end in a false regression. Each eval run gets its
     # own database, so the index always starts clean and is dropped in the finally.
     url = make_url(get_settings().database_url)
-    name = f"paperwatch_eval_{uuid.uuid4().hex}"
+    name = f"paperwatch_eval_{int(time.time())}_{uuid.uuid4().hex}"
     admin = make_engine(url.render_as_string(hide_password=False)).execution_options(
         isolation_level="AUTOCOMMIT"
     )
     try:
+        _sweep_stale_databases(admin, int(time.time()))
         _create_database(admin, name)
     except SQLAlchemyError as exc:
         admin.dispose()
-        raise EvalDatabaseError(
-            f"could not create the throwaway eval database ({exc}); "
-            "the database role needs the CREATEDB privilege"
-        ) from exc
+        raise _eval_database_error(exc) from exc
     try:
         temp_url = url.set(database=name).render_as_string(hide_password=False)
-        _upgrade_schema(temp_url)
+        try:
+            _upgrade_schema(temp_url)
+        except Exception as exc:
+            raise EvalDatabaseError(
+                f"could not migrate the throwaway eval database ({exc}); the role must be able "
+                "to create the vector extension (superuser, or install it in template1)"
+            ) from exc
         engine = make_engine(temp_url)
         try:
             session = make_session_factory(engine)()
@@ -98,8 +137,13 @@ def _with_throwaway_database[T](run: Callable[[Session], T]) -> T:
         finally:
             engine.dispose()
     finally:
-        _drop_database(admin, name)
-        admin.dispose()
+        try:
+            _drop_database(admin, name)
+        except SQLAlchemyError as exc:
+            # A failed cleanup must not replace the run's result, and dispose must still run.
+            typer.echo(f"warning: could not drop throwaway database {name}: {exc}", err=True)
+        finally:
+            admin.dispose()
 
 
 @app.callback()

@@ -6,13 +6,14 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import false, select
+from sqlalchemy import false, func, select
 from sqlalchemy.orm import Session
 
 from evals.retrieval_eval import GATED, DatabaseNotEmpty, evaluate, gate
 from paperwatch.domain import SourceItem
 from paperwatch.llm.embedder import FakeEmbedder
 from paperwatch.retrieval import hybrid
+from paperwatch.retrieval.hybrid import Filters, _filtered
 from paperwatch.store.models import Item
 from paperwatch.store.repository import Repository
 
@@ -68,13 +69,33 @@ def test_metrics_are_pinned_to_the_committed_values(db_session: Session) -> None
     assert m["text_nonempty:paraphrase"] == pytest.approx(1 / 13)
     assert m["recall_at_k:text_only:exact_name"] == pytest.approx(14 / 18)
     assert m["mrr:paraphrase"] == pytest.approx(7 / 13)
+    # Pinning the vector-only branch kills a substitution of the hybrid list for it.
+    assert m["recall_at_k:vector_only"] == pytest.approx(22.5 / 31)
+    assert m["mrr:vector_only"] == pytest.approx(22 / 31)
 
 
-def test_evaluate_is_stable_across_two_runs(db_session: Session) -> None:
-    # A second run in the same transaction reuses the seeded rows and must return the same dict.
-    first = evaluate(db_session, FakeEmbedder(), CORPUS, QUESTIONS, k=5)
-    second = evaluate(db_session, FakeEmbedder(), CORPUS, QUESTIONS, k=5)
-    assert first == second
+def test_worst_first_text_order_fails_the_gate(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import evals.retrieval_eval as retrieval_eval
+
+    def worst_first(query: str, filters: Filters, limit: int) -> object:
+        tsq = func.websearch_to_tsquery("english", query)
+        return _filtered(
+            select(Item.id)
+            .where(Item.tsv.op("@@")(tsq))
+            .order_by(func.ts_rank_cd(Item.tsv, tsq).asc(), Item.id)
+            .limit(limit),
+            filters,
+        )
+
+    monkeypatch.setattr(hybrid, "text_query", worst_first)
+    # On this data a worst-first text list also tips a fused tie; the guard is asserted separately,
+    # so disable it here to prove the gate itself sees the ordering change.
+    monkeypatch.setattr(retrieval_eval, "_check_no_ties", lambda *args: None)
+    m = evaluate(db_session, FakeEmbedder(), CORPUS, QUESTIONS, k=5)
+    assert m["mrr:text_only:exact_name"] < 14 / 18
+    assert gate(m, json.loads(BASELINE.read_text())) != []
 
 
 def test_a_fused_tie_is_rejected(db_session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -88,6 +109,22 @@ def test_a_fused_tie_is_rejected(db_session: Session, monkeypatch: pytest.Monkey
     monkeypatch.setattr(hybrid, "hybrid_search", tied)
     with pytest.raises(ValueError, match="tie"):
         evaluate(db_session, FakeEmbedder(), CORPUS, QUESTIONS, k=5)
+
+
+def test_evaluate_requests_one_extra_hit_for_the_tie_guard(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The guard can only see a tie at the k/(k+1) boundary if the hybrid search returns k+1 hits.
+    seen: list[int] = []
+    original = hybrid.hybrid_search
+
+    def spy(session: object, embedder: object, query: str, k: int = 10, **kwargs: object) -> object:
+        seen.append(k)
+        return original(session, embedder, query, k=k, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(hybrid, "hybrid_search", spy)
+    evaluate(db_session, FakeEmbedder(), CORPUS, QUESTIONS, k=5)
+    assert seen and set(seen) == {6}
 
 
 def test_broken_text_branch_fails_the_gate(

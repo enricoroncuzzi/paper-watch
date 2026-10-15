@@ -73,7 +73,8 @@ jobs:
         with: {persist-credentials: false}
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
       - run: uv sync --locked
-      - run: uv run alembic upgrade head
+      # The eval creates and migrates its own throwaway database, so the service DB is only the
+      # server it connects to; no `alembic upgrade head` against it is needed.
       - run: uv run paperwatch eval
   security:
     runs-on: ubuntu-latest

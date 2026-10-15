@@ -220,12 +220,12 @@ def test_eval_data_paths_are_repo_rooted(monkeypatch: pytest.MonkeyPatch, tmp_pa
 
 def test_eval_refuses_a_non_empty_database(monkeypatch: pytest.MonkeyPatch) -> None:
     def refuse(*args: object, **kwargs: object) -> object:
-        raise DatabaseNotEmpty("the eval needs an empty database or the CI service")
+        raise DatabaseNotEmpty("the eval needs an empty database")
 
     _stub_eval(monkeypatch, refuse)
     result = CliRunner().invoke(app, ["eval"])
     assert result.exit_code == 2
-    assert "empty database" in result.output
+    assert "empty database" in result.stderr
 
 
 def test_eval_names_the_createdb_privilege_when_it_cannot_create(
@@ -237,4 +237,4 @@ def test_eval_names_the_createdb_privilege_when_it_cannot_create(
     monkeypatch.setattr(cli, "_with_throwaway_database", refuse)
     result = CliRunner().invoke(app, ["eval"])
     assert result.exit_code == 2
-    assert "CREATEDB" in result.output
+    assert "CREATEDB" in result.stderr
