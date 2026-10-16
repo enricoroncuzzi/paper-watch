@@ -7,11 +7,12 @@ queries, and only admitted items are searchable.
 """
 
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Select, func, select, text
+from sqlalchemy import ColumnElement, Select, Text, cast, func, select, text
 from sqlalchemy.orm import Session
 
 from paperwatch.llm.embedder import Embedder
@@ -60,26 +61,50 @@ _NO_FILTERS = Filters()
 
 
 def vector_query(qvec: list[float], filters: Filters, limit: int) -> Select[Any]:
-    # Separate so a test can EXPLAIN exactly the statement search runs. A secondary sort key
-    # here would stop the planner using the partial HNSW index; ties inside the vector branch
-    # follow the index order, and the fusion sort breaks only equal fused scores by id.
-    return _filtered(
-        select(Item.id).order_by(Item.embedding.cosine_distance(qvec)).limit(limit), filters
-    )
+    # Separate so a test can EXPLAIN exactly the statement search runs. A secondary sort key here
+    # would stop the planner using the partial HNSW index, so the score is selected next to the id
+    # and equal distances are given a shared rank after the fetch, never a second SQL sort key.
+    distance = Item.embedding.cosine_distance(qvec).label("score")
+    return _filtered(select(Item.id, distance).order_by(distance).limit(limit), filters)
+
+
+def any_term_tsquery(query: str) -> ColumnElement[Any]:
+    # plainto_tsquery joins stems with AND ('harness' & 'agent'); OR-ing them makes any shared
+    # stem a match and leaves the ordering to ts_rank_cd. Phrase operators (<->) that
+    # plainto_tsquery emits for hyphenated words like SWE-bench are kept as they are.
+    anded = func.plainto_tsquery("english", query)
+    return func.to_tsquery("english", func.replace(cast(anded, Text), " & ", " | "))
 
 
 def text_query(query: str, filters: Filters, limit: int) -> Select[Any]:
     # Separate like vector_query, so a test inspects this statement instead of a drifting copy.
-    # The id tie-break makes equal ts_rank order deterministic; this statement sorts anyway, so
-    # it never affects the GIN index the full-text predicate uses.
-    tsq = func.websearch_to_tsquery("english", query)
+    # ts_rank_cd ties are common once the query OR-joins its stems, so the score is selected next
+    # to the id and equal ranks get a shared rank after the fetch; the stable key only orders rows
+    # the rank cannot separate, and this statement sorts anyway, so the GIN index still serves it.
+    tsq = any_term_tsquery(query)
+    rank = func.ts_rank_cd(Item.tsv, tsq).label("score")
     return _filtered(
-        select(Item.id)
+        select(Item.id, rank)
         .where(Item.tsv.op("@@")(tsq))
-        .order_by(func.ts_rank_cd(Item.tsv, tsq).desc(), Item.id)
+        .order_by(rank.desc(), Item.source, Item.external_id)
         .limit(limit),
         filters,
     )
+
+
+def shared_ranks(rows: Iterable[tuple[uuid.UUID, float]]) -> dict[uuid.UUID, int]:
+    # Competition ranking over rows already ordered best-score-first: equal scores share the best
+    # position of their group (1-2-2-4), so a tie gives the same RRF weight whichever order the
+    # database or the HNSW index happened to return it in, and no item gains rank from its id.
+    ranks: dict[uuid.UUID, int] = {}
+    previous: float | None = None
+    rank = 0
+    for position, (item_id, score) in enumerate(rows, start=1):
+        if score != previous:
+            rank = position
+        ranks[item_id] = rank
+        previous = score
+    return ranks
 
 
 def set_search_settings(session: Session, candidates: int) -> None:
@@ -118,16 +143,29 @@ def hybrid_search(
     # scan, so a large or filtered candidate set would under-fill; this sets it wide enough.
     set_search_settings(session, candidates)
     qvec = embedder.embed([query])[0]
-    vec_ids = list(session.scalars(vector_query(qvec, filters, candidates)))
-    txt_ids = list(session.scalars(text_query(query, filters, candidates)))
+    # `shared_ranks` gives tied scores one rank each, so the fusion never sees the arbitrary order
+    # the index or the text sort returned equal rows in.
+    vec_rows = [
+        (row.id, row.score) for row in session.execute(vector_query(qvec, filters, candidates))
+    ]
+    txt_rows = [
+        (row.id, row.score) for row in session.execute(text_query(query, filters, candidates))
+    ]
     scores: dict[uuid.UUID, float] = {}
-    for ranked in (vec_ids, txt_ids):
-        for rank, item_id in enumerate(ranked, start=1):
+    for branch_rows in (vec_rows, txt_rows):
+        for item_id, rank in shared_ranks(branch_rows).items():
             scores[item_id] = scores.get(item_id, 0.0) + 1.0 / (rrf_k + rank)
-    # Item.id breaks equal-score ties, so the fused order is deterministic too.
-    top = sorted(scores, key=lambda i: (-scores[i], str(i)))[:k]
-    rows = {r.id: r for r in session.scalars(select(Item).where(Item.id.in_(top)))}
-    return [_hit(rows[i], scores[i]) for i in top]
+    # Equal fused scores are ordered by the item's stable (source, external_id) key, never its
+    # random uuid, so the output is reproducible; one query reads those columns for the fused ids.
+    keys = {
+        row.id: (row.source, row.external_id)
+        for row in session.execute(
+            select(Item.id, Item.source, Item.external_id).where(Item.id.in_(scores))
+        )
+    }
+    top = sorted(scores, key=lambda i: (-scores[i], *keys[i]))[:k]
+    item_rows = {r.id: r for r in session.scalars(select(Item).where(Item.id.in_(top)))}
+    return [_hit(item_rows[i], scores[i]) for i in top]
 
 
 def _hit(row: Item, score: float) -> Hit:

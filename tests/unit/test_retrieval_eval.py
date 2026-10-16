@@ -3,19 +3,16 @@
 import json
 import math
 from pathlib import Path
-from uuid import uuid4
 
 import pytest
 
 from evals.retrieval_eval import (
     GATED,
-    _check_no_ties,
     _ndcg,
     _recall,
     _reciprocal_rank,
     gate,
 )
-from paperwatch.retrieval.hybrid import Hit
 
 DATA = Path(__file__).resolve().parents[2] / "evals" / "data"
 
@@ -64,17 +61,6 @@ def test_gate_tolerance_is_001() -> None:
     # A 0.012 drop fails, a 0.008 drop passes: the boundary is the documented 0.01.
     assert gate(_metrics(recall_at_k=0.988), baseline) != []
     assert gate(_metrics(recall_at_k=0.992), baseline) == []
-
-
-def test_tie_guard_rejects_equal_fused_scores() -> None:
-    def hit(score: float) -> Hit:
-        return Hit(uuid4(), "t", "https://x/i", "vetted_preprint", "seed", score, "s")
-
-    with pytest.raises(ValueError, match="tie"):
-        # The tie is exactly at the k-th and (k+1)-th hits, for k = 2.
-        _check_no_ties([hit(1 / 61), hit(1 / 62), hit(1 / 62)], "q", 2)
-    # Distinct scores are accepted, and a tie outside the requested hits does not matter.
-    _check_no_ties([hit(1 / 61), hit(1 / 62)], "q", 1)
 
 
 def test_gate_requires_exactly_the_gated_baseline_keys() -> None:

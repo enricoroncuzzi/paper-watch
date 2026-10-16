@@ -3,7 +3,12 @@
 Tests check that code does what it says; an eval checks that retrieval ranks well enough, and a
 committed baseline turns a quality drop into a CI failure. This runs with the deterministic
 `FakeEmbedder`, so it is fast, offline and reproducible; real-model numbers come from the
-corpus-size checkpoints on real data, not from the fake embedder.
+corpus-size checkpoints on real data, not from the fake embedder. Reproducibility is guaranteed
+by construction: equal branch scores get one shared rank and equal fused scores are ordered by
+an item's stable `(source, external_id)` key, never its random uuid, and
+`tests/integration/test_eval_throwaway.py` proves two fresh databases score identically. That
+replaced the old `_check_no_ties` tripwire, which merely caught the nondeterminism a random-id
+tie-break produced after a change.
 """
 
 import json
@@ -48,19 +53,6 @@ def _load(path: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
-def _check_no_ties(hits: list[hybrid.Hit], question: str, k: int) -> None:
-    # A fused tie at the k-th place makes the top k depend on the fusion's random-id tie-break.
-    # This is a tripwire, not a proof: it sees only this run's ids, so a data edit that introduces
-    # a tie can still pass when the ids happen to order it, and ties inside a branch (ts_rank or
-    # the vector index) are not covered. It turns a silent drift into a loud stop.
-    scores = [round(h.score, 12) for h in hits]
-    if len(scores) != len(set(scores)):
-        raise ValueError(
-            f"fused scores tie within the top {k + 1} for {question!r}; a branch ordering may "
-            "have changed, or the data needs a change so the ranking is id-independent"
-        )
-
-
 def _recall(ranked: list[str | None], relevant: set[str]) -> float:
     return len(relevant.intersection(ranked)) / len(relevant)
 
@@ -95,6 +87,8 @@ def evaluate(
     repo = Repository(session)
     by_url: dict[str, str] = {}
     by_item: dict[uuid.UUID, str] = {}
+    # The stable key that orders a branch cut and a fused tie: (source, external_id).
+    key_of: dict[uuid.UUID, tuple[str, str]] = {}
     # Seed the corpus first: every row is admitted exactly as the pipeline would admit it, so the
     # eval exercises the real write path and the partial HNSW index.
     for row in _load(corpus):
@@ -118,6 +112,7 @@ def evaluate(
         )
         by_url[url] = row["external_id"]
         by_item[item_id] = row["external_id"]
+        key_of[item_id] = (item.source, row["external_id"])
     session.flush()
 
     totals: defaultdict[str, float] = defaultdict(float)
@@ -128,25 +123,38 @@ def evaluate(
     for q in qs:
         relevant = set(q["relevant"])
         kind = q["kind"]
-        # Request one extra hybrid hit so a tie at the k-th place is seen. The candidates count
-        # matches production's default, so the branch lists and the hybrid path agree.
-        hits = hybrid.hybrid_search(
-            session, embedder, q["question"], k=k + 1, candidates=candidates
-        )
-        _check_no_ties(hits, q["question"], k)
+        # The candidates count matches production's default, so the branch lists and the hybrid
+        # path agree. Tied branch scores share a rank and equal fused scores are ordered by the
+        # stable key, so the top k is reproducible across fresh databases; test_eval_throwaway
+        # proves it.
+        hits = hybrid.hybrid_search(session, embedder, q["question"], k=k, candidates=candidates)
         # The branch lists are the same public queries the fusion uses, limited like production and
         # then cut to k so the metrics are recall@k and MRR@k. The vector branch runs under the
         # same transaction-local settings hybrid_search set (shared helper), not by call order.
         qvec = embedder.embed([q["question"]])[0]
         hybrid.set_search_settings(session, candidates)
-        vector_ids = list(session.scalars(hybrid.vector_query(qvec, hybrid.Filters(), candidates)))
-        text_ids = list(
-            session.scalars(hybrid.text_query(q["question"], hybrid.Filters(), candidates))
-        )
+        vector_rows = [
+            (row.id, row.score)
+            for row in session.execute(hybrid.vector_query(qvec, hybrid.Filters(), candidates))
+        ]
+        text_rows = [
+            (row.id, row.score)
+            for row in session.execute(
+                hybrid.text_query(q["question"], hybrid.Filters(), candidates)
+            )
+        ]
+
+        def branch_ids(rows: list[tuple[uuid.UUID, float]]) -> list[str | None]:
+            # Cut the branch list at k with the shared rank first and the stable key second, so a
+            # tie at the boundary cannot depend on the order the database returned the rows in.
+            ranks = hybrid.shared_ranks(rows)
+            ordered = sorted(rows, key=lambda r: (ranks[r[0]], *key_of[r[0]]))
+            return [by_item.get(item_id) for item_id, _ in ordered[:k]]
+
         branch_lists = {
             "hybrid": [by_url.get(h.url) for h in hits[:k]],
-            "text_only": [by_item.get(i) for i in text_ids[:k]],
-            "vector_only": [by_item.get(i) for i in vector_ids[:k]],
+            "text_only": branch_ids(text_rows),
+            "vector_only": branch_ids(vector_rows),
         }
         for branch, ranked in branch_lists.items():
             # Hybrid keys carry no suffix; a branch-only key names the branch, then the kind.

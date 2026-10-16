@@ -147,9 +147,14 @@ def test_a_percent_encoded_password_still_migrates(
         admin.dispose()
 
 
-def test_two_throwaway_runs_give_identical_metrics(
+def test_eval_is_identical_across_fresh_databases(
     db_url: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # The evaluator's reproducibility guarantee: two fresh databases get different random uuids,
+    # yet every metric must match, because tied branch scores share a rank and equal fused scores
+    # are ordered by the item's stable key. This replaced the old `_check_no_ties` tripwire, which
+    # could only catch a nondeterminism after the fact and only for the questions the sampled ids
+    # happened to expose.
     _settings_for(monkeypatch, db_url)
 
     def body(session: object) -> dict[str, float]:
