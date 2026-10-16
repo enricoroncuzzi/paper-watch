@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<OAI-PMH xmlns="http://www.openarchives.org/OAI/2.0/" 
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://www.openarchives.org/OAI/2.0/ http://www.openarchives.org/OAI/2.0/OAI-PMH.xsd">
+    <responseDate>2026-10-16T07:58:05Z</responseDate>
+                <request verb="ListRecords" metadataPrefix="arXivRaw" from="2026-10-06" until="2026-10-06" set="stat:stat:ML">http://oaipmh.arxiv.org/oai</request>
+
+
+    <ListRecords><record>
+                <header>
+        <identifier>oai:arXiv.org:1909.09849</identifier>
+        <datestamp>2026-10-06</datestamp>
+            <setSpec>cs:cs:MA</setSpec>
+            <setSpec>cs:cs:AI</setSpec>
+            <setSpec>cs:cs:LG</setSpec>
+            <setSpec>stat:stat:ML</setSpec>
+    </header>
+
+            <metadata>
+                        <arXivRaw xmlns="http://arxiv.org/OAI/arXivRaw/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://arxiv.org/OAI/arXivRaw/ https://oaipmh.arxiv.org/OAI/arXivRaw.xsd">
+        <id>1909.09849</id>
+        <submitter>Shayegan Omidshafiei</submitter>
+            <version version="v1">
+                <date>Sat, 21 Sep 2019 16:05:31 GMT</date>
+                <size>568kb</size>
+                    <source_type>D</source_type>
+            </version>
+            <version version="v2">
+                <date>Wed, 30 Oct 2019 16:21:02 GMT</date>
+                <size>825kb</size>
+                    <source_type>D</source_type>
+            </version>
+            <version version="v3">
+                <date>Thu, 21 Nov 2019 10:05:19 GMT</date>
+                <size>824kb</size>
+                    <source_type>D</source_type>
+            </version>
+            <version version="v4">
+                <date>Fri, 10 Jan 2020 09:59:37 GMT</date>
+                <size>471kb</size>
+                    <source_type>D</source_type>
+            </version>
+        <title>Multiagent Evaluation under Incomplete Information</title>
+        <authors>Mark Rowland, Shayegan Omidshafiei, Karl Tuyls, Julien Perolat, Michal Valko, Georgios Piliouras, Remi Munos</authors>
+        <categories>cs.MA cs.AI cs.LG stat.ML</categories>
+            <license>http://arxiv.org/licenses/nonexclusive-distrib/1.0/</license>
+            <abstract>This paper investigates the evaluation of learned multiagent strategies in the incomplete information setting, which plays a critical role in ranking and training of agents. Traditionally, researchers have relied on Elo ratings for this purpose, with recent works also using methods based on Nash equilibria. Unfortunately, Elo is unable to handle intransitive agent interactions, and other techniques are restricted to zero-sum, two-player settings or are limited by the fact that the Nash equilibrium is intractable to compute. Recently, a ranking method called {\alpha}-Rank, relying on a new graph-based game-theoretic solution concept, was shown to tractably apply to general games. However, evaluations based on Elo or {\alpha}-Rank typically assume noise-free game outcomes, despite the data often being collected from noisy simulations, making this assumption unrealistic in practice. This paper investigates multiagent evaluation in the incomplete information regime, involving general-sum many-player games with noisy outcomes. We derive sample complexity guarantees required to confidently rank agents in this setting. We propose adaptive algorithms for accurate ranking, provide correctness and sample complexity guarantees, then introduce a means of connecting uncertainties in noisy match outcomes to uncertainties in rankings. We evaluate the performance of these approaches in several domains, including Bernoulli games, a soccer meta-game, and Kuhn poker.</abstract>
+    </arXivRaw>
+
+            </metadata>
+        </record><record>
+                <header>
+        <identifier>oai:arXiv.org:1506.04782</identifier>
+        <datestamp>2026-10-06</datestamp>
+            <setSpec>cs:cs:LG</setSpec>
+            <setSpec>stat:stat:ML</setSpec>
+    </header>
+
+            <metadata>
+                        <arXivRaw xmlns="http://arxiv.org/OAI/arXivRaw/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://arxiv.org/OAI/arXivRaw/ https://oaipmh.arxiv.org/OAI/arXivRaw.xsd">
+        <id>1506.04782</id>
+        <submitter>Manjesh Kumar Hanawal</submitter>
+            <version version="v1">
+                <date>Mon, 15 Jun 2015 21:42:45 GMT</date>
+                <size>2913kb</size>
+                    <source_type>D</source_type>
+            </version>
+            <version version="v2">
+                <date>Thu, 18 Jun 2015 22:40:51 GMT</date>
+                <size>2918kb</size>
+                    <source_type>D</source_type>
+            </version>
+        <title>Cheap Bandits</title>
+        <authors>Manjesh Kumar Hanawal and Venkatesh Saligrama and Michal Valko and R\&#39; emi Munos</authors>
+        <categories>cs.LG stat.ML</categories>
+            <comments>To be presented at ICML 2015</comments>
+            <license>http://arxiv.org/licenses/nonexclusive-distrib/1.0/</license>
+            <abstract>We consider stochastic sequential learning problems where the learner can observe the \textit{average reward of several actions}. Such a setting is interesting in many applications involving monitoring and surveillance, where the set of the actions to observe represent some (geographical) area. The importance of this setting is that in these applications, it is actually \textit{cheaper} to observe average reward of a group of actions rather than the reward of a single action. We show that when the reward is \textit{smooth} over a given graph representing the neighboring actions, we can maximize the cumulative reward of learning while \textit{minimizing the sensing cost}. In this paper we propose CheapUCB, an algorithm that matches the regret guarantees of the known algorithms for this setting and at the same time guarantees a linear cost again over them. As a by-product of our analysis, we establish a $\Omega(\sqrt{dT})$ lower bound on the cumulative regret of spectral bandits for a class of graphs with effective dimension $d$.</abstract>
+    </arXivRaw>
+
+            </metadata>
+        </record><resumptionToken></resumptionToken></ListRecords>
+</OAI-PMH>

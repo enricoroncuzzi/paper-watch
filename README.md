@@ -23,7 +23,10 @@ uv run alembic upgrade head   # create the database schema
 uv run pytest                 # run the test suite
 ```
 
-Configuration comes from `PW_*` environment variables; see [`.env.example`](.env.example).
+Configuration comes from `PW_*` environment variables; see [`.env.example`](.env.example). One
+matters for production: `PW_USER_AGENT` should identify the deployment with an address arXiv can
+contact (for example `paper-watch/0.1 (+https://github.com/enricoroncuzzi/paper-watch; you@example.com)`),
+because arXiv asks bulk harvesters to leave a contact and the committed default carries none.
 
 ## M1: what you can do now
 

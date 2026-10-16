@@ -26,9 +26,14 @@ S2_CADENCE = (
     (timedelta(days=90), timedelta(days=7)),
     (timedelta(days=365), timedelta(days=30)),
 )
-# arXiv announces papers hours to ~3 days after submission (longer over holidays), and its
-# query filters on submission date, so each run re-reads this much before the arXiv cursor.
-ARXIV_ANNOUNCEMENT_LAG = timedelta(days=7)
+# arXiv's bulk-harvest interface (OAI-PMH) lists records by last-modification datestamp, one
+# day at a time, so a paper is seen the day it is announced and again when it is revised.
+ARXIV_OAI_URL = "https://oaipmh.arxiv.org/oai"
+# arXivRaw carries every version with its exact date, unlike the plain arXiv format.
+ARXIV_OAI_PREFIX = "arXivRaw"
+# Each run re-reads one day before its cursor so a datestamp's time-zone boundary cannot miss a
+# record; the store's unique key absorbs the overlap.
+ARXIV_OAI_OVERLAP = timedelta(days=1)
 # A feed post can appear after its own date (CDN cache, feed regeneration, scheduled posts
 # dated at drafting, zone-less dates read as UTC), so each feed is re-read this far back too.
 FEED_OVERLAP = timedelta(days=7)

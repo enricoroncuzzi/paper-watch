@@ -1,27 +1,31 @@
-"""arXiv Atom API client.
+"""arXiv OAI-PMH bulk-harvest client storing arXivRaw metadata.
 
-Terms: https://info.arxiv.org/help/api/tou.html - at most one request every
-three seconds on one connection, and only metadata/abstracts are stored (CC0),
-never the PDF.
+Terms: https://info.arxiv.org/help/api/tou.html and https://info.arxiv.org/help/oa/index.html.
+OAI-PMH is arXiv's bulk-harvest interface and its preferred way to keep an up-to-date
+copy: at most one request every three seconds on one connection, metadata/abstracts only
+(CC0), never the PDF. A datestamp day is harvested at a time so a paper is seen the day it
+is announced and seen again when it is revised, which the Atom query interface never did.
 """
 
 import re
 import time
-from datetime import UTC, datetime
-from typing import Any
+from collections.abc import Iterator
+from datetime import UTC, date, datetime
+from email.utils import parsedate_to_datetime
+from xml.etree import ElementTree as ET
 
-import feedparser
 import httpx
 import structlog
-from tenacity import retry, stop_after_attempt, wait_exponential
 
+from paperwatch.config import ARXIV_OAI_PREFIX, ARXIV_OAI_URL
 from paperwatch.domain import Profile, RejectedEntry, SourceItem
+from paperwatch.sources.base import send_with_retries
 
-ARXIV_URL = "https://export.arxiv.org/api/query"
+# The OAI-PMH envelope and the arXivRaw metadata body; element names carry both.
+_OAI = "{http://www.openarchives.org/OAI/2.0/}"
+_RAW = "{http://arxiv.org/OAI/arXivRaw/}"
 # arXiv appends a version to every id (v1, v2, ...); identity is the base id.
-_VERSION = re.compile(r"v\d+$")
-# The API refuses start values past this ceiling, so paging must stop before it.
-_MAX_START = 30_000
+_VERSION = re.compile(r"v(\d+)$")
 log = structlog.get_logger()
 
 
@@ -30,40 +34,57 @@ def arxiv_base_id(raw: str) -> str:
     return _VERSION.sub("", raw.rstrip("/").split("/abs/")[-1])
 
 
-def _version_of(raw: str) -> int:
-    # Trailing "vN" ranks versions so the newest body wins; a bare id ranks 0.
-    match = _VERSION.search(raw.rstrip("/"))
-    return int(match.group()[1:]) if match else 0
+def oai_sets(profiles: list[Profile]) -> list[str]:
+    """The OAI sets to harvest for these profiles, sorted and deduplicated.
+
+    The cs archive has one umbrella set; any other archive is queried at its
+    sub-archive set, for example stat.ML -> stat:stat:ML.
+    """
+    sets: set[str] = set()
+    for profile in profiles:
+        for category in profile.categories:
+            archive, _, sub = category.partition(".")
+            if not sub:
+                continue
+            if archive == "cs":
+                sets.add("cs")
+            else:
+                sets.add(f"{archive}:{archive}:{sub}")
+    return sorted(sets)
 
 
-def _utc(parsed: tuple[int, ...]) -> datetime:
-    # feedparser hands back a naive struct_time; arXiv timestamps are UTC.
-    year, month, day, hour, minute, second = parsed[:6]
-    return datetime(year, month, day, hour, minute, second, tzinfo=UTC)
+def _term_pattern(term: str) -> re.Pattern[str]:
+    # A phrase's internal spaces match any whitespace, and \b keeps "bot" out of "robot".
+    parts = [re.escape(part) for part in term.split()]
+    return re.compile(r"\b" + r"\s+".join(parts) + r"\b", re.IGNORECASE)
 
 
-def _stamp(value: datetime) -> str:
-    # submittedDate is GMT: an aware value converts, a naive one is already UTC.
-    if value.tzinfo is None:
-        value = value.replace(tzinfo=UTC)
-    return f"{value.astimezone(UTC):%Y%m%d%H%M}"
+def _version_number(version: ET.Element) -> int:
+    # "v2" ranks above "v1"; an absent version ranks lowest.
+    match = _VERSION.search(version.get("version") or "")
+    return int(match.group(1)) if match else 0
 
 
-def _profile_query(p: Profile, since: datetime, until: datetime) -> str:
-    # Build one query per profile: category filter AND term filter AND date window.
-    cats = " OR ".join(f"cat:{c}" for c in p.categories)
-    terms = " OR ".join(f'all:"{t}"' for t in p.terms)
-    window = f"submittedDate:[{_stamp(since)} TO {_stamp(until)}]"
-    return f"({cats}) AND ({terms}) AND {window}"
+def _split_authors(value: str) -> tuple[str, ...]:
+    # arXivRaw separates authors with commas and a final " and "; a parenthesised
+    # affiliation follows the name and is not part of it.
+    authors: list[str] = []
+    for part in re.split(r",|\band\b", value):
+        name = re.sub(r"\([^)]*\)", "", part).strip()
+        if name:
+            authors.append(name)
+    return tuple(authors)
 
 
-def _total_results(feed: Any) -> int | None:
-    # opensearch:totalResults is how many entries the whole window holds.
-    raw = feed.get("opensearch_totalresults")
-    return int(raw) if raw else None
+def _published_at(version: ET.Element) -> datetime:
+    # OAI dates are RFC 2822 with a "GMT" zone; store the v1 date in UTC.
+    parsed = parsedate_to_datetime((version.findtext(f"{_RAW}date") or "").strip())
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
-class ArxivSource:
+class ArxivOaiSource:
     # Matches the source field written onto every SourceItem.
     name = "arxiv"
 
@@ -71,105 +92,155 @@ class ArxivSource:
         self,
         client: httpx.Client,
         profiles: list[Profile],
-        page_size: int = 100,
         pause_s: float = 3.0,
+        retry_wait_s: float = 60.0,
     ) -> None:
         self._client, self._profiles = client, profiles
-        self._page_size, self._pause_s = page_size, pause_s
-        # Entries skipped during the most recent fetch, for the run to dead-letter.
+        self._pause_s, self._retry_wait_s = pause_s, retry_wait_s
+        # Start of the last request attempt, for the pacing rule; None before the first.
+        self._last_request: float | None = None
+        # (categories, term patterns) per profile, so a page filters without recompiling.
+        self._match_terms = [
+            (set(p.categories), [_term_pattern(t) for t in p.terms]) for p in profiles
+        ]
+        # Records skipped during the most recent harvest, for the run to dead-letter.
         self.rejected: list[RejectedEntry] = []
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=3, max=30), reraise=True)
-    def _get(self, params: dict[str, str | int]) -> str:
-        # Retries keep at least 3 s between attempts, which doubles as the rate limit.
-        resp = self._client.get(ARXIV_URL, params=params)
-        resp.raise_for_status()
+    def _pace(self) -> None:
+        # Space request starts by pause_s on a monotonic clock, retries included; the
+        # clock is read before the request, so the request's own duration counts too.
+        now = time.monotonic()
+        if self._last_request is not None:
+            wait = self._pause_s - (now - self._last_request)
+            if wait > 0:
+                time.sleep(wait)
+        self._last_request = time.monotonic()
+
+    def _get(self, params: dict[str, str]) -> str:
+        # One retry after Retry-After or retry_wait_s, then the exception propagates so the
+        # run degrades and the source stops for the day.
+        resp = send_with_retries(
+            self._client,
+            "GET",
+            ARXIV_OAI_URL,
+            params=params,
+            attempts=2,
+            min_wait_s=self._retry_wait_s,
+            max_wait_s=self._retry_wait_s,
+            before_request=self._pace,
+        )
         return resp.text
 
-    def _item(self, e: Any) -> SourceItem:
-        # Feedparser entries are dict-like; a missing field raises and is re-labelled.
-        base = arxiv_base_id(e.id)
+    def _matches(self, categories: tuple[str, ...], text: str) -> bool:
+        # A record is in scope when a profile's category and one of its terms both hit.
+        cats = set(categories)
+        return any(
+            cats & profile_cats and any(pattern.search(text) for pattern in patterns)
+            for profile_cats, patterns in self._match_terms
+        )
+
+    def _item(self, record: ET.Element) -> SourceItem | None:
+        # None means the record is out of scope; a structural problem raises and is rejected.
+        raw = record.find(f".//{_RAW}arXivRaw")
+        if raw is None:
+            raise ValueError("record has no arXivRaw metadata")
+        raw_id = (raw.findtext(f"{_RAW}id") or "").strip()
+        if not raw_id:
+            raise ValueError("arXivRaw has no id")
+        versions = raw.findall(f"{_RAW}version")
+        if not versions:
+            raise ValueError("arXivRaw has no version")
+        ordered = sorted(versions, key=_version_number)
+        if not (ordered[0].findtext(f"{_RAW}date") or "").strip():
+            raise ValueError("arXivRaw v1 has no date")
+        # Normalise whitespace in the title and abstract: OAI carries newlines and runs.
+        title = " ".join((raw.findtext(f"{_RAW}title") or "").split())
+        abstract = " ".join((raw.findtext(f"{_RAW}abstract") or "").split())
+        categories = tuple((raw.findtext(f"{_RAW}categories") or "").split())
+        if not self._matches(categories, f"{title} {abstract}"):
+            return None
+        base = arxiv_base_id(raw_id)
         return SourceItem(
             source=self.name,
             external_id=base,
-            # Normalise whitespace: Atom carries newlines in titles/summaries.
-            title=" ".join(e.title.split()),
-            authors=tuple(a.name for a in e.get("authors", [])),
-            text=" ".join(e.summary.split()),
+            title=title,
+            authors=_split_authors(raw.findtext(f"{_RAW}authors") or ""),
+            text=abstract,
             url=f"https://arxiv.org/abs/{base}",
-            published_at=_utc(e.published_parsed),
-            categories=tuple(t.term for t in e.get("tags", [])),
+            # The v1 date is the announcement date; a later version keeps the same base id.
+            published_at=_published_at(ordered[0]),
+            categories=categories,
             licence="CC0-1.0 (metadata)",
-            version=_version_of(e.id),
+            version=_version_number(ordered[-1]),
         )
 
-    def fetch(self, since: datetime, until: datetime) -> list[SourceItem]:
-        # rejected describes one fetch; clear it so callers never read stale rows.
+    def _parse_page(self, text: str) -> tuple[list[SourceItem], str]:
+        root = ET.fromstring(text)  # noqa: S314 - trusted arXiv OAI over TLS, no entity resolution
+        error = root.find(f"{_OAI}error")
+        if error is not None:
+            code = error.get("code") or "unknown"
+            if code == "noRecordsMatch":
+                return [], ""  # a quiet datestamp day, not a failure
+            raise ValueError(f"OAI-PMH error {code}: {(error.text or '').strip()}")
+        listed = root.find(f"{_OAI}ListRecords")
+        if listed is None:
+            raise ValueError("OAI-PMH response has no ListRecords element")
+        items: list[SourceItem] = []
+        for record in listed.findall(f"{_OAI}record"):
+            header = record.find(f"{_OAI}header")
+            if header is not None and header.get("status") == "deleted":
+                continue  # a withdrawn paper is not a news item
+            try:
+                item = self._item(record)
+            except (AttributeError, KeyError, TypeError, ValueError) as exc:
+                # A deterministic bad record must not block the page: skip it and record
+                # the OAI identifier so Task 9 dead-letters it and still advances the day.
+                ref = header.findtext(f"{_OAI}identifier") if header is not None else None
+                ref = ref or "<missing id>"
+                self.rejected.append(RejectedEntry(source=self.name, ref=ref, error=str(exc)))
+                log.warning("arxiv_record_rejected", ref=ref, error=str(exc))
+                continue
+            if item is not None:
+                items.append(item)
+        token_el = listed.find(f"{_OAI}resumptionToken")
+        token = (token_el.text or "").strip() if token_el is not None else ""
+        return items, token
+
+    def harvest(self, day: date) -> Iterator[list[SourceItem]]:
+        """Yield one filtered page per OAI response for `day`, oldest set first.
+
+        The caller receives each page before the next request goes out, so it can park
+        the page durably and only then ask for the resumption token.
+        """
+        # rejected describes one harvest; clear it so callers never read stale rows.
         self.rejected = []
-        seen: dict[str, SourceItem] = {}
-        # Highest version number stored per base id, to pick the newest body.
-        versions: dict[str, int] = {}
-        for profile in self._profiles:
-            start = 0
+        # Base ids already yielded in this call: a paper cross-listed into two sets is
+        # yielded once, at the version its single arXivRaw record lists (its highest).
+        seen: set[str] = set()
+        for set_spec in oai_sets(self._profiles):
+            token = ""
+            first = True
             while True:
-                text = self._get(
+                params = (
                     {
-                        "search_query": _profile_query(profile, since, until),
-                        "sortBy": "submittedDate",
-                        "sortOrder": "descending",
-                        "start": start,
-                        "max_results": self._page_size,
+                        "verb": "ListRecords",
+                        "metadataPrefix": ARXIV_OAI_PREFIX,
+                        "set": set_spec,
+                        "from": day.isoformat(),
+                        "until": day.isoformat(),
                     }
+                    if first
+                    else {"verb": "ListRecords", "resumptionToken": token}
                 )
-                feed = feedparser.parse(text)
-                entries = feed.entries
-                total = _total_results(feed.feed)
-                for e in entries:
-                    try:
-                        item = self._item(e)
-                    except (AttributeError, KeyError, TypeError, ValueError) as exc:
-                        # A deterministic bad entry must not block the whole source, so
-                        # skip it and record the id: Task 9 writes a dead letter, marks
-                        # the run partial, and still advances the cursor.
-                        ref = e.get("id") or "<missing id>"
-                        self.rejected.append(
-                            RejectedEntry(source=self.name, ref=ref, error=str(exc))
-                        )
-                        log.warning("arxiv_entry_rejected", ref=ref, error=str(exc))
+                items, token = self._parse_page(self._get(params))
+                page: list[SourceItem] = []
+                for item in items:
+                    if item.external_id in seen:
                         continue
-                    # Replace the stored body when a higher version of the same base id
-                    # arrives, independent of the order pages happen to return.
-                    version = _version_of(e.id)
-                    if item.external_id not in seen or version > versions[item.external_id]:
-                        seen[item.external_id] = item
-                        versions[item.external_id] = version
-                # Pacing: one request every pause_s seconds, retries included.
-                time.sleep(self._pause_s)
-                if not entries:
-                    # An empty page ends paging only when the total is unknown or
-                    # reached; otherwise it is a transient gap and returning early
-                    # would silently lose the rest of the window.
-                    if total is not None and start < total:
-                        raise ValueError(
-                            f"arXiv returned an empty page at start={start} "
-                            f"but totalResults={total}"
-                        )
+                    seen.add(item.external_id)
+                    page.append(item)
+                if page:
+                    yield page
+                first = False
+                if not token:
                     break
-                if total is not None and start + len(entries) >= total:
-                    # totalResults says we have the whole window.
-                    break
-                if len(entries) < self._page_size:
-                    # A short page is an ending only when no total is known; with a
-                    # total that says more exist it is a truncated response, so fail
-                    # loudly and let the run dead-letter and replay the window.
-                    if total is not None:
-                        raise ValueError(
-                            f"arXiv returned a short page ({len(entries)}) at "
-                            f"start={start} but totalResults={total}"
-                        )
-                    break
-                start += self._page_size
-                if start >= _MAX_START:
-                    # Past the API ceiling we cannot page further; stop rather than loop.
-                    break
-        return list(seen.values())

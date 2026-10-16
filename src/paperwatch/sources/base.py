@@ -1,6 +1,7 @@
 """Shared pieces for every source client: the HTTP client factory and retries."""
 
 import math
+from collections.abc import Callable
 from contextlib import suppress
 from functools import partial
 from typing import Any
@@ -61,6 +62,7 @@ def send_with_retries(
     attempts: int = 3,
     min_wait_s: float = 1.0,
     max_wait_s: float = 30.0,
+    before_request: Callable[[], None] | None = None,
     **kwargs: Any,
 ) -> httpx.Response:
     """Send one request, retrying 429/503 and transport errors, and raise on failure.
@@ -78,6 +80,10 @@ def send_with_retries(
         reraise=True,
     ):
         with attempt:
+            if before_request is not None:
+                # A caller that must pace every attempt (arXiv's one-request-per-3 s
+                # rule) hooks in here, so a retry is paced too, not only the first try.
+                before_request()
             resp = client.request(method, url, **kwargs)
             resp.raise_for_status()
             return resp

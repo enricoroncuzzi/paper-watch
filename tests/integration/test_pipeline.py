@@ -1,5 +1,6 @@
 import dataclasses
-from datetime import UTC, datetime, timedelta
+from collections.abc import Callable, Iterator
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from unittest.mock import DEFAULT, MagicMock
 
@@ -11,7 +12,6 @@ from structlog.testing import capture_logs
 
 from paperwatch.admission import load_admission
 from paperwatch.config import (
-    ARXIV_ANNOUNCEMENT_LAG,
     FEED_OVERLAP,
     HF_RECHECK_HORIZON,
     INGEST_LOCK_KEY,
@@ -107,12 +107,32 @@ class FlakyEmbedder(FakeEmbedder):
         return super().embed(texts)
 
 
+def _serve_papers(s: Sources) -> Callable[[date], Iterator[list[SourceItem]]]:
+    # A fake harvest that serves the source's current `papers` as one page every day; the
+    # pipeline dedupes by (source, external_id), so a run still stores each item once.
+    def harvest(day: date) -> Iterator[list[SourceItem]]:
+        return iter([s.arxiv.papers] if s.arxiv.papers else [])
+
+    return harvest
+
+
+def _pages_for(
+    pages: dict[date, list[list[SourceItem]]],
+) -> Callable[[date], Iterator[list[SourceItem]]]:
+    # A day missing from the map has no records; a present day yields its pages in order.
+    def harvest(day: date) -> Iterator[list[SourceItem]]:
+        return iter(pages.get(day, []))
+
+    return harvest
+
+
 def fake_sources(papers: list[SourceItem], feed_items: list[SourceItem] | None = None) -> Sources:
     s = Sources(
         arxiv=MagicMock(), hf=MagicMock(), s2=MagicMock(), feeds=MagicMock(), feed_list=[FEED]
     )
-    s.arxiv.fetch.return_value = papers
-    s.arxiv.rejected = []  # filled by the real client when an entry cannot be parsed
+    s.arxiv.papers = list(papers)  # mutable: a test changes it between runs
+    s.arxiv.rejected = []  # filled by the real client when a record cannot be parsed
+    s.arxiv.harvest.side_effect = _serve_papers(s)
     # Signal sources report outages through these flags instead of raising (Task 4).
     s.hf.degraded, s.hf.failure = False, None
     s.s2.degraded, s.s2.failure = False, None
@@ -147,6 +167,7 @@ def run(
     classifier: Classifier | None = None,
     embedder: Embedder | None = None,
     ledger: Ledger | None = None,
+    since_override: datetime | None = None,
 ) -> RunResult:
     return run_ingestion(
         session,
@@ -156,6 +177,7 @@ def run(
         ledger or Ledger(10**9),
         ADM,
         now,
+        since_override=since_override,
     )
 
 
@@ -217,7 +239,7 @@ def test_candidate_admitted_when_upvotes_arrive_late(db_session: Session) -> Non
     first = run(db_session, src)
     assert first.counts["stored"] == 0 and row(db_session, "2510.1").status == "candidate"
     day20 = NOW + timedelta(days=20)
-    src.arxiv.fetch.return_value = []  # long out of the arXiv fetch window
+    src.arxiv.papers = []  # long out of the arXiv fetch window
     src.hf.upvotes.return_value = {"2510.1": 14}
     res = run(db_session, src, now=day20)
     assert src.hf.upvotes.call_args.args == ((day20 - HF_RECHECK_HORIZON).date(), day20.date())
@@ -247,7 +269,7 @@ def test_lab_report_admitted_same_day_then_basis_improves(db_session: Session) -
         "lab_author",
     )
     day3 = NOW + timedelta(days=3)
-    src.arxiv.fetch.return_value = []
+    src.arxiv.papers = []
     src.hf.upvotes.return_value = {"2510.1": 120}
     res = run(db_session, src, now=day3)
     assert res.counts["basis_improved"] == 1 and res.counts["promoted"] == 0
@@ -266,7 +288,7 @@ def test_vetted_preprint_promoted_when_venue_appears_months_later(db_session: Se
     src.s2.lookup.return_value = {"2510.1": Signals(venue="arXiv.org", citation_count=6)}
     run(db_session, src)
     day90 = NOW + timedelta(days=90)
-    src.arxiv.fetch.return_value = []
+    src.arxiv.papers = []
     src.s2.lookup.return_value = {
         "2510.1": Signals(
             venue="International Conference on Learning Representations",
@@ -348,7 +370,7 @@ def test_s2_refused_chunk_stays_due(db_session: Session, monkeypatch: pytest.Mon
     src.hf.upvotes.return_value = {}  # no evidence: both stay candidates, checked daily
     run(db_session, src)
     day1 = NOW + timedelta(days=1)
-    src.arxiv.fetch.return_value = []
+    src.arxiv.papers = []
     src.s2.refused = {"2510.2"}
     src.s2.degraded, src.s2.failure = True, "s2 chunk at 500: HTTP 429"
     res = run(db_session, src, now=day1)
@@ -393,7 +415,7 @@ def test_new_arxiv_version_replaces_text_without_reclassifying(db_session: Sessi
         paper("2510.1", "Agent harness", version=2),
         text="Agent harness. We add a memory module for tool use.",
     )
-    src.arxiv.fetch.return_value = [v2]
+    src.arxiv.papers = [v2]
     res = run(db_session, src, now=NOW + timedelta(days=1), classifier=clf, embedder=emb)
     r = row(db_session, "2510.1")
     assert (r.version, r.text) == (2, v2.text) and res.counts["text_updated"] == 1
@@ -407,7 +429,7 @@ def test_failed_reembedding_keeps_the_old_version(db_session: Session) -> None:
     before = row(db_session, "2510.1")
     old_text, old_vec = before.text, list(before.embedding)
     v2 = dataclasses.replace(paper("2510.1", "Agent harness", version=2), text="Rewritten.")
-    src.arxiv.fetch.return_value = [v2]
+    src.arxiv.papers = [v2]
     emb.failures = 1
     res = run(db_session, src, now=NOW + timedelta(days=1), embedder=emb)
     assert res.status == "partial" and res.counts["failed"] == 1
@@ -432,17 +454,19 @@ def test_source_failure_records_dead_letter_and_partial_run(db_session: Session)
 
 def test_failed_source_window_is_replayed_next_run(db_session: Session) -> None:
     src = fake_sources([], feed_items=[blog("p1")])
-    src.arxiv.fetch.side_effect = RuntimeError("arXiv down")
+    src.arxiv.harvest.side_effect = RuntimeError("arXiv down")
     first = run(db_session, src)
     assert first.status == "partial" and first.counts["stored"] == 1
-    src.arxiv.fetch.side_effect = None
-    src.arxiv.fetch.return_value = [paper("2510.5", "Coding agent")]
+    pinned = Repository(db_session).cursor("arxiv")
+    assert pinned == datetime(2026, 10, 5, tzinfo=UTC)  # midnight of the first missed day
+    src.arxiv.harvest.side_effect = _serve_papers(src)
+    src.arxiv.papers = [paper("2510.5", "Coding agent")]
     src.hf.upvotes.return_value = {"2510.5": 50}
-    later = NOW + timedelta(days=7)
-    second = run(db_session, src, now=later)
-    since, until = src.arxiv.fetch.call_args.args
-    # The pinned cursor is the missed window's start; the fetch reaches back the lag before it.
-    assert since == NOW - timedelta(days=7) - ARXIV_ANNOUNCEMENT_LAG and until == later
+    before = src.arxiv.harvest.call_count
+    second = run(db_session, src, now=NOW + timedelta(days=7))
+    days = [c.args[0] for c in src.arxiv.harvest.call_args_list[before:]]
+    # The pinned cursor is the missed window's start; the harvest reaches one overlap day before it.
+    assert days[0] == pinned.date() - timedelta(days=1)
     assert second.status == "succeeded" and second.counts["stored"] == 1
 
 
@@ -454,7 +478,7 @@ def test_admission_failure_is_retried_next_run(db_session: Session) -> None:
     assert row(db_session, "2510.6").status == "candidate"
     # The failed embed rolls the S2 check time back with the item, so the paper stays due.
     assert row(db_session, "2510.6").s2_checked_at is None
-    src.arxiv.fetch.return_value = []
+    src.arxiv.papers = []
     # Even one hour later (inside the daily cadence) the paper is looked up again.
     run(db_session, src, now=NOW + timedelta(hours=1), embedder=emb)
     [ids] = src.s2.lookup.call_args.args
@@ -592,7 +616,7 @@ def test_budget_stop_does_not_resurrect_given_up_items(db_session: Session) -> N
     ledger = Ledger(1)
     trigger = paper("2510.trigger", "Coding agent")
     # The trigger comes first, so a budget loop over the rest would see the poison paper.
-    src.arxiv.fetch.return_value = [trigger, poison]
+    src.arxiv.papers = [trigger, poison]
     res = run(
         db_session,
         src,
@@ -635,7 +659,7 @@ def test_crash_after_fetch_commit_resumes_and_finishes(db_session: Session) -> N
     crashed = db_session.scalars(select(Run).where(Run.status == "failed")).one()
     assert crashed.finished_at is not None  # the row is closed, not left 'running'
     # The next run's arXiv window no longer covers the paper; the parked letter resumes it.
-    src.arxiv.fetch.return_value = []
+    src.arxiv.papers = []
     res = run(db_session, src, now=NOW + timedelta(days=1))
     assert res.status == "succeeded"
     assert row(db_session, "2510.old").status == "admitted"
@@ -667,7 +691,7 @@ def test_corrupt_dead_letter_payload_is_counted_not_fatal(db_session: Session) -
 
 def test_crash_during_fetch_finishes_the_run(db_session: Session) -> None:
     src = fake_sources([])
-    src.arxiv.fetch.side_effect = SystemExit("killed during fetch")
+    src.arxiv.harvest.side_effect = SystemExit("killed during fetch")
     with pytest.raises(SystemExit):
         run(db_session, src)
     crashed = db_session.scalars(select(Run).where(Run.status == "failed")).one()
@@ -692,21 +716,132 @@ def test_hard_kill_left_running_run_is_closed_next_run(
     monkeypatch.undo()
     stale = db_session.scalars(select(Run).where(Run.status == "running")).one()
     assert stale.finished_at is None
-    src.arxiv.fetch.return_value = []
+    src.arxiv.papers = []
     run(db_session, src, now=NOW + timedelta(days=1))
     db_session.refresh(stale)
     assert stale.status == "failed" and stale.finished_at is not None
 
 
-def test_arxiv_refetch_overlaps_announcement_lag(db_session: Session) -> None:
-    # A paper submitted before the cursor but announced after it must still be fetched.
+def test_first_run_harvests_the_lookback_window(db_session: Session) -> None:
+    days: list[date] = []
+    src = fake_sources([])
+
+    def harvest(day: date) -> Iterator[list[SourceItem]]:
+        days.append(day)
+        return iter([])
+
+    src.arxiv.harvest.side_effect = harvest
+    run(db_session, src)
+    # Cursorless: (now - 7 days).date() through now.date(), oldest first.
+    assert days == [date(2026, 10, 5) + timedelta(days=offset) for offset in range(8)]
+    # Every past day completed, so the cursor is today's midnight; today never completes.
+    assert Repository(db_session).cursor("arxiv") == datetime(2026, 10, 12, tzinfo=UTC)
+
+
+def test_second_run_starts_at_cursor_minus_the_overlap(db_session: Session) -> None:
     src = fake_sources([paper("2510.1", "Agent harness")])
     run(db_session, src)
-    tomorrow = NOW + timedelta(days=1)
-    run(db_session, src, now=tomorrow)
-    since, until = src.arxiv.fetch.call_args.args
-    assert since == NOW - ARXIV_ANNOUNCEMENT_LAG and until == tomorrow
-    assert Repository(db_session).cursor("arxiv") == tomorrow
+    days: list[date] = []
+    serve = _serve_papers(src)
+
+    def harvest(day: date) -> Iterator[list[SourceItem]]:
+        days.append(day)
+        return serve(day)
+
+    src.arxiv.harvest.side_effect = harvest
+    res = run(db_session, src, now=NOW + timedelta(days=1))
+    # Cursor midnight(2026-10-12) minus the one-day overlap.
+    assert days[0] == date(2026, 10, 11)
+    # The re-read overlap stores nothing twice.
+    assert res.counts["new"] == 0 and res.counts["stored"] == 0
+    assert len(db_session.scalars(select(Item)).all()) == 1
+
+
+def test_failure_on_a_later_page_keeps_completed_days_and_replays(db_session: Session) -> None:
+    day0, day1, day2 = date(2026, 10, 5), date(2026, 10, 6), date(2026, 10, 7)
+    first, second = paper("2510.1", "Agent harness"), paper("2510.2", "Coding agent")
+    page1, page2 = paper("2510.3", "Agent planning"), paper("2510.4", "Agent memory")
+
+    def harvest(day: date) -> Iterator[list[SourceItem]]:
+        if day == day0:
+            yield [first]
+        elif day == day1:
+            yield [second]
+        elif day == day2:
+            yield [page1]
+            raise RuntimeError("page 2 of the day timed out")
+
+    src = fake_sources([])
+    src.arxiv.harvest.side_effect = harvest
+    first_run = run(db_session, src)
+    assert first_run.status == "partial"
+    # The two days before the failure completed; the third day's page 1 is parked and stored.
+    repo = Repository(db_session)
+    assert repo.cursor("arxiv") == datetime(2026, 10, 7, tzinfo=UTC)
+    assert set(db_session.scalars(select(Item.external_id))) == {"2510.1", "2510.2", "2510.3"}
+    letters = db_session.scalars(
+        select(DeadLetter).where(DeadLetter.source == "arxiv", DeadLetter.ref == "window")
+    ).all()
+    assert len(letters) == 1 and letters[0].resolved_at is None
+
+    # The next run re-harvests from the third day minus the overlap and stores the rest once.
+    def replay(day: date) -> Iterator[list[SourceItem]]:
+        if day == day2:
+            yield [page2]
+
+    src.arxiv.harvest.side_effect = replay
+    src.hf.upvotes.return_value = {"2510.4": 50}
+    res = run(db_session, src, now=NOW + timedelta(days=1))
+    assert set(db_session.scalars(select(Item.external_id))) == {
+        "2510.1",
+        "2510.2",
+        "2510.3",
+        "2510.4",
+    }
+    assert res.counts["stored"] == 1
+
+
+def test_repeated_failures_without_a_cursor_pin_the_first_day(db_session: Session) -> None:
+    src = fake_sources([])
+    src.arxiv.harvest.side_effect = RuntimeError("arXiv down")
+    assert run(db_session, src).status == "partial"
+    pinned = Repository(db_session).cursor("arxiv")
+    assert pinned == datetime(2026, 10, 5, tzinfo=UTC)  # midnight of the first missed day
+    assert run(db_session, src, now=NOW + timedelta(days=1)).status == "partial"
+    # The cursor does not slide forward with the clock, so the missed window stays covered.
+    assert Repository(db_session).cursor("arxiv") == pinned
+
+
+def test_since_override_harvests_from_that_date(db_session: Session) -> None:
+    days: list[date] = []
+    src = fake_sources([])
+
+    def harvest(day: date) -> Iterator[list[SourceItem]]:
+        days.append(day)
+        return iter([])
+
+    src.arxiv.harvest.side_effect = harvest
+    res = run(db_session, src, since_override=NOW - timedelta(days=3))
+    assert days[0] == date(2026, 10, 9)
+    assert days[-1] == date(2026, 10, 12)
+    assert Repository(db_session).cursor("arxiv") == datetime(2026, 10, 12, tzinfo=UTC)
+    assert res.status == "succeeded"
+
+
+def test_weekend_only_window_with_no_items_is_not_flagged(db_session: Session) -> None:
+    src = fake_sources([])
+    saturday = datetime(2026, 10, 10, 6, tzinfo=UTC)
+    res = run(db_session, src, now=saturday + timedelta(days=1), since_override=saturday)
+    problems = db_session.get_one(Run, res.run_id).health["problems"]
+    assert "arxiv fetched 0 items" not in problems
+
+
+def test_weekday_window_with_no_items_is_flagged(db_session: Session) -> None:
+    src = fake_sources([])
+    wednesday = datetime(2026, 10, 7, 6, tzinfo=UTC)
+    res = run(db_session, src, now=wednesday, since_override=wednesday)
+    problems = db_session.get_one(Run, res.run_id).health["problems"]
+    assert "arxiv fetched 0 items" in problems
 
 
 def test_malformed_arxiv_entry_is_dead_lettered_once_and_cursor_advances(
@@ -720,8 +855,8 @@ def test_malformed_arxiv_entry_is_dead_lettered_once_and_cursor_advances(
     ]
     first = run(db_session, src)
     assert first.status == "partial" and first.counts["malformed"] == 1
-    assert Repository(db_session).cursor("arxiv") == NOW
-    # The lag overlap re-reads the same bad entry tomorrow: it is not recorded twice.
+    assert Repository(db_session).cursor("arxiv") == datetime(2026, 10, 12, tzinfo=UTC)
+    # The daily overlap re-reads the same bad entry tomorrow: it is not recorded twice.
     second = run(db_session, src, now=NOW + timedelta(days=1))
     assert second.status == "succeeded" and second.counts["malformed"] == 0
     # Exactly one open malformed letter: the parked letter for the good paper is resolved.
@@ -820,33 +955,35 @@ def test_signal_source_outage_is_visible_and_cursor_advances(db_session: Session
     dl = db_session.scalars(select(DeadLetter).where(DeadLetter.source == "s2")).one()
     assert "429" in dl.error
     # arXiv was fetched fine, so its cursor moves; the next run's re-check repeats the lookup.
-    assert Repository(db_session).cursor("arxiv") == NOW
+    assert Repository(db_session).cursor("arxiv") == datetime(2026, 10, 12, tzinfo=UTC)
     health = db_session.get_one(Run, res.run_id).health
     assert "1 signal sources degraded" in health["problems"]
 
 
 def test_daily_runs_over_a_week_lose_nothing(db_session: Session) -> None:
-    # Replays seven consecutive daily runs against a fake arXiv that, like the real one,
-    # only returns papers already announced. One paper is announced three days after
-    # submission; the feed is down on day 3. Nothing may be lost or stored twice.
+    # Replays seven consecutive daily runs against a fake arXiv that, like OAI-PMH, returns a
+    # paper on its announcement datestamp day. One paper is announced four days later; the feed
+    # is down on day 3. Nothing may be lost or stored twice.
     day0 = NOW
-    catalogue = [  # (id, submitted, announced)
-        ("2510.11", day0 - timedelta(hours=30), day0 - timedelta(hours=8)),
-        ("2510.12", day0 + timedelta(hours=10), day0 + timedelta(hours=20)),
-        ("2510.13", day0 + timedelta(days=1, hours=12), day0 + timedelta(days=4, hours=14)),
-        ("2510.14", day0 + timedelta(days=5, hours=2), day0 + timedelta(days=5, hours=13)),
+    catalogue = [  # (id, announcement day offset from the first run)
+        ("2510.11", 0),
+        ("2510.12", 1),
+        ("2510.13", 4),
+        ("2510.14", 5),
     ]
 
-    def announced(since: datetime, until: datetime) -> list[SourceItem]:
-        return [
-            dataclasses.replace(paper(eid, "Coding agent harness"), published_at=sub)
-            for eid, sub, ann in catalogue
-            if since <= sub < until and ann <= until
+    def announced(day: date) -> Iterator[list[SourceItem]]:
+        offset = (day - day0.date()).days
+        items = [
+            paper(eid, "Coding agent harness")
+            for eid, announced_offset in catalogue
+            if announced_offset == offset
         ]
+        return iter([items] if items else [])
 
     src = fake_sources([], feed_items=[blog("p1")])
-    src.arxiv.fetch.side_effect = announced
-    src.hf.upvotes.return_value = {eid: 50 for eid, _, _ in catalogue}
+    src.arxiv.harvest.side_effect = announced
+    src.hf.upvotes.return_value = {eid: 50 for eid, _ in catalogue}
     statuses = []
     for day in range(7):
         now = day0 + timedelta(days=day)
@@ -858,7 +995,7 @@ def test_daily_runs_over_a_week_lose_nothing(db_session: Session) -> None:
             select(Item.external_id).where(Item.source == "arxiv", Item.status == "admitted")
         )
     )
-    assert admitted == [eid for eid, _, _ in catalogue]
+    assert admitted == [eid for eid, _ in catalogue]
     assert len(db_session.scalars(select(Item).where(Item.source == "feed")).all()) == 1
 
 
@@ -889,20 +1026,20 @@ def test_second_run_is_skipped_while_the_lock_is_held(db_session: Session, engin
     assert len(db_session.scalars(select(Run)).all()) == 1
     assert db_session.get_one(Run, stale).status == "running"
     assert db_session.get_one(Run, stale).finished_at is None
-    src.arxiv.fetch.assert_not_called()
+    src.arxiv.harvest.assert_not_called()
     src.feeds.fetch_one.assert_not_called()
 
 
 def test_failed_run_releases_the_lock(db_session: Session) -> None:
     src = fake_sources([])
-    src.arxiv.fetch.side_effect = SystemExit("killed during fetch")
+    src.arxiv.harvest.side_effect = SystemExit("killed during fetch")
     with pytest.raises(SystemExit):
         run(db_session, src)
     # The failed row is closed with the run's clock, not the database's.
     failed = db_session.scalars(select(Run).where(Run.status == "failed")).one()
     assert failed.started_at == NOW and failed.finished_at == NOW
     # The finally released the lock, so a following run is not skipped.
-    src.arxiv.fetch.side_effect = None
+    src.arxiv.harvest.side_effect = _serve_papers(src)
     res = run(db_session, src, now=NOW + timedelta(minutes=1))
     assert res.status == "succeeded"
 
@@ -927,7 +1064,7 @@ def test_degraded_signal_letter_is_written_once_and_closed_on_recovery(
 
 def test_arxiv_outage_letter_is_written_once_and_closed_on_recovery(db_session: Session) -> None:
     src = fake_sources([paper("2510.1", "Agent harness")])
-    src.arxiv.fetch.side_effect = RuntimeError("arXiv 503")
+    src.arxiv.harvest.side_effect = RuntimeError("arXiv 503")
     assert run(db_session, src).status == "partial"
     assert run(db_session, src, now=NOW + timedelta(days=1)).status == "partial"
     window = db_session.scalars(
@@ -935,8 +1072,8 @@ def test_arxiv_outage_letter_is_written_once_and_closed_on_recovery(db_session: 
     ).all()
     assert len(window) == 1 and window[0].resolved_at is None
     # A good fetch closes the outage letter.
-    src.arxiv.fetch.side_effect = None
-    src.arxiv.fetch.return_value = [paper("2510.2", "Coding agent")]
+    src.arxiv.harvest.side_effect = _serve_papers(src)
+    src.arxiv.papers = [paper("2510.2", "Coding agent")]
     res = run(db_session, src, now=NOW + timedelta(days=2))
     assert res.status == "succeeded"
     db_session.refresh(window[0])
@@ -1019,7 +1156,7 @@ def test_stored_item_retry_resolution_uses_the_run_clock(db_session: Session) ->
     src = fake_sources([paper("2510.1", "Agent harness")])
     run(db_session, src, embedder=emb)  # stored and admitted
     v2 = dataclasses.replace(paper("2510.1", "Agent harness", version=2), text="Rewritten.")
-    src.arxiv.fetch.return_value = [v2]
+    src.arxiv.papers = [v2]
     emb.failures = 1
     run(db_session, src, now=NOW + timedelta(days=1), embedder=emb)  # re-embedding fails: letter
     letter = db_session.scalars(
@@ -1035,7 +1172,7 @@ def test_lock_holder_is_not_idle_in_transaction(db_session: Session) -> None:
     src = fake_sources([paper("2510.1", "Agent harness")])
     states: list[str] = []
 
-    def peek(*args: object) -> list[SourceItem]:
+    def peek(day: date) -> Iterator[list[SourceItem]]:
         # The advisory lock holder is this run, mid-flight: it must not sit in a transaction.
         states.extend(
             db_session.execute(
@@ -1045,9 +1182,9 @@ def test_lock_holder_is_not_idle_in_transaction(db_session: Session) -> None:
                 )
             ).scalars()
         )
-        return [paper("2510.1", "Agent harness")]
+        return iter([[paper("2510.1", "Agent harness")]])
 
-    src.arxiv.fetch.side_effect = peek
+    src.arxiv.harvest.side_effect = peek
     assert run(db_session, src).status == "succeeded"
     assert states  # the lock is taken while the run is in flight
     assert "idle in transaction" not in states
@@ -1058,11 +1195,11 @@ def test_lock_is_held_for_the_whole_run(db_session: Session, engine: Engine) -> 
     seen: dict[str, object] = {}
     probing = True
 
-    def probe_second_run(*args: object) -> list[SourceItem]:
+    def probe_second_run(day: date) -> Iterator[list[SourceItem]]:
         # Mid-run, on its own connection, a second run must still see the lock held.
         nonlocal probing
         if not probing:
-            return [paper("2510.1", "Agent harness")]
+            return iter([[paper("2510.1", "Agent harness")]])
         probing = False
         second = make_session_factory(engine)()
         try:
@@ -1074,9 +1211,9 @@ def test_lock_is_held_for_the_whole_run(db_session: Session, engine: Engine) -> 
             seen["run_rows"] = len(db_session.scalars(select(Run)).all())
         finally:
             second.close()
-        return [paper("2510.1", "Agent harness")]
+        return iter([[paper("2510.1", "Agent harness")]])
 
-    outer.arxiv.fetch.side_effect = probe_second_run
+    outer.arxiv.harvest.side_effect = probe_second_run
     result = run(db_session, outer)
     assert result.status == "succeeded"
     inner = seen["result"]
@@ -1101,11 +1238,11 @@ def test_dead_lock_connection_still_returns_succeeded(db_session: Session, engin
     killer = make_session_factory(engine)()
     before = engine.pool.checkedout()
 
-    def kill_mid_run(*args: object) -> list[SourceItem]:
+    def kill_mid_run(day: date) -> Iterator[list[SourceItem]]:
         kill_lock_holders(killer)
-        return [paper("2510.1", "Agent harness")]
+        return iter([[paper("2510.1", "Agent harness")]])
 
-    src.arxiv.fetch.side_effect = kill_mid_run
+    src.arxiv.harvest.side_effect = kill_mid_run
     try:
         assert run(db_session, src).status == "succeeded"
     finally:
@@ -1121,14 +1258,14 @@ def test_dead_lock_connection_keeps_the_runs_own_error(
     killer = make_session_factory(engine)()
     before = engine.pool.checkedout()
 
-    def kill_mid_run(*args: object) -> list[SourceItem]:
+    def kill_mid_run(day: date) -> Iterator[list[SourceItem]]:
         kill_lock_holders(killer)
-        return [paper("2510.1", "Agent harness")]
+        return iter([[paper("2510.1", "Agent harness")]])
 
     def boom(*args: object, **kwargs: object) -> None:
         raise RuntimeError("run boom")
 
-    src.arxiv.fetch.side_effect = kill_mid_run
+    src.arxiv.harvest.side_effect = kill_mid_run
     monkeypatch.setattr(Repository, "recheck_targets", boom)
     try:
         # The unlock error on the dead connection must not replace the run's own error.

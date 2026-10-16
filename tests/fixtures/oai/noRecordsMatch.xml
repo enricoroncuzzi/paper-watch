@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<OAI-PMH xmlns="http://www.openarchives.org/OAI/2.0/">
+  <responseDate>2026-10-16T08:00:00Z</responseDate>
+  <request verb="ListRecords" metadataPrefix="arXivRaw" set="stat:stat:ML" from="2026-10-04" until="2026-10-04">https://oaipmh.arxiv.org/oai</request>
+  <error code="noRecordsMatch">no records match the request</error>
+</OAI-PMH>

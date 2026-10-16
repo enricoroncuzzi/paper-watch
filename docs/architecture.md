@@ -8,7 +8,7 @@ fake, so the whole test and eval suite runs offline against a real Postgres + pg
 
 | Unit | Purpose | Depends on |
 |---|---|---|
-| `sources/*` | One client per source; returns normalised `SourceItem` records; owns pacing and retries | HTTP only |
+| `sources/*` | One client per source; returns normalised `SourceItem` records; owns pacing and retries (arXiv harvests OAI-PMH datestamp days) | HTTP only |
 | `ingest` | Window, dedupe, classify, admit, embed, upsert; writes run records and a health verdict | sources, store, llm |
 | `store` | Schema, Alembic migrations, repository; the only module that writes SQL | Postgres |
 | `retrieval` | Hybrid search (pgvector + Postgres full-text, fused with reciprocal rank fusion), filters | store |
@@ -23,16 +23,20 @@ framework comparison stays fair when `bench` is built.
 
 `paperwatch ingest --live` reads `Settings` and builds one client per source plus the local
 embedder and classifier, then `run_ingestion` takes the single-run Postgres advisory lock so two
-runs cannot overlap. For each source it fetches from that source's cursor (arXiv and the feeds
-re-read a fixed overlap to catch late announcements), dedupes against the store, classifies each
-new item once with the embedding-similarity classifier, admits it by tier and quality signal,
-embeds the admitted text locally, and upserts it idempotently; the unique `(source, external_id)`
-key makes a replay insert nothing. After fetching, the run re-checks the evidence of candidate
-and vetted-preprint papers whose age makes them due and promotes them if it improved, then writes
-a run row with counts, tokens and a health verdict, advances each source's cursor only when its
-fetch fully succeeded, and releases the lock. A source outage is recorded as a dead letter and
-makes the run `partial` without stopping the others; a malformed entry is skipped and recorded
-once.
+runs cannot overlap. arXiv is harvested one datestamp day at a time through OAI-PMH from the day
+after its cursor, one overlap day is re-read because a datestamp's time-zone boundary can move a
+record between days, and each response page is parked durably before the next request is sent; the
+cursor advances to the next day only once a whole past day is complete, so today is fetched but
+never marked complete. Each feed is fetched from its cursor minus the same kind of overlap. The
+run then dedupes against the store, classifies each new item once with the embedding-similarity
+classifier, admits it by tier and quality signal, embeds the admitted text locally, and upserts it
+idempotently; the unique `(source, external_id)` key makes a replay insert nothing. After
+fetching, the run re-checks the evidence of candidate and vetted-preprint papers whose age makes
+them due and promotes them if it improved, then writes a run row with counts, tokens and a health
+verdict, advances each source's cursor only when its fetch fully succeeded, and releases the lock.
+A source outage stops that source for the run, is recorded as a dead letter over the whole missed
+window, and makes the run `partial` without stopping the others; a malformed entry is skipped and
+recorded once.
 
 ## The retrieval path
 

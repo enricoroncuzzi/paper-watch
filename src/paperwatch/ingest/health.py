@@ -23,13 +23,15 @@ def assess_run(
     token_cap: int,
     stuck_cursors: list[str],
     stale_feeds: Sequence[str] = (),
+    *,
+    arxiv_expected: bool = True,
 ) -> Health:
     problems: list[str] = []
     if status != "succeeded":
         problems.append(f"status={status}")
-    # arXiv is re-read over at least the announcement lag, so an empty fetch means a broken
-    # source or query, not a quiet week.
-    if counts.get("fetched_arxiv", 0) == 0:
+    # arXiv announces Sunday-Thursday evenings, so a weekend-only window that fetched nothing is
+    # a quiet day, not a broken source; a weekday window with no items still is.
+    if arxiv_expected and counts.get("fetched_arxiv", 0) == 0:
         problems.append("arxiv fetched 0 items")
     if counts.get("failed", 0):
         problems.append(f"{counts['failed']} items failed")

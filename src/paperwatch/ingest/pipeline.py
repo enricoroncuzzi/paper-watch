@@ -3,7 +3,7 @@ import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import structlog
 from sqlalchemy import text
@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from paperwatch.admission import AdmissionConfig, admit, basis_improves, promote
 from paperwatch.config import (
-    ARXIV_ANNOUNCEMENT_LAG,
+    ARXIV_OAI_OVERLAP,
     FEED_OVERLAP,
     FEED_STALE_AFTER,
     HF_RECHECK_HORIZON,
@@ -25,7 +25,7 @@ from paperwatch.ingest.health import assess_run
 from paperwatch.llm.classifier import Classifier
 from paperwatch.llm.embedder import Embedder, embedding_text
 from paperwatch.llm.ledger import BudgetExceeded, Ledger
-from paperwatch.sources.arxiv import ArxivSource
+from paperwatch.sources.arxiv import ArxivOaiSource
 from paperwatch.sources.feeds import Feed, FeedSource
 from paperwatch.sources.hf_daily import HfDailySource
 from paperwatch.sources.semantic_scholar import SemanticScholarSource
@@ -36,7 +36,7 @@ log = structlog.get_logger()
 
 @dataclass
 class Sources:
-    arxiv: ArxivSource
+    arxiv: ArxivOaiSource
     hf: HfDailySource
     s2: SemanticScholarSource
     feeds: FeedSource
@@ -71,6 +71,37 @@ def payload_to_item(p: dict[str, object]) -> SourceItem:
         licence=str(p["licence"]),
         version=int(str(p.get("version") or 1)),
     )
+
+
+def _midnight(day: date) -> datetime:
+    # The arXiv cursor stores midnight UTC of the first datestamp day not yet complete.
+    return datetime(day.year, day.month, day.day, tzinfo=UTC)
+
+
+def _park_items(
+    repo: Repository, run_id: uuid.UUID, items: list[SourceItem], parked: set[tuple[str, str]]
+) -> None:
+    # Park every not-yet-stored fetched item before the cursor commits, so a process that dies
+    # before phase 2 stores it does not lose it when it falls outside the next overlap. The
+    # letters carry attempts=0: phase 2 loads them as pending and resolves each on success.
+    for item in items:
+        if item.source == "feed" and repo.has_item_url("feed", item.url):
+            # A moved feed gives old posts new ids; its link shows they are already stored,
+            # so do not park (and resolve) a letter for it on every run.
+            continue
+        item_key = (item.source, item.external_id)
+        if repo.stored(item.source, item.external_id) is None and not repo.has_open_dead_letter(
+            item.source, item.external_id
+        ):
+            repo.add_dead_letter(
+                run_id,
+                item.source,
+                item.external_id,
+                "fetched, not yet stored",
+                payload=item_to_payload(item),
+                attempts=0,
+            )
+            parked.add(item_key)
 
 
 @contextmanager
@@ -156,44 +187,81 @@ def run_ingestion(
             parked: set[tuple[str, str]] = set()
 
             # Phase 1: fetch. Each source keeps its own cursor and fails alone.
-            arxiv_from = window("arxiv")
-            # submittedDate filters on submission, but a paper is visible only after announcement
-            # (hours to days later), so re-read the lag before the cursor; an explicit --since wins.
-            arxiv_since = arxiv_from if since_override else arxiv_from - ARXIV_ANNOUNCEMENT_LAG
+            # Days to harvest, oldest first: a cursor re-reads one overlap day back, a first run
+            # starts at the lookback floor, and --since overrides both. Today is fetched but
+            # never completed, because its datestamp can still grow during the day.
+            arxiv_cursor = repo.cursor("arxiv")
+            if since_override is not None:
+                first_day = since_override.date()
+            elif arxiv_cursor is not None:
+                first_day = arxiv_cursor.date() - ARXIV_OAI_OVERLAP
+            else:
+                first_day = (now - default_lookback).date()
+            days = [
+                first_day + timedelta(days=offset)
+                for offset in range((now.date() - first_day).days + 1)
+            ]
+            # arXiv announces Sunday-Thursday evenings US Eastern, so weekend datestamps are
+            # normally empty; a quiet Saturday or Sunday is not a broken source.
+            arxiv_expected = any(day.weekday() in (1, 2, 3, 4) for day in days)
             try:
-                papers = sources.arxiv.fetch(arxiv_since, now)
-                fetched += papers
-                counts["fetched_arxiv"] = len(papers)
-                for bad in sources.arxiv.rejected:
-                    # Record each unparseable entry once; the lag overlap re-reads it for days.
-                    if not repo.has_open_dead_letter(bad.source, bad.ref):
-                        repo.add_dead_letter(run_id, bad.source, bad.ref, bad.error)
-                        counts["malformed"] += 1
-                        degraded = True
-                repo.advance_cursor("arxiv", now)  # advances even past a bad entry: no poison pill
-                # The fetch answered: any earlier arXiv outage letter is over.
-                repo.resolve_open_dead_letters("arxiv", "window", at=now)
+                for day in days:
+                    for page in sources.arxiv.harvest(day):
+                        fetched += page
+                        counts["fetched_arxiv"] += len(page)
+                        # Park the page before the resumption request goes out, so a killed
+                        # process loses nothing it has already read.
+                        _park_items(repo, run_id, page, parked)
+                        session.commit()
+                    for bad in sources.arxiv.rejected:
+                        # One dead letter per open ref; a later day re-reads the same record and
+                        # the open letter keeps it from being recorded twice.
+                        if not repo.has_open_dead_letter(bad.source, bad.ref):
+                            repo.add_dead_letter(run_id, bad.source, bad.ref, bad.error)
+                            counts["malformed"] += 1
+                            degraded = True
+                    if day < now.date():
+                        # A completed past day advances the cursor to the next day's midnight;
+                        # today is never marked complete.
+                        repo.advance_cursor("arxiv", _midnight(day) + timedelta(days=1))
+                    session.commit()
+                    # A completed day is a source that answered: any open outage letter is over.
+                    repo.resolve_open_dead_letters("arxiv", "window", at=now)
+                    session.commit()
             except Exception as exc:  # noqa: BLE001 - one source must not abort the run
                 degraded = True
                 stuck.append("arxiv")
+                # A record parsed before the failure is still recorded; completed days keep
+                # their cursor and parked pages stay parked for phase 2.
+                for bad in sources.arxiv.rejected:
+                    if not repo.has_open_dead_letter(bad.source, bad.ref):
+                        repo.add_dead_letter(run_id, bad.source, bad.ref, bad.error)
+                        counts["malformed"] += 1
                 if not repo.has_open_dead_letter("arxiv", "window"):
-                    # One letter per outage, however many runs it lasts.
+                    # One letter per outage, however many days it lasts, over the whole window.
                     repo.add_dead_letter(
-                        run_id, "arxiv", "window", repr(exc), window=(arxiv_since, now)
+                        run_id,
+                        "arxiv",
+                        "window",
+                        repr(exc),
+                        window=(_midnight(first_day), now),
                     )
                 if repo.cursor("arxiv") is None:
-                    # Pin the un-lagged start, so repeated failures do not push the window back.
-                    repo.advance_cursor("arxiv", arxiv_from)
+                    # Pin the first day, so repeated failures do not slide the window forward and
+                    # drop the days already missed.
+                    repo.advance_cursor("arxiv", _midnight(first_day))
+                session.commit()
             sources.feeds.rejected = []  # filled by fetch_one across every feed of this run
             sources.feeds.newest = {}  # newest entry date per feed, for the stale-feed warning
             stale: list[str] = []
+            feed_fetched: list[SourceItem] = []
             for feed in sources.feed_list:
                 key = f"feed:{feed.url}"
                 feed_from = window(key)
                 # Same reason as arXiv: a post can appear after its date. The unique key absorbs it.
                 since = feed_from if since_override else feed_from - FEED_OVERLAP
                 try:
-                    fetched += sources.feeds.fetch_one(feed, since, now)
+                    feed_fetched += sources.feeds.fetch_one(feed, since, now)
                     repo.advance_cursor(key, now)
                     # The feed answered: any earlier outage letter for it is over.
                     repo.resolve_open_dead_letters("feed", feed.url, at=now)
@@ -211,6 +279,7 @@ def run_ingestion(
                         )
                     if repo.cursor(key) is None:
                         repo.advance_cursor(key, feed_from)  # pin the un-lagged start
+            fetched += feed_fetched
             for bad in sources.feeds.rejected:
                 # Same rule as arXiv: one dead letter per bad entry while open, and the cursor
                 # still moves.
@@ -218,28 +287,7 @@ def run_ingestion(
                     repo.add_dead_letter(run_id, bad.source, bad.ref, bad.error)
                     counts["malformed"] += 1
                     degraded = True
-            # Park every not-yet-stored fetched item before the cursors commit, so a process that
-            # dies before phase 2 stores it does not lose it when it falls outside the next overlap.
-            # They are attempts=0 letters: phase 2 loads them as pending and resolves each on
-            # success.
-            for item in fetched:
-                if item.source == "feed" and repo.has_item_url("feed", item.url):
-                    # A moved feed gives old posts new ids; its link shows they are already stored,
-                    # so do not park (and resolve) a letter for it on every run.
-                    continue
-                item_key = (item.source, item.external_id)
-                if repo.stored(
-                    item.source, item.external_id
-                ) is None and not repo.has_open_dead_letter(item.source, item.external_id):
-                    repo.add_dead_letter(
-                        run_id,
-                        item.source,
-                        item.external_id,
-                        "fetched, not yet stored",
-                        payload=item_to_payload(item),
-                        attempts=0,
-                    )
-                    parked.add(item_key)
+            _park_items(repo, run_id, feed_fetched, parked)
             session.commit()
 
             # One entry per item: an item both re-fetched by the overlap and waiting in a dead
@@ -474,7 +522,15 @@ def run_ingestion(
 
         if status == "succeeded" and degraded:
             status = "partial"
-        health = assess_run(status, counts, ledger.tokens_used, ledger.max_tokens, stuck, stale)
+        health = assess_run(
+            status,
+            counts,
+            ledger.tokens_used,
+            ledger.max_tokens,
+            stuck,
+            stale,
+            arxiv_expected=arxiv_expected,
+        )
         repo.finish_run(run_id, status, counts, ledger.tokens_used, health.as_dict(), at=now)
         session.commit()
         log.info(

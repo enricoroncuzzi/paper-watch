@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<OAI-PMH xmlns="http://www.openarchives.org/OAI/2.0/">
+  <responseDate>2026-10-16T08:00:00Z</responseDate>
+  <request verb="ListRecords" resumptionToken="stale-token">https://oaipmh.arxiv.org/oai</request>
+  <error code="badResumptionToken">the resumptionToken is invalid or has expired</error>
+</OAI-PMH>

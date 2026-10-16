@@ -20,7 +20,7 @@ from paperwatch.llm.embedder import Embedder, FakeEmbedder, make_embedder
 from paperwatch.llm.ledger import Ledger
 from paperwatch.logging import configure_logging
 from paperwatch.retrieval.hybrid import Filters, hybrid_search
-from paperwatch.sources.arxiv import ArxivSource
+from paperwatch.sources.arxiv import ArxivOaiSource
 from paperwatch.sources.base import make_http_client
 from paperwatch.sources.feeds import FeedSource, load_feeds
 from paperwatch.sources.hf_daily import HfDailySource
@@ -207,7 +207,7 @@ def ingest(live: bool = LIVE, since: str | None = SINCE) -> None:
     profiles = load_profiles(Path("config/profiles.yaml"))
     feeds = load_feeds(Path("config/feeds.yaml"))
     sources = Sources(
-        ArxivSource(http, profiles),
+        ArxivOaiSource(http, profiles),
         HfDailySource(http),
         SemanticScholarSource(http, s.semantic_scholar_api_key),
         FeedSource(http, feeds),

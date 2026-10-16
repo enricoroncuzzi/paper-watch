@@ -8,6 +8,19 @@ def test_clean_run_is_healthy() -> None:
     assert h.healthy and h.problems == ()
 
 
+def test_arxiv_expected_false_suppresses_only_that_problem() -> None:
+    # A weekend-only window that fetched nothing is not a broken source.
+    h = assess_run(
+        "succeeded",
+        {"fetched_arxiv": 0, "failed": 0, "malformed": 0, "given_up": 0},
+        tokens=1_000,
+        token_cap=200_000,
+        stuck_cursors=[],
+        arxiv_expected=False,
+    )
+    assert h.healthy and h.problems == ()
+
+
 def test_each_problem_is_named() -> None:
     h = assess_run(
         "partial",

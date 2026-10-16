@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<OAI-PMH xmlns="http://www.openarchives.org/OAI/2.0/" 
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://www.openarchives.org/OAI/2.0/ http://www.openarchives.org/OAI/2.0/OAI-PMH.xsd">
+    <responseDate>2026-10-16T07:54:27Z</responseDate>
+                <request verb="ListRecords" metadataPrefix="arXivRaw" from="2026-10-06" until="2026-10-06" set="cs">http://oaipmh.arxiv.org/oai</request>
+
+
+    <ListRecords><record>
+                <header>
+        <identifier>oai:arXiv.org:2404.09982</identifier>
+        <datestamp>2026-10-06</datestamp>
+            <setSpec>cs:cs:CL</setSpec>
+    </header>
+
+            <metadata>
+                        <arXivRaw xmlns="http://arxiv.org/OAI/arXivRaw/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://arxiv.org/OAI/arXivRaw/ https://oaipmh.arxiv.org/OAI/arXivRaw.xsd">
+        <id>2404.09982</id>
+        <submitter>Hang Gao</submitter>
+            <version version="v1">
+                <date>Mon, 15 Apr 2024 17:57:30 GMT</date>
+                <size>415kb</size>
+                    <source_type>D</source_type>
+            </version>
+            <version version="v2">
+                <date>Fri, 05 Jul 2024 15:22:58 GMT</date>
+                <size>8525kb</size>
+                    <source_type>D</source_type>
+            </version>
+            <version version="v3">
+                <date>Wed, 04 Mar 2026 20:28:17 GMT</date>
+                <size>341kb</size>
+            </version>
+            <version version="v4">
+                <date>Sun, 04 Oct 2026 05:06:12 GMT</date>
+                <size>332kb</size>
+            </version>
+        <title>INMS: Memory Sharing for Large Language Model based Agents</title>
+        <authors>Hang Gao, Yongfeng Zhang</authors>
+        <categories>cs.CL</categories>
+            <comments>IJCNLP-AACL 2026 Main</comments>
+            <license>http://creativecommons.org/licenses/by/4.0/</license>
+            <abstract>While Large Language Model (LLM) based agents excel at complex tasks, their performance in open-ended scenarios is often constrained by isolated operation and reliance on static databases, missing the dynamic knowledge exchange of human dialogue. To bridge this gap, we propose the INteractive Memory Sharing (INMS) framework, an asynchronous interaction paradigm for multi-agent systems. By integrating real-time memory filtering, storage, and retrieval, INMS establishes a shared conversational memory pool. This enables continuous, dialogue-like memory sharing among agents, promoting collective self-enhancement and dynamically refining the retrieval mediator based on interaction history. Extensive experiments across three datasets demonstrate that INMS improves agent performance by effectively modeling multi-agent interaction and collective knowledge sharing.</abstract>
+    </arXivRaw>
+
+            </metadata>
+        </record><record>
+                <header>
+        <identifier>oai:arXiv.org:2610.04539</identifier>
+        <datestamp>2026-10-06</datestamp>
+            <setSpec>cs:cs:AI</setSpec>
+    </header>
+
+            <metadata>
+                        <arXivRaw xmlns="http://arxiv.org/OAI/arXivRaw/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://arxiv.org/OAI/arXivRaw/ https://oaipmh.arxiv.org/OAI/arXivRaw.xsd">
+        <id>2610.04539</id>
+        <submitter>Jinping Wang</submitter>
+            <version version="v1">
+                <date>Sat, 03 Oct 2026 14:12:16 GMT</date>
+                <size>8247kb</size>
+            </version>
+        <title>Action-Consequence Alignment for Reliable Planning and Self-Improving in Latent World Models</title>
+        <authors>Jinping Wang1, Zhiqiang Gao, Xiantong Zhen, Ling Shao</authors>
+        <categories>cs.AI</categories>
+            <license>http://creativecommons.org/licenses/by/4.0/</license>
+            <abstract>Latent world models learn to predict observed transitions, yet low prediction error alone does not guarantee reliable planning. Inspired by self tickling experiments in neuroscience showing that disrupting motor sensory correspondence increases prediction mismatch, we examine whether learned world models preserve an analogous action consequence correspondence.The results show nearby alternatives can receive lower prediction errors despite producing physical outcomes farther from the recorded target. With that future treated as a goal, this reveals a concrete prediction planning mismatch: the model assigns a lower cost to an action that achieves the target less accurately. To mitigate this gap, we introduce Action Consequence Alignment (ACA), a training objective that complements forward prediction by penalizing the prediction error advantage of locally searched alternatives over factual actions without additional model components or environment interactions during training. The same principle can also guide additional data collection for self improvement. We demonstrate that across diverse environments and evaluation settings, ACA improves planning performance and reduces real goal error, while ACA guided data collection outperforms random local sampling. These results support action consequence alignment as a practical principle for bridging predictive learning and reliable planning.</abstract>
+    </arXivRaw>
+
+            </metadata>
+        </record><resumptionToken></resumptionToken></ListRecords>
+</OAI-PMH>
