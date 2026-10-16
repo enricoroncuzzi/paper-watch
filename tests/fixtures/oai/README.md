@@ -18,7 +18,10 @@ Real captures (the record list is trimmed; for the two cs pages the
   `cs-token-2`; `cs_page2.xml` ends with an empty token. Records: `1909.09849`
   (matching agent paper), `2503.21975` (cs.RO/cs.AI, "robot" but no profile
   term), `2301.07757` (cs.CG/cs.CC, outside every profile category),
-  `2404.09982` and `2610.04539` (two more matching agent papers).
+  `2404.09982` and `2610.04539` (two more matching agent papers). In the
+  real-fixture test both dropped records fail the term filter; the category
+  rule is pinned separately by the synthetic
+  `test_category_filter_drops_records_outside_every_profile`.
 
 Hand-written (element shapes copied from the real responses):
 

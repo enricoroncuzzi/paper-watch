@@ -1,5 +1,6 @@
 """unit tests for the arXiv OAI-PMH source: request shape, paging, mapping, retries."""
 
+import signal
 import time
 from datetime import UTC, date, datetime
 from itertools import pairwise
@@ -10,7 +11,7 @@ import pytest
 
 from paperwatch.config import ARXIV_OAI_PREFIX
 from paperwatch.domain import Profile, RejectedEntry, load_profiles
-from paperwatch.sources.arxiv import ArxivOaiSource, arxiv_base_id, oai_sets
+from paperwatch.sources.arxiv import ArxivOaiSource, _split_authors, arxiv_base_id, oai_sets
 
 FIXTURES = Path("tests/fixtures/oai")
 CS_PAGE1 = (FIXTURES / "cs_page1.xml").read_text()
@@ -200,6 +201,8 @@ def test_terms_accept_plurals_but_not_substrings() -> None:
         _record("oai:arXiv.org:4", raw_id="2510.00004", title="Harnesses at work"),
         _record("oai:arXiv.org:5", raw_id="2510.00005", title="A robot arm"),
         _record("oai:arXiv.org:6", raw_id="2510.00006", title="Robots and robotics"),
+        _record("oai:arXiv.org:7", raw_id="2510.00007", title="A botnet takedown"),
+        _record("oai:arXiv.org:8", raw_id="2510.00008", title="Harnessing noise"),
     )
     titles = [i.title for i in _flat(_harvest(xml))]  # type: ignore[union-attr]
     assert titles == [
@@ -271,6 +274,26 @@ def test_authors_drop_affiliations_then_split() -> None:
     assert items[2].authors == ("Ziyan Chen",)  # type: ignore[union-attr]
 
 
+def test_authors_stop_on_unbalanced_parentheses() -> None:
+    # A stray ")" before a stray "(" never pairs; a split that loops would hang the daily run
+    # while it holds the single-run lock, so a regression must fail here, not stall the suite.
+    def timeout(signum: int, frame: object) -> None:
+        raise TimeoutError("_split_authors did not return")
+
+    old = signal.signal(signal.SIGALRM, timeout)
+    signal.alarm(5)
+    try:
+        assert _split_authors("Foo 1), Bar (2") == ("Foo 1)", "Bar (2")
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old)
+
+
+def test_authors_drop_nested_affiliations() -> None:
+    xml = _page(_record("oai:arXiv.org:1", authors="Name (Univ (Dept, Lab), City), Zed"))
+    assert _flat(_harvest(xml))[0].authors == ("Name", "Zed")  # type: ignore[union-attr]
+
+
 def test_cross_listed_record_is_yielded_once_across_sets() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         params = request.url.params
@@ -288,7 +311,9 @@ def test_cross_listed_record_is_yielded_once_across_sets() -> None:
 
 
 def test_real_cs_fixture_yields_only_matching_papers() -> None:
-    # The real page holds a "robot" paper and an out-of-category paper; both are dropped.
+    # 2503.21975 is in cs.AI but matches no profile term, and 2301.07757 is outside every profile
+    # category and also has no term; the term rule drops both here. The category rule on its own
+    # is covered by test_category_filter_drops_records_outside_every_profile.
     def handler(request: httpx.Request) -> httpx.Response:
         if "resumptionToken" in request.url.params:
             return httpx.Response(200, text=CS_PAGE2)

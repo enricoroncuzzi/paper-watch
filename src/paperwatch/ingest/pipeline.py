@@ -216,7 +216,6 @@ def run_ingestion(
             # arXiv announces Sunday-Thursday evenings US Eastern, so weekend datestamps are
             # normally empty; a quiet Saturday or Sunday is not a broken source.
             arxiv_expected = any(day.weekday() in (1, 2, 3, 4) for day in days)
-            completed_days = 0
             arxiv_stopped_early = False
             try:
                 for day in days:
@@ -242,12 +241,11 @@ def run_ingestion(
                     # A completed day is a source that answered: any open outage letter is over.
                     repo.resolve_open_dead_letters("arxiv", "window", at=now)
                     session.commit()
-                    completed_days += 1
             except Exception as exc:  # noqa: BLE001 - one source must not abort the run
                 degraded = True
-                if completed_days:
-                    # The cursor advanced for the days that finished, so the source stopped early
-                    # rather than failing with no progress.
+                if repo.cursor("arxiv") != arxiv_cursor:
+                    # A completed day moved the cursor, so the source stopped early with progress;
+                    # a day that only rewrote the same cursor value is not progress.
                     arxiv_stopped_early = True
                 else:
                     stuck.append("arxiv")

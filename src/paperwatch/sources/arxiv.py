@@ -85,9 +85,11 @@ def oai_sets(profiles: list[Profile]) -> list[str]:
 
 def _term_pattern(term: str) -> re.Pattern[str]:
     # A phrase's internal spaces match any whitespace, and \b keeps "bot" out of "robot". The
-    # last word also accepts a plural, because the arXiv all: query it replaces stemmed terms.
+    # last word also accepts a plural, because the arXiv all: query it replaces stemmed terms;
+    # "tool use" matching "tool uses" (the verb) is accepted for the same reason.
     parts = [re.escape(part) for part in term.split()]
-    return re.compile(r"\b" + r"\s+".join([*parts[:-1], parts[-1] + r"(?:s|es)?"]) + r"\b", re.I)
+    last = parts[-1] + r"(?:s|es)?"
+    return re.compile(r"\b" + r"\s+".join([*parts[:-1], last]) + r"\b", re.I)
 
 
 def _version_number(version: ET.Element) -> int:
@@ -99,9 +101,10 @@ def _version_number(version: ET.Element) -> int:
 def _split_authors(value: str) -> tuple[str, ...]:
     # arXivRaw separates authors with commas and a final " and "; an affiliation follows a name
     # in parentheses. Drop the groups first (repeatedly, for nesting), so a comma or "and"
-    # inside an affiliation cannot split a name.
-    while "(" in value and ")" in value:
-        value = re.sub(r"\([^()]*\)", "", value)
+    # inside an affiliation cannot split a name. Stop when a pass removes nothing: a stray ")"
+    # before a stray "(" never pairs, so testing for the characters alone would loop forever.
+    while (stripped := re.sub(r"\([^()]*\)", "", value)) != value:
+        value = stripped
     authors: list[str] = []
     for part in re.split(r",|\band\b", value):
         name = part.strip()

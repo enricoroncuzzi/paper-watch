@@ -871,7 +871,7 @@ def test_crash_between_pages_loses_nothing(db_session: Session) -> None:
 
 def test_parked_letter_is_refreshed_to_a_higher_version(db_session: Session) -> None:
     # A crash during a multi-day catch-up leaves v1 parked; a later day's v2 must replace the
-    # parked payload, or resuming phase 2 would store the older text.
+    # parked payload, or resuming phase 2 would store the older text. A lower version must not.
     repo = Repository(db_session)
     run_id = repo.start_run(NOW, NOW, at=NOW)
     v1 = paper("2510.9", "Agent harness")
@@ -879,11 +879,52 @@ def test_parked_letter_is_refreshed_to_a_higher_version(db_session: Session) -> 
     parked: set[tuple[str, str]] = set()
     _park_items(repo, run_id, [v1], parked)
     _park_items(repo, run_id, [v2], parked)
+    _park_items(repo, run_id, [v1], parked)  # a lower version must not overwrite the parked v2
     db_session.commit()
     letter = db_session.scalars(
         select(DeadLetter).where(DeadLetter.ref == "2510.9", DeadLetter.resolved_at.is_(None))
     ).one()
     assert payload_to_item(letter.payload).version == 2
+
+
+def test_given_up_letter_is_not_refreshed(db_session: Session) -> None:
+    # A given-up letter is a human's to resolve; parking a newer version must not rewrite it.
+    repo = Repository(db_session)
+    run_id = repo.start_run(NOW, NOW, at=NOW)
+    v1 = paper("2510.9", "Agent harness")
+    repo.add_dead_letter(
+        run_id,
+        "arxiv",
+        "2510.9",
+        "gave up after repeated failures",
+        payload=item_to_payload(v1),
+        attempts=MAX_ITEM_ATTEMPTS,
+    )
+    db_session.commit()
+    v2 = dataclasses.replace(paper("2510.9", "Agent harness", version=2), text="Rewritten.")
+    _park_items(repo, run_id, [v2], set())
+    db_session.commit()
+    letter = db_session.scalars(select(DeadLetter).where(DeadLetter.ref == "2510.9")).one()
+    assert payload_to_item(letter.payload).version == 1
+
+
+def test_steady_state_cursor_day_failure_reports_a_stuck_cursor(db_session: Session) -> None:
+    # Run 1 leaves the cursor at midnight(2026-10-12). Run 2's overlap day rewrites that same
+    # cursor, then the cursor day fails: the cursor did not move, so it is not an early stop.
+    src = fake_sources([paper("2510.1", "Agent harness")])
+    run(db_session, src)
+
+    def harvest(day: date) -> Iterator[list[SourceItem]]:
+        if day == date(2026, 10, 12):
+            yield [paper("2510.2", "Coding agent")]
+            raise RuntimeError("the cursor day failed")
+        return iter([])
+
+    src.arxiv.harvest.side_effect = harvest
+    res = run(db_session, src, now=NOW + timedelta(days=1))
+    problems = db_session.get_one(Run, res.run_id).health["problems"]
+    assert "cursor not advanced: arxiv" in problems
+    assert "arxiv stopped early" not in problems
 
 
 def test_since_override_harvests_from_that_date(db_session: Session) -> None:
