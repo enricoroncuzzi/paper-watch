@@ -207,7 +207,7 @@ class ArxivOaiSource:
             authors=_split_authors(raw.findtext(f"{_RAW}authors") or ""),
             text=abstract,
             url=f"https://arxiv.org/abs/{base}",
-            # The v1 date is the announcement date; a later version keeps the same base id.
+            # The v1 date is the first submission date; arXiv announces it one to three days later.
             published_at=_published_at(ordered[0]),
             categories=categories,
             licence="CC0-1.0 (metadata)",

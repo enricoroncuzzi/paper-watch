@@ -918,13 +918,30 @@ def test_steady_state_cursor_day_failure_reports_a_stuck_cursor(db_session: Sess
         if day == date(2026, 10, 12):
             yield [paper("2510.2", "Coding agent")]
             raise RuntimeError("the cursor day failed")
-        return iter([])
+        return
 
     src.arxiv.harvest.side_effect = harvest
     res = run(db_session, src, now=NOW + timedelta(days=1))
     problems = db_session.get_one(Run, res.run_id).health["problems"]
     assert "cursor not advanced: arxiv" in problems
     assert "arxiv stopped early" not in problems
+
+
+def test_steady_state_failure_on_today_is_an_early_stop(db_session: Session) -> None:
+    # The cursor day completed and moved the cursor to today's midnight before today failed.
+    src = fake_sources([paper("2510.1", "Agent harness")])
+    run(db_session, src)
+
+    def harvest(day: date) -> Iterator[list[SourceItem]]:
+        if day == date(2026, 10, 13):
+            raise RuntimeError("today failed")
+        return iter([])
+
+    src.arxiv.harvest.side_effect = harvest
+    res = run(db_session, src, now=NOW + timedelta(days=1))
+    problems = db_session.get_one(Run, res.run_id).health["problems"]
+    assert "arxiv stopped early" in problems
+    assert "cursor not advanced: arxiv" not in problems
 
 
 def test_since_override_harvests_from_that_date(db_session: Session) -> None:
