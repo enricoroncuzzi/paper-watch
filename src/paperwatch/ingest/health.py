@@ -25,6 +25,7 @@ def assess_run(
     stale_feeds: Sequence[str] = (),
     *,
     arxiv_expected: bool = True,
+    arxiv_stopped_early: bool = False,
 ) -> Health:
     problems: list[str] = []
     if status != "succeeded":
@@ -33,6 +34,9 @@ def assess_run(
     # a quiet day, not a broken source; a weekday window with no items still is.
     if arxiv_expected and counts.get("fetched_arxiv", 0) == 0:
         problems.append("arxiv fetched 0 items")
+    if arxiv_stopped_early:
+        # Some days completed before the failure, so the cursor did partly advance.
+        problems.append("arxiv stopped early")
     if counts.get("failed", 0):
         problems.append(f"{counts['failed']} items failed")
     if counts.get("given_up", 0):

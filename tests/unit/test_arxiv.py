@@ -30,7 +30,7 @@ def _record(
     *,
     raw_id: str | None = "2510.00001",
     title: str = "An agent paper",
-    abstract: str = "Agents that plan.",
+    abstract: str = "A short study.",
     authors: str = "A, B and C",
     categories: str = "cs.AI",
     versions: tuple[tuple[str, str], ...] = (("v1", "Mon, 06 Oct 2026 10:00:00 GMT"),),
@@ -106,6 +106,35 @@ def test_oai_sets_maps_a_non_cs_category() -> None:
     assert oai_sets([p]) == ["eess:eess:IV"]
 
 
+@pytest.mark.parametrize("category", ["quant-ph", "hep-th", "gr-qc", "physics"])
+def test_oai_sets_rejects_a_category_with_no_sub_archive(category: str) -> None:
+    # No dot means no sub-archive and no set the current mapping can name.
+    p = Profile("x", 1.0, (category,), ("term",), "desc", 0.5)
+    with pytest.raises(ValueError, match=category):
+        oai_sets([p])
+
+
+@pytest.mark.parametrize("category", ["astro-ph.CO", "cond-mat.str-el", "nlin.CD", "math-ph.MP"])
+def test_oai_sets_rejects_a_physics_umbrella_archive(category: str) -> None:
+    # These archives live under arXiv's physics umbrella (physics:<archive>), not their own.
+    p = Profile("x", 1.0, (category,), ("term",), "desc", 0.5)
+    with pytest.raises(ValueError, match=category):
+        oai_sets([p])
+
+
+def test_oai_sets_allows_a_physics_sub_archive() -> None:
+    # physics.soc-ph is a real set as physics:physics:soc-ph; only the umbrella names are wrong.
+    p = Profile("x", 1.0, ("physics.soc-ph",), ("term",), "desc", 0.5)
+    assert oai_sets([p]) == ["physics:physics:soc-ph"]
+
+
+def test_source_rejects_a_profile_with_no_oai_set() -> None:
+    # The source validates its sets at construction, so a bad profile fails at startup.
+    p = Profile("x", 1.0, ("quant-ph",), ("term",), "desc", 0.5)
+    with pytest.raises(ValueError, match="quant-ph"):
+        ArxivOaiSource(_client(lambda request: httpx.Response(200, text=_page())), [p])
+
+
 def test_request_shape_then_resumption_token() -> None:
     calls: list[dict[str, str]] = []
 
@@ -161,6 +190,26 @@ def test_phrase_matches_across_a_line_break_and_case() -> None:
     assert len(_flat(_harvest(xml))) == 1
 
 
+def test_terms_accept_plurals_but_not_substrings() -> None:
+    # The Atom `all:` query it replaces stemmed terms, so a plural must still match; a suffix
+    # must not turn "bot" into a match inside "robot".
+    xml = _page(
+        _record("oai:arXiv.org:1", title="Agents that plan"),
+        _record("oai:arXiv.org:2", raw_id="2510.00002", title="A chat bot"),
+        _record("oai:arXiv.org:3", raw_id="2510.00003", title="Chat bots for teams"),
+        _record("oai:arXiv.org:4", raw_id="2510.00004", title="Harnesses at work"),
+        _record("oai:arXiv.org:5", raw_id="2510.00005", title="A robot arm"),
+        _record("oai:arXiv.org:6", raw_id="2510.00006", title="Robots and robotics"),
+    )
+    titles = [i.title for i in _flat(_harvest(xml))]  # type: ignore[union-attr]
+    assert titles == [
+        "Agents that plan",
+        "A chat bot",
+        "Chat bots for teams",
+        "Harnesses at work",
+    ]
+
+
 def test_category_filter_drops_records_outside_every_profile() -> None:
     xml = _page(_record("oai:arXiv.org:1", title="An agent paper", categories="math.OC"))
     assert _flat(_harvest(xml)) == []
@@ -198,14 +247,28 @@ def test_mapping_from_the_real_record() -> None:
     assert "\n" not in item.title and item.title.startswith("Multiagent Evaluation")
 
 
-def test_authors_split_on_comma_and_and_and_drop_affiliations() -> None:
+def test_authors_drop_affiliations_then_split() -> None:
+    # An affiliation may itself contain a comma or "and", so a parenthesised group must go
+    # before the split, not after it.
     xml = _page(
+        _record("oai:arXiv.org:1", authors="Alice (MIT), Bob and Carol (DeepMind)"),
         _record(
-            "oai:arXiv.org:1",
-            authors="Alice (MIT), Bob and Carol (DeepMind)",
-        )
+            "oai:arXiv.org:2",
+            raw_id="2510.00002",
+            title="Second agent paper",
+            authors="Wenhui Chu (University at Albany, State University of New York)",
+        ),
+        _record(
+            "oai:arXiv.org:3",
+            raw_id="2510.00003",
+            title="Third agent paper",
+            authors="Ziyan Chen (1 and 2)",
+        ),
     )
-    assert _flat(_harvest(xml))[0].authors == ("Alice", "Bob", "Carol")  # type: ignore[union-attr]
+    items = _flat(_harvest(xml))
+    assert items[0].authors == ("Alice", "Bob", "Carol")  # type: ignore[union-attr]
+    assert items[1].authors == ("Wenhui Chu",)  # type: ignore[union-attr]
+    assert items[2].authors == ("Ziyan Chen",)  # type: ignore[union-attr]
 
 
 def test_cross_listed_record_is_yielded_once_across_sets() -> None:
@@ -222,6 +285,29 @@ def test_cross_listed_record_is_yielded_once_across_sets() -> None:
     # 1909.09849 is in both the cs set and stat:stat:ML; 1506.04782 is filtered by terms.
     assert ids.count("1909.09849") == 1
     assert "1506.04782" not in ids
+
+
+def test_real_cs_fixture_yields_only_matching_papers() -> None:
+    # The real page holds a "robot" paper and an out-of-category paper; both are dropped.
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "resumptionToken" in request.url.params:
+            return httpx.Response(200, text=CS_PAGE2)
+        return httpx.Response(200, text=CS_PAGE1)
+
+    src = ArxivOaiSource(_client(handler), AGENTIC, pause_s=0)
+    ids = [i.external_id for i in _flat(list(src.harvest(DAY)))]  # type: ignore[union-attr]
+    assert ids == ["1909.09849", "2404.09982", "2610.04539"]
+
+
+def test_a_doctype_body_is_rejected_before_parsing() -> None:
+    # OAI-PMH never carries a DTD; refusing one blocks the billion-laughs shape up front.
+    xml = (
+        '<?xml version="1.0"?>'
+        '<!DOCTYPE OAI-PMH [<!ENTITY x "y">]>'
+        '<OAI-PMH xmlns="http://www.openarchives.org/OAI/2.0/"><ListRecords/></OAI-PMH>'
+    )
+    with pytest.raises(ValueError, match="DOCTYPE"):
+        _harvest(xml)
 
 
 def test_no_records_match_yields_nothing_and_does_not_raise() -> None:

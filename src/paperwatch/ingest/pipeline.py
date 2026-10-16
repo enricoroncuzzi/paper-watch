@@ -90,6 +90,18 @@ def _park_items(
             # so do not park (and resolve) a letter for it on every run.
             continue
         item_key = (item.source, item.external_id)
+        open_letter = repo.open_item_letter(item.source, item.external_id)
+        if open_letter is not None:
+            # A later day in the same catch-up can carry a newer version of a parked paper; keep
+            # the payload current, so a crash before phase 2 resumes the newest text, not v1.
+            letter_id, payload = open_letter
+            try:
+                parked_version = payload_to_item(payload).version
+            except (KeyError, TypeError, ValueError):
+                parked_version = 0  # a corrupt payload is replaced by the newest seen
+            if item.version > parked_version:
+                repo.refresh_dead_letter_payload(letter_id, item_to_payload(item))
+            continue
         if repo.stored(item.source, item.external_id) is None and not repo.has_open_dead_letter(
             item.source, item.external_id
         ):
@@ -204,6 +216,8 @@ def run_ingestion(
             # arXiv announces Sunday-Thursday evenings US Eastern, so weekend datestamps are
             # normally empty; a quiet Saturday or Sunday is not a broken source.
             arxiv_expected = any(day.weekday() in (1, 2, 3, 4) for day in days)
+            completed_days = 0
+            arxiv_stopped_early = False
             try:
                 for day in days:
                     for page in sources.arxiv.harvest(day):
@@ -228,9 +242,15 @@ def run_ingestion(
                     # A completed day is a source that answered: any open outage letter is over.
                     repo.resolve_open_dead_letters("arxiv", "window", at=now)
                     session.commit()
+                    completed_days += 1
             except Exception as exc:  # noqa: BLE001 - one source must not abort the run
                 degraded = True
-                stuck.append("arxiv")
+                if completed_days:
+                    # The cursor advanced for the days that finished, so the source stopped early
+                    # rather than failing with no progress.
+                    arxiv_stopped_early = True
+                else:
+                    stuck.append("arxiv")
                 # A record parsed before the failure is still recorded; completed days keep
                 # their cursor and parked pages stay parked for phase 2.
                 for bad in sources.arxiv.rejected:
@@ -530,6 +550,7 @@ def run_ingestion(
             stuck,
             stale,
             arxiv_expected=arxiv_expected,
+            arxiv_stopped_early=arxiv_stopped_early,
         )
         repo.finish_run(run_id, status, counts, ledger.tokens_used, health.as_dict(), at=now)
         session.commit()

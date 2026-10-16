@@ -23,17 +23,18 @@ framework comparison stays fair when `bench` is built.
 
 `paperwatch ingest --live` reads `Settings` and builds one client per source plus the local
 embedder and classifier, then `run_ingestion` takes the single-run Postgres advisory lock so two
-runs cannot overlap. arXiv is harvested one datestamp day at a time through OAI-PMH from the day
-after its cursor, one overlap day is re-read because a datestamp's time-zone boundary can move a
-record between days, and each response page is parked durably before the next request is sent; the
-cursor advances to the next day only once a whole past day is complete, so today is fetched but
-never marked complete. Each feed is fetched from its cursor minus the same kind of overlap. The
+runs cannot overlap. arXiv is harvested one datestamp day at a time through OAI-PMH starting at
+the cursor day minus the one-day overlap (a datestamp's time-zone boundary can move a record
+between days), and each response page is parked durably before the next request is sent; the
+cursor advances per completed day to the next day's midnight, so today is fetched but never marked
+complete. Each feed is fetched from its cursor minus the same kind of overlap. The
 run then dedupes against the store, classifies each new item once with the embedding-similarity
 classifier, admits it by tier and quality signal, embeds the admitted text locally, and upserts it
 idempotently; the unique `(source, external_id)` key makes a replay insert nothing. After
 fetching, the run re-checks the evidence of candidate and vetted-preprint papers whose age makes
 them due and promotes them if it improved, then writes a run row with counts, tokens and a health
-verdict, advances each source's cursor only when its fetch fully succeeded, and releases the lock.
+verdict, advances each feed's cursor only when it fully succeeded and the arXiv cursor after each
+completed day, and releases the lock.
 A source outage stops that source for the run, is recorded as a dead letter over the whole missed
 window, and makes the run `partial` without stopping the others; a malformed entry is skipped and
 recorded once.

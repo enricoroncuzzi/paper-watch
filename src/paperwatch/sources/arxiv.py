@@ -34,18 +34,48 @@ def arxiv_base_id(raw: str) -> str:
     return _VERSION.sub("", raw.rstrip("/").split("/abs/")[-1])
 
 
+# arXiv's physics umbrella: these archives have no umbrella OAI set of their own, and their
+# real sets live under `physics:` (for example `physics:astro-ph:CO`). Until that mapping is
+# added, a profile using one must fail loudly rather than silently harvest nothing or fail each
+# day on a set arXiv does not know.
+_PHYSICS_UMBRELLA = frozenset(
+    {
+        "astro-ph",
+        "cond-mat",
+        "gr-qc",
+        "hep-ex",
+        "hep-lat",
+        "hep-ph",
+        "hep-th",
+        "math-ph",
+        "nlin",
+        "nucl-ex",
+        "nucl-th",
+        "quant-ph",
+    }
+)
+
+
 def oai_sets(profiles: list[Profile]) -> list[str]:
     """The OAI sets to harvest for these profiles, sorted and deduplicated.
 
-    The cs archive has one umbrella set; any other archive is queried at its
-    sub-archive set, for example stat.ML -> stat:stat:ML.
+    The cs archive has one umbrella set; any other archive is queried at its sub-archive
+    set, for example stat.ML -> stat:stat:ML. A category the mapping cannot name raises, so
+    a profile edit cannot silently harvest nothing or break every day.
     """
     sets: set[str] = set()
     for profile in profiles:
         for category in profile.categories:
             archive, _, sub = category.partition(".")
             if not sub:
-                continue
+                raise ValueError(
+                    f"arXiv category {category!r} has no sub-archive, so no OAI set is known"
+                )
+            if archive in _PHYSICS_UMBRELLA:
+                raise ValueError(
+                    f"arXiv category {category!r} is under the physics umbrella, whose OAI set "
+                    "mapping is not implemented"
+                )
             if archive == "cs":
                 sets.add("cs")
             else:
@@ -54,9 +84,10 @@ def oai_sets(profiles: list[Profile]) -> list[str]:
 
 
 def _term_pattern(term: str) -> re.Pattern[str]:
-    # A phrase's internal spaces match any whitespace, and \b keeps "bot" out of "robot".
+    # A phrase's internal spaces match any whitespace, and \b keeps "bot" out of "robot". The
+    # last word also accepts a plural, because the arXiv all: query it replaces stemmed terms.
     parts = [re.escape(part) for part in term.split()]
-    return re.compile(r"\b" + r"\s+".join(parts) + r"\b", re.IGNORECASE)
+    return re.compile(r"\b" + r"\s+".join([*parts[:-1], parts[-1] + r"(?:s|es)?"]) + r"\b", re.I)
 
 
 def _version_number(version: ET.Element) -> int:
@@ -66,11 +97,14 @@ def _version_number(version: ET.Element) -> int:
 
 
 def _split_authors(value: str) -> tuple[str, ...]:
-    # arXivRaw separates authors with commas and a final " and "; a parenthesised
-    # affiliation follows the name and is not part of it.
+    # arXivRaw separates authors with commas and a final " and "; an affiliation follows a name
+    # in parentheses. Drop the groups first (repeatedly, for nesting), so a comma or "and"
+    # inside an affiliation cannot split a name.
+    while "(" in value and ")" in value:
+        value = re.sub(r"\([^()]*\)", "", value)
     authors: list[str] = []
     for part in re.split(r",|\band\b", value):
-        name = re.sub(r"\([^)]*\)", "", part).strip()
+        name = part.strip()
         if name:
             authors.append(name)
     return tuple(authors)
@@ -97,6 +131,9 @@ class ArxivOaiSource:
     ) -> None:
         self._client, self._profiles = client, profiles
         self._pause_s, self._retry_wait_s = pause_s, retry_wait_s
+        # Resolve the sets now, so a profile the mapping cannot name fails at startup rather
+        # than silently harvesting nothing or failing every day on an unknown set.
+        self._sets = oai_sets(profiles)
         # Start of the last request attempt, for the pacing rule; None before the first.
         self._last_request: float | None = None
         # (categories, term patterns) per profile, so a page filters without recompiling.
@@ -175,7 +212,13 @@ class ArxivOaiSource:
         )
 
     def _parse_page(self, text: str) -> tuple[list[SourceItem], str]:
-        root = ET.fromstring(text)  # noqa: S314 - trusted arXiv OAI over TLS, no entity resolution
+        if "<!DOCTYPE" in text:
+            # OAI-PMH never carries a DTD; refusing one blocks entity-amplification bodies
+            # before expat sees them.
+            raise ValueError("OAI-PMH response carries a DOCTYPE, which arXiv never sends")
+        # ElementTree is safe here: expat >= 2.4.1 bounds entity amplification, external
+        # entities are not resolved, and a DOCTYPE is refused above.
+        root = ET.fromstring(text)  # noqa: S314 - see the comment above
         error = root.find(f"{_OAI}error")
         if error is not None:
             code = error.get("code") or "unknown"
@@ -207,7 +250,7 @@ class ArxivOaiSource:
         return items, token
 
     def harvest(self, day: date) -> Iterator[list[SourceItem]]:
-        """Yield one filtered page per OAI response for `day`, oldest set first.
+        """Yield one filtered page per OAI response for `day`, sets in sorted order.
 
         The caller receives each page before the next request goes out, so it can park
         the page durably and only then ask for the resumption token.
@@ -217,7 +260,7 @@ class ArxivOaiSource:
         # Base ids already yielded in this call: a paper cross-listed into two sets is
         # yielded once, at the version its single arXivRaw record lists (its highest).
         seen: set[str] = set()
-        for set_spec in oai_sets(self._profiles):
+        for set_spec in self._sets:
             token = ""
             first = True
             while True:

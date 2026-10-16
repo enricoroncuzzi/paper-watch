@@ -25,7 +25,14 @@ from paperwatch.domain import (
     Tier,
     load_profiles,
 )
-from paperwatch.ingest.pipeline import RunResult, Sources, item_to_payload, run_ingestion
+from paperwatch.ingest.pipeline import (
+    RunResult,
+    Sources,
+    _park_items,
+    item_to_payload,
+    payload_to_item,
+    run_ingestion,
+)
 from paperwatch.llm.classifier import Classifier, FakeClassifier
 from paperwatch.llm.embedder import Embedder, FakeEmbedder
 from paperwatch.llm.ledger import Ledger
@@ -409,14 +416,19 @@ def test_interrupted_feed_admission_is_retried(db_session: Session) -> None:
 
 def test_new_arxiv_version_replaces_text_without_reclassifying(db_session: Session) -> None:
     clf, emb = CountingClassifier(), FlakyEmbedder(failures=0)
-    src = fake_sources([paper("2510.1", "Agent harness")])
-    run(db_session, src, classifier=clf, embedder=emb)
+    v1 = paper("2510.1", "Agent harness")
     v2 = dataclasses.replace(
         paper("2510.1", "Agent harness", version=2),
         text="Agent harness. We add a memory module for tool use.",
     )
-    src.arxiv.papers = [v2]
-    res = run(db_session, src, now=NOW + timedelta(days=1), classifier=clf, embedder=emb)
+    day1 = datetime(2026, 10, 5, 6, tzinfo=UTC)
+    day3 = datetime(2026, 10, 7, 6, tzinfo=UTC)
+    src = fake_sources([])
+    src.hf.upvotes.return_value = {"2510.1": 50}  # admitted, so the v2 text is re-embedded
+    # v1 is announced on day 1 and v2 only on day 3, not served on every day.
+    src.arxiv.harvest.side_effect = _pages_for({day1.date(): [[v1]], day3.date(): [[v2]]})
+    run(db_session, src, now=day1, since_override=day1, classifier=clf, embedder=emb)
+    res = run(db_session, src, now=day3, since_override=day3, classifier=clf, embedder=emb)
     r = row(db_session, "2510.1")
     assert (r.version, r.text) == (2, v2.text) and res.counts["text_updated"] == 1
     assert clf.calls == 1 and emb.calls == 2  # first admission, then the v2 re-embedding
@@ -779,6 +791,8 @@ def test_failure_on_a_later_page_keeps_completed_days_and_replays(db_session: Se
     repo = Repository(db_session)
     assert repo.cursor("arxiv") == datetime(2026, 10, 7, tzinfo=UTC)
     assert set(db_session.scalars(select(Item.external_id))) == {"2510.1", "2510.2", "2510.3"}
+    # A run that finished some days and then stopped says so, not "cursor not advanced".
+    assert "arxiv stopped early" in db_session.get_one(Run, first_run.run_id).health["problems"]
     letters = db_session.scalars(
         select(DeadLetter).where(DeadLetter.source == "arxiv", DeadLetter.ref == "window")
     ).all()
@@ -810,6 +824,66 @@ def test_repeated_failures_without_a_cursor_pin_the_first_day(db_session: Sessio
     assert run(db_session, src, now=NOW + timedelta(days=1)).status == "partial"
     # The cursor does not slide forward with the clock, so the missed window stays covered.
     assert Repository(db_session).cursor("arxiv") == pinned
+
+
+def test_failure_before_any_day_completes_reports_a_stuck_cursor(db_session: Session) -> None:
+    src = fake_sources([])
+    src.arxiv.harvest.side_effect = RuntimeError("arXiv down")
+    res = run(db_session, src)
+    assert "cursor not advanced: arxiv" in db_session.get_one(Run, res.run_id).health["problems"]
+
+
+def test_page_is_parked_before_the_next_request(db_session: Session) -> None:
+    seen: list[list[str]] = []
+
+    def harvest(day: date) -> Iterator[list[SourceItem]]:
+        if day == date(2026, 10, 12):
+            yield [paper("2510.77", "Agent harness")]
+            # The pipeline resumes this generator only to request the next page, so the first
+            # page must already be parked and committed here.
+            seen.append(
+                [str(p["external_id"]) for _, p in Repository(db_session).open_item_dead_letters()]
+            )
+            yield [paper("2510.78", "Agent memory")]
+
+    src = fake_sources([])
+    src.arxiv.harvest.side_effect = harvest
+    run(db_session, src)
+    assert seen == [["2510.77"]]
+
+
+def test_crash_between_pages_loses_nothing(db_session: Session) -> None:
+    def harvest(day: date) -> Iterator[list[SourceItem]]:
+        if day == date(2026, 10, 12):
+            yield [paper("2510.77", "Agent harness")]
+            raise SystemExit("killed between pages")
+
+    src = fake_sources([])
+    src.arxiv.harvest.side_effect = harvest
+    with pytest.raises(SystemExit):
+        run(db_session, src)
+    # The page parked before the crash is picked up by the next run and admitted once.
+    src.arxiv.harvest.side_effect = _pages_for({})
+    src.hf.upvotes.return_value = {"2510.77": 50}
+    res = run(db_session, src, now=NOW + timedelta(days=1))
+    assert row(db_session, "2510.77").status == "admitted" and res.status == "succeeded"
+
+
+def test_parked_letter_is_refreshed_to_a_higher_version(db_session: Session) -> None:
+    # A crash during a multi-day catch-up leaves v1 parked; a later day's v2 must replace the
+    # parked payload, or resuming phase 2 would store the older text.
+    repo = Repository(db_session)
+    run_id = repo.start_run(NOW, NOW, at=NOW)
+    v1 = paper("2510.9", "Agent harness")
+    v2 = dataclasses.replace(paper("2510.9", "Agent harness", version=2), text="Rewritten.")
+    parked: set[tuple[str, str]] = set()
+    _park_items(repo, run_id, [v1], parked)
+    _park_items(repo, run_id, [v2], parked)
+    db_session.commit()
+    letter = db_session.scalars(
+        select(DeadLetter).where(DeadLetter.ref == "2510.9", DeadLetter.resolved_at.is_(None))
+    ).one()
+    assert payload_to_item(letter.payload).version == 2
 
 
 def test_since_override_harvests_from_that_date(db_session: Session) -> None:

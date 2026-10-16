@@ -361,6 +361,32 @@ class Repository:
         ).all()
         return [(r.id, r.payload) for r in rows]
 
+    def open_item_letter(
+        self, source: str, external_id: str
+    ) -> tuple[int, dict[str, object]] | None:
+        # The open parked letter for one item, if any; a given-up letter (at the attempt cap)
+        # is not one, so a human still owns it.
+        row = self._s.execute(
+            select(DeadLetter.id, DeadLetter.payload)
+            .where(
+                DeadLetter.source == source,
+                DeadLetter.ref == external_id,
+                DeadLetter.payload.is_not(None),
+                DeadLetter.resolved_at.is_(None),
+                DeadLetter.attempts < MAX_ITEM_ATTEMPTS,
+            )
+            .limit(1)
+        ).first()
+        return (row.id, row.payload) if row is not None else None
+
+    def refresh_dead_letter_payload(self, dead_letter_id: int, payload: dict[str, object]) -> None:
+        # A later day in the same catch-up can carry a newer version of a parked paper; keep the
+        # stored payload at the newest text, so a crash before phase 2 resumes that, not the old.
+        self._s.execute(
+            update(DeadLetter).where(DeadLetter.id == dead_letter_id).values(payload=payload)
+        )
+        self._s.flush()
+
     def record_retry_failure(self, dead_letter_id: int, error: str) -> int:
         dl = self._s.get_one(DeadLetter, dead_letter_id)
         dl.attempts += 1
