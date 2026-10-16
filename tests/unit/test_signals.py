@@ -483,3 +483,39 @@ def test_s2_checked_ids_keep_answered_chunks_only(monkeypatch) -> None:
     assert src.degraded is True
     assert src.checked_ids == set(ids[:500])
     assert ids[500] not in src.checked_ids
+
+
+@respx.mock
+def test_s2_all_unknown_chunk_counts_as_checked_with_no_signals(monkeypatch) -> None:
+    # S2 answers a chunk made only of ids it has not indexed yet, routine for papers
+    # announced the same day, with this exact 400. Such a chunk is checked and empty,
+    # not an outage, so the next chunk still runs and the source stays healthy.
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        count = len(json.loads(request.content)["ids"])
+        if count == 500:
+            return httpx.Response(200, json=[{"venue": "arXiv.org", "citationCount": 1}] * count)
+        return httpx.Response(400, json={"error": "No valid paper ids given"})
+
+    respx.post(S2_BATCH_URL).mock(side_effect=responder)
+    ids = [f"2510.{i:05d}" for i in range(514)]
+    src = SemanticScholarSource(httpx.Client(), None, pause_s=0)
+    out = src.lookup(ids)
+    assert set(out) == set(ids[:500])
+    assert src.degraded is False
+    assert src.failure is None
+    assert src.checked_ids == set(ids)
+
+
+@respx.mock
+def test_s2_other_400_still_degrades(monkeypatch) -> None:
+    # Only the all-unknown answer is benign; any other 400 is a request bug.
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    respx.post(S2_BATCH_URL).mock(
+        return_value=httpx.Response(400, json={"error": "Unrecognized field"})
+    )
+    src = SemanticScholarSource(httpx.Client(), None, pause_s=0)
+    assert src.lookup(["2510.00001"]) == {}
+    assert src.degraded is True
+    assert src.checked_ids == set()

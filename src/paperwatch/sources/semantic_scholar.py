@@ -23,7 +23,19 @@ S2_MAX_WAIT_S = 60.0
 S2_PAUSE_S = 10.0
 S2_JITTER = 0.2
 _VERSION = re.compile(r"v\d+$")
+# S2's 400 body when no id in the chunk is indexed yet, routine for papers announced the
+# same day: the chunk was checked and simply has no signals.
+_NO_KNOWN_IDS = {"error": "No valid paper ids given"}
 log = structlog.get_logger()
+
+
+def _no_known_ids(exc: httpx.HTTPStatusError) -> bool:
+    if exc.response.status_code != 400:
+        return False
+    try:
+        return exc.response.json() == _NO_KNOWN_IDS
+    except ValueError:
+        return False
 
 
 def _base_id(arxiv_id: str) -> str:
@@ -55,17 +67,23 @@ class SemanticScholarSource:
             chunk = arxiv_ids[i : i + BATCH_SIZE]
             has_more = i + BATCH_SIZE < len(arxiv_ids)
             try:
-                resp = send_with_retries(
-                    self._client,
-                    "POST",
-                    S2_BATCH_URL,
-                    headers=self._headers,
-                    params={"fields": "externalIds,venue,publicationVenue,citationCount"},
-                    json={"ids": [f"ARXIV:{_base_id(a)}" for a in chunk]},
-                    attempts=S2_ATTEMPTS,
-                    min_wait_s=S2_MIN_WAIT_S,
-                    max_wait_s=S2_MAX_WAIT_S,
-                )
+                try:
+                    resp = send_with_retries(
+                        self._client,
+                        "POST",
+                        S2_BATCH_URL,
+                        headers=self._headers,
+                        params={"fields": "externalIds,venue,publicationVenue,citationCount"},
+                        json={"ids": [f"ARXIV:{_base_id(a)}" for a in chunk]},
+                        attempts=S2_ATTEMPTS,
+                        min_wait_s=S2_MIN_WAIT_S,
+                        max_wait_s=S2_MAX_WAIT_S,
+                    )
+                except httpx.HTTPStatusError as exc:
+                    if not _no_known_ids(exc):
+                        raise
+                    self.checked_ids.update(chunk)
+                    continue
                 # S2 answers one element per requested id, null for an unknown id. The
                 # results are mapped back to the caller's ids, version suffix and all.
                 for aid, paper in zip(chunk, resp.json(), strict=True):
