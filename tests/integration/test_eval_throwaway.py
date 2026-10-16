@@ -150,17 +150,17 @@ def test_a_percent_encoded_password_still_migrates(
 def test_eval_is_identical_across_fresh_databases(
     db_url: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # The evaluator's reproducibility guarantee: two fresh databases get different random uuids,
-    # yet every metric must match, because tied branch scores share a rank and equal fused scores
-    # are ordered by the item's stable key. This replaced the old `_check_no_ties` tripwire, which
-    # could only catch a nondeterminism after the fact and only for the questions the sampled ids
-    # happened to expose.
+    # A check, not the guarantee: the shared-rank and stable-key unit tests in test_hybrid.py carry
+    # reproducibility, and this shows four fresh databases (different random uuids) agree anyway.
+    # It replaced the old `_check_no_ties` tripwire, which caught a nondeterminism only after the
+    # fact and only for the questions the sampled ids happened to expose.
     _settings_for(monkeypatch, db_url)
 
     def body(session: object) -> dict[str, float]:
         return evaluate(session, FakeEmbedder(), CORPUS, QUESTIONS, k=5)  # type: ignore[arg-type]
 
-    assert cli._with_throwaway_database(body) == cli._with_throwaway_database(body)
+    results = [cli._with_throwaway_database(body) for _ in range(4)]
+    assert results[1:] == results[:-1]
 
 
 def test_sweep_drops_only_its_own_stale_databases(

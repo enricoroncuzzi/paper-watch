@@ -3,12 +3,13 @@
 Tests check that code does what it says; an eval checks that retrieval ranks well enough, and a
 committed baseline turns a quality drop into a CI failure. This runs with the deterministic
 `FakeEmbedder`, so it is fast, offline and reproducible; real-model numbers come from the
-corpus-size checkpoints on real data, not from the fake embedder. Reproducibility is guaranteed
-by construction: equal branch scores get one shared rank and equal fused scores are ordered by
-an item's stable `(source, external_id)` key, never its random uuid, and
-`tests/integration/test_eval_throwaway.py` proves two fresh databases score identically. That
-replaced the old `_check_no_ties` tripwire, which merely caught the nondeterminism a random-id
-tie-break produced after a change.
+corpus-size checkpoints on real data, not from the fake embedder. The determinism guarantee is
+carried by the shared-rank and stable-key unit tests in `tests/integration/test_hybrid.py`; the
+same ordering runs here, and `tests/integration/test_eval_throwaway.py` checks four fresh
+databases score identically. The informational `fused_ties_in_top_k` metric counts the questions
+whose top k still holds an equal fused score, so a data edit that creates one is visible; it
+replaced the old raising `_check_no_ties` tripwire, which merely caught the nondeterminism such a
+tie produced.
 """
 
 import json
@@ -71,6 +72,14 @@ def _ndcg(ranked: list[str | None], relevant: set[str], k: int) -> float:
     return dcg / ideal
 
 
+def _branch_ids(rows: list[Any], by_item: dict[uuid.UUID, str], limit: int) -> list[str | None]:
+    # Best score first, equal scores ordered by the stable (source, external_id) key, cut at
+    # `limit`: which rows fit the cut must not depend on the order the database returned a tie in.
+    ranks = hybrid.shared_ranks((row.id, row.score) for row in rows)
+    ordered = sorted(rows, key=lambda row: (ranks[row.id], row.source, row.external_id))
+    return [by_item.get(row.id) for row in ordered[:limit]]
+
+
 def evaluate(
     session: Session,
     embedder: Embedder,
@@ -87,8 +96,6 @@ def evaluate(
     repo = Repository(session)
     by_url: dict[str, str] = {}
     by_item: dict[uuid.UUID, str] = {}
-    # The stable key that orders a branch cut and a fused tie: (source, external_id).
-    key_of: dict[uuid.UUID, tuple[str, str]] = {}
     # Seed the corpus first: every row is admitted exactly as the pipeline would admit it, so the
     # eval exercises the real write path and the partial HNSW index.
     for row in _load(corpus):
@@ -112,13 +119,13 @@ def evaluate(
         )
         by_url[url] = row["external_id"]
         by_item[item_id] = row["external_id"]
-        key_of[item_id] = (item.source, row["external_id"])
     session.flush()
 
     totals: defaultdict[str, float] = defaultdict(float)
     kind_totals: defaultdict[str, float] = defaultdict(float)
     counts: defaultdict[str, int] = defaultdict(int)
     nonempty: defaultdict[str, int] = defaultdict(int)
+    ties = 0
     qs = _load(questions)
     for q in qs:
         relevant = set(q["relevant"])
@@ -126,35 +133,25 @@ def evaluate(
         # The candidates count matches production's default, so the branch lists and the hybrid
         # path agree. Tied branch scores share a rank and equal fused scores are ordered by the
         # stable key, so the top k is reproducible across fresh databases; test_eval_throwaway
-        # proves it.
+        # checks it.
         hits = hybrid.hybrid_search(session, embedder, q["question"], k=k, candidates=candidates)
+        # A question whose top k holds equal fused scores is informational only: the stable key
+        # orders them so the run stays reproducible, but a data edit that creates one is visible.
+        if len({round(h.score, 12) for h in hits}) < len(hits):
+            ties += 1
         # The branch lists are the same public queries the fusion uses, limited like production and
         # then cut to k so the metrics are recall@k and MRR@k. The vector branch runs under the
         # same transaction-local settings hybrid_search set (shared helper), not by call order.
         qvec = embedder.embed([q["question"]])[0]
         hybrid.set_search_settings(session, candidates)
-        vector_rows = [
-            (row.id, row.score)
-            for row in session.execute(hybrid.vector_query(qvec, hybrid.Filters(), candidates))
-        ]
-        text_rows = [
-            (row.id, row.score)
-            for row in session.execute(
-                hybrid.text_query(q["question"], hybrid.Filters(), candidates)
-            )
-        ]
-
-        def branch_ids(rows: list[tuple[uuid.UUID, float]]) -> list[str | None]:
-            # Cut the branch list at k with the shared rank first and the stable key second, so a
-            # tie at the boundary cannot depend on the order the database returned the rows in.
-            ranks = hybrid.shared_ranks(rows)
-            ordered = sorted(rows, key=lambda r: (ranks[r[0]], *key_of[r[0]]))
-            return [by_item.get(item_id) for item_id, _ in ordered[:k]]
-
+        vector_rows = list(session.execute(hybrid.vector_query(qvec, hybrid.Filters(), candidates)))
+        text_rows = list(
+            session.execute(hybrid.text_query(q["question"], hybrid.Filters(), candidates))
+        )
         branch_lists = {
             "hybrid": [by_url.get(h.url) for h in hits[:k]],
-            "text_only": branch_ids(text_rows),
-            "vector_only": branch_ids(vector_rows),
+            "text_only": _branch_ids(text_rows, by_item, k),
+            "vector_only": _branch_ids(vector_rows, by_item, k),
         }
         for branch, ranked in branch_lists.items():
             # Hybrid keys carry no suffix; a branch-only key names the branch, then the kind.
@@ -175,6 +172,7 @@ def evaluate(
         "mrr": totals["mrr"] / n,
         "ndcg_at_k": totals["ndcg_at_k"] / n,
         "text_nonempty": nonempty["text_nonempty"] / n,
+        "fused_ties_in_top_k": float(ties),
     }
     for branch in BRANCHES:
         metrics[f"recall_at_k:{branch}"] = totals[f"recall_at_k:{branch}"] / n

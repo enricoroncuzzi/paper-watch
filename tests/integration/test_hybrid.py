@@ -1,3 +1,4 @@
+import math
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -171,14 +172,27 @@ def admitted_with_id(
 
 
 def test_vector_branch_fills_candidates_under_a_filter(db_session: Session) -> None:
-    # More admitted rows than candidates, and only a fifth match the profile filter, so a scan
-    # capped at hnsw.ef_search rows and filtered afterwards would return far fewer than 50. A
+    # More admitted rows than candidates, and only a fifth match the profile filter. The rejected
+    # rows are all nearer the query than the kept ones, so a scan capped at hnsw.ef_search rows
+    # and filtered afterwards returns none of the 50; iterative_scan must keep scanning past the
+    # rejected rows. Distinct directions avoid the degenerate graph identical vectors produce. A
     # bitmap scan plus sort would return all 50 even with the fix removed, so disable that too:
     # the EXPLAIN then fails loudly if the planner drifts away from the HNSW index.
     at = datetime(2026, 10, 1, tzinfo=UTC)
-    # Every row shares the query direction, so the zero-similarity floor keeps it a candidate; the
-    # query matches no body, so the text branch stays empty and the vector branch must fill alone.
-    qvec = E.embed(["zzzunmatchedzzz"])[0]
+    qvec = [1.0] + [0.0] * (EMBEDDING_DIM - 1)
+
+    def direction(theta: float) -> list[float]:
+        return [math.cos(theta), math.sin(theta)] + [0.0] * (EMBEDDING_DIM - 2)
+
+    for i in range(240):
+        admitted(
+            db_session,
+            f"other{i}",
+            f"harness number {i}",
+            "ml-architectures",
+            at,
+            embedding=direction(0.001 * (i + 1)),
+        )
     for i in range(60):
         admitted(
             db_session,
@@ -186,11 +200,7 @@ def test_vector_branch_fills_candidates_under_a_filter(db_session: Session) -> N
             f"harness number {i}",
             "agentic-engineering",
             at,
-            embedding=qvec,
-        )
-    for i in range(240):
-        admitted(
-            db_session, f"other{i}", f"harness number {i}", "ml-architectures", at, embedding=qvec
+            embedding=direction(1.2 + 0.0005 * i),
         )
     db_session.flush()
     db_session.execute(text("SET LOCAL enable_seqscan = off"))
@@ -201,7 +211,9 @@ def test_vector_branch_fills_candidates_under_a_filter(db_session: Session) -> N
     )
     plan = "\n".join(db_session.execute(text(f"EXPLAIN {sql}")).scalars())
     assert "ix_items_embedding_hnsw" in plan  # the scan this test is about
-    hits = hybrid_search(db_session, E, "zzzunmatchedzzz", k=100, candidates=50, filters=filters)
+    hits = hybrid_search(
+        db_session, QueryEmbedder(qvec), "zzzunmatchedzzz", k=100, candidates=50, filters=filters
+    )
     # The text branch matches nothing, so the vector branch alone must fill the 50 candidates.
     assert len(hits) == 50
 
@@ -289,13 +301,28 @@ def test_equal_fused_scores_come_back_in_key_order(db_session: Session) -> None:
     near = [1.0] + [0.0] * (EMBEDDING_DIM - 1)
     far = [0.0, 1.0] + [0.0] * (EMBEDDING_DIM - 2)
     # A vector-only item and a text-only item both rank first in their list, so they tie at
-    # 1/61. Their external ids order ("aaa" before "zzz") differs from their ids, so only the
-    # fusion sort's stable-key tie-break can produce the asserted order.
-    admitted_with_id(db_session, UUID(int=20), "aaa", "vector body", near)
-    admitted_with_id(db_session, UUID(int=10), "zzz", "tietoken body", far)
+    # 1/61. Insertion order and id order both put the vector item (id 10, "zzz") first, so only
+    # the fusion sort's stable-key tie-break can put the text item ("aaa") first.
+    admitted_with_id(db_session, UUID(int=10), "zzz", "vector body", near)
+    admitted_with_id(db_session, UUID(int=20), "aaa", "tietoken body", far)
     db_session.flush()
     hits = hybrid_search(db_session, QueryEmbedder(near), "tietoken", k=2, candidates=1)
     assert [external_id(db_session, h.item_id) for h in hits] == ["aaa", "zzz"]
+
+
+def test_a_text_tie_at_the_candidate_boundary_is_cut_by_key(db_session: Session) -> None:
+    near = [1.0] + [0.0] * (EMBEDDING_DIM - 1)
+    far = [0.0, 1.0] + [0.0] * (EMBEDDING_DIM - 2)
+    for item_id, eid in ((UUID(int=3), "tx"), (UUID(int=1), "tz"), (UUID(int=2), "ty")):
+        admitted_with_id(db_session, item_id, eid, "tietoken body", far)
+    for i in range(2):
+        admitted_with_id(db_session, UUID(int=100 + i), f"v{i}", "vector body", near)
+    db_session.flush()
+    # The candidate limit is 2 and three rows tie on the text rank, so the key decides which two
+    # enter: tx and ty, never the smaller-id tz.
+    hits = hybrid_search(db_session, QueryEmbedder(near), "tietoken", k=10, candidates=2)
+    tied = sorted(external_id(db_session, h.item_id) for h in hits if h.item_id.int < 10)
+    assert tied == ["tx", "ty"]
 
 
 def test_shared_ranks_skip_after_a_tie() -> None:
@@ -411,3 +438,22 @@ def test_stopword_only_query_matches_nothing(db_session: Session) -> None:
 def test_hyphenated_name_still_matches(db_session: Session) -> None:
     seed(db_session)
     assert ids_for(db_session, "SWE-bench")[0] == item_id(db_session, "1")
+
+
+@pytest.mark.parametrize(
+    ("body", "query"),
+    [
+        ("Dense embedding models for retrieval", "embeddings"),
+        ("Sparse autoencoders", "sparse"),
+        ("Supervised fine-tuning data", "supervised"),
+        ("Analyses of agent traces", "analyses"),
+    ],
+)
+def test_a_query_term_matches_a_document_with_the_same_stem(
+    db_session: Session, body: str, query: str
+) -> None:
+    # These query words stem to a lexeme that is not stable under a second stemming pass
+    # (embedding -> embed -> emb), so a re-parsed OR query would look for a lexeme no tsvector has.
+    admitted(db_session, "x", body, "p1", datetime(2026, 10, 1, tzinfo=UTC))
+    db_session.flush()
+    assert len(list(db_session.scalars(text_query(query, Filters(), 10)))) == 1

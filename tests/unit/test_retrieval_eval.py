@@ -2,17 +2,22 @@
 
 import json
 import math
+from collections import namedtuple
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 
 from evals.retrieval_eval import (
     GATED,
+    _branch_ids,
     _ndcg,
     _recall,
     _reciprocal_rank,
     gate,
 )
+
+_BranchRow = namedtuple("_BranchRow", "id score source external_id")
 
 DATA = Path(__file__).resolve().parents[2] / "evals" / "data"
 
@@ -37,6 +42,18 @@ def test_ndcg_matches_hand_computed_values() -> None:
     assert _ndcg(["a"], {"a", "b"}, 5) == pytest.approx(0.6131, abs=1e-4)
     assert _ndcg(["a", "b"], {"a", "b"}, 5) == 1.0
     assert _ndcg([], {"a"}, 5) == 0.0
+
+
+def test_branch_ids_cuts_a_boundary_tie_by_key() -> None:
+    first, tied_z, tied_a = uuid4(), uuid4(), uuid4()
+    rows = [
+        _BranchRow(first, 0.9, "eval", "mmm"),
+        _BranchRow(tied_z, 0.5, "eval", "zzz"),
+        _BranchRow(tied_a, 0.5, "eval", "aaa"),
+    ]
+    by_item = {first: "mmm", tied_z: "zzz", tied_a: "aaa"}
+    # The cut at 2 falls inside the 0.5 tie, so the stable key picks "aaa" over "zzz".
+    assert _branch_ids(rows, by_item, 2) == ["mmm", "aaa"]
 
 
 def _metrics(**overrides: float) -> dict[str, float]:

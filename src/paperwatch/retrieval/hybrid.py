@@ -13,6 +13,7 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import ColumnElement, Select, Text, cast, func, select, text
+from sqlalchemy.dialects.postgresql import TSQUERY
 from sqlalchemy.orm import Session
 
 from paperwatch.llm.embedder import Embedder
@@ -66,9 +67,10 @@ def vector_query(qvec: list[float], filters: Filters, limit: int) -> Select[Any]
     # and equal distances are given a shared rank after the fetch, never a second SQL sort key.
     # A cosine distance of 1 is zero similarity (the vectors share nothing), so the row is not a
     # candidate at all; real English embeddings practically never reach it, but the fake one ties.
+    # The stable key rides along so the fusion needs no second query to order an equal score.
     distance = Item.embedding.cosine_distance(qvec)
     return _filtered(
-        select(Item.id, distance.label("score"))
+        select(Item.id, distance.label("score"), Item.source, Item.external_id)
         .where(distance < 1.0)
         .order_by(distance)
         .limit(limit),
@@ -78,10 +80,11 @@ def vector_query(qvec: list[float], filters: Filters, limit: int) -> Select[Any]
 
 def any_term_tsquery(query: str) -> ColumnElement[Any]:
     # plainto_tsquery joins stems with AND ('harness' & 'agent'); OR-ing them makes any shared
-    # stem a match and leaves the ordering to ts_rank_cd. Phrase operators (<->) that
-    # plainto_tsquery emits for hyphenated words like SWE-bench are kept as they are.
+    # stem a match and leaves the ordering to ts_rank_cd. The result is cast back to tsquery, not
+    # re-parsed by to_tsquery, which would stem the stems a second time and lose words whose stem
+    # is not stable (embedding -> embed, then emb, which no tsvector holds).
     anded = func.plainto_tsquery("english", query)
-    return func.to_tsquery("english", func.replace(cast(anded, Text), " & ", " | "))
+    return cast(func.replace(cast(anded, Text), " & ", " | "), TSQUERY)
 
 
 def text_query(query: str, filters: Filters, limit: int) -> Select[Any]:
@@ -89,12 +92,14 @@ def text_query(query: str, filters: Filters, limit: int) -> Select[Any]:
     # ts_rank_cd ties are common once the query OR-joins its stems, so the score is selected next
     # to the id and equal ranks get a shared rank after the fetch; the stable key only orders rows
     # the rank cannot separate, and this statement sorts anyway, so the GIN index still serves it.
+    # The key is COLLATE "C", whose byte order matches Python's code-point order, so SQL and the
+    # fusion cut a tie the same way whatever the database locale.
     tsq = any_term_tsquery(query)
     rank = func.ts_rank_cd(Item.tsv, tsq).label("score")
     return _filtered(
-        select(Item.id, rank)
+        select(Item.id, rank, Item.source, Item.external_id)
         .where(Item.tsv.op("@@")(tsq))
-        .order_by(rank.desc(), Item.source, Item.external_id)
+        .order_by(rank.desc(), Item.source.collate("C"), Item.external_id.collate("C"))
         .limit(limit),
         filters,
     )
@@ -151,28 +156,20 @@ def hybrid_search(
     # scan, so a large or filtered candidate set would under-fill; this sets it wide enough.
     set_search_settings(session, candidates)
     qvec = embedder.embed([query])[0]
-    # `shared_ranks` gives tied scores one rank each, so the fusion never sees the arbitrary order
-    # the index or the text sort returned equal rows in.
-    vec_rows = [
-        (row.id, row.score) for row in session.execute(vector_query(qvec, filters, candidates))
-    ]
-    txt_rows = [
-        (row.id, row.score) for row in session.execute(text_query(query, filters, candidates))
-    ]
+    # Each branch returns the id, the score and the stable key. `shared_ranks` gives tied scores
+    # one rank each, so the fusion never sees the arbitrary order the index or the text sort
+    # returned equal rows in, and the stable key rides along for the equal-score sort below.
+    vec_rows = list(session.execute(vector_query(qvec, filters, candidates)))
+    txt_rows = list(session.execute(text_query(query, filters, candidates)))
     scores: dict[uuid.UUID, float] = {}
     for branch_rows in (vec_rows, txt_rows):
-        for item_id, rank in shared_ranks(branch_rows).items():
+        for item_id, rank in shared_ranks((r.id, r.score) for r in branch_rows).items():
             scores[item_id] = scores.get(item_id, 0.0) + 1.0 / (rrf_k + rank)
     # Equal fused scores are ordered by the item's stable (source, external_id) key, never its
-    # random uuid, so the output is reproducible; one query reads those columns for the fused ids.
-    keys = {
-        row.id: (row.source, row.external_id)
-        for row in session.execute(
-            select(Item.id, Item.source, Item.external_id).where(Item.id.in_(scores))
-        )
-    }
+    # random uuid, so the output is reproducible.
+    keys = {r.id: (r.source, r.external_id) for r in [*vec_rows, *txt_rows]}
     top = sorted(scores, key=lambda i: (-scores[i], *keys[i]))[:k]
-    item_rows = {r.id: r for r in session.scalars(select(Item).where(Item.id.in_(top)))}
+    item_rows = {r.id: r for r in session.scalars(select(Item).where(Item.id.in_(list(top))))}
     return [_hit(item_rows[i], scores[i]) for i in top]
 
 

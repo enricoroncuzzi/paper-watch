@@ -56,13 +56,15 @@ KEYS = {
     "text_nonempty",
     "text_nonempty:exact_name",
     "text_nonempty:paraphrase",
+    "fused_ties_in_top_k",
 }
 
 
 def test_metrics_in_range_and_gate_passes(db_session: Session) -> None:
     m = evaluate(db_session, FakeEmbedder(), CORPUS, QUESTIONS, k=5)
     assert set(m) == KEYS
-    assert all(0.0 <= v <= 1.0 for v in m.values())
+    # Every metric is a rate except the informational tie count.
+    assert all(0.0 <= v <= 1.0 for name, v in m.items() if name != "fused_ties_in_top_k")
     assert gate(m, json.loads(BASELINE.read_text())) == []
 
 
@@ -92,12 +94,12 @@ def test_worst_first_text_order_fails_the_gate(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def worst_first(query: str, filters: Filters, limit: int) -> object:
-        tsq = func.websearch_to_tsquery("english", query)
-        # The branch returns (id, score) now, so the stub must too: shared_ranks reads the score
-        # and trusts the row order, so a worst-first order gives the worst rows the best ranks.
+        # The stub uses the production OR query, so it still exercises the real branch; the
+        # worst-first order is what makes shared_ranks give the worst rows the best ranks.
+        tsq = hybrid.any_term_tsquery(query)
         rank = func.ts_rank_cd(Item.tsv, tsq).label("score")
         return _filtered(
-            select(Item.id, rank)
+            select(Item.id, rank, Item.source, Item.external_id)
             .where(Item.tsv.op("@@")(tsq))
             .order_by(rank.asc(), Item.id)
             .limit(limit),
@@ -106,7 +108,7 @@ def test_worst_first_text_order_fails_the_gate(
 
     monkeypatch.setattr(hybrid, "text_query", worst_first)
     m = evaluate(db_session, FakeEmbedder(), CORPUS, QUESTIONS, k=5)
-    assert m["mrr:text_only:exact_name"] < 14 / 18
+    assert m["mrr:text_only:exact_name"] < 16 / 18
     assert gate(m, json.loads(BASELINE.read_text())) != []
 
 
