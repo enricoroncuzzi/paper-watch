@@ -176,15 +176,27 @@ def test_vector_branch_fills_candidates_under_a_filter(db_session: Session) -> N
     # bitmap scan plus sort would return all 50 even with the fix removed, so disable that too:
     # the EXPLAIN then fails loudly if the planner drifts away from the HNSW index.
     at = datetime(2026, 10, 1, tzinfo=UTC)
+    # Every row shares the query direction, so the zero-similarity floor keeps it a candidate; the
+    # query matches no body, so the text branch stays empty and the vector branch must fill alone.
+    qvec = E.embed(["zzzunmatchedzzz"])[0]
     for i in range(60):
-        admitted(db_session, f"match{i}", f"harness number {i}", "agentic-engineering", at)
+        admitted(
+            db_session,
+            f"match{i}",
+            f"harness number {i}",
+            "agentic-engineering",
+            at,
+            embedding=qvec,
+        )
     for i in range(240):
-        admitted(db_session, f"other{i}", f"harness number {i}", "ml-architectures", at)
+        admitted(
+            db_session, f"other{i}", f"harness number {i}", "ml-architectures", at, embedding=qvec
+        )
     db_session.flush()
     db_session.execute(text("SET LOCAL enable_seqscan = off"))
     db_session.execute(text("SET LOCAL enable_bitmapscan = off"))
     filters = Filters(profiles=frozenset({"agentic-engineering"}))
-    sql = vector_query(E.embed(["zzzunmatchedzzz"])[0], filters, 50).compile(
+    sql = vector_query(qvec, filters, 50).compile(
         db_session.get_bind(), compile_kwargs={"literal_binds": True}
     )
     plan = "\n".join(db_session.execute(text(f"EXPLAIN {sql}")).scalars())
@@ -196,11 +208,12 @@ def test_vector_branch_fills_candidates_under_a_filter(db_session: Session) -> N
 
 def test_text_branch_ranks_a_token_match_above_a_vector_neighbour(db_session: Session) -> None:
     near = [1.0] + [0.0] * (EMBEDDING_DIM - 1)
-    far = [0.0, 1.0] + [0.0] * (EMBEDDING_DIM - 2)
+    # A unit vector part-aligned with `near`: distance 0.4, so it survives the zero-similarity
+    # floor as a vector candidate, but it ranks below the neighbour, so only the text branch can
+    # lift the token match above it.
+    mid = [0.6, 0.8] + [0.0] * (EMBEDDING_DIM - 2)
     at = datetime(2026, 10, 1, tzinfo=UTC)
-    # The token match sits far from the query vector; the neighbour is identical to it but never
-    # mentions SWE-bench, so only the text branch can lift the token match above the neighbour.
-    admitted(db_session, "token", "SWE-bench harness", "p1", at, embedding=far)
+    admitted(db_session, "token", "SWE-bench harness", "p1", at, embedding=mid)
     admitted(db_session, "neighbour", "Memory for agents", "p1", at, embedding=near)
     db_session.flush()
     hits = hybrid_search(db_session, QueryEmbedder(near), "SWE-bench", k=2)
@@ -302,6 +315,20 @@ def test_equal_distances_share_a_vector_rank(db_session: Session) -> None:
     hits = hybrid_search(db_session, QueryEmbedder(near), "tietoken", k=2, candidates=2)
     scores = {h.item_id: h.score for h in hits}
     assert scores[UUID(int=5)] == scores[UUID(int=6)] == pytest.approx(1 / 61)
+
+
+def test_orthogonal_vectors_are_not_vector_candidates(db_session: Session) -> None:
+    near = [1.0] + [0.0] * (EMBEDDING_DIM - 1)
+    far = [0.0, 1.0] + [0.0] * (EMBEDDING_DIM - 2)
+    # `near` is the query direction (distance 0) and `far` is orthogonal (distance 1, similarity
+    # 0): a vector sharing nothing is not evidence, so only the near row is a vector candidate.
+    admitted_with_id(db_session, UUID(int=1), "near", "vector body", near)
+    admitted_with_id(db_session, UUID(int=2), "far", "vector body", far)
+    db_session.flush()
+    got = [
+        external_id(db_session, i) for i in db_session.scalars(vector_query(near, Filters(), 10))
+    ]
+    assert got == ["near"]
 
 
 def test_equal_text_ranks_share_a_rank(db_session: Session) -> None:

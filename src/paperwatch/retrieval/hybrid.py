@@ -64,8 +64,16 @@ def vector_query(qvec: list[float], filters: Filters, limit: int) -> Select[Any]
     # Separate so a test can EXPLAIN exactly the statement search runs. A secondary sort key here
     # would stop the planner using the partial HNSW index, so the score is selected next to the id
     # and equal distances are given a shared rank after the fetch, never a second SQL sort key.
-    distance = Item.embedding.cosine_distance(qvec).label("score")
-    return _filtered(select(Item.id, distance).order_by(distance).limit(limit), filters)
+    # A cosine distance of 1 is zero similarity (the vectors share nothing), so the row is not a
+    # candidate at all; real English embeddings practically never reach it, but the fake one ties.
+    distance = Item.embedding.cosine_distance(qvec)
+    return _filtered(
+        select(Item.id, distance.label("score"))
+        .where(distance < 1.0)
+        .order_by(distance)
+        .limit(limit),
+        filters,
+    )
 
 
 def any_term_tsquery(query: str) -> ColumnElement[Any]:
