@@ -1,0 +1,91 @@
+# Tier-3 official lab feeds. Read only via RSS/Atom; never scrape HTML.
+# Verified live on 2026-10-12 by a feed research step (status, content type,
+# newest item, 90-day rate). Region is us-eu or cn.
+feeds:
+  # --- Wave 1: agentic-engineering core, ship now ---
+  - lab: Microsoft Agent Framework
+    region: us-eu
+    url: https://devblogs.microsoft.com/agent-framework/feed/
+  - lab: Microsoft Foundry
+    region: us-eu
+    url: https://devblogs.microsoft.com/foundry/feed/
+  - lab: LangChain
+    region: us-eu
+    url: https://blog.langchain.com/rss.xml
+  - lab: Sourcegraph
+    region: us-eu
+    url: https://sourcegraph.com/blog/feed.rss
+  - lab: Arize AI
+    region: us-eu
+    url: https://arize.com/feed/
+  - lab: Braintrust
+    region: us-eu
+    url: https://www.braintrust.dev/blog/atom
+  - lab: Zep
+    region: us-eu
+    url: https://www.getzep.com/blog/rss.xml
+  - lab: Temporal
+    region: us-eu
+    url: https://temporal.io/blog/feed.xml
+  - lab: Modal
+    region: us-eu
+    url: https://modal.com/blog/atom.xml
+  - lab: Sierra
+    region: us-eu
+    url: https://sierra.ai/rss.xml
+  - lab: OpenAI
+    region: us-eu
+    url: https://openai.com/news/rss.xml
+  - lab: Google DeepMind
+    region: us-eu
+    url: https://deepmind.google/blog/rss.xml
+  - lab: Microsoft Research
+    region: us-eu
+    url: https://www.microsoft.com/en-us/research/feed/
+  - lab: Mistral AI
+    region: us-eu
+    url: https://mistral.ai/news/rss
+
+  # --- Wave 2: broader coverage (ai-forensics, ml-architectures, context).
+  # Uncomment to enable. Title/summary-only feeds give search little text.
+  # - lab: Engineering at Meta
+  #   region: us-eu
+  #   url: https://engineering.fb.com/feed/
+  # Hugging Face: title-only feed, so items carry no body text to search.
+  # - lab: Hugging Face
+  #   region: us-eu
+  #   url: https://huggingface.co/blog/feed.xml
+  # - lab: Ai2
+  #   region: us-eu
+  #   url: https://allenai.org/rss.xml
+  # - lab: Google Research
+  #   region: us-eu
+  #   url: https://research.google/blog/rss/
+  # - lab: AWS Machine Learning Blog
+  #   region: us-eu
+  #   url: https://aws.amazon.com/blogs/machine-learning/feed/
+  # - lab: NVIDIA Technical Blog
+  #   region: us-eu
+  #   url: https://developer.nvidia.com/blog/feed/
+  # - lab: Databricks
+  #   region: us-eu
+  #   url: https://www.databricks.com/feed
+  # - lab: IBM Research
+  #   region: us-eu
+  #   url: https://research.ibm.com/rss
+  # - lab: PyTorch
+  #   region: us-eu
+  #   url: https://pytorch.org/feed/
+  # - lab: Together AI
+  #   region: us-eu
+  #   url: https://www.together.ai/blog/rss.xml
+  # - lab: Langflow
+  #   region: us-eu
+  #   url: https://blog.langflow.org/rss.xml
+  # - lab: Hive
+  #   region: us-eu
+  #   url: https://thehive.ai/blog/feed
+  # Qwen: stale since 2025-09-22; rely on the arXiv team names instead.
+  # - lab: Qwen
+  #   region: cn
+  #   url: https://qwenlm.github.io/blog/index.xml

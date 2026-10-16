@@ -1,0 +1,21 @@
+[
+  {
+    "paperId": "6c6de25a1d0d50bf1e2b6b6a5d2f9d1e0d6a7c",
+    "externalIds": {"ArXiv": "2510.00001", "CorpusId": 237497419},
+    "venue": "International Conference on Learning Representations",
+    "publicationVenue": {
+      "name": "International Conference on Learning Representations",
+      "type": "conference",
+      "alternate_names": ["ICLR"]
+    },
+    "citationCount": 7
+  },
+  {
+    "paperId": "0f6f4a1c2b3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f",
+    "externalIds": {"ArXiv": "2510.00002", "CorpusId": 250000002},
+    "venue": "arXiv.org",
+    "publicationVenue": null,
+    "citationCount": 0
+  },
+  null
+]

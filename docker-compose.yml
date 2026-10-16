@@ -1,7 +1,8 @@
 # Local Postgres with the pgvector extension. Start it with: docker compose up -d db
 services:
   db:
-    image: pgvector/pgvector:pg16
+    # Pinned release: hnsw.iterative_scan needs pgvector 0.8 or later.
+    image: pgvector/pgvector:0.8.7-pg16
     environment:
       # Must match the default database_url in src/paperwatch/config.py.
       POSTGRES_USER: paperwatch

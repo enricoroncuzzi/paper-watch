@@ -1,0 +1,120 @@
+{
+  "calibrated_on": "2026-10-13",
+  "model": "ibm-granite/granite-embedding-small-english-r2",
+  "fingerprint": "7957f230d36272c31efd49880ead3b9c454791869d391125ed667986f65da3a5",
+  "thresholds": {
+    "agentic-engineering": 0.813,
+    "ai-forensics": 0.799,
+    "ml-architectures": 0.816
+  },
+  "validation": {
+    "macro_precision": 0.8492,
+    "macro_recall": 0.8294,
+    "macro_f1": 0.8273,
+    "admitted_precision": 0.8413,
+    "routing_accuracy": 0.8802,
+    "profiles": {
+      "agentic-engineering": {
+        "precision": 0.7857,
+        "recall": 0.9167,
+        "f1": 0.8462,
+        "support": 24
+      },
+      "ai-forensics": {
+        "precision": 0.9048,
+        "recall": 1.0,
+        "f1": 0.95,
+        "support": 19
+      },
+      "ml-architectures": {
+        "precision": 0.8571,
+        "recall": 0.5714,
+        "f1": 0.6857,
+        "support": 21
+      }
+    }
+  },
+  "test": {
+    "macro_precision": 0.7388,
+    "macro_recall": 0.7517,
+    "macro_f1": 0.7421,
+    "admitted_precision": 0.7612,
+    "routing_accuracy": 0.8075,
+    "profiles": {
+      "agentic-engineering": {
+        "precision": 0.8387,
+        "recall": 0.8966,
+        "f1": 0.8667,
+        "support": 29
+      },
+      "ai-forensics": {
+        "precision": 0.7895,
+        "recall": 0.8824,
+        "f1": 0.8333,
+        "support": 17
+      },
+      "ml-architectures": {
+        "precision": 0.5882,
+        "recall": 0.4762,
+        "f1": 0.5263,
+        "support": 21
+      }
+    }
+  },
+  "previous_test": {
+    "macro_precision": 0.7388,
+    "macro_recall": 0.7517,
+    "macro_f1": 0.7421,
+    "admitted_precision": 0.7612,
+    "routing_accuracy": 0.8075,
+    "profiles": {
+      "agentic-engineering": {
+        "precision": 0.8387,
+        "recall": 0.8966,
+        "f1": 0.8667,
+        "support": 29
+      },
+      "ai-forensics": {
+        "precision": 0.7895,
+        "recall": 0.8824,
+        "f1": 0.8333,
+        "support": 17
+      },
+      "ml-architectures": {
+        "precision": 0.5882,
+        "recall": 0.4762,
+        "f1": 0.5263,
+        "support": 21
+      }
+    }
+  },
+  "keyword_test": {
+    "macro_precision": 0.4814,
+    "macro_recall": 0.7756,
+    "macro_f1": 0.5885,
+    "admitted_precision": 0.4779,
+    "routing_accuracy": 0.5901,
+    "profiles": {
+      "agentic-engineering": {
+        "precision": 0.5714,
+        "recall": 0.9655,
+        "f1": 0.7179,
+        "support": 29
+      },
+      "ai-forensics": {
+        "precision": 0.5238,
+        "recall": 0.6471,
+        "f1": 0.5789,
+        "support": 17
+      },
+      "ml-architectures": {
+        "precision": 0.3488,
+        "recall": 0.7143,
+        "f1": 0.4688,
+        "support": 21
+      }
+    }
+  },
+  "n_validation": 167,
+  "n_test": 161
+}

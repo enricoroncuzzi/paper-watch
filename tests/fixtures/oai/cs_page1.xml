@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<OAI-PMH xmlns="http://www.openarchives.org/OAI/2.0/"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://www.openarchives.org/OAI/2.0/ http://www.openarchives.org/OAI/2.0/OAI-PMH.xsd">
+    <responseDate>2026-10-16T07:54:27Z</responseDate>
+                <request verb="ListRecords" metadataPrefix="arXivRaw" from="2026-10-06" until="2026-10-06" set="cs">http://oaipmh.arxiv.org/oai</request>
+
+
+    <ListRecords><record>
+                <header>
+        <identifier>oai:arXiv.org:1909.09849</identifier>
+        <datestamp>2026-10-06</datestamp>
+            <setSpec>cs:cs:MA</setSpec>
+            <setSpec>cs:cs:AI</setSpec>
+            <setSpec>cs:cs:LG</setSpec>
+            <setSpec>stat:stat:ML</setSpec>
+    </header>
+
+            <metadata>
+                        <arXivRaw xmlns="http://arxiv.org/OAI/arXivRaw/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://arxiv.org/OAI/arXivRaw/ https://oaipmh.arxiv.org/OAI/arXivRaw.xsd">
+        <id>1909.09849</id>
+        <submitter>Shayegan Omidshafiei</submitter>
+            <version version="v1">
+                <date>Sat, 21 Sep 2019 16:05:31 GMT</date>
+                <size>568kb</size>
+                    <source_type>D</source_type>
+            </version>
+            <version version="v2">
+                <date>Wed, 30 Oct 2019 16:21:02 GMT</date>
+                <size>825kb</size>
+                    <source_type>D</source_type>
+            </version>
+            <version version="v3">
+                <date>Thu, 21 Nov 2019 10:05:19 GMT</date>
+                <size>824kb</size>
+                    <source_type>D</source_type>
+            </version>
+            <version version="v4">
+                <date>Fri, 10 Jan 2020 09:59:37 GMT</date>
+                <size>471kb</size>
+                    <source_type>D</source_type>
+            </version>
+        <title>Multiagent Evaluation under Incomplete Information</title>
+        <authors>Mark Rowland, Shayegan Omidshafiei, Karl Tuyls, Julien Perolat, Michal Valko, Georgios Piliouras, Remi Munos</authors>
+        <categories>cs.MA cs.AI cs.LG stat.ML</categories>
+            <license>http://arxiv.org/licenses/nonexclusive-distrib/1.0/</license>
+            <abstract>This paper investigates the evaluation of learned multiagent strategies in the incomplete information setting, which plays a critical role in ranking and training of agents. Traditionally, researchers have relied on Elo ratings for this purpose, with recent works also using methods based on Nash equilibria. Unfortunately, Elo is unable to handle intransitive agent interactions, and other techniques are restricted to zero-sum, two-player settings or are limited by the fact that the Nash equilibrium is intractable to compute. Recently, a ranking method called {\alpha}-Rank, relying on a new graph-based game-theoretic solution concept, was shown to tractably apply to general games. However, evaluations based on Elo or {\alpha}-Rank typically assume noise-free game outcomes, despite the data often being collected from noisy simulations, making this assumption unrealistic in practice. This paper investigates multiagent evaluation in the incomplete information regime, involving general-sum many-player games with noisy outcomes. We derive sample complexity guarantees required to confidently rank agents in this setting. We propose adaptive algorithms for accurate ranking, provide correctness and sample complexity guarantees, then introduce a means of connecting uncertainties in noisy match outcomes to uncertainties in rankings. We evaluate the performance of these approaches in several domains, including Bernoulli games, a soccer meta-game, and Kuhn poker.</abstract>
+    </arXivRaw>
+
+            </metadata>
+        </record><record>
+                <header>
+        <identifier>oai:arXiv.org:2503.21975</identifier>
+        <datestamp>2026-10-06</datestamp>
+            <setSpec>cs:cs:RO</setSpec>
+            <setSpec>cs:cs:AI</setSpec>
+    </header>
+
+            <metadata>
+                        <arXivRaw xmlns="http://arxiv.org/OAI/arXivRaw/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://arxiv.org/OAI/arXivRaw/ https://oaipmh.arxiv.org/OAI/arXivRaw.xsd">
+        <id>2503.21975</id>
+        <submitter>Yuan Meng</submitter>
+            <version version="v1">
+                <date>Thu, 27 Mar 2025 20:43:36 GMT</date>
+                <size>2843kb</size>
+                    <source_type>D</source_type>
+            </version>
+            <version version="v2">
+                <date>Sat, 03 Oct 2026 13:50:50 GMT</date>
+                <size>4387kb</size>
+            </version>
+        <title>Robotic Long-Horizon Manipulation with Bayesian Non-parametric Skill Priors</title>
+        <authors>Yuan Meng, Xiangtong Yao, Yansong Wu, Liding Zhang, Yixiao Nie, Zhenshan Bing, Alois Knoll</authors>
+        <categories>cs.RO cs.AI</categories>
+            <comments>Accepted by IROS 2026 (8 pages)</comments>
+            <license>http://creativecommons.org/licenses/by/4.0/</license>
+            <abstract>Long-horizon manipulation under sparse rewards remains challenging for reinforcement learning due to delayed feedback and inefficient exploration. Existing skill-based approaches often assume a fixed parametric prior (e.g., a single Gaussian), limiting their ability to capture diverse and multi-modal skill structures required for complex tasks. We propose a Bayesian non-parametric skill prior that models temporally extended skills in a structured latent space using a Dirichlet Process Mixture, enabling adaptive skill discovery without predefining the number of components. Integrated into a hierarchical RL framework, the learned prior guides high-level skill selection while a pretrained decoder generates temporally abstracted actions, improving exploration efficiency in sparse-reward settings. Experiments on Franka Kitchen, LIBERO-Long, Meta-World, and a real robot demonstrate consistent gains in long-horizon manipulation, achieving over 0.8 success rate within 1.5M steps, whereas SAC fails to converge even after 5M steps ($&lt;$0.1). Compared to a single-Gaussian prior baseline, our model yields an average improvement of 21.8\%.</abstract>
+    </arXivRaw>
+
+            </metadata>
+        </record><record>
+                <header>
+        <identifier>oai:arXiv.org:2301.07757</identifier>
+        <datestamp>2026-10-06</datestamp>
+            <setSpec>cs:cs:CG</setSpec>
+            <setSpec>cs:cs:CC</setSpec>
+    </header>
+
+            <metadata>
+                        <arXivRaw xmlns="http://arxiv.org/OAI/arXivRaw/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://arxiv.org/OAI/arXivRaw/ https://oaipmh.arxiv.org/OAI/arXivRaw.xsd">
+        <id>2301.07757</id>
+        <submitter>Lucas Silva</submitter>
+            <version version="v1">
+                <date>Wed, 18 Jan 2023 19:45:31 GMT</date>
+                <size>13kb</size>
+            </version>
+        <title>Freeze-Tag is NP-Hard in 3D with $L_1$ distance</title>
+        <authors>Lucas de Oliveira Silva</authors>
+        <categories>cs.CG cs.CC</categories>
+            <doi>10.1016/j.procs.2023.08.248</doi>
+            <license>http://creativecommons.org/licenses/by/4.0/</license>
+            <abstract>Arkin et al. in 2002 introduced a scheduling-like problem called Freeze-Tag Problem (FTP) motivated by robot swarm activation. The input consists of the locations of n mobile punctual robots in some metric space or graph. Only one begins &#34;active&#34;, while the others are initially &#34;frozen&#34;. All active robots can move at unit speed and, upon reaching a frozen one&#39;s location, activates it. The goal is to activate all the robots in the minimum amount of time, the so-called makespan. Until 2017 the hardness of this problem in metric spaces was still open, but then Yu et al. proved it to be NP-Hard in the Euclidian plane, and in the same year, Demaine and Roudoy demonstrated that the FTP is also hard in 3D with any $L_p$ distance (with p &gt; 1). However, we still don&#39;t know whether Demaine&#39;s and Roudoy&#39;s result could be translated to the plane. This paper fills the p=1 gap by showing that the FTP is NP-Hard in 3D with $L_1$ distance.</abstract>
+    </arXivRaw>
+
+            </metadata>
+        </record><resumptionToken>cs-token-2</resumptionToken></ListRecords>
+</OAI-PMH>

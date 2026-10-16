@@ -23,10 +23,55 @@ uv run alembic upgrade head   # create the database schema
 uv run pytest                 # run the test suite
 ```
 
-Configuration comes from `PW_*` environment variables; see [`.env.example`](.env.example).
+Configuration comes from `PW_*` environment variables; see [`.env.example`](.env.example). One
+matters for production: `PW_USER_AGENT` should identify the deployment with an address arXiv can
+contact (for example `paper-watch/0.1 (+https://github.com/enricoroncuzzi/paper-watch; you@example.com)`),
+because arXiv asks bulk harvesters to leave a contact and the committed default carries none.
+
+## M1: what you can do now
+
+With the database running and migrated (above):
+
+```bash
+uv run paperwatch ingest --live              # fetch, classify, admit and embed new items
+uv run paperwatch search "agent memory" --live  # hybrid retrieval over the corpus
+uv run paperwatch eval                       # retrieval metrics against the committed baseline
+```
+
+The eval runs in a uniquely named throwaway database on the configured server: it creates it,
+migrates it, seeds its own synthetic corpus there and drops it afterwards, so repeated local runs
+never accumulate index state and a populated development database cannot report a false
+regression. The database role needs the `CREATEDB` privilege and, because the first migration adds
+the `vector` extension, superuser (or the extension installed in `template1`); the CI service user
+is a superuser. A killed run can leave its database behind; the next run drops this role's leftover
+eval databases older than a day.
+
+The relevance calibration needs no database:
+
+```bash
+uv run python -m evals.relevance_eval        # print thresholds and scores (--write updates the config and baseline)
+```
+
+`relevance_eval` recalibrates the relevance thresholds after changing a profile description or the
+embedding model (`--write` updates `config/profiles.yaml` and `evals/relevance_baseline.json`). The
+labelled abstracts and their criteria are in `evals/data/relevance/`, whose "Reading the scores"
+section explains what the numbers do and do not mean; the real-model gate runs in the `model-evals`
+workflow.
+
+The live commands need no API key: embeddings and the relevance classifier run locally with the
+pinned `ibm-granite/granite-embedding-small-english-r2` model (384 dimensions, about 180 MB
+downloaded once on first use). Set `PW_LOCAL_EMBEDDING_CACHE_DIR` to a persistent directory to
+keep that download, for example one baked into a deployed image.
+
+**CV line (true as of M1):** Built a tiered AI-research corpus with hybrid (pgvector + full-text)
+retrieval and retrieval evals.
 
 ## Documentation
 
 - [`docs/learn/`](docs/learn/): one lesson per technology, starting with
   [how to read this repo](docs/learn/00-how-to-read-this-repo.md).
 - [`docs/adr/`](docs/adr/): architecture decision records.
+
+## Data sources
+
+Venue and citation data from Semantic Scholar (https://www.semanticscholar.org).
