@@ -7,7 +7,8 @@ corpus-size checkpoints on real data, not from the fake embedder. The determinis
 carried by the shared-rank and stable-key unit tests in `tests/integration/test_hybrid.py`; the
 same ordering runs here, and `tests/integration/test_eval_throwaway.py` checks four fresh
 databases score identically. The informational `fused_ties_in_top_k` metric counts the questions
-whose top k still holds an equal fused score, so a data edit that creates one is visible; it
+whose top k+1 hits hold an equal fused score, so a data edit that creates one, including a tie
+that straddles the cut, is visible; it
 replaced the old raising `_check_no_ties` tripwire, which merely caught the nondeterminism such a
 tie produced.
 """
@@ -131,12 +132,15 @@ def evaluate(
         relevant = set(q["relevant"])
         kind = q["kind"]
         # The candidates count matches production's default, so the branch lists and the hybrid
-        # path agree. Tied branch scores share a rank and equal fused scores are ordered by the
-        # stable key, so the top k is reproducible across fresh databases; test_eval_throwaway
-        # checks it.
-        hits = hybrid.hybrid_search(session, embedder, q["question"], k=k, candidates=candidates)
-        # A question whose top k holds equal fused scores is informational only: the stable key
-        # orders them so the run stays reproducible, but a data edit that creates one is visible.
+        # path agree. One extra hit is requested for the tie counter only, so a tie that straddles
+        # the k/(k+1) boundary, the one case where the key decides membership, is visible; the
+        # metrics below cut at k. Tied branch scores share a rank and equal fused scores are
+        # ordered by the stable key, so the top k is reproducible; test_eval_throwaway checks it.
+        hits = hybrid.hybrid_search(
+            session, embedder, q["question"], k=k + 1, candidates=candidates
+        )
+        # Informational only: the key orders equal scores so the run stays reproducible, but a
+        # data edit that creates one should be visible.
         if len({round(h.score, 12) for h in hits}) < len(hits):
             ties += 1
         # The branch lists are the same public queries the fusion uses, limited like production and

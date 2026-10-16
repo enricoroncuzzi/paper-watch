@@ -169,7 +169,7 @@ def hybrid_search(
     # random uuid, so the output is reproducible.
     keys = {r.id: (r.source, r.external_id) for r in [*vec_rows, *txt_rows]}
     top = sorted(scores, key=lambda i: (-scores[i], *keys[i]))[:k]
-    item_rows = {r.id: r for r in session.scalars(select(Item).where(Item.id.in_(list(top))))}
+    item_rows = {r.id: r for r in session.scalars(select(Item).where(Item.id.in_(top)))}
     return [_hit(item_rows[i], scores[i]) for i in top]
 
 

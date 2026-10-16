@@ -83,6 +83,8 @@ def test_metrics_are_pinned_to_the_committed_values(db_session: Session) -> None
     # Pinning the vector-only branch kills a substitution of the hybrid list for it.
     assert m["recall_at_k:vector_only"] == pytest.approx(22.5 / 31)
     assert m["mrr:vector_only"] == pytest.approx(22 / 31)
+    # Informational, but pinned so a counter that stopped counting is noticed.
+    assert m["fused_ties_in_top_k"] == 4
 
 
 def test_baseline_is_not_below_m1() -> None:

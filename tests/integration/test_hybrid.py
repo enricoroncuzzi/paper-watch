@@ -325,6 +325,20 @@ def test_a_text_tie_at_the_candidate_boundary_is_cut_by_key(db_session: Session)
     assert tied == ["tx", "ty"]
 
 
+def test_a_text_tie_cut_follows_code_point_order_not_the_locale(db_session: Session) -> None:
+    near = [1.0] + [0.0] * (EMBEDDING_DIM - 1)
+    far = [0.0, 1.0] + [0.0] * (EMBEDDING_DIM - 2)
+    # Under en_US "a1" sorts before "B1"; in code-point order (Python, and COLLATE "C") "B1" does.
+    for n, eid in enumerate(("a1", "B1")):
+        admitted_with_id(db_session, UUID(int=1 + n), eid, "tietoken body", far)
+    admitted_with_id(db_session, UUID(int=100), "v0", "vector body", near)
+    db_session.flush()
+    # The candidate limit is 1, so the cut falls inside the tie and the key order picks the row.
+    hits = hybrid_search(db_session, QueryEmbedder(near), "tietoken", k=10, candidates=1)
+    tied = [external_id(db_session, h.item_id) for h in hits if h.item_id.int < 10]
+    assert tied == ["B1"]
+
+
 def test_shared_ranks_skip_after_a_tie() -> None:
     a, b, c, d = UUID(int=1), UUID(int=2), UUID(int=3), UUID(int=4)
     # Competition ranking: the two 0.2 rows share rank 2, so the next row is rank 4, not rank 3.
