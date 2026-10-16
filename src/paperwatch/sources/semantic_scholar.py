@@ -33,7 +33,7 @@ def _no_known_ids(exc: httpx.HTTPStatusError) -> bool:
     if exc.response.status_code != 400:
         return False
     try:
-        return exc.response.json() == _NO_KNOWN_IDS
+        return bool(exc.response.json() == _NO_KNOWN_IDS)
     except ValueError:
         return False
 
