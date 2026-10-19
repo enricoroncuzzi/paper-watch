@@ -118,6 +118,11 @@ class Settings(BaseSettings):
     # A free model can stall; a timeout turns that into a fallback instead of a hang. There is no
     # retry setting: the SDK's own retries would be invisible to the daily cap (ADR 0006).
     chat_timeout_s: float = Field(default=60.0, gt=0)
+    # One response's output is capped too: the ledger is only charged after a call, and a streamed
+    # response is not bounded by `chat_timeout_s` (httpx applies it per read, not to the whole
+    # stream), so without this one runaway generation can pass the answer budget in a single call
+    # or stream until the context limit.
+    chat_max_output_tokens: int = Field(default=4096, ge=1)
     # Per-answer cap, charged through the same Ledger as the ingestion runs: one answer is one
     # graph run, so a tool loop cannot spend without bound.
     chat_max_tokens_per_answer: int = Field(default=60_000, ge=1)

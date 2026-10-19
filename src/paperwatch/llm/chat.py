@@ -78,15 +78,19 @@ def make_chat_models(settings: Settings) -> list[ChatModel]:
     models = [
         ChatModel(
             "openrouter",
-            # The OpenAI SDK also reads OPENAI_ORG_ID, OPENAI_PROXY and OPENAI_BASE_URL from the
-            # environment, so an OpenAI or Azure setup in the same shell applies to these
-            # providers too. Accepted: nothing here sets them, and a stray organisation header
-            # shows in the provider's dashboard.
+            # Two OpenAI env vars still apply: OPENAI_ORG_ID (LangChain falls back to it when no
+            # organisation is passed) and OPENAI_PROXY. OPENAI_BASE_URL does not: the SDK reads it
+            # only when base_url is None, and this client always passes one. Accepted because
+            # nothing sets them, and a stray organisation header shows in the provider's dashboard.
             ChatOpenAI(
                 base_url=OPENROUTER_BASE_URL,
                 api_key=settings.openrouter_api_key.get_secret_value(),
                 model=settings.chat_model,
                 timeout=settings.chat_timeout_s,
+                # One response's output is capped: the timeout applies per read, not to a whole
+                # stream, so a generation that never stalls is otherwise bounded only by the
+                # context limit. langchain-openai sends this as `max_completion_tokens`.
+                max_tokens=settings.chat_max_output_tokens,
                 # No SDK retries: a retry inside the client is a request the daily cap never sees.
                 # The agent's fallback loop (Task 16) owns retrying, so every attempt is counted.
                 max_retries=0,
@@ -113,6 +117,7 @@ def make_chat_models(settings: Settings) -> list[ChatModel]:
                     api_key=settings.groq_api_key.get_secret_value(),
                     model=settings.groq_chat_model,
                     timeout=settings.chat_timeout_s,
+                    max_tokens=settings.chat_max_output_tokens,
                     max_retries=0,
                     stream_usage=True,
                 ),
@@ -196,6 +201,12 @@ class CallGuard:
         )
 
 
+def _word_chunks(content: object) -> list[AIMessageChunk]:
+    # Word by word, so a test sees a real token stream rather than one blob.
+    words = str(content).split(" ")
+    return [AIMessageChunk(content=w if i == 0 else f" {w}") for i, w in enumerate(words)]
+
+
 class ScriptedChatModel(BaseChatModel):
     """Offline stand-in for a chat model: replays a script, records what it was asked."""
 
@@ -245,6 +256,10 @@ class ScriptedChatModel(BaseChatModel):
     ) -> Iterator[ChatGenerationChunk]:
         msg = self._next(messages, kwargs.get("tools"))
         chunks: list[AIMessageChunk] = []
+        # A provider streams text before the call it decides to make, and invoke() keeps that
+        # text; replaying it first keeps the stream and the invoke in agreement.
+        if msg.content:
+            chunks.extend(_word_chunks(msg.content))
         if msg.tool_calls:
             # A tool call streams as chunks that reassemble into the same call, which is how a
             # real provider delivers it and how LangGraph collects it.
@@ -261,12 +276,6 @@ class ScriptedChatModel(BaseChatModel):
                         for i, c in enumerate(msg.tool_calls)
                     ],
                 )
-            )
-        else:
-            # Word by word, so a test sees a real token stream rather than one blob.
-            words = str(msg.content).split(" ")
-            chunks.extend(
-                AIMessageChunk(content=w if i == 0 else f" {w}") for i, w in enumerate(words)
             )
         # Usage arrives last, as it does from a provider, so the guard charges it after the text.
         # `chunk_position="last"` marks the end of the stream: LangChain otherwise appends its own

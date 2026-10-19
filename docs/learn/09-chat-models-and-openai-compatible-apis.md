@@ -12,7 +12,9 @@ required; Groq is appended only when both its key and its model id are set. Each
 fallback loop retries, so the daily cap sees every attempt), plus `stream_usage=True`. That last
 flag matters more than it looks: a streamed response from an OpenAI-compatible provider carries
 token usage only when the request asked for it, and without it the ledger would charge nothing for
-the answers the agent actually streams.
+the answers the agent actually streams. The model also carries `max_tokens=chat_max_output_tokens`
+(sent as `max_completion_tokens`), which bounds one response and a stream that never stalls, so
+with `MAX_TOOL_ROUNDS = 4` the worst case for one answer is five calls of (input + 4096) tokens.
 
 `CallGuard` wraps one answer's calls. `before_call` counts today's rows in `chat_calls` from UTC
 midnight and raises `DailyCapReached` at the cap, before the request goes out, because a free tier

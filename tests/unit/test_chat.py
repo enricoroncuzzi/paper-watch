@@ -50,6 +50,7 @@ def test_settings_defaults() -> None:
     s = Settings()
     assert s.chat_model == CHAT_MODEL
     assert (s.chat_max_calls_per_day, s.chat_max_tokens_per_answer) == (800, 60_000)
+    assert s.chat_max_output_tokens == 4096
     assert s.openrouter_api_key is None and s.groq_api_key is None
 
 
@@ -76,6 +77,22 @@ def test_chat_model_has_timeout_and_no_sdk_retries() -> None:
     # 0 retries: the SDK retrying inside a call would spend requests the daily cap never counts.
     for m in make_chat_models(keyed(groq_api_key="g", groq_chat_model="some-model")):
         assert (m.model.request_timeout, m.model.max_retries) == (60.0, 0)
+
+
+def test_chat_output_cap_reaches_both_models() -> None:
+    # A stream is not bounded by the read timeout, so one call needs its own output limit, or a
+    # runaway generation can pass the per-answer budget in a single response.
+    models = make_chat_models(keyed(groq_api_key="g", groq_chat_model="some-model"))
+    assert [m.model.max_tokens for m in models] == [4096, 4096]
+
+
+def test_chat_output_cap_is_sent_as_max_completion_tokens() -> None:
+    # langchain-openai renames max_tokens to max_completion_tokens in the request payload, and
+    # both providers document that field; Groq deprecates the max_tokens spelling.
+    [primary] = make_chat_models(keyed(chat_max_output_tokens=1234))
+    payload = primary.model._get_request_payload([HumanMessage("q")])
+    assert payload["max_completion_tokens"] == 1234
+    assert "max_tokens" not in payload
 
 
 def test_call_guard_charges_real_usage() -> None:
@@ -251,6 +268,21 @@ def test_scripted_model_streams_a_tool_call() -> None:
     # The chunk reassembles into the same call the model returned.
     assert chunks[0].tool_calls[0]["name"] == "search_corpus"
     assert chunks[0].tool_calls[0]["args"] == {"q": "x"}
+
+
+def test_scripted_model_streams_text_before_a_tool_call() -> None:
+    # A provider streams text it emits before the call, and invoke() already keeps that text; the
+    # stream must agree, or a streamed answer loses the model's own words (post-acceptance fix).
+    call = {"name": "search_corpus", "args": {"q": "x"}, "id": "c1"}
+    fake = ScriptedChatModel(script=[AIMessage("let me search", tool_calls=[call])])
+    chunks = list(fake.stream([HumanMessage("q")]))
+    aggregate = chunks[0]
+    for chunk in chunks[1:]:
+        aggregate += chunk
+    assert aggregate.content == "let me search"
+    assert [(c["name"], c["args"], c["id"]) for c in aggregate.tool_calls] == [
+        ("search_corpus", {"q": "x"}, "c1")
+    ]
 
 
 def test_scripted_model_records_the_tools_it_was_bound() -> None:

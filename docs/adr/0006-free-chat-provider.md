@@ -52,8 +52,11 @@ answer fails or the client hangs up, and the requests already spent must stay co
 committed row is also visible to a second question running at the same time. The cap is counted
 from Postgres, not from memory, so a restart cannot forget calls already made today. Each model
 is built with a request timeout (`chat_timeout_s = 60`) and `max_retries = 0`, so a stalled free
-model becomes a fallback instead of a hung request, and with `stream_usage=True` so a streamed
-answer still reports the tokens it spent. Retries are explicit: the agent's fallback loop makes
+model becomes a fallback instead of a hung request, with `stream_usage=True` so a streamed
+answer still reports the tokens it spent, and with `max_tokens = chat_max_output_tokens = 4096`,
+which bounds one response and with it a stream that never stalls; `chat_timeout_s` applies per
+read, so the worst case for one answer is `(MAX_TOOL_ROUNDS + 1) x (input + 4096)` tokens.
+Retries are explicit: the agent's fallback loop makes
 them, one guarded attempt at a time, because an SDK retry inside a call is a provider request the
 guard would never see. Keys are `SecretStr` in `Settings`, so a settings object in a log or a
 traceback shows `**********`, not the key.
@@ -76,6 +79,8 @@ traceback shows `**********`, not the key.
 - LangSmith tracing is off, and must stay off. `langsmith` arrives as a transitive dependency of
   LangChain, and setting `LANGSMITH_TRACING` (or `LANGCHAIN_TRACING_V2`) would ship every prompt,
   which contains stored paper text, to a third party.
-- The OpenAI SDK also reads `OPENAI_ORG_ID`, `OPENAI_PROXY` and `OPENAI_BASE_URL` from the
-  environment, so an OpenAI or Azure setup in the same shell would apply to these providers too.
-  Nothing sets them here; a stray organisation header would show in the provider's dashboard.
+- Two OpenAI environment variables still apply to these clients: `OPENAI_ORG_ID` (LangChain
+  falls back to it when no organisation is passed) and `OPENAI_PROXY`. `OPENAI_BASE_URL` does
+  not, because the SDK reads it only when no base URL is passed and this code always passes one.
+  Nothing sets any of them here; a stray organisation header would show in the provider's
+  dashboard.
