@@ -270,6 +270,9 @@ def test_settings_defaults_hold_against_an_inherited_pw_variable() -> None:
     # The autouse fixture must clear inherited PW_* variables, not just hide .env. Running one test
     # in a subprocess with PW_CHAT_MODEL exported is the only way to prove it: in-process, the
     # fixture would clear the variable the test itself just set (review N1).
+    # Run in the repo root: an IDE or script may start this from anywhere, and the relative node
+    # id would otherwise be looked up under the parent's working directory.
+    root = Path(__file__).resolve().parents[2]
     env = {**os.environ, "PW_CHAT_MODEL": "other/model:free"}
     proc = subprocess.run(
         [
@@ -283,6 +286,7 @@ def test_settings_defaults_hold_against_an_inherited_pw_variable() -> None:
             "tests/unit/test_chat.py::test_settings_defaults",
         ],
         env=env,
+        cwd=root,
         capture_output=True,
         text=True,
     )

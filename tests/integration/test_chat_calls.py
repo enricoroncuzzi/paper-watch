@@ -82,13 +82,16 @@ def test_chat_call_log_returns_every_connection_to_the_pool(engine: Engine) -> N
     factory = make_session_factory(engine)
     log = ChatCallLog(factory)
     at = datetime(2026, 10, 16, 4, tzinfo=UTC)
+    # A delta, not zero: the engine is session-scoped, so an unrelated test's open connection must
+    # not be able to fail this one (review N2).
+    before = engine.pool.checkedout()
     try:
         log.chat_calls_since(MIDNIGHT)
-        assert engine.pool.checkedout() == 0
+        assert engine.pool.checkedout() == before
         log.record_chat_call(
             at=at, provider="openrouter", model="m", input_tokens=1, output_tokens=1
         )
-        assert engine.pool.checkedout() == 0
+        assert engine.pool.checkedout() == before
     finally:
         # The row is committed, so it outlives the test.
         with factory() as cleanup:
