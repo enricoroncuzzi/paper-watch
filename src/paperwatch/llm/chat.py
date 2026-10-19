@@ -147,7 +147,9 @@ class CallGuard:
     def before_call(self) -> None:
         now = self._clock()
         # A naive clock would be read as local time by astimezone and silently shift the day.
-        assert now.tzinfo is not None, "the guard's clock must return an aware datetime"
+        # A raise, not an assert: `python -O` strips asserts, and this guard must hold.
+        if now.tzinfo is None:
+            raise ValueError("the clock must return an aware datetime")
         # The cap is per UTC day: count from this day's midnight, so it resets without a job.
         midnight = now.astimezone(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
         calls_today = self._store.chat_calls_since(midnight)

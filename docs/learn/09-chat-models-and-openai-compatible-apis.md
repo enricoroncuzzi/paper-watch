@@ -8,10 +8,11 @@ Most model providers now accept the request shape of OpenAI's chat completions A
 
 `make_chat_models(settings)` builds the provider chain, primary first. OpenRouter is always
 required; Groq is appended only when both its key and its model id are set. Each model is a
-`ChatOpenAI` with a base URL, a key, a model id, a request timeout and a retry count, plus
-`stream_usage=True`. That last flag matters more than it looks: a streamed response from an
-OpenAI-compatible provider carries token usage only when the request asked for it, and without it
-the ledger would charge nothing for the answers the agent actually streams.
+`ChatOpenAI` with a base URL, a key, a model id, a request timeout and no SDK retries (the agent's
+fallback loop retries, so the daily cap sees every attempt), plus `stream_usage=True`. That last
+flag matters more than it looks: a streamed response from an OpenAI-compatible provider carries
+token usage only when the request asked for it, and without it the ledger would charge nothing for
+the answers the agent actually streams.
 
 `CallGuard` wraps one answer's calls. `before_call` counts today's rows in `chat_calls` from UTC
 midnight and raises `DailyCapReached` at the cap, before the request goes out, because a free tier
@@ -19,7 +20,14 @@ meters requests. `after_call` reads `usage_metadata` from the response, falls ba
 with a logged warning when a provider omits it, takes the model id the provider reports (or
 `unknown`), writes the `chat_calls` row and only then charges the `Ledger`. Writing first is the
 point: a call that spent tokens must be on record even when the ledger's `BudgetExceeded` refuses
-the answer it paid for.
+the answer it paid for. `after_failure` records an attempt that raised (429, timeout, withdrawn
+model) as a zero-token row with model `"failed"`, because a failed request still spends a request
+against a free tier, and a failure is when the next one is most likely to be refused.
+
+Rows go through `ChatCallLog`, which opens its own short session and commits each row before
+returning, rather than through the request's session. A failed answer or a client that hangs up
+rolls that request session back, and the requests already spent have to stay counted; a committed
+row is also visible to a second question running at the same time.
 
 `ScriptedChatModel` is a `BaseChatModel` that replays a list of `AIMessage`s and exceptions. It
 records every message list it was asked (`seen`) and every set of tool names it was bound with
@@ -42,9 +50,10 @@ scan rather than a growing table scan.
 ## The test double
 
 `tests/unit/test_chat.py` covers the settings defaults, the missing-key refusal, the provider
-order, the timeout and retry wiring, the guard's three charging paths (real usage, budget
-exceeded, missing usage) and the cap boundary. `tests/integration/test_chat_calls.py` covers the
-table itself: the count's boundary, the cap blocking before a call, and the cap resetting at UTC
-midnight. No test calls a model or the network.
+order, the timeout and no-retry wiring, the guard's four charging paths (real usage, budget
+exceeded, missing usage, a failed attempt) and the cap boundary. `tests/integration/test_chat_calls.py`
+covers the table itself: the count's boundary, the cap blocking before a call, the cap resetting
+at UTC midnight, and `ChatCallLog` committing a row that a rolled-back request session cannot
+take with it. No test calls a model or the network.
 
 The decision and its consequences are recorded in `docs/adr/0006-free-chat-provider.md`.

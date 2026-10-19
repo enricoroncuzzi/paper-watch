@@ -1,5 +1,8 @@
 """The chat model layer: settings, provider wiring, the call guard, and the test double."""
 
+import os
+import subprocess
+import sys
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -224,9 +227,10 @@ def test_cap_resets_at_utc_midnight_on_a_non_utc_clock() -> None:
 
 
 def test_before_call_refuses_a_naive_clock() -> None:
-    # A naive datetime would be read as local time by astimezone and shift the day silently.
+    # A naive datetime would be read as local time by astimezone and shift the day silently. A
+    # ValueError, not an assert: assertions vanish under `python -O` and this guard must not.
     naive = datetime(2026, 10, 16, 12)  # no timezone: that is the point of the test
-    with pytest.raises(AssertionError, match="aware"):
+    with pytest.raises(ValueError, match="aware"):
         CallGuard(FakeRepo(), Ledger(100), 800, lambda: naive).before_call()
 
 
@@ -260,3 +264,26 @@ def test_scripted_model_records_the_tools_it_was_bound() -> None:
     fake.bind_tools([_Named("search_corpus")]).invoke([HumanMessage("q")])
     fake.invoke([HumanMessage("q")])
     assert fake.bound_tools == [["search_corpus"], []]
+
+
+def test_settings_defaults_hold_against_an_inherited_pw_variable() -> None:
+    # The autouse fixture must clear inherited PW_* variables, not just hide .env. Running one test
+    # in a subprocess with PW_CHAT_MODEL exported is the only way to prove it: in-process, the
+    # fixture would clear the variable the test itself just set (review N1).
+    env = {**os.environ, "PW_CHAT_MODEL": "other/model:free"}
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-p",
+            "no:cacheprovider",
+            "--no-cov",
+            "-q",
+            "tests/unit/test_chat.py::test_settings_defaults",
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr

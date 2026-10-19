@@ -73,3 +73,24 @@ def test_chat_call_log_survives_a_rolled_back_request_session(engine: Engine) ->
         with factory() as cleanup:
             cleanup.execute(delete(ChatCall).where(ChatCall.at == at))
             cleanup.commit()
+
+
+def test_chat_call_log_returns_every_connection_to_the_pool(engine: Engine) -> None:
+    # Both methods open a short session, so a long answer cannot hold a pool slot between calls
+    # (review N2). checkedout() is the pool's own count, so it catches a session that is only
+    # released when garbage collected.
+    factory = make_session_factory(engine)
+    log = ChatCallLog(factory)
+    at = datetime(2026, 10, 16, 4, tzinfo=UTC)
+    try:
+        log.chat_calls_since(MIDNIGHT)
+        assert engine.pool.checkedout() == 0
+        log.record_chat_call(
+            at=at, provider="openrouter", model="m", input_tokens=1, output_tokens=1
+        )
+        assert engine.pool.checkedout() == 0
+    finally:
+        # The row is committed, so it outlives the test.
+        with factory() as cleanup:
+            cleanup.execute(delete(ChatCall).where(ChatCall.at == at))
+            cleanup.commit()

@@ -15,13 +15,20 @@ from paperwatch.store.db import make_engine, make_session_factory
 
 
 @pytest.fixture(autouse=True)
-def _hermetic_settings(monkeypatch: pytest.MonkeyPatch) -> None:
-    """No test reads the developer's environment or a real .env by accident.
+def _hermetic_settings(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep a test function's own Settings away from the developer's environment and real .env.
 
     The captain keeps real keys in .env (Global Constraints), so a test that built Settings from
     it would pass here and fail on their machine, and vice versa. A test that wants an env var
     still sets it with monkeypatch, which runs after this fixture.
+
+    Two exceptions, both deliberate. Real-model tests (`-m model`) read the real environment on
+    purpose: `PW_LOCAL_EMBEDDING_CACHE_DIR` is how `model-evals.yml` points them at the cache it
+    primed, and clearing it would make them download the model again. And this fixture is
+    function-scoped, so module- and session-scoped fixtures run before it and are not covered.
     """
+    if request.node.get_closest_marker("model"):
+        return  # real-model tests read PW_LOCAL_EMBEDDING_CACHE_DIR on purpose
     for name in [n for n in os.environ if n.startswith("PW_")]:
         monkeypatch.delenv(name, raising=False)
     # Unset the file rather than passing `_env_file=None` at every call site: the class default
