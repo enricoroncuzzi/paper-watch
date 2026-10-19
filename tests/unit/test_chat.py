@@ -270,6 +270,18 @@ def test_scripted_model_streams_a_tool_call() -> None:
     assert chunks[0].tool_calls[0]["args"] == {"q": "x"}
 
 
+def test_provider_base_url_and_key_beat_the_openai_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # openai/_client.py reads OPENAI_BASE_URL and OPENAI_API_KEY only when base_url and api_key are
+    # None, and make_chat_models always passes both; the comment there rests on that.
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://stray.example/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-stray")
+    models = make_chat_models(keyed(groq_api_key="g", groq_chat_model="some-model"))
+    assert [m.model.openai_api_base for m in models] == [OPENROUTER_BASE_URL, GROQ_BASE_URL]
+    assert [m.model.openai_api_key.get_secret_value() for m in models] == ["or-key", "g"]
+
+
 def test_scripted_model_streams_text_before_a_tool_call() -> None:
     # A provider streams text it emits before the call, and invoke() already keeps that text; the
     # stream must agree, or a streamed answer loses the model's own words (post-acceptance fix).

@@ -29,11 +29,18 @@ log = structlog.get_logger()
 GET_ITEM_MAX_CHARS = 6000
 COMPARE_MAX_CHARS = 1500
 COMPARE_MIN, COMPARE_MAX = 2, 4
-# An item's title and author list are not bounded by the schema (arXiv papers can list thousands
-# of authors and feeds carry arbitrary titles), so a block clips both: a result must stay small
-# whatever the stored item looks like.
+# An item's title, author names and URL are not bounded by the schema (arXiv papers can list
+# thousands of authors, feed fields are arbitrary strings), so a block clips all three: a result
+# must stay small whatever the stored item looks like. The URL clip applies to the printed
+# attribute only; SourceRef keeps the full value for citation rendering.
 TITLE_MAX_CHARS = 300
+AUTHOR_MAX_CHARS = 100
 AUTHORS_SHOWN = 20
+URL_MAX_CHARS = 2048
+# Around 30,000 terms make the any-term tsquery exceed Postgres's stack depth, and that
+# OperationalError aborts the session's transaction, so a model query is cut to this many
+# characters first (far more than any useful search needs).
+QUERY_MAX_CHARS = 2000
 NO_HITS = "No admitted item matched this search."
 # A module-level default, not a call in the signature: the filters are immutable, and ruff's
 # B008 keeps function calls out of argument defaults.
@@ -98,16 +105,24 @@ def _clip(text: str, limit: int) -> str:
     return text[:limit] + "..." if len(text) > limit else text
 
 
+def _clean(value: str) -> str:
+    # A NUL reaches Postgres as a DataError and a lone surrogate fails UTF-8 encoding; neither is
+    # text, so both are dropped rather than crashing the tool call.
+    return value.replace("\x00", "").encode("utf-8", "ignore").decode()
+
+
 def _block(ref: SourceRef, title: str, text: str, meta: str | None = None) -> str:
     # Stored text is untrusted data: escaping `&`, `<` and `>` keeps it from closing this block
     # or opening another, and the attribute values are escaped with quotes so a crafted URL cannot
     # break out of its attribute either. The model is told to treat everything inside as data.
+    # The printed URL is clipped (no ellipsis: a truncated URL is already unusable, and "..."
+    # would look like part of it); SourceRef keeps the full value for citation rendering.
     head = (
         f'<source id="{html.escape(ref.alias, quote=True)}"'
         f' tier="{html.escape(ref.tier, quote=True)}"'
         f' basis="{html.escape(ref.basis, quote=True)}"'
         f' published="{ref.published_at.date().isoformat()}"'
-        f' url="{html.escape(ref.url, quote=True)}">'
+        f' url="{html.escape(ref.url[:URL_MAX_CHARS], quote=True)}">'
     )
     lines = [head, html.escape(_clip(title, TITLE_MAX_CHARS), quote=False)]
     if meta is not None:
@@ -117,7 +132,7 @@ def _block(ref: SourceRef, title: str, text: str, meta: str | None = None) -> st
 
 
 def _meta(detail: ItemDetail) -> str:
-    authors = list(detail.authors[:AUTHORS_SHOWN])
+    authors = [_clip(a, AUTHOR_MAX_CHARS) for a in detail.authors[:AUTHORS_SHOWN]]
     shown = ", ".join(authors) if authors else "unknown"
     if len(detail.authors) > AUTHORS_SHOWN:
         shown += f" and {len(detail.authors) - AUTHORS_SHOWN} more"
@@ -143,13 +158,14 @@ def make_tools(
         profiles: list[str] | None = None,
         since: date | None = None,
     ) -> str:
-        # A small model can send a blank query or a stray NUL: the NUL would reach Postgres as a
-        # DataError and the blank query trips hybrid_search's own ValueError, so both are turned
-        # into a ToolException here and come back to the model as a message.
-        query = query.replace("\x00", "")
+        # A small model can send a blank query, a stray NUL or a lone surrogate: the last two
+        # would reach Postgres as a DataError or a UTF-8 failure, and the blank query trips
+        # hybrid_search's own ValueError, so all three are handled here and come back as a message.
+        # The clip keeps an absurd query from making the any-term tsquery too deep to plan.
+        query = _clean(query)[:QUERY_MAX_CHARS]
         if not query.strip():
             raise ToolException("query must not be blank.")
-        clean_profiles = [p.replace("\x00", "") for p in profiles] if profiles else profiles
+        clean_profiles = [_clean(p) for p in profiles] if profiles else profiles
         hits = hybrid_search(
             session,
             embedder,

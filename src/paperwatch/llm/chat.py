@@ -78,10 +78,12 @@ def make_chat_models(settings: Settings) -> list[ChatModel]:
     models = [
         ChatModel(
             "openrouter",
-            # Two OpenAI env vars still apply: OPENAI_ORG_ID (LangChain falls back to it when no
-            # organisation is passed) and OPENAI_PROXY. OPENAI_BASE_URL does not: the SDK reads it
-            # only when base_url is None, and this client always passes one. Accepted because
-            # nothing sets them, and a stray organisation header shows in the provider's dashboard.
+            # The OpenAI SDK and LangChain also read OPENAI_ORG_ID, OPENAI_PROJECT_ID, OPENAI_PROXY
+            # and OPENAI_CUSTOM_HEADERS (whose Authorization line replaces the API key passed
+            # here), so an OpenAI setup in the same shell would reach these providers.
+            # OPENAI_BASE_URL, OPENAI_API_BASE and OPENAI_API_KEY do not apply because this code
+            # always passes base_url and api_key. Accepted: nothing here sets them, and a stray
+            # header shows in the provider's dashboard.
             ChatOpenAI(
                 base_url=OPENROUTER_BASE_URL,
                 api_key=settings.openrouter_api_key.get_secret_value(),

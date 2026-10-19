@@ -41,6 +41,11 @@ def test_search_registers_hits_with_stable_aliases(db_session: Session, seed_ite
     for out in (first_out, second_out):
         for alias, title in re.findall(r'id="(S\d+)"[^>]*>\n([^\n]+)\n', out):
             assert next(r.alias for r in reg.all() if r.title == title) == alias
+    # A third search ranks the blog item first, whose alias was issued last, so a printer that
+    # numbered blocks by their position in this output would disagree with the registry.
+    blog_alias = next(r.alias for r in reg.all() if r.tier == "lab_blog")
+    third_out = tools["search_corpus"].invoke({"query": "sandboxed tools harness"})
+    assert re.findall(r'id="(S\d+)"', third_out)[0] == blog_alias
 
 
 def test_search_respects_base_and_model_filters(db_session: Session, seed_items: Seed) -> None:
@@ -102,7 +107,35 @@ def test_get_item_returns_full_text_clipped(db_session: Session, seed_items: See
     huge_out = tools["get_item"].invoke({"source_id": alias_of["T" * 20000]})
     # The title is clipped with an ellipsis and the author list shows 20 then a count.
     assert "and 2980 more" in huge_out and "T" * 300 in huge_out and "T" * 301 not in huge_out
+    assert f"{'T' * 300}..." in huge_out
     assert len(huge_out) <= GET_ITEM_MAX_CHARS + 200
+    # Item fields the schema does not bound (names, URLs) are clipped too; the body has no markup,
+    # so this length is before escaping is counted.
+    blowup = SourceItem(
+        "arxiv",
+        "blowup",
+        "A blowup paper",
+        ("B" * 100000,),
+        "agents body",
+        "https://example.org/" + "C" * 100000,
+        datetime(2026, 10, 1, tzinfo=UTC),
+    )
+    Repository(db_session).upsert_item(
+        blowup,
+        Tier.VETTED_PREPRINT,
+        "agentic-engineering",
+        0.9,
+        Signals(),
+        FakeEmbedder().embed(["agents"])[0],
+    )
+    db_session.flush()
+    tools["search_corpus"].invoke({"query": "agents blowup"})
+    blowup_alias = next(r.alias for r in reg.all() if r.title == "A blowup paper")
+    blowup_out = tools["get_item"].invoke({"source_id": blowup_alias})
+    assert len(blowup_out) <= GET_ITEM_MAX_CHARS + 200
+    assert "B" * 100000 not in blowup_out and "B" * 100 in blowup_out
+    printed_url = re.search(r'url="([^"]*)"', blowup_out).group(1)  # type: ignore[union-attr]
+    assert len(printed_url) == 2048  # the URL is clipped to URL_MAX_CHARS, prefix included
 
 
 def test_compare_needs_two_to_four_aliases(db_session: Session, seed_items: Seed) -> None:
@@ -112,6 +145,8 @@ def test_compare_needs_two_to_four_aliases(db_session: Session, seed_items: Seed
     tools["search_corpus"].invoke({"query": "agents harness memory"})
     assert "<source" not in tools["compare_items"].invoke({"source_ids": ["S1"]})
     assert "<source" not in tools["compare_items"].invoke({"source_ids": ["S1"] * 5})
+    # A repeated alias is one source, not two.
+    assert "distinct" in tools["compare_items"].invoke({"source_ids": ["S1", "S1"]})
     out = tools["compare_items"].invoke({"source_ids": ["S3", "S1", "S2"]})
     assert re.findall(r'<source id="(S\d)"', out) == ["S3", "S1", "S2"]
 
@@ -320,8 +355,10 @@ def test_get_item_marks_a_clipped_text(db_session: Session, seed_items: Seed) ->
 
 
 def test_a_blank_query_is_a_message_not_an_exception(db_session: Session) -> None:
-    out = tools_for(db_session, SourceRegistry())["search_corpus"].invoke({"query": "  "})
-    assert "blank" in out and "<source" not in out
+    tools = tools_for(db_session, SourceRegistry())
+    assert "blank" in tools["search_corpus"].invoke({"query": "  "})
+    # A query that is nothing but a NUL is blank after cleaning, not a DataError.
+    assert "blank" in tools["search_corpus"].invoke({"query": "\x00"})
 
 
 def test_a_nul_query_and_profile_come_back_as_a_message(
@@ -333,5 +370,51 @@ def test_a_nul_query_and_profile_come_back_as_a_message(
     assert "<source" in tools["search_corpus"].invoke({"query": "agents\x00 harness"})
     out = tools["search_corpus"].invoke(
         {"query": "agents", "profiles": ["agentic\x00-engineering"]}
+    )
+    assert "<source" in out
+    # A lone surrogate cannot be sent as UTF-8 either, and Postgres would refuse it the same way.
+    assert "<source" in tools["search_corpus"].invoke({"query": "agents \ud800"})
+
+
+def test_title_and_author_clip_boundaries(db_session: Session, seed_items: Seed) -> None:
+    title = "U" * 300
+    authors = tuple(f"A{i}" for i in range(20))
+    item = SourceItem(
+        "arxiv",
+        "edge",
+        title,
+        authors,
+        "agents boundary",
+        "https://example.org/edge",
+        datetime(2026, 10, 1, tzinfo=UTC),
+    )
+    Repository(db_session).upsert_item(
+        item,
+        Tier.VETTED_PREPRINT,
+        "agentic-engineering",
+        0.9,
+        Signals(),
+        FakeEmbedder().embed(["agents"])[0],
+    )
+    db_session.flush()
+    tools = tools_for(db_session, SourceRegistry())
+    tools["search_corpus"].invoke({"query": "agents boundary"})
+    out = tools["get_item"].invoke({"source_id": "S1"})
+    # Exactly at both limits: nothing is clipped, so no ellipsis and no "and 0 more".
+    assert f"\n{title}\n" in out and f"{title}..." not in out
+    assert "A0" in out and "A19" in out and "and 0 more" not in out
+
+
+def test_an_unseen_alias_with_an_empty_registry_says_none(db_session: Session) -> None:
+    out = tools_for(db_session, SourceRegistry())["get_item"].invoke({"source_id": "S1"})
+    assert "known: none" in out
+
+
+def test_a_huge_query_is_clipped_not_refused(db_session: Session, seed_items: Seed) -> None:
+    seed_items(AGENT_ROWS)
+    # Around 30,000 terms make the any-term tsquery exceed Postgres's stack depth, and that
+    # OperationalError aborts the session's transaction; the query is clipped instead.
+    out = tools_for(db_session, SourceRegistry())["search_corpus"].invoke(
+        {"query": "agents " * 30000}
     )
     assert "<source" in out
