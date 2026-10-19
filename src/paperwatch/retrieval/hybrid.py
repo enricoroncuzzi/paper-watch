@@ -60,13 +60,9 @@ def _filtered(stmt: Select[Any], f: Filters) -> Select[Any]:
 
 _NO_FILTERS = Filters()
 
-# The ts_rank_cd normalization flag, Postgres's third argument: 0 is no length normalization, 1
-# divides the rank by 1 + log(document length) and 2 divides it by the length. The corpus mixes
-# abstract-only papers with full lab-blog posts, so the flag was measured on the real database
-# (docs/learn/07, "Length normalization"): 1 and 2 move the text branch's tier-3 share from 0.767
-# to 0.700 and 0.683 against a 0.185 fair share, while 2 fails the eval gate and 1 costs live
-# exact-name recall, and the fused ranking the agent sees sits at 0.233. So 0 stays. This is a
-# constant, not a setting: it is a ranking decision.
+# ts_rank_cd normalization flag: 0 none, 1 rank / (1 + log length), 2 rank / length. Measured on
+# the real database and kept at 0 (docs/learn/07, "Length normalization"): 2 fails the eval gate,
+# 1 loses a live exact-name item. A constant, not a setting: it is a ranking decision.
 TS_RANK_NORMALIZATION = 0
 
 

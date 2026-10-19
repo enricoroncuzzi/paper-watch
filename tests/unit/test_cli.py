@@ -240,27 +240,30 @@ def test_eval_names_the_createdb_privilege_when_it_cannot_create(
     assert "CREATEDB" in result.stderr
 
 
-def test_eval_live_refuses_to_write_the_baseline(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_eval_live_refuses_to_write_the_baseline(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     # --live is a manual checkpoint on the real embedder; the gate and the committed baseline stay
     # pinned to the offline FakeEmbedder, so both flags together is a usage error raised before
     # any model, engine or database is built.
     monkeypatch.setattr(cli, "make_embedder", boom)
     monkeypatch.setattr(cli, "_with_throwaway_database", boom)
+    # Redirected so a refusal that fell through to writing could not clobber the real baseline.
+    monkeypatch.setattr(cli, "_BASELINE_PATH", tmp_path / "baseline.json")
     result = CliRunner().invoke(app, ["eval", "--live", "--write-baseline"])
     assert result.exit_code == 2
     assert "--live" in result.output and "--write-baseline" in result.output
+    assert not (tmp_path / "baseline.json").exists()
 
 
 def test_eval_live_uses_the_configured_embedder_and_never_gates(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     # The live path must reach make_embedder (never the offline fake) and must skip the gate, so a
     # real-model number can never be compared against, or become, the committed baseline.
     embedder = object()
-    built: list[object] = []
 
     def fake_embedder(settings: object, ledger: object) -> object:
-        built.append(embedder)
         return embedder
 
     captured: dict[str, object] = {}
@@ -272,12 +275,18 @@ def test_eval_live_uses_the_configured_embedder_and_never_gates(
         return {name: 1.0 for name in GATED}
 
     monkeypatch.setattr(cli, "make_embedder", fake_embedder)
+    # A real Settings would read the developer's .env; the live branch only needs an object.
+    monkeypatch.setattr(cli, "get_settings", lambda: SimpleNamespace(max_tokens_per_run=0))
     _stub_eval(monkeypatch, fake_evaluate)
     monkeypatch.setattr(retrieval_eval, "gate", boom)
+    # Redirect the baseline so the test can prove the live path never writes it: without this a
+    # `if live: write baseline` regression would pass the test and overwrite the real file.
+    monkeypatch.setattr(cli, "_BASELINE_PATH", tmp_path / "baseline.json")
     result = CliRunner().invoke(app, ["eval", "--live"])
     assert result.exit_code == 0
-    assert captured["embedder"] is embedder and built == [embedder]
+    assert captured["embedder"] is embedder
     assert "recall_at_k" in result.output
+    assert not (tmp_path / "baseline.json").exists()
 
 
 def test_eval_db_name_always_matches_the_sweep_pattern() -> None:

@@ -36,6 +36,7 @@ With the database running and migrated (above):
 uv run paperwatch ingest --live              # fetch, classify, admit and embed new items
 uv run paperwatch search "agent memory" --live  # hybrid retrieval over the corpus
 uv run paperwatch eval                       # retrieval metrics against the committed baseline
+uv run paperwatch eval --live                # same set with the real local embedder; report only, never gates
 ```
 
 The eval runs in a uniquely named throwaway database on the configured server: it creates it,
