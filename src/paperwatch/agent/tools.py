@@ -31,8 +31,9 @@ COMPARE_MAX_CHARS = 1500
 COMPARE_MIN, COMPARE_MAX = 2, 4
 # An item's title, author names and URL are not bounded by the schema (arXiv papers can list
 # thousands of authors, feed fields are arbitrary strings), so a block clips all three: a result
-# must stay small whatever the stored item looks like. The URL clip applies to the printed
-# attribute only; SourceRef keeps the full value for citation rendering.
+# stays bounded whatever the stored item looks like. The clips count characters before escaping,
+# which can grow a block about nine times, so one get_item is at most about 54,000 characters. The
+# URL clip applies to the printed attribute only; SourceRef keeps the full value for citations.
 TITLE_MAX_CHARS = 300
 AUTHOR_MAX_CHARS = 100
 AUTHORS_SHOWN = 20

@@ -79,9 +79,9 @@ traceback shows `**********`, not the key.
 - LangSmith tracing is off, and must stay off. `langsmith` arrives as a transitive dependency of
   LangChain, and setting `LANGSMITH_TRACING` (or `LANGCHAIN_TRACING_V2`) would ship every prompt,
   which contains stored paper text, to a third party.
-- The OpenAI SDK and LangChain also read `OPENAI_ORG_ID`, `OPENAI_PROJECT_ID`, `OPENAI_PROXY`
-  and `OPENAI_CUSTOM_HEADERS` (an `Authorization` line there replaces the API key passed here),
-  so an OpenAI setup in the same shell would reach these providers too. `OPENAI_BASE_URL`,
-  `OPENAI_API_BASE` and `OPENAI_API_KEY` do not apply, because this code always passes `base_url`
-  and `api_key`. Nothing sets any of them here; a stray header would show in the provider's
-  dashboard.
+- The OpenAI SDK and LangChain also read `OPENAI_ORG_ID` (or its alias `OPENAI_ORGANIZATION`),
+  `OPENAI_PROJECT_ID`, `OPENAI_PROXY` and `OPENAI_CUSTOM_HEADERS` (an `Authorization` line there
+  replaces the API key passed here), so an OpenAI setup in the same shell would reach these
+  providers too. `OPENAI_BASE_URL`, `OPENAI_API_BASE` and `OPENAI_API_KEY` do not apply, because
+  this code always passes `base_url` and `api_key`. Accepted: nothing here sets them; a stray
+  credential or header would go to the provider.

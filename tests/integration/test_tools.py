@@ -10,7 +10,13 @@ from sqlalchemy.orm import Session
 from structlog.testing import capture_logs
 
 from paperwatch.agent.sources import SourceRegistry
-from paperwatch.agent.tools import COMPARE_MAX_CHARS, GET_ITEM_MAX_CHARS, NO_HITS, make_tools
+from paperwatch.agent.tools import (
+    COMPARE_MAX_CHARS,
+    GET_ITEM_MAX_CHARS,
+    NO_HITS,
+    QUERY_MAX_CHARS,
+    make_tools,
+)
 from paperwatch.domain import Signals, SourceItem, Tier
 from paperwatch.llm.embedder import FakeEmbedder
 from paperwatch.retrieval.hybrid import Filters
@@ -134,6 +140,7 @@ def test_get_item_returns_full_text_clipped(db_session: Session, seed_items: See
     blowup_out = tools["get_item"].invoke({"source_id": blowup_alias})
     assert len(blowup_out) <= GET_ITEM_MAX_CHARS + 200
     assert "B" * 100000 not in blowup_out and "B" * 100 in blowup_out
+    assert "B" * 101 not in blowup_out  # the clip is exactly AUTHOR_MAX_CHARS
     printed_url = re.search(r'url="([^"]*)"', blowup_out).group(1)  # type: ignore[union-attr]
     assert len(printed_url) == 2048  # the URL is clipped to URL_MAX_CHARS, prefix included
 
@@ -374,6 +381,8 @@ def test_a_nul_query_and_profile_come_back_as_a_message(
     assert "<source" in out
     # A lone surrogate cannot be sent as UTF-8 either, and Postgres would refuse it the same way.
     assert "<source" in tools["search_corpus"].invoke({"query": "agents \ud800"})
+    # A profile that cleans to nothing matches no item, rather than raising.
+    assert tools["search_corpus"].invoke({"query": "agents", "profiles": ["\ud800"]}) == NO_HITS
 
 
 def test_title_and_author_clip_boundaries(db_session: Session, seed_items: Seed) -> None:
@@ -414,7 +423,10 @@ def test_a_huge_query_is_clipped_not_refused(db_session: Session, seed_items: Se
     seed_items(AGENT_ROWS)
     # Around 30,000 terms make the any-term tsquery exceed Postgres's stack depth, and that
     # OperationalError aborts the session's transaction; the query is clipped instead.
-    out = tools_for(db_session, SourceRegistry())["search_corpus"].invoke(
-        {"query": "agents " * 30000}
-    )
+    with capture_logs() as logs:
+        out = tools_for(db_session, SourceRegistry())["search_corpus"].invoke(
+            {"query": "agents " * 30000}
+        )
     assert "<source" in out
+    entry = next(e for e in logs if e["event"] == "search_corpus")
+    assert entry["query_chars"] == 2000 == QUERY_MAX_CHARS  # the literal pins the constant
