@@ -36,16 +36,27 @@ the feature refuses to start rather than failing inside an HTTP request.
 
 Two limits wrap every call, in `src/paperwatch/llm/chat.py`. `CallGuard.before_call` counts the
 `chat_calls` rows since UTC midnight and refuses at `chat_max_calls_per_day = 800`, a fifth under
-OpenRouter's 1,000 to leave room for a retry or a fallback call inside the same answer.
+OpenRouter's 1,000. That gap is headroom for questions asked at the same time, not for retries:
+every attempt that reaches the provider is counted, so the count is never a floor.
 `CallGuard.after_call` records the provider's real `usage_metadata` (zero, with a warning, when a
 provider reports none) and then charges the per-answer token ledger, the same `Ledger` and
 `BudgetExceeded` that M1's ingestion runs use, capped at `chat_max_tokens_per_answer = 60_000`.
-The usage row is written before the charge, so a call that spent tokens is on record even when
-the ledger then refuses the answer. The cap is counted from Postgres, not from memory, so a
-restart cannot forget calls already made today. Each model is built with a request timeout
-(`chat_timeout_s = 60`) and retries (`chat_max_retries = 2`), so a stalled free model becomes a
-retry or a fallback instead of a hung request, and `stream_usage=True` so a streamed answer still
-reports the tokens it spent.
+`CallGuard.after_failure` records an attempt that reached the provider and raised (429, timeout,
+5xx, withdrawn model) as a row with zero tokens and model `"failed"`, because a failure is exactly
+when the next request is most likely to be refused. The usage row is written before the charge,
+so a call that spent tokens is on record even when the ledger then refuses the answer.
+
+Rows are written through `ChatCallLog`, which opens its own short session and commits each row
+before returning, not through the request's session. The request's session is rolled back when an
+answer fails or the client hangs up, and the requests already spent must stay counted; a
+committed row is also visible to a second question running at the same time. The cap is counted
+from Postgres, not from memory, so a restart cannot forget calls already made today. Each model
+is built with a request timeout (`chat_timeout_s = 60`) and `max_retries = 0`, so a stalled free
+model becomes a fallback instead of a hung request, and with `stream_usage=True` so a streamed
+answer still reports the tokens it spent. Retries are explicit: the agent's fallback loop makes
+them, one guarded attempt at a time, because an SDK retry inside a call is a provider request the
+guard would never see. Keys are `SecretStr` in `Settings`, so a settings object in a log or a
+traceback shows `**********`, not the key.
 
 ## Consequences
 
@@ -62,3 +73,9 @@ reports the tokens it spent.
   paid tier, is a settings change plus an edit here, never a silent default.
 - A test never needs a key or the network: `ScriptedChatModel` replays recorded answers and
   raises recorded errors, so the whole agent graph runs offline in CI.
+- LangSmith tracing is off, and must stay off. `langsmith` arrives as a transitive dependency of
+  LangChain, and setting `LANGSMITH_TRACING` (or `LANGCHAIN_TRACING_V2`) would ship every prompt,
+  which contains stored paper text, to a third party.
+- The OpenAI SDK also reads `OPENAI_ORG_ID`, `OPENAI_PROXY` and `OPENAI_BASE_URL` from the
+  environment, so an OpenAI or Azure setup in the same shell would apply to these providers too.
+  Nothing sets them here; a stray organisation header would show in the provider's dashboard.

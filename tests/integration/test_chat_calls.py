@@ -3,13 +3,14 @@
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import Engine, delete, func, select
 from sqlalchemy.orm import Session
 
 from paperwatch.llm.chat import CallGuard, DailyCapReached
 from paperwatch.llm.ledger import Ledger
+from paperwatch.store.db import make_session_factory
 from paperwatch.store.models import ChatCall
-from paperwatch.store.repository import Repository
+from paperwatch.store.repository import ChatCallLog, Repository
 
 pytestmark = pytest.mark.integration
 MIDNIGHT = datetime(2026, 10, 16, tzinfo=UTC)
@@ -42,3 +43,33 @@ def test_cap_resets_at_utc_midnight(db_session: Session) -> None:
     record(repo, MIDNIGHT + timedelta(hours=2))
     tomorrow = MIDNIGHT + timedelta(days=1, seconds=1)
     CallGuard(repo, Ledger(100), 2, lambda: tomorrow).before_call()
+
+
+def test_chat_call_log_survives_a_rolled_back_request_session(engine: Engine) -> None:
+    # The production guard writes through ChatCallLog, not through the request's own session: a
+    # request that fails or whose client hangs up rolls that session back, and the calls it
+    # already spent must stay counted (review S2). A plain `db_session` cannot show this because
+    # the fixture itself rolls everything back.
+    factory = make_session_factory(engine)
+    log = ChatCallLog(factory)
+    at = datetime(2026, 10, 16, 3, tzinfo=UTC)
+    try:
+        log.record_chat_call(
+            at=at, provider="openrouter", model="m", input_tokens=1, output_tokens=2
+        )
+        # A separate request session that rolls back must not take the usage row with it.
+        with factory() as doomed:
+            doomed.add(
+                ChatCall(at=at, provider="groq", model="gone", input_tokens=0, output_tokens=0)
+            )
+            doomed.flush()
+            doomed.rollback()
+        # A fresh session sees the committed row, and only that one.
+        with factory() as fresh:
+            assert log.chat_calls_since(MIDNIGHT) == 1
+            assert fresh.scalar(select(func.count()).select_from(ChatCall)) == 1
+    finally:
+        # The row is committed, so it outlives the test: remove it or later runs count it.
+        with factory() as cleanup:
+            cleanup.execute(delete(ChatCall).where(ChatCall.at == at))
+            cleanup.commit()

@@ -1,6 +1,7 @@
-"""Integration fixtures: a migrated pgvector Postgres container, one session per test."""
+"""Shared fixtures: hermetic settings for every test, plus a Postgres container for integration."""
 
-from collections.abc import Iterator
+import os
+from collections.abc import Callable, Iterator
 
 import pytest
 from alembic import command
@@ -9,7 +10,33 @@ from sqlalchemy import Engine
 from sqlalchemy.orm import Session
 from testcontainers.community.postgres import PostgresContainer
 
+from paperwatch.config import Settings
 from paperwatch.store.db import make_engine, make_session_factory
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No test reads the developer's environment or a real .env by accident.
+
+    The captain keeps real keys in .env (Global Constraints), so a test that built Settings from
+    it would pass here and fail on their machine, and vice versa. A test that wants an env var
+    still sets it with monkeypatch, which runs after this fixture.
+    """
+    for name in [n for n in os.environ if n.startswith("PW_")]:
+        monkeypatch.delenv(name, raising=False)
+    # Unset the file rather than passing `_env_file=None` at every call site: the class default
+    # then holds for every Settings the code under test builds on its own.
+    monkeypatch.setitem(Settings.model_config, "env_file", None)
+
+
+@pytest.fixture
+def build_settings() -> Callable[..., Settings]:
+    """Build Settings from the test's own environment only (see `_hermetic_settings`)."""
+
+    def build(**values: object) -> Settings:
+        return Settings(**values)  # type: ignore[arg-type]
+
+    return build
 
 
 @pytest.fixture(scope="session")

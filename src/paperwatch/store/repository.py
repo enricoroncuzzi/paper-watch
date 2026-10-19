@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 
 from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from paperwatch.config import MAX_ITEM_ATTEMPTS, S2_CADENCE
 from paperwatch.domain import AdmissionBasis, Signals, SourceItem, Tier
@@ -446,7 +446,8 @@ class Repository:
         output_tokens: int,
     ) -> None:
         # One row per request: the daily cap counts these rows, so a restart cannot forget a call
-        # that was already made. `at` comes from the caller's clock, not the database's.
+        # that was already made. `at` comes from the caller's clock, not the database's. This
+        # flushes only; the production guard writes through `ChatCallLog`, which commits.
         self._s.add(
             ChatCall(
                 at=at,
@@ -464,3 +465,41 @@ class Repository:
         return (
             self._s.scalar(select(func.count()).select_from(ChatCall).where(ChatCall.at >= at)) or 0
         )
+
+
+class ChatCallLog:
+    """The production `ChatCallStore`: every usage row is committed on its own short session.
+
+    The request's own session cannot carry these rows: a failed answer or a client that hangs up
+    rolls it back, and the calls it already spent against the free tier would vanish from the
+    daily cap (ADR 0006). A row also becomes visible to other requests at once, instead of at the
+    end of a long answer, which keeps the cap accurate when two questions run together.
+    """
+
+    def __init__(self, session_factory: sessionmaker[Session]) -> None:
+        self._session_factory = session_factory
+
+    def record_chat_call(
+        self,
+        *,
+        at: datetime,
+        provider: str,
+        model: str,
+        input_tokens: int,
+        output_tokens: int,
+    ) -> None:
+        # Its own transaction, committed before returning: this is the whole point of the class.
+        with self._session_factory() as session:
+            Repository(session).record_chat_call(
+                at=at,
+                provider=provider,
+                model=model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+            )
+            session.commit()
+
+    def chat_calls_since(self, at: datetime) -> int:
+        # A read-only session is enough, and closing it releases the connection at once.
+        with self._session_factory() as session:
+            return Repository(session).chat_calls_since(at)

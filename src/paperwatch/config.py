@@ -4,7 +4,7 @@ from datetime import timedelta
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Vector size of the embedding model; the DB column and the model must agree on it. 384 is the
@@ -97,7 +97,9 @@ class Settings(BaseSettings):
 
     # Azure OpenAI: endpoint and key have no default, so they must come from the environment.
     azure_openai_endpoint: str | None = None
-    azure_openai_api_key: str | None = None
+    # Keys are SecretStr so a Settings object in a log or a traceback shows `**********`, not the
+    # key; every call site reads them with .get_secret_value().
+    azure_openai_api_key: SecretStr | None = None
     azure_openai_api_version: str = "2024-10-21"
     embedding_deployment: str = "text-embedding-3-small"
     classifier_deployment: str = "gpt-4o-mini"
@@ -107,24 +109,24 @@ class Settings(BaseSettings):
 
     # Chat (M2). The key is unset by default and comes only from the environment; without it a
     # chat call refuses to start rather than failing deep inside an HTTP request.
-    openrouter_api_key: str | None = None
+    openrouter_api_key: SecretStr | None = None
     chat_model: str = CHAT_MODEL
     # Groq answers only when both the key and a model id are set: Groq's free models change too
     # often to pin a default here, and a guessed id would fail on every fallback attempt.
-    groq_api_key: str | None = None
+    groq_api_key: SecretStr | None = None
     groq_chat_model: str | None = None
-    # A free model can stall; a timeout turns that into a retry (or a fallback) instead of a hang.
+    # A free model can stall; a timeout turns that into a fallback instead of a hang. There is no
+    # retry setting: the SDK's own retries would be invisible to the daily cap (ADR 0006).
     chat_timeout_s: float = Field(default=60.0, gt=0)
-    chat_max_retries: int = Field(default=2, ge=0)
     # Per-answer cap, charged through the same Ledger as the ingestion runs: one answer is one
     # graph run, so a tool loop cannot spend without bound.
     chat_max_tokens_per_answer: int = Field(default=60_000, ge=1)
-    # 800 sits under the 1,000 free requests a day OpenRouter allows with the captain's credit,
-    # leaving headroom for a retry or a fallback call inside the same answer.
+    # 800 sits under the 1,000 free requests a day OpenRouter allows with the captain's credit:
+    # the gap is headroom for questions asked at the same time, not for hidden SDK retries.
     chat_max_calls_per_day: int = Field(default=800, ge=1)
 
     # Optional key for Semantic Scholar (works without it, with lower rate limits).
-    semantic_scholar_api_key: str | None = None
+    semantic_scholar_api_key: SecretStr | None = None
 
     log_level: str = "INFO"
     # Sent with every HTTP request so source sites can identify us.

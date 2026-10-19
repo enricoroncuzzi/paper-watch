@@ -209,7 +209,11 @@ def ingest(live: bool = LIVE, since: str | None = SINCE) -> None:
     sources = Sources(
         ArxivOaiSource(http, profiles),
         HfDailySource(http),
-        SemanticScholarSource(http, s.semantic_scholar_api_key),
+        SemanticScholarSource(
+            http,
+            # The source takes a plain header value; only Settings holds it as a secret.
+            s.semantic_scholar_api_key.get_secret_value() if s.semantic_scholar_api_key else None,
+        ),
         FeedSource(http, feeds),
         feeds,
     )

@@ -6,15 +6,16 @@ URL, a key and a model id (ADR 0006). Free tiers are withdrawn or rate-limited w
 the provider is a configuration value and a second provider can answer when the first fails.
 
 Every call goes through `CallGuard`: the daily request cap is checked before the call and the
-provider's real token usage is recorded after it. The cap is counted from the `chat_calls` table
-rather than from memory, so restarting the process cannot forget calls already made today.
+provider's real token usage is recorded after it, and an attempt that raised is recorded too. The
+cap is counted from the `chat_calls` table rather than from memory, so restarting the process
+cannot forget calls already made today.
 """
 
 import json
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import Any, Protocol
 
 import structlog
 from langchain_core.callbacks import CallbackManagerForLLMRun
@@ -27,11 +28,6 @@ from pydantic import Field
 
 from paperwatch.config import GROQ_BASE_URL, OPENROUTER_BASE_URL, Settings
 from paperwatch.llm.ledger import Ledger
-
-if TYPE_CHECKING:
-    # Type-only: the guard needs two repository methods, and importing the store at runtime would
-    # pull SQLAlchemy into every module that touches a chat model, including the offline tests.
-    from paperwatch.store.repository import Repository
 
 log = structlog.get_logger()
 
@@ -60,6 +56,20 @@ class ChatModel:
     model: BaseChatModel
 
 
+class ChatCallStore(Protocol):
+    """The two `chat_calls` operations the guard needs, so the store can be swapped.
+
+    `Repository` satisfies it for tests that already hold a session; `ChatCallLog` is the
+    production one, and commits each row on its own so the cap survives a request's rollback.
+    """
+
+    def record_chat_call(
+        self, *, at: datetime, provider: str, model: str, input_tokens: int, output_tokens: int
+    ) -> None: ...
+
+    def chat_calls_since(self, at: datetime) -> int: ...
+
+
 def make_chat_models(settings: Settings) -> list[ChatModel]:
     """Build the provider chain, primary first: OpenRouter, then Groq when fully configured."""
     if not settings.openrouter_api_key:
@@ -68,14 +78,21 @@ def make_chat_models(settings: Settings) -> list[ChatModel]:
     models = [
         ChatModel(
             "openrouter",
+            # The OpenAI SDK also reads OPENAI_ORG_ID, OPENAI_PROXY and OPENAI_BASE_URL from the
+            # environment, so an OpenAI or Azure setup in the same shell applies to these
+            # providers too. Accepted: nothing here sets them, and a stray organisation header
+            # shows in the provider's dashboard.
             ChatOpenAI(
                 base_url=OPENROUTER_BASE_URL,
-                api_key=settings.openrouter_api_key,
+                api_key=settings.openrouter_api_key.get_secret_value(),
                 model=settings.chat_model,
                 timeout=settings.chat_timeout_s,
-                max_retries=settings.chat_max_retries,
+                # No SDK retries: a retry inside the client is a request the daily cap never sees.
+                # The agent's fallback loop (Task 16) owns retrying, so every attempt is counted.
+                max_retries=0,
                 # Ask for token usage on streamed responses too: without it a streamed answer
-                # reports no usage, and the ledger would charge nothing for it.
+                # reports no usage, and the ledger would charge nothing for it. langchain-openai
+                # leaves this off for a custom base URL, so it is required here, not redundant.
                 stream_usage=True,
                 # OpenRouter's app attribution headers, which put our app on its usage dashboard.
                 default_headers={
@@ -93,10 +110,10 @@ def make_chat_models(settings: Settings) -> list[ChatModel]:
                 "groq",
                 ChatOpenAI(
                     base_url=GROQ_BASE_URL,
-                    api_key=settings.groq_api_key,
+                    api_key=settings.groq_api_key.get_secret_value(),
                     model=settings.groq_chat_model,
                     timeout=settings.chat_timeout_s,
-                    max_retries=settings.chat_max_retries,
+                    max_retries=0,
                     stream_usage=True,
                 ),
             )
@@ -108,19 +125,20 @@ class CallGuard:
     """The two free-tier limits around one chat call: requests per day, and tokens per answer.
 
     `before_call` runs first and refuses once the day's request cap is spent; `after_call` runs
-    once the provider answered, records the real usage and charges the per-answer ledger.
+    once the provider answered, records the real usage and charges the per-answer ledger;
+    `after_failure` records an attempt that reached the provider but produced no answer.
     """
 
     def __init__(
         self,
-        repo: "Repository",
+        store: ChatCallStore,
         ledger: Ledger,
         max_calls_per_day: int,
         clock: Callable[[], datetime],
     ) -> None:
         # The guard is deliberately narrow: it reads only `chat_calls_since` and writes only
-        # `record_chat_call`, so tests pass a small in-memory stand-in for the repository.
-        self._repo = repo
+        # `record_chat_call`, so tests pass a small in-memory stand-in for the store.
+        self._store = store
         self._ledger = ledger
         self._max_calls_per_day = max_calls_per_day
         # The clock is injected so a test can place a call on either side of UTC midnight.
@@ -128,14 +146,22 @@ class CallGuard:
 
     def before_call(self) -> None:
         now = self._clock()
+        # A naive clock would be read as local time by astimezone and silently shift the day.
+        assert now.tzinfo is not None, "the guard's clock must return an aware datetime"
         # The cap is per UTC day: count from this day's midnight, so it resets without a job.
         midnight = now.astimezone(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
-        calls_today = self._repo.chat_calls_since(midnight)
+        calls_today = self._store.chat_calls_since(midnight)
         if calls_today >= self._max_calls_per_day:
             raise DailyCapReached(
                 f"{calls_today} chat calls since {midnight.isoformat()}, "
                 f"cap is {self._max_calls_per_day}"
             )
+
+    def after_failure(self, provider: str) -> None:
+        # An attempt that reached the provider is a request against the free tier even when it
+        # raised, and a failure is exactly when the next request is most likely to be refused.
+        # Zero tokens, and model "failed", so the row cannot be read as a real answer.
+        self._record(provider, "failed", 0, 0)
 
     def after_call(self, provider: str, message: AIMessage) -> None:
         usage = message.usage_metadata
@@ -152,14 +178,20 @@ class CallGuard:
         model = str(message.response_metadata.get("model_name") or "unknown")
         # Record before charging: the tokens were spent even when the ledger then refuses the
         # answer, so the usage row must survive the BudgetExceeded.
-        self._repo.record_chat_call(
+        self._record(provider, model, input_tokens, output_tokens)
+        self._ledger.charge(model, input_tokens + output_tokens)
+
+    def _record(self, provider: str, model: str, input_tokens: int, output_tokens: int) -> None:
+        # The row is stamped when the response arrives (or the attempt fails), not when it was
+        # sent: a call spanning UTC midnight counts for the day it finished. Harmless, because a
+        # call lasts seconds and the cap is 200 under the provider's.
+        self._store.record_chat_call(
             at=self._clock(),
             provider=provider,
             model=model,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
         )
-        self._ledger.charge(model, input_tokens + output_tokens)
 
 
 class ScriptedChatModel(BaseChatModel):

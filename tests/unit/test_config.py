@@ -1,23 +1,9 @@
-import os
 from collections.abc import Callable
 
 import pytest
 from pydantic import ValidationError
 
 from paperwatch.config import EMBEDDING_DIM, LOCAL_EMBEDDING_MODEL, Settings
-
-
-@pytest.fixture
-def build_settings(monkeypatch: pytest.MonkeyPatch) -> Callable[[], Settings]:
-    """Build Settings from the test's own environment: no local .env and no leftover PW_* vars."""
-    for name in [n for n in os.environ if n.startswith("PW_")]:
-        monkeypatch.delenv(name, raising=False)
-
-    def build() -> Settings:
-        # _env_file=None ignores a developer's real .env; env vars the test sets still apply.
-        return Settings(_env_file=None)
-
-    return build
 
 
 def test_settings_read_from_environment(
