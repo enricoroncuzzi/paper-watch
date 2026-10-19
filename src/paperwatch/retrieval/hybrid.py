@@ -60,6 +60,15 @@ def _filtered(stmt: Select[Any], f: Filters) -> Select[Any]:
 
 _NO_FILTERS = Filters()
 
+# The ts_rank_cd normalization flag, Postgres's third argument: 0 is no length normalization, 1
+# divides the rank by 1 + log(document length) and 2 divides it by the length. The corpus mixes
+# abstract-only papers with full lab-blog posts, so the flag was measured on the real database
+# (docs/learn/07, "Length normalization"): 1 and 2 move the text branch's tier-3 share from 0.767
+# to 0.700 and 0.683 against a 0.185 fair share, while 2 fails the eval gate and 1 costs live
+# exact-name recall, and the fused ranking the agent sees sits at 0.233. So 0 stays. This is a
+# constant, not a setting: it is a ranking decision.
+TS_RANK_NORMALIZATION = 0
+
 
 def vector_query(qvec: list[float], filters: Filters, limit: int) -> Select[Any]:
     # Separate so a test can EXPLAIN exactly the statement search runs. A secondary sort key here
@@ -95,7 +104,7 @@ def text_query(query: str, filters: Filters, limit: int) -> Select[Any]:
     # The key is COLLATE "C", whose byte order matches Python's code-point order, so SQL and the
     # fusion cut a tie the same way whatever the database locale.
     tsq = any_term_tsquery(query)
-    rank = func.ts_rank_cd(Item.tsv, tsq).label("score")
+    rank = func.ts_rank_cd(Item.tsv, tsq, TS_RANK_NORMALIZATION).label("score")
     return _filtered(
         select(Item.id, rank, Item.source, Item.external_id)
         .where(Item.tsv.op("@@")(tsq))

@@ -266,19 +266,38 @@ def search(
 @app.command(name="eval")
 def eval_cmd(
     write_baseline: bool = typer.Option(False, "--write-baseline"),
+    live: bool = typer.Option(
+        False,
+        "--live",
+        help="Use the configured embedding model; never gates and never writes the baseline",
+    ),
 ) -> None:
     import json
     import sys
+
+    # The gate and the committed baseline belong to the offline FakeEmbedder, so a real-model run
+    # is a manual checkpoint: refusing the combination keeps real numbers out of the baseline.
+    if live and write_baseline:
+        typer.echo("--live cannot be combined with --write-baseline", err=True)
+        raise typer.Exit(2)
 
     # The console script's path contains src, not the repository root, so the top-level evals
     # package is invisible without adding the root (the same base the data paths use).
     sys.path.insert(0, str(_REPO_ROOT))
     from evals.retrieval_eval import GATED, DatabaseNotEmpty, evaluate, gate
 
+    # Real embeddings need the configured model and the run's token budget; the default stays the
+    # deterministic fake, so CI is offline and a real run is always an explicit --live.
+    if live:
+        s = get_settings()
+        embedder: Embedder = make_embedder(s, Ledger(s.max_tokens_per_run))
+    else:
+        embedder = FakeEmbedder()
+
     def run(session: Session) -> dict[str, float]:
         return evaluate(
             session,
-            FakeEmbedder(),
+            embedder,
             _EVAL_DATA / "corpus.jsonl",
             _EVAL_DATA / "questions.jsonl",
         )
@@ -294,6 +313,9 @@ def eval_cmd(
         # Only the gated metrics are committed: the gate validates exactly these keys.
         baseline = {name: m[name] for name in GATED}
         _BASELINE_PATH.write_text(json.dumps(baseline, indent=2) + "\n")
+        return
+    if live:
+        # A live run only reports; the gated baseline is the fake embedder's, so nothing to check.
         return
     failures = gate(m, json.loads(_BASELINE_PATH.read_text()))
     for fail in failures:
