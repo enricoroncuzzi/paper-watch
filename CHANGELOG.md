@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.2.0...paperwatch-v0.2.1) (2026-10-19)
+
+
+### Documentation
+
+* add AGENTS.md and CLAUDE.md for coding agents ([#8](https://github.com/enricoroncuzzi/paper-watch/issues/8)) ([f697d41](https://github.com/enricoroncuzzi/paper-watch/commit/f697d419ae495e2000a0e5283b929199e393f96f))
+
 ## [0.2.0](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.1.0...paperwatch-v0.2.0) (2026-10-16)
 
 
