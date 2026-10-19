@@ -54,6 +54,19 @@ S2_MAX_PAPERS_PER_RUN = 12_500
 # spending the same token budget. The value is ASCII "PAPRWTCK", arbitrary but fixed.
 INGEST_LOCK_KEY = 0x5041_5052_5754_434B
 
+# Chat providers speak the OpenAI chat-completions shape, so only the base URL, the key and the
+# model id change between them (ADR 0006). OpenRouter is primary because its free tier needs no
+# card; Groq is an optional fallback for the day a free model is withdrawn or rate-limited.
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+GROQ_BASE_URL = "https://api.groq.com/openai/v1"
+# Provisional default, checked against the public OpenRouter catalogue on 2026-10-19: present,
+# priced at 0, and listing `tools` in `supported_parameters`, which the agent's tools need.
+# Task 18 measures three candidates on the QA set and may replace this id.
+CHAT_MODEL = "google/gemma-4-31b-it:free"
+# Tool rounds the agent may take before it is called once more without tools and must answer;
+# the cap turns a model that loops on its tools into a final answer instead of a hung request.
+MAX_TOOL_ROUNDS = 4
+
 
 class Settings(BaseSettings):
     # Each field is read from an env var with the PW_ prefix (database_url <- PW_DATABASE_URL),
@@ -91,6 +104,24 @@ class Settings(BaseSettings):
 
     # Safety cap: a run stops calling the model once it has spent this many tokens.
     max_tokens_per_run: int = 200_000
+
+    # Chat (M2). The key is unset by default and comes only from the environment; without it a
+    # chat call refuses to start rather than failing deep inside an HTTP request.
+    openrouter_api_key: str | None = None
+    chat_model: str = CHAT_MODEL
+    # Groq answers only when both the key and a model id are set: Groq's free models change too
+    # often to pin a default here, and a guessed id would fail on every fallback attempt.
+    groq_api_key: str | None = None
+    groq_chat_model: str | None = None
+    # A free model can stall; a timeout turns that into a retry (or a fallback) instead of a hang.
+    chat_timeout_s: float = Field(default=60.0, gt=0)
+    chat_max_retries: int = Field(default=2, ge=0)
+    # Per-answer cap, charged through the same Ledger as the ingestion runs: one answer is one
+    # graph run, so a tool loop cannot spend without bound.
+    chat_max_tokens_per_answer: int = Field(default=60_000, ge=1)
+    # 800 sits under the 1,000 free requests a day OpenRouter allows with the captain's credit,
+    # leaving headroom for a retry or a fallback call inside the same answer.
+    chat_max_calls_per_day: int = Field(default=800, ge=1)
 
     # Optional key for Semantic Scholar (works without it, with lower rate limits).
     semantic_scholar_api_key: str | None = None

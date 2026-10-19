@@ -10,13 +10,13 @@ from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from sqlalchemy import and_, case, or_, select, update
+from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from paperwatch.config import MAX_ITEM_ATTEMPTS, S2_CADENCE
 from paperwatch.domain import AdmissionBasis, Signals, SourceItem, Tier
-from paperwatch.store.models import DeadLetter, Item, Run, SourceCursor, TierHistory
+from paperwatch.store.models import ChatCall, DeadLetter, Item, Run, SourceCursor, TierHistory
 
 # Semantic Scholar reports the preprint server while a paper is only a preprint. A real venue,
 # once seen, is never replaced by one of these, so a temporary answer cannot erase an acceptance.
@@ -435,3 +435,32 @@ class Repository:
             .values(resolved_at=at)
         )
         self._s.flush()
+
+    def record_chat_call(
+        self,
+        *,
+        at: datetime,
+        provider: str,
+        model: str,
+        input_tokens: int,
+        output_tokens: int,
+    ) -> None:
+        # One row per request: the daily cap counts these rows, so a restart cannot forget a call
+        # that was already made. `at` comes from the caller's clock, not the database's.
+        self._s.add(
+            ChatCall(
+                at=at,
+                provider=provider,
+                model=model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+            )
+        )
+        self._s.flush()
+
+    def chat_calls_since(self, at: datetime) -> int:
+        # The cap is per UTC day, so the caller passes that day's midnight and this counts only
+        # the calls at or after it; the ix_chat_calls_at index keeps it a range scan.
+        return (
+            self._s.scalar(select(func.count()).select_from(ChatCall).where(ChatCall.at >= at)) or 0
+        )

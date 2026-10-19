@@ -183,3 +183,27 @@ class SourceCursor(Base):
     __tablename__ = "source_cursors"
     key: Mapped[str] = mapped_column(String(600), primary_key=True)  # "arxiv" or "feed:<url>"
     window_end: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class ChatCall(Base):
+    """One chat-model request, with the usage the provider reported for it.
+
+    Rows are the durable half of the free-tier guard: the daily cap is counted from them, so it
+    survives a process restart, unlike an in-memory counter. Tokens are recorded, not enforced:
+    the per-answer cap is charged through the in-process Ledger.
+    """
+
+    __tablename__ = "chat_calls"
+    __table_args__ = (
+        # The daily cap asks "how many calls since UTC midnight" on every call, so this index
+        # keeps that count a range scan instead of a growing table scan.
+        Index("ix_chat_calls_at", "at"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # The moment of the call, from the guard's clock (not the database clock), so a test can
+    # place calls before or after a midnight boundary.
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    provider: Mapped[str] = mapped_column(String(32))
+    model: Mapped[str] = mapped_column(String(128))
+    input_tokens: Mapped[int] = mapped_column(Integer)
+    output_tokens: Mapped[int] = mapped_column(Integer)
