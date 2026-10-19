@@ -29,6 +29,11 @@ log = structlog.get_logger()
 GET_ITEM_MAX_CHARS = 6000
 COMPARE_MAX_CHARS = 1500
 COMPARE_MIN, COMPARE_MAX = 2, 4
+# An item's title and author list are not bounded by the schema (arXiv papers can list thousands
+# of authors and feeds carry arbitrary titles), so a block clips both: a result must stay small
+# whatever the stored item looks like.
+TITLE_MAX_CHARS = 300
+AUTHORS_SHOWN = 20
 NO_HITS = "No admitted item matched this search."
 # A module-level default, not a call in the signature: the filters are immutable, and ruff's
 # B008 keeps function calls out of argument defaults.
@@ -88,6 +93,11 @@ def _narrow(
     )
 
 
+def _clip(text: str, limit: int) -> str:
+    # An ellipsis tells the model the text continues; an item field has no other bound.
+    return text[:limit] + "..." if len(text) > limit else text
+
+
 def _block(ref: SourceRef, title: str, text: str, meta: str | None = None) -> str:
     # Stored text is untrusted data: escaping `&`, `<` and `>` keeps it from closing this block
     # or opening another, and the attribute values are escaped with quotes so a crafted URL cannot
@@ -99,7 +109,7 @@ def _block(ref: SourceRef, title: str, text: str, meta: str | None = None) -> st
         f' published="{ref.published_at.date().isoformat()}"'
         f' url="{html.escape(ref.url, quote=True)}">'
     )
-    lines = [head, html.escape(title, quote=False)]
+    lines = [head, html.escape(_clip(title, TITLE_MAX_CHARS), quote=False)]
     if meta is not None:
         lines.append(html.escape(meta, quote=False))
     lines += [html.escape(text, quote=False), "</source>"]
@@ -107,7 +117,11 @@ def _block(ref: SourceRef, title: str, text: str, meta: str | None = None) -> st
 
 
 def _meta(detail: ItemDetail) -> str:
-    parts = [f"Authors: {', '.join(detail.authors) or 'unknown'}"]
+    authors = list(detail.authors[:AUTHORS_SHOWN])
+    shown = ", ".join(authors) if authors else "unknown"
+    if len(detail.authors) > AUTHORS_SHOWN:
+        shown += f" and {len(detail.authors) - AUTHORS_SHOWN} more"
+    parts = [f"Authors: {shown}"]
     if detail.venue:
         parts.append(f"Venue: {detail.venue}")
     parts.append(f"Citations: {detail.citation_count}")
@@ -129,12 +143,24 @@ def make_tools(
         profiles: list[str] | None = None,
         since: date | None = None,
     ) -> str:
+        # A small model can send a blank query or a stray NUL: the NUL would reach Postgres as a
+        # DataError and the blank query trips hybrid_search's own ValueError, so both are turned
+        # into a ToolException here and come back to the model as a message.
+        query = query.replace("\x00", "")
+        if not query.strip():
+            raise ToolException("query must not be blank.")
+        clean_profiles = [p.replace("\x00", "") for p in profiles] if profiles else profiles
         hits = hybrid_search(
-            session, embedder, query, k=k, filters=_narrow(base_filters, tiers, profiles, since)
+            session,
+            embedder,
+            query,
+            k=k,
+            filters=_narrow(base_filters, tiers, clean_profiles, since),
         )
         # One line per call, tiers in rank order: real query mixes can be compared with the
-        # measured tier shares in docs/learn/07 without keeping the questions themselves.
-        log.info("search_corpus", query=query, tiers=[h.tier for h in hits])
+        # measured tier shares in docs/learn/07. The query text itself is model-controlled and
+        # can be huge, so only its length is logged.
+        log.info("search_corpus", query_chars=len(query), tiers=[h.tier for h in hits])
         if not hits:
             return NO_HITS
         # One query for every hit, never one per hit, and only admitted rows come back.
@@ -149,9 +175,12 @@ def make_tools(
     def registered(alias: str) -> tuple[SourceRef, ItemDetail]:
         ref = registry.get(alias)
         if ref is None:
+            known = ", ".join(r.alias for r in registry.all()) or "none"
+            # The alias is model-controlled text, so the echo is clipped; the known list helps a
+            # small model recover from a wrong-case or invented id.
             raise ToolException(
-                f"{alias} is not a source in this answer. Search first: only aliases a search "
-                "returned can be used."
+                f"{alias[:40]!r} is not a source in this answer (known: {known}). Only aliases a "
+                "search returned can be used."
             )
         detail = repo.admitted_details([ref.item_id]).get(ref.item_id)
         if detail is None:
