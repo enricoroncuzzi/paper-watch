@@ -1,7 +1,9 @@
 """Shared fixtures: hermetic settings for every test, plus a Postgres container for integration."""
 
 import os
+import uuid
 from collections.abc import Callable, Iterator
+from datetime import UTC, datetime
 
 import pytest
 from alembic import command
@@ -11,7 +13,10 @@ from sqlalchemy.orm import Session
 from testcontainers.community.postgres import PostgresContainer
 
 from paperwatch.config import Settings
+from paperwatch.domain import Signals, SourceItem, Tier
+from paperwatch.llm.embedder import FakeEmbedder
 from paperwatch.store.db import make_engine, make_session_factory
+from paperwatch.store.repository import Repository
 
 
 @pytest.fixture(autouse=True)
@@ -79,3 +84,56 @@ def db_session(engine: Engine) -> Iterator[Session]:
     session.close()
     trans.rollback()
     conn.close()
+
+
+# (external id, title, body, tier): one admitted row each, embedded with FakeEmbedder.
+SeedRow = tuple[str, str, str, Tier]
+
+AGENT_ROWS: list[SeedRow] = [
+    (
+        "swe",
+        "SWE-bench results for coding agents",
+        "Coding agent harness evaluated on SWE-bench Verified with real repository bugs.",
+        Tier.PEER_REVIEWED,
+    ),
+    (
+        "mem",
+        "Memory for long-horizon agents",
+        "Agents that remember across sessions plan better over long tasks.",
+        Tier.VETTED_PREPRINT,
+    ),
+    (
+        "blog",
+        "How we build agent harnesses",
+        "Our team ships an agent harness with sandboxed tools and evals.",
+        Tier.LAB_BLOG,
+    ),
+]
+
+
+@pytest.fixture
+def seed_items(db_session: Session) -> Callable[[list[SeedRow]], dict[str, uuid.UUID]]:
+    def seed(rows: list[SeedRow]) -> dict[str, uuid.UUID]:
+        repo, embedder, ids = Repository(db_session), FakeEmbedder(), {}
+        for eid, title, body, tier in rows:
+            item = SourceItem(
+                "arxiv",
+                eid,
+                title,
+                ("Ada Lovelace",),
+                body,
+                f"https://example.org/{eid}",
+                datetime(2026, 10, 1, tzinfo=UTC),
+            )
+            ids[eid] = repo.upsert_item(
+                item,
+                tier,
+                "agentic-engineering",
+                0.9,
+                Signals(),
+                embedder.embed([f"{title}\n{body}"])[0],
+            )
+        db_session.flush()
+        return ids
+
+    return seed

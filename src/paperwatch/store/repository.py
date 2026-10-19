@@ -37,6 +37,24 @@ class StoredItem:
     signals: Signals
 
 
+@dataclass(frozen=True)
+class ItemDetail:
+    """One admitted item as the agent's tools may show it to the model."""
+
+    item_id: uuid.UUID
+    title: str
+    authors: tuple[str, ...]
+    text: str
+    url: str
+    tier: str
+    basis: str
+    published_at: datetime
+    venue: str | None
+    citation_count: int
+    hf_upvotes: int | None
+    profile: str | None
+
+
 def _is_preprint(venue: str | None) -> bool:
     return venue is not None and venue.strip().lower() in PREPRINT_VENUES
 
@@ -72,6 +90,26 @@ def _stored(row: Item) -> StoredItem:
         row.profile,
         row.relevance,
         _signals(row),
+    )
+
+
+def _detail(row: Item) -> ItemDetail:
+    # Only admitted rows are passed in; the check constraints give them a tier and a basis, and
+    # the assert narrows the columns for mypy instead of writing a fallback nobody should see.
+    assert row.tier is not None and row.admission_basis is not None
+    return ItemDetail(
+        item_id=row.id,
+        title=row.title,
+        authors=tuple(row.authors),
+        text=row.text,
+        url=row.url,
+        tier=row.tier,
+        basis=row.admission_basis,
+        published_at=row.published_at,
+        venue=row.venue,
+        citation_count=row.citation_count,
+        hf_upvotes=row.hf_upvotes,
+        profile=row.profile,
     )
 
 
@@ -127,6 +165,16 @@ class Repository:
         self._s.flush()
         assert new_id is not None
         return new_id
+
+    def admitted_details(self, ids: Collection[uuid.UUID]) -> dict[uuid.UUID, ItemDetail]:
+        # Admitted rows only: an id from anywhere else (a stale alias, a candidate item) is
+        # simply absent, so a caller cannot show text the corpus has not admitted. One query for
+        # every id the caller asks about, so a search does not run one query per hit.
+        wanted = list(ids)
+        if not wanted:
+            return {}
+        rows = self._s.scalars(select(Item).where(Item.id.in_(wanted), Item.status == "admitted"))
+        return {row.id: _detail(row) for row in rows}
 
     def has_item_url(self, source: str, url: str) -> bool:
         return (
