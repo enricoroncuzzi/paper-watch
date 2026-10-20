@@ -219,6 +219,9 @@ class ScriptedChatModel(BaseChatModel):
     seen: list[list[BaseMessage]] = Field(default_factory=list)
     # Tool names bound for each call, [] for an unbound call: trajectory tests read it.
     bound_tools: list[list[str]] = Field(default_factory=list)
+    # Keyword arguments each `bind_tools` received (`parallel_tool_calls`, for one), so a test can
+    # prove what the agent asked a real model to do without a live call.
+    bound_kwargs: list[dict[str, Any]] = Field(default_factory=list)
 
     @property
     def _llm_type(self) -> str:
@@ -226,6 +229,7 @@ class ScriptedChatModel(BaseChatModel):
 
     def bind_tools(self, tools: Sequence[Any], **kwargs: Any) -> Runnable[Any, AIMessage]:
         # Like ChatOpenAI, binding returns a wrapper that passes the tools on every call.
+        self.bound_kwargs.append(dict(kwargs))
         return self.bind(tools=[t.name for t in tools], **kwargs)
 
     def _next(self, messages: list[BaseMessage], tools: list[str] | None) -> AIMessage:
