@@ -150,7 +150,7 @@ def test_separators_inside_a_group_are_understood() -> None:
         assert [c.alias for c in a.citations] == ["S1", "S2"], marker
         # A square group keeps its own wording; only the aliases are normalised.
         assert marker in a.text, marker
-    for paren in ("(S1; S2)", "(S1, S2)", "(S1 and S2)"):
+    for paren in ("(S1; S2)", "(S1, S2)", "(S1 and S2)", "(S1 & S2)", "(S1, S2, and S2)"):
         a = check_answer(
             f"Both papers measure long-horizon agent memory directly {paren}.", registry()
         )
@@ -332,6 +332,7 @@ def test_a_square_group_with_extra_tokens_is_a_citation() -> None:
         ("[S1 S9]", "[S1 ?]"),
         ("[S9, p. 4]", "[?, p. 4]"),
         ("[S1-S9]", "[S1-?]"),
+        ("[S1 AND S9]", "[S1 AND ?]"),
     ):
         a = check_answer(f"Memory helps agents plan over long tasks [S1] {marker}.", registry())
         assert [f.kind for f in a.flags] == ["unknown_source"], marker
@@ -395,6 +396,9 @@ def test_every_listed_negation_is_honest() -> None:
         "is currently under peer review",
         "was submitted for peer review",
         "is pending peer review",
+        "is without peer review",
+        "is awaiting peer review",
+        "has yet to be peer reviewed",
         "has not yet been formally peer-reviewed",
         "has not been accepted at any venue",
     ):
@@ -529,3 +533,59 @@ def test_a_question_is_not_a_tier_claim() -> None:
         "Memory helps agents plan over long tasks [S1]. Is this peer-reviewed at all?", registry()
     )
     assert cited.flags == () and cited.supported
+
+
+def test_curly_apostrophes_and_capitalised_negations() -> None:
+    curly = check_answer(
+        "This preprint hasn\u2019t been peer-reviewed and shows agents forget early steps [S1].",
+        registry(),
+    )
+    assert curly.flags == ()
+    capitalised = check_answer(
+        "Not yet peer-reviewed, this preprint shows agents forget early steps [S1].", registry()
+    )
+    assert capitalised.flags == ()
+
+
+def test_a_locator_with_a_trailing_letter_is_not_an_alias() -> None:
+    pages = check_answer("Memory helps agents plan over long tasks [S2, pages 4-5].", registry())
+    assert [c.alias for c in pages.citations] == ["S2"]
+    assert "[S2, pages 4-5]" in pages.text and pages.flags == ()
+
+    author = check_answer(
+        "Memory helps agents plan over long tasks [S1, Williams 2023].", registry()
+    )
+    assert author.flags == () and "[S1, Williams 2023]" in author.text
+
+
+def test_etc_before_a_closer_does_not_end_the_sentence() -> None:
+    supported = check_answer(
+        "Agents (Claude Code, Cursor, Copilot, etc.) forget early steps in long tasks [S1].",
+        registry(),
+    )
+    assert supported.supported and supported.flags == ()
+
+    flagged = check_answer(
+        "Agents (Code, Cursor, etc.) Most production agents forget everything soon.", registry()
+    )
+    assert [f.kind for f in flagged.flags] == ["uncited_claim"]
+
+
+def test_an_unbalanced_backtick_does_not_hide_an_alias() -> None:
+    text = (
+        "Memory helps agents plan over long tasks [S1]. The `agent stores traces. "
+        "Most production agents forget everything between sessions [S99]. The `x` tool."
+    )
+    a = check_answer(text, registry())
+    assert [f.kind for f in a.flags] == ["unknown_source"]
+    assert "[S99]" not in a.text and "[?]" in a.text
+
+
+def test_an_unclosed_paren_list_is_not_exponential() -> None:
+    for text in (
+        "(" + ", ".join(f"S{i}" for i in range(1, 41)) + " etc.",
+        "(S1," + " " * 50_000 + "x",
+    ):
+        start = time.perf_counter()
+        check_answer(text, registry())
+        assert time.perf_counter() - start < 1.0

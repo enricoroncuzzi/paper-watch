@@ -7,9 +7,10 @@ is true; it judges whether each claim points at evidence the reader can open, an
 pass off an answer with no evidence.
 
 This is a heuristic safety net, not a parser of English. Three guarantees hold, and everything
-else is a known limit in `docs/learn/11`: an alias no tool returned never becomes a `Citation` and
-is always visible as `?`; an answer with no cited claim is `NO_SUPPORT`; a cited source described
-as peer-reviewed when it is not is flagged.
+else is a known limit in `docs/learn/11`: an alias no tool returned never becomes a `Citation` and,
+outside code spans, closed fences and URLs, is always visible as `?`; an answer with no cited text
+is `NO_SUPPORT`; a sentence that calls its cited source or sources peer-reviewed or venue-accepted
+when none of them is is flagged.
 
 Everything this module returns is untrusted in one of two ways, and must be escaped wherever it
 is rendered into a prompt, an SSE event or a terminal: `CheckedAnswer.text`, `Flag.sentence` and
@@ -38,12 +39,12 @@ ALIAS_MAX_CHARS = 32
 # so they must not be invisible to the check.
 _GAP = r"[\s\u200b\u200c\u200d\ufeff]"
 _ALIAS = rf"(?<!\w)[Ss]{_GAP}*\d+(?!\w)"
-_SEP = rf"{_GAP}*(?:,{_GAP}*(?:and{_GAP}*)?|;{_GAP}*|&{_GAP}*|and{_GAP}*){_GAP}*"
-_ALIAS_PART = re.compile(rf"[Ss]{_GAP}*(\d+)")
+_SEP = rf"{_GAP}*(?:,{_GAP}*(?:and{_GAP}*)?|;{_GAP}*|&{_GAP}*|and{_GAP}*)"
+_ALIAS_PART = re.compile(rf"(?<!\w)[Ss]{_GAP}*(\d+)(?!\w)")
 
 # Code, a closed fence and a URL are content, never citations. One pass finds protectors and
-# citation groups together, so detection, stripping and rewriting agree and stay linear.
-_CODE = r"`[^`\n]*`"
+# citation groups together, so detection, stripping and rewriting agree and the scan stays linear.
+_CODE = r"`(?:[^`\n.!?]|[.!?](?!\s))*`"
 _FENCE = r"^[ \t]*```.*?^[ \t]*```[^\n]*"
 _URL = r"https?://\S+"
 # A square bracket that holds an alias token anywhere is a citation group, whatever else it holds
@@ -70,7 +71,7 @@ _BOLD_LINE = re.compile(r"^\s*\*\*.*\*\*\s*$")
 # split. "etc." ends a sentence before a capital, so it is protected only before a lowercase word,
 # a digit or punctuation.
 _ABBREV = re.compile(
-    r"\betc\.(?=\s+[a-z0-9,;(])"
+    r"\betc\.(?=[\"')\]*_]*\s+[a-z0-9,;(\[])"
     r"|\b(?:al|e\.g|i\.e|vs|Fig|Dr|Inc|Corp|Ltd|No|Prof|Sec|Eq|approx)\."
     r"|(?:[A-Z]\.){2,}"
 )
@@ -87,7 +88,7 @@ _TIER_CLAIM = re.compile(
 # An honest label the product asks for ("a preprint, not yet peer-reviewed") must not be flagged.
 # "not only" and "not just" assert the opposite, so they are not negations.
 _NEGATED = re.compile(
-    r"(?:\bnot\b(?!\s+(?:only|just)\b)|\bnon\b|n't\b|\bnever\b|\bno\b|\bun"
+    r"(?:\bnot\b(?!\s+(?:only|just)\b)|\bnon\b|n['\u2019]t\b|\bnever\b|\bno\b|\bun"
     r"|\bwithout\b|\bawaiting\b|\bpending\b|\byet\s+to\s+be\b|\bunder\b|\bsubmitted\s+for\b)"
     r"(?:\W+\w+){0,3}\W*$",
     re.IGNORECASE,
@@ -311,7 +312,7 @@ def _is_claim(sentence: str) -> bool:
     if _is_question(sentence) or _structural(sentence):
         return False
     # A wholly bold line is a heading, unless it carries a citation and so is a real sentence.
-    if _BOLD_LINE.match(sentence) and not _groups(sentence):
+    if _BOLD_LINE.match(sentence):
         return False
     return _word_count(sentence) >= CLAIM_MIN_WORDS
 
