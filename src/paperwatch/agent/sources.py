@@ -4,6 +4,10 @@ The registry is created for one answer and thrown away with it. A tool registers
 back a short alias (`S1`, `S2`, ... in first-seen order); the model then refers to sources by that
 alias. An alias the registry never issued cannot be cited, so a hallucinated source is a missing
 lookup rather than a plausible-looking citation.
+
+It is not thread-safe: registering computes the next alias from the size and then writes two
+dicts, so callers must serialize. `make_tools` holds one lock around every tool body, which is
+what keeps two concurrent searches from issuing the same alias to different papers.
 """
 
 import uuid

@@ -6,14 +6,23 @@ against prompt injection: stored text is written by strangers, so it can say "ig
 instructions" but it cannot close its block, open a new one, or name a source no tool returned.
 Each call also logs its hits' tiers in rank order, so the tier mix of real agent queries can be
 measured against the figures in `docs/learn/07`.
+
+`ToolNode` runs one message's tool calls concurrently, but the tools share one `Session` and the
+`SourceRegistry` is not thread-safe, so `make_tools` holds one lock around every tool body. Each
+body also runs in a savepoint: one failed statement would otherwise abort the session's transaction
+and fail every later tool call in the same answer.
 """
 
 import html
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, date, datetime
 
 import structlog
 from langchain_core.tools import BaseTool, StructuredTool, ToolException
 from pydantic import BaseModel, Field
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from paperwatch.agent.sources import SourceRef, SourceRegistry
@@ -31,9 +40,10 @@ COMPARE_MAX_CHARS = 1500
 COMPARE_MIN, COMPARE_MAX = 2, 4
 # An item's title, author names and URL are not bounded by the schema (arXiv papers can list
 # thousands of authors, feed fields are arbitrary strings), so a block clips all three: a result
-# stays bounded whatever the stored item looks like. The clips count characters before escaping,
-# which can grow a block about nine times, so one get_item is at most about 54,000 characters. The
-# URL clip applies to the printed attribute only; SourceRef keeps the full value for citations.
+# stays bounded whatever the stored item looks like. Escaping grows text at most 5x ("&" becomes
+# "&amp;") and an attribute at most 6x (a quote becomes "&quot;"), so one get_item's clipped fields
+# stay under 6x their stored length. The URL clip applies to the printed attribute only; SourceRef
+# keeps the full value for citations.
 TITLE_MAX_CHARS = 300
 AUTHOR_MAX_CHARS = 100
 AUTHORS_SHOWN = 20
@@ -144,6 +154,18 @@ def _meta(detail: ItemDetail) -> str:
     return " | ".join(parts)
 
 
+@contextmanager
+def _database_work(session: Session) -> Iterator[None]:
+    # A failed statement aborts the session's transaction, which would fail every later tool call
+    # in this answer; a savepoint contains the damage to this call.
+    try:
+        with session.begin_nested():
+            yield
+    except SQLAlchemyError as exc:
+        log.error("tool_database_error", error=str(exc))
+        raise ToolException("The search failed; try again or rephrase.") from exc
+
+
 def make_tools(
     session: Session,
     embedder: Embedder,
@@ -152,6 +174,7 @@ def make_tools(
     k: int = 8,
 ) -> list[BaseTool]:
     repo = Repository(session)
+    lock = threading.Lock()
 
     def search(
         query: str,
@@ -167,27 +190,28 @@ def make_tools(
         if not query.strip():
             raise ToolException("query must not be blank.")
         clean_profiles = [_clean(p) for p in profiles] if profiles else profiles
-        hits = hybrid_search(
-            session,
-            embedder,
-            query,
-            k=k,
-            filters=_narrow(base_filters, tiers, clean_profiles, since),
-        )
-        # One line per call, tiers in rank order: real query mixes can be compared with the
-        # measured tier shares in docs/learn/07. The query text itself is model-controlled and
-        # can be huge, so only its length is logged.
-        log.info("search_corpus", query_chars=len(query), tiers=[h.tier for h in hits])
-        if not hits:
-            return NO_HITS
-        # One query for every hit, never one per hit, and only admitted rows come back.
-        details = repo.admitted_details([h.item_id for h in hits])
-        blocks = [
-            _block(registry.register(detail), detail.title, hit.snippet)
-            for hit in hits
-            if (detail := details.get(hit.item_id)) is not None
-        ]
-        return "\n".join(blocks) if blocks else NO_HITS
+        with lock, _database_work(session):
+            hits = hybrid_search(
+                session,
+                embedder,
+                query,
+                k=k,
+                filters=_narrow(base_filters, tiers, clean_profiles, since),
+            )
+            # One line per call, tiers in rank order: real query mixes can be compared with the
+            # measured tier shares in docs/learn/07. The query text itself is model-controlled and
+            # can be huge, so only its length is logged.
+            log.info("search_corpus", query_chars=len(query), tiers=[h.tier for h in hits])
+            if not hits:
+                return NO_HITS
+            # One query for every hit, never one per hit, and only admitted rows come back.
+            details = repo.admitted_details([h.item_id for h in hits])
+            blocks = [
+                _block(registry.register(detail), detail.title, hit.snippet)
+                for hit in hits
+                if (detail := details.get(hit.item_id)) is not None
+            ]
+            return "\n".join(blocks) if blocks else NO_HITS
 
     def registered(alias: str) -> tuple[SourceRef, ItemDetail]:
         ref = registry.get(alias)
@@ -205,11 +229,12 @@ def make_tools(
         return ref, detail
 
     def get_item(source_id: str) -> str:
-        ref, detail = registered(source_id)
-        text = detail.text[:GET_ITEM_MAX_CHARS]
-        if len(detail.text) > GET_ITEM_MAX_CHARS:
-            text += "\n[text truncated]"
-        return _block(ref, detail.title, text, _meta(detail))
+        with lock, _database_work(session):
+            ref, detail = registered(source_id)
+            text = detail.text[:GET_ITEM_MAX_CHARS]
+            if len(detail.text) > GET_ITEM_MAX_CHARS:
+                text += "\n[text truncated]"
+            return _block(ref, detail.title, text, _meta(detail))
 
     def compare(source_ids: list[str]) -> str:
         # A repeated alias is still one source, so dedupe before counting the 2-4 range.
@@ -219,11 +244,12 @@ def make_tools(
                 f"compare_items needs {COMPARE_MIN} to {COMPARE_MAX} distinct source ids, "
                 f"got {len(aliases)}."
             )
-        blocks = []
-        for alias in aliases:
-            ref, detail = registered(alias)
-            blocks.append(_block(ref, detail.title, detail.text[:COMPARE_MAX_CHARS]))
-        return "\n".join(blocks)
+        with lock, _database_work(session):
+            blocks = []
+            for alias in aliases:
+                ref, detail = registered(alias)
+                blocks.append(_block(ref, detail.title, detail.text[:COMPARE_MAX_CHARS]))
+            return "\n".join(blocks)
 
     return [
         StructuredTool.from_function(

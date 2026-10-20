@@ -1,25 +1,33 @@
 import re
+import sys
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime
 from uuid import UUID
 
 import pytest
 from langchain_core.tools import BaseTool
-from sqlalchemy import update
+from sqlalchemy import Engine, text, update
 from sqlalchemy.orm import Session
 from structlog.testing import capture_logs
 
+from paperwatch.agent import tools as agent_tools
 from paperwatch.agent.sources import SourceRegistry
 from paperwatch.agent.tools import (
+    AUTHOR_MAX_CHARS,
+    AUTHORS_SHOWN,
     COMPARE_MAX_CHARS,
     GET_ITEM_MAX_CHARS,
     NO_HITS,
     QUERY_MAX_CHARS,
+    TITLE_MAX_CHARS,
+    URL_MAX_CHARS,
     make_tools,
 )
 from paperwatch.domain import Signals, SourceItem, Tier
 from paperwatch.llm.embedder import FakeEmbedder
 from paperwatch.retrieval.hybrid import Filters
+from paperwatch.store.db import make_session_factory
 from paperwatch.store.models import Item
 from paperwatch.store.repository import Repository
 from tests.conftest import AGENT_ROWS, SeedRow
@@ -430,3 +438,144 @@ def test_a_huge_query_is_clipped_not_refused(db_session: Session, seed_items: Se
     assert "<source" in out
     entry = next(e for e in logs if e["event"] == "search_corpus")
     assert entry["query_chars"] == 2000 == QUERY_MAX_CHARS  # the literal pins the constant
+
+
+def test_parallel_searches_keep_aliases_consistent(db_session: Session, seed_items: Seed) -> None:
+    # Many rows so that concurrent first searches really register new items at the same time: a
+    # registry that is already complete only ever reads, and never races.
+    seed_items(
+        [
+            (f"p{i}", f"Paper {i} on agents", f"Token unique{i} on agents.", Tier.VETTED_PREPRINT)
+            for i in range(60)
+        ]
+    )
+    reg = SourceRegistry()
+    tools = tools_for(db_session, reg)
+    # ToolNode runs one message's tool calls concurrently on a thread pool, so two searches can
+    # reach the shared session and registry at once.
+    queries = [f"unique{i}" for i in range(60)]
+    interval = sys.getswitchinterval()
+    # The window between computing an alias and storing it is a few bytecodes, so a normal switch
+    # interval almost never lands inside it; this makes the race the test is about reachable.
+    sys.setswitchinterval(1e-6)
+    try:
+        with ThreadPoolExecutor(max_workers=16) as pool:
+            outputs = list(pool.map(lambda q: tools["search_corpus"].invoke({"query": q}), queries))
+    finally:
+        sys.setswitchinterval(interval)
+
+    assert all("<source" in out for out in outputs), [o for o in outputs if "<source" not in o]
+    refs = reg.all()
+    assert len({r.alias for r in refs}) == len(refs)
+    assert [r.alias for r in refs] == [f"S{i}" for i in range(1, len(refs) + 1)]
+    # Every block printed a title the registry holds, under the alias the registry gave it.
+    printed = {
+        title for out in outputs for _, title in re.findall(r'id="(S\d+)"[^>]*>\n([^\n]+)\n', out)
+    }
+    assert printed
+    assert printed <= {r.title for r in refs}
+
+
+def test_a_database_error_in_one_tool_does_not_poison_the_answer(
+    db_session: Session, seed_items: Seed, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seed_items(AGENT_ROWS)
+    reg = SourceRegistry()
+    tools = tools_for(db_session, reg)
+    real = agent_tools.hybrid_search
+    calls = {"n": 0}
+
+    def flaky(*args: object, **kwargs: object) -> object:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # A statement that really fails aborts the server-side transaction; a faked exception
+            # raised in Python would not poison anything.
+            db_session.execute(text("SELECT * FROM table_that_does_not_exist"))
+        return real(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(agent_tools, "hybrid_search", flaky)
+    first = tools["search_corpus"].invoke({"query": "SWE-bench"})
+    assert "<source" not in first and "failed" in first.lower()
+    second = tools["search_corpus"].invoke({"query": "SWE-bench"})
+    assert "<source" in second
+
+
+def test_a_maximal_block_grows_at_most_six_times(db_session: Session, seed_items: Seed) -> None:
+    # Every clipped field at its limit and every character the worst to escape: "&" is 5x in body
+    # text, a quote is 6x in an attribute.
+    item = SourceItem(
+        "arxiv",
+        "worst",
+        "&" * TITLE_MAX_CHARS,
+        tuple("&" * AUTHOR_MAX_CHARS for _ in range(AUTHORS_SHOWN)),
+        "agents boundary " + "&" * GET_ITEM_MAX_CHARS,
+        '"' * URL_MAX_CHARS,
+        datetime(2026, 10, 1, tzinfo=UTC),
+    )
+    Repository(db_session).upsert_item(
+        item,
+        Tier.VETTED_PREPRINT,
+        "agentic-engineering",
+        0.9,
+        Signals(),
+        FakeEmbedder().embed(["agents boundary"])[0],
+    )
+    db_session.flush()
+    tools = tools_for(db_session, SourceRegistry())
+    tools["search_corpus"].invoke({"query": "agents boundary"})
+    out = tools["get_item"].invoke({"source_id": "S1"})
+    raw = URL_MAX_CHARS + TITLE_MAX_CHARS + AUTHORS_SHOWN * AUTHOR_MAX_CHARS + GET_ITEM_MAX_CHARS
+    assert len(out) <= 6 * raw
+
+
+def test_a_savepoint_works_in_a_read_only_transaction(
+    engine: Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Task 17 opens the agent's session with SET TRANSACTION READ ONLY. A tool's savepoint has to
+    # roll back a failed statement there and leave the transaction usable.
+    marker = "readonlysavepointprobe"
+    embedder = FakeEmbedder()
+    item = SourceItem(
+        "arxiv",
+        "readonly-probe",
+        "Read-only probe paper on agents",
+        ("Ada Lovelace",),
+        f"Token {marker} about long agent tasks.",
+        "https://example.org/readonly-probe",
+        datetime(2026, 10, 1, tzinfo=UTC),
+    )
+    with Session(engine) as writer:
+        item_id = Repository(writer).upsert_item(
+            item,
+            Tier.PEER_REVIEWED,
+            "agentic-engineering",
+            0.9,
+            Signals(),
+            embedder.embed([marker])[0],
+        )
+        writer.commit()
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SET TRANSACTION READ ONLY"))
+            session = make_session_factory(engine)(
+                bind=conn, join_transaction_mode="create_savepoint"
+            )
+            tools = tools_for(session, SourceRegistry())
+            assert f"Token {marker}" in tools["search_corpus"].invoke({"query": marker})
+            real = agent_tools.hybrid_search
+            calls = {"n": 0}
+
+            def flaky(*args: object, **kwargs: object) -> object:
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    session.execute(text("SELECT * FROM table_that_does_not_exist"))
+                return real(*args, **kwargs)  # type: ignore[arg-type]
+
+            monkeypatch.setattr(agent_tools, "hybrid_search", flaky)
+            assert "failed" in tools["search_corpus"].invoke({"query": marker}).lower()
+            assert f"Token {marker}" in tools["search_corpus"].invoke({"query": marker})
+            session.close()
+            conn.rollback()
+    finally:
+        with engine.begin() as cleanup:
+            cleanup.execute(text("DELETE FROM items WHERE id = :id"), {"id": item_id})
