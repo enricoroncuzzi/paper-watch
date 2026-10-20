@@ -3,8 +3,8 @@
 `paperwatch serve --live` runs the FastAPI app from `src/paperwatch/api/app.py` on
 `http://127.0.0.1:8000` by default. It has no sign-in yet (Entra ID arrives with M3), so it is
 bound to the loopback interface unless `--host` says otherwise; a non-loopback bind prints a
-warning, and a loopback bind only accepts `Host: 127.0.0.1`, `localhost` or `::1`, so a
-DNS-rebinding page cannot reach it.
+warning, and a loopback bind only accepts `Host: 127.0.0.1`, `localhost` or `::1` (an IPv6 host
+arrives in brackets, `Host: [::1]:8000`), so a DNS-rebinding page cannot reach it.
 
 | Route | Purpose |
 |---|---|
@@ -15,8 +15,10 @@ DNS-rebinding page cannot reach it.
 `POST /ask` takes `{"question": "...", "tiers": [...], "profiles": [...], "since": "YYYY-MM-DD"}`
 (the last three optional) and answers with `text/event-stream`. Every event is one
 `event:` line and one `data:` line holding a JSON object. The event payloads are Pydantic models
-(`ToolData`, `TokenData`, `AnswerData`, `ErrorData`) combined by `StreamItem`, which is what the
-committed contract's `text/event-stream` schema references:
+(`ToolData`, `TokenData`, `AnswerData`, `ErrorData`), and the committed contract's
+`text/event-stream` media type is an `itemSchema` for one parsed event: the `event` name (one of
+the four below) and `data`, a JSON string whose `contentSchema` is the `anyOf` of those payloads.
+A client parses the `data:` line alone, which is what it will find:
 
 - `tool` with `{"name", "args"}`, emitted when the model calls one of the read-only corpus tools;
 - `token` with `{"text"}`, the model's words as it writes them;
@@ -41,6 +43,10 @@ committed contract's `text/event-stream` schema references:
   (`docs/learn/11-citations-and-grounding.md`).
 - On a `NO_SUPPORT` answer the `flags` list is empty and the flags are logged server-side: they
   describe model text the reader never saw.
+
+A request that is refused before the stream starts answers 422 in the shape the contract documents
+for a validation error: `{"detail": [{"type", "loc", "msg"}]}`. That covers both the pydantic
+field checks and the two route-level refusals (an unknown profile name, a `since` in the future).
 
 ## The committed contract
 

@@ -1,4 +1,5 @@
 import json
+import os
 import signal
 import threading
 from collections.abc import Callable, Iterator
@@ -8,6 +9,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+import structlog
 from structlog.testing import capture_logs
 from typer.testing import CliRunner
 
@@ -18,6 +20,7 @@ from paperwatch.agent.citations import CheckedAnswer, Citation, Flag
 from paperwatch.agent.graph import AnswerEvent, TokenEvent, ToolEvent
 from paperwatch.api.app import ErrorEvent
 from paperwatch.cli import app
+from paperwatch.llm.embedder import FakeEmbedder
 from paperwatch.retrieval.hybrid import Filters
 
 
@@ -644,10 +647,107 @@ def test_search_refuses_an_unknown_profile(monkeypatch: pytest.MonkeyPatch) -> N
     assert result.exit_code == 2 and "profile" in result.output.lower()
 
 
+def test_the_live_commands_find_the_profiles_file_from_another_directory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Both commands used to read `config/profiles.yaml` relative to the working directory, so the
+    # console script died with a FileNotFoundError traceback anywhere else, before the first model
+    # or connection. Profile names are configuration, so they resolve from the repository.
+    monkeypatch.chdir(tmp_path)
+    # The missing chat key is the only thing left for `ask`, and it must be reported as a usage
+    # error rather than a traceback: reaching it means the profile file was found and read.
+    missing_key = CliRunner().invoke(app, ["ask", "q", "--live", "--profile", "ai-forensics"])
+    assert missing_key.exit_code == 2
+    assert "PW_OPENROUTER_API_KEY" in missing_key.stderr
+    assert "Traceback" not in missing_key.stderr
+
+    # `search` proves the same file was found by validating a name against its contents.
+    monkeypatch.setattr(cli, "make_embedder", boom)
+    bad = CliRunner().invoke(app, ["search", "q", "--live", "--profile", "not-a-profile"])
+    assert bad.exit_code == 2 and "profile" in bad.output.lower()
+    assert "Traceback" not in bad.stderr
+
+
+def test_search_without_a_profile_never_reads_the_profiles_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # `search` did not touch the file before Task 17, and a missing or malformed file must not
+    # turn a plain search into a traceback: names are loaded only when `--profile` is given.
+    monkeypatch.setattr(cli, "_PROFILES_PATH", tmp_path / "absent.yaml")
+    monkeypatch.setattr(cli, "make_embedder", lambda settings, ledger: FakeEmbedder())
+    monkeypatch.setattr(cli, "make_engine", lambda url: object())
+    monkeypatch.setattr(
+        cli, "make_session_factory", lambda engine: lambda: SimpleNamespace(close=lambda: None)
+    )
+    monkeypatch.setattr(cli, "hybrid_search", lambda *args, **kwargs: [])
+    result = CliRunner().invoke(app, ["search", "q", "--live"])
+    assert result.exit_code == 0
+    assert "Traceback" not in result.stderr
+
+
+def test_ask_keeps_log_lines_out_of_its_stdout(monkeypatch: pytest.MonkeyPatch) -> None:
+    # `ask` configures structlog for the process, and structlog's default logger writes to
+    # stdout: the tool call's INFO line landed in the middle of the answer, and `ask q > a.txt`
+    # captured it. Log lines belong on stderr, beside the `tool:` progress line.
+    def stream(
+        deps: object, question: str, filters: object, cancel: object = None
+    ) -> Iterator[object]:
+        structlog.get_logger().info("search_corpus", query_chars=9)
+        yield ToolEvent("search_corpus", {"query": "SWE-bench"})
+        yield AnswerEvent(answer_with(supported=True))
+
+    monkeypatch.setattr(cli, "live_deps", lambda s: object())
+    monkeypatch.setattr(cli, "run_question", stream)
+    result = CliRunner().invoke(app, ["ask", "q", "--live"])
+    assert result.exit_code == 0
+    # stdout is the answer and its sources only; every log line is on stderr.
+    assert result.stdout.strip().endswith("Coding agents are scored on real bugs [S1].")
+    assert "search_corpus" not in result.stdout and '"level"' not in result.stdout
+    assert any("search_corpus" in line and '"level"' in line for line in result.stderr.splitlines())
+
+
+def test_serve_without_a_chat_key_exits_2(monkeypatch: pytest.MonkeyPatch) -> None:
+    # `serve` refuses like `ask` does: a usage error that names the variable, before any engine or
+    # embedding model is built (the chat chain is first in `live_deps`).
+    from paperwatch.api import app as api
+
+    monkeypatch.setattr(api, "make_embedder", boom)
+    monkeypatch.setattr(api, "make_engine", boom)
+    result = CliRunner().invoke(app, ["serve", "--live"])
+    assert result.exit_code == 2
+    assert "PW_OPENROUTER_API_KEY" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_serve_cannot_crash_on_a_log_level_alias(monkeypatch: pytest.MonkeyPatch) -> None:
+    # `logging` accepts WARN, but uvicorn's Config raises KeyError for it. Settings stores the
+    # canonical name, so the level uvicorn gets is one it knows.
+    from fastapi import FastAPI
+
+    from paperwatch.config import Settings
+
+    captured: dict[str, object] = {}
+    monkeypatch.setenv("PW_LOG_LEVEL", "WARN")
+    # `get_settings` is cached per process; build from the test's own environment instead.
+    monkeypatch.setattr(cli, "get_settings", lambda: Settings())
+    monkeypatch.setattr(cli, "live_deps", lambda s: "deps")
+    monkeypatch.setattr(cli, "create_app", lambda deps: FastAPI())
+    monkeypatch.setattr(cli.uvicorn, "run", lambda app_, **kwargs: captured.update(kwargs))
+    result = CliRunner().invoke(app, ["serve", "--live"])
+    assert result.exit_code == 0
+    assert captured["log_level"] == "warning"
+
+
 def test_ask_names_the_missing_chat_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    # No key: exit 2 with the variable's name, before any model, engine or embedder is built.
+    # No key: exit 2 with the variable's name, before any model, engine or embedder is built. The
+    # api module's factory is patched too: `live_deps` imports its own, and a regression that
+    # built the embedder first would download the real model in a test run.
+    from paperwatch.api import app as api
+
     monkeypatch.setattr(cli, "make_embedder", boom)
     monkeypatch.setattr(cli, "make_engine", boom)
+    monkeypatch.setattr(api, "make_embedder", boom)
+    monkeypatch.setattr(api, "make_engine", boom)
     result = CliRunner().invoke(app, ["ask", "q", "--live"])
     assert result.exit_code == 2
     assert "PW_OPENROUTER_API_KEY" in result.stderr
@@ -723,14 +823,53 @@ def test_ask_exits_130_on_ctrl_c(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "Traceback" not in result.stderr
 
 
-def test_the_interrupt_handler_sets_the_flag_before_it_raises() -> None:
-    # This ordering is the fix for Ctrl-C: the graph's cleanup joins the in-flight model call, so
-    # the abort flag has to be set before the interrupt starts unwinding.
+def test_ask_handles_a_real_sigint_and_restores_the_handler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A real signal, not a raised KeyboardInterrupt: this proves `ask` installs the handler in the
+    # main thread, that the command's own event reaches the answer, and that the previous handler
+    # is put back on the way out.
+    original = signal.getsignal(signal.SIGINT)
+    seen: list[object] = []
+
+    def stream(
+        deps: object, question: str, filters: object, cancel: object = None
+    ) -> Iterator[object]:
+        seen.append(cancel)
+        yield TokenEvent("half an answer")
+        os.kill(os.getpid(), signal.SIGINT)
+        # The real agent stops at its next chance once the flag is set; this is that step.
+        if not cancel.is_set():  # type: ignore[attr-defined]
+            yield AnswerEvent(answer_with(supported=True))
+
+    monkeypatch.setattr(cli, "live_deps", lambda s: object())
+    monkeypatch.setattr(cli, "run_question", stream)
+    result = CliRunner().invoke(app, ["ask", "q", "--live"])
+    assert result.exit_code == 130
+    assert isinstance(seen[0], threading.Event) and seen[0].is_set()
+    # The first press says what it is doing; the command then stops within the current step.
+    assert "stopping; press Ctrl-C again to quit now" in result.stderr
+    assert "interrupted: the answer was stopped" in result.stderr
+    # The streamed line is ended before the message, so a terminal does not splice them together.
+    assert result.stdout.endswith("\n") and result.stdout.strip() == "half an answer"
+    assert "Traceback" not in result.stderr
+    assert signal.getsignal(signal.SIGINT) is original
+
+
+def test_the_second_ctrl_c_leaves_at_once(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A model call runs in a thread that cannot be interrupted, and Python joins it at exit, so
+    # the second press is the only way out of a stalled request: flush and leave.
     cancel = threading.Event()
+    exits: list[int] = []
+    monkeypatch.setattr(cli.os, "_exit", exits.append)
     handler = cli._interrupt_handler(cancel)
-    with pytest.raises(KeyboardInterrupt):
-        handler(signal.SIGINT, None)
-    assert cancel.is_set()
+    handler(signal.SIGINT, None)
+    assert exits == [] and cancel.is_set()
+    handler(signal.SIGINT, None)
+    assert exits == [130]
+    assert "stopping; press Ctrl-C again to quit now" in capsys.readouterr().err
 
 
 def test_serve_runs_uvicorn_on_localhost_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -753,20 +892,56 @@ def test_serve_runs_uvicorn_on_localhost_by_default(monkeypatch: pytest.MonkeyPa
     assert (captured["host"], captured["port"]) == ("127.0.0.1", 8000)
     assert captured["log_config"] is None
     assert captured["log_level"] == "info"
-    assert any(m.cls.__name__ == "TrustedHostMiddleware" for m in built.user_middleware)
+    # Open streams are cancelled when the server stops instead of being waited for: a Ctrl-C on
+    # `serve` must not wait for a whole in-flight answer.
+    assert captured["timeout_graceful_shutdown"] == cli.GRACEFUL_SHUTDOWN_S
+    assert any(m.cls.__name__ == "_LoopbackHosts" for m in built.user_middleware)
     assert "warning" not in result.stderr.lower()
 
 
-def test_a_loopback_server_refuses_a_foreign_host() -> None:
-    # The middleware must actually reject a rebound Host header, not just be installed.
-    from fastapi import FastAPI
+def _served_loopback() -> object:
+    return cli._served_app(object(), "127.0.0.1")  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "host",
+    ["127.0.0.1", "127.0.0.1:8000", "localhost", "localhost:8000", "LOCALHOST:8000", "[::1]:8000"],
+)
+def test_a_loopback_server_accepts_every_loopback_host(host: str) -> None:
+    # A browser writes an IPv6 host in brackets, so a plain string comparison against `::1` could
+    # never match and `serve --host ::1` refused every request.
     from fastapi.testclient import TestClient
 
-    built = FastAPI()
-    built.add_api_route("/healthz", lambda: {"status": "ok"}, methods=["GET"])
-    served = cli._served_app(object(), "127.0.0.1")
-    assert TestClient(served).get("/healthz", headers={"host": "127.0.0.1"}).status_code == 200
-    assert TestClient(served).get("/healthz", headers={"host": "evil.example"}).status_code == 400
+    assert TestClient(_served_loopback()).get("/healthz", headers={"host": host}).status_code == 200
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        "evil.example",
+        "127.0.0.1.evil.example",
+        "localhost.",
+        "localhost.:8000",
+        "[::1].evil.example",
+    ],
+)
+def test_a_loopback_server_refuses_a_foreign_host(host: str) -> None:
+    # The middleware must actually reject a rebound Host header, not just be installed.
+    from fastapi.testclient import TestClient
+
+    assert TestClient(_served_loopback()).get("/healthz", headers={"host": host}).status_code == 400
+
+
+def test_an_ipv6_bind_prints_a_bracketed_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    # `http://::1:8000` is not a URL a person or a client can use; IPv6 literals need brackets.
+    from fastapi import FastAPI
+
+    monkeypatch.setattr(cli, "live_deps", lambda s: "deps")
+    monkeypatch.setattr(cli, "create_app", lambda deps: FastAPI())
+    monkeypatch.setattr(cli.uvicorn, "run", lambda app_, **kwargs: None)
+    result = CliRunner().invoke(app, ["serve", "--live", "--host", "::1"])
+    assert result.exit_code == 0
+    assert "http://[::1]:8000" in result.stdout
 
 
 def test_serve_warns_about_a_public_host(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -781,7 +956,7 @@ def test_serve_warns_about_a_public_host(monkeypatch: pytest.MonkeyPatch) -> Non
     assert "warning" in result.stderr.lower()
     # A public bind is the operator's choice; the loopback host allow-list would only fail
     # requests there, so it is not installed.
-    assert not any(m.cls.__name__ == "TrustedHostMiddleware" for m in built.user_middleware)
+    assert not any(m.cls.__name__ == "_LoopbackHosts" for m in built.user_middleware)
 
 
 def test_the_cli_never_claims_an_answer_was_verified() -> None:

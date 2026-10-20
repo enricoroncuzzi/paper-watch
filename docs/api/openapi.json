@@ -49,7 +49,7 @@
     "/ask": {
       "post": {
         "summary": "Ask",
-        "description": "Answer one question as server-sent events, one `StreamItem` per event.",
+        "description": "Answer one question as server-sent events, one `itemSchema` event per frame.",
         "operationId": "ask_ask_post",
         "requestBody": {
           "content": {
@@ -66,8 +66,43 @@
             "description": "Server-sent events, one JSON object per `data:` line. The `event` line names the payload: `tool`, `token`, `answer` or `error`. `answer` is the last event unless an `error` follows; a client replaces its streamed text with the `answer` event's `text`, never appends it, and takes every link from its `citations[].url`.",
             "content": {
               "text/event-stream": {
-                "schema": {
-                  "$ref": "#/components/schemas/StreamItem"
+                "itemSchema": {
+                  "type": "object",
+                  "properties": {
+                    "event": {
+                      "type": "string",
+                      "enum": [
+                        "tool",
+                        "token",
+                        "answer",
+                        "error"
+                      ]
+                    },
+                    "data": {
+                      "type": "string",
+                      "contentMediaType": "application/json",
+                      "contentSchema": {
+                        "anyOf": [
+                          {
+                            "$ref": "#/components/schemas/ToolData"
+                          },
+                          {
+                            "$ref": "#/components/schemas/TokenData"
+                          },
+                          {
+                            "$ref": "#/components/schemas/AnswerData"
+                          },
+                          {
+                            "$ref": "#/components/schemas/ErrorData"
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "event",
+                    "data"
+                  ]
                 }
               }
             }
@@ -278,44 +313,6 @@
         },
         "type": "object",
         "title": "HTTPValidationError"
-      },
-      "StreamItem": {
-        "properties": {
-          "event": {
-            "type": "string",
-            "enum": [
-              "tool",
-              "token",
-              "answer",
-              "error"
-            ],
-            "title": "Event"
-          },
-          "data": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/ToolData"
-              },
-              {
-                "$ref": "#/components/schemas/TokenData"
-              },
-              {
-                "$ref": "#/components/schemas/AnswerData"
-              },
-              {
-                "$ref": "#/components/schemas/ErrorData"
-              }
-            ],
-            "title": "Data"
-          }
-        },
-        "type": "object",
-        "required": [
-          "event",
-          "data"
-        ],
-        "title": "StreamItem",
-        "description": "One server-sent event: the `event` name and the JSON payload of its `data` line.\n\nOn the wire each event is one `event: <event>` line and one `data: <json>` line, with no\nblank line inside the payload; a client replaces its streamed text with `answer.data.text`."
       },
       "Tier": {
         "type": "string",

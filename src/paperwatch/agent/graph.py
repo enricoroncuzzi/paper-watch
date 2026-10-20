@@ -14,6 +14,7 @@ import threading
 from collections.abc import Generator, Iterator, Sequence
 from dataclasses import dataclass
 from typing import Annotated, Any, TypedDict, cast
+from uuid import UUID
 
 import structlog
 from langchain_core.callbacks import BaseCallbackHandler
@@ -21,6 +22,7 @@ from langchain_core.messages import (
     AIMessage,
     AIMessageChunk,
     AnyMessage,
+    BaseMessage,
     HumanMessage,
     SystemMessage,
 )
@@ -88,17 +90,37 @@ class AnswerAborted(BaseException):
     A BaseException on purpose: the model-failure handler in `call_models` catches `Exception`,
     and an abort must not look like provider trouble and send the question to the fallback model,
     which would spend another request for nobody.
+
+    It is raised from a graph callback or from `call_models`, so it unwinds whichever step is
+    running: a model round, the step after a tool, or the executor's own loop. `run_question`
+    returns quietly when it sees one, because there is no consumer left to tell.
     """
 
 
 class _AbortOnDisconnect(BaseCallbackHandler):
-    """Raises `AnswerAborted` at the next token once the answer's consumer has gone away."""
+    """Raises `AnswerAborted` at the next model event once the answer's consumer has gone away."""
 
     # langchain-core logs and swallows a handler's exceptions unless this is set.
     raise_error = True
 
     def __init__(self, cancel: threading.Event) -> None:
         self._cancel = cancel
+
+    def on_chat_model_start(
+        self,
+        serialized: dict[str, Any],
+        messages: list[list[BaseMessage]],
+        *,
+        run_id: UUID,
+        parent_run_id: UUID | None = None,
+        tags: list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        # `invoke` never streams, so `on_llm_new_token` would never fire for it. The start of a
+        # request is the last moment an abort can keep it from being sent at all.
+        if self._cancel.is_set():
+            raise AnswerAborted
 
     def on_llm_new_token(self, token: str | list[str | dict[str, Any]], **kwargs: Any) -> None:
         # Called for every streamed chunk, so one flag check per token is the cost of an answer
@@ -112,6 +134,7 @@ def build_agent(
     tools: list[BaseTool],
     registry: SourceRegistry,
     guard: CallGuard,
+    cancel: threading.Event | None = None,
 ) -> AgentGraph:
     """Build the graph for one run. Do not start a second run on it (see `call_agent`)."""
     if not models:
@@ -143,6 +166,10 @@ def build_agent(
         # the free tier, so the guard has to see each one and know which provider answered it.
         failures: list[tuple[str, Exception]] = []
         for provider, model in candidates:
+            # The client is gone, so no request may start: the callback would abort it at its
+            # first chunk, but the request would still be spent against the free daily cap.
+            if cancel is not None and cancel.is_set():
+                raise AnswerAborted
             # Outside the try on purpose: a cap or budget decision must not look like provider
             # trouble, because another provider would spend the same budget or bypass the same
             # cap.

@@ -6,6 +6,7 @@ assertion: each step is consumed by exactly one model call, so a graph that asks
 not at all) fails instead of quietly passing.
 """
 
+import threading
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -20,6 +21,7 @@ from structlog.testing import capture_logs
 from paperwatch.agent.citations import NO_SUPPORT
 from paperwatch.agent.graph import (
     AgentState,
+    AnswerAborted,
     AnswerEvent,
     TokenEvent,
     ToolEvent,
@@ -82,6 +84,18 @@ class _FailingStore:
 
     def chat_calls_since(self, at: datetime) -> int:
         return 0
+
+
+class _AbortingModel(ScriptedChatModel):
+    """A model whose request is aborted, as `_AbortOnDisconnect` aborts a real one.
+
+    The abort is a `BaseException`, which `ScriptedChatModel`'s script deliberately does not
+    accept (its union is `Exception | AIMessage`), so it is raised from `_next` instead.
+    """
+
+    def _next(self, messages: list[Any], kwargs: dict[str, Any]) -> AIMessage:
+        self.seen.append(list(messages))
+        raise AnswerAborted
 
 
 class _StatusError(RuntimeError):
@@ -421,6 +435,56 @@ def test_provider_error_text_stays_out_of_logs_and_errors(db_session: Session) -
     assert all("exc_info" not in entry for entry in store_logs)
     record_failures = [e for e in store_logs if e["event"] == "chat_failure_record_failed"]
     assert [entry["error_type"] for entry in record_failures] == ["RuntimeError"]
+
+
+def test_an_abort_never_tries_the_fallback_model(db_session: Session) -> None:
+    # The client is gone, so another provider would spend another request for nobody. The abort is
+    # a BaseException precisely so the fallback loop's `except Exception` cannot catch it.
+    primary = _AbortingModel(script=[])
+    fallback = ScriptedChatModel(script=[final("Quantum agents ship today [S1].")])
+    graph = agent(db_session, primary, fallback)
+    with pytest.raises(AnswerAborted):
+        answer_question(graph, "q")
+    assert fallback.seen == []
+
+
+def test_a_failing_store_never_masks_the_abort(db_session: Session) -> None:
+    # Recording the aborted attempt can fail; the abort is what the caller must see, and the
+    # store's failure is only logged.
+    reg = SourceRegistry()
+    graph = build_agent(
+        [ChatModel("p0", _AbortingModel(script=[]))],
+        [],
+        reg,
+        CallGuard(_FailingStore(), Ledger(10_000), 800, lambda: NOW),
+    )
+    with capture_logs() as logs, pytest.raises(AnswerAborted):
+        answer_question(graph, "q")
+    assert [e["error_type"] for e in logs if e["event"] == "chat_failure_record_failed"] == [
+        "RuntimeError"
+    ]
+
+
+def test_a_set_cancel_event_stops_the_first_request_from_being_made(
+    db_session: Session,
+) -> None:
+    # The flag is checked before `guard.before_call()`, so an aborted request is not counted
+    # against the daily cap and records nothing at all.
+    model = ScriptedChatModel(script=[final("Quantum agents ship today [S1].")])
+    cancel = threading.Event()
+    cancel.set()
+    reg = SourceRegistry()
+    graph = build_agent(
+        [ChatModel("p0", model)],
+        [],
+        reg,
+        CallGuard(Repository(db_session), Ledger(10_000), 800, lambda: NOW),
+        cancel,
+    )
+    before = calls(db_session)
+    with pytest.raises(AnswerAborted):
+        answer_question(graph, "q")
+    assert model.seen == [] and calls(db_session) == before
 
 
 def test_every_failed_model_is_named_in_order(db_session: Session) -> None:

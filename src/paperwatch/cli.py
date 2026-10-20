@@ -1,6 +1,8 @@
 import json
+import os
 import re
 import signal
+import sys
 import threading
 import time
 import unicodedata
@@ -18,13 +20,20 @@ from sqlalchemy import Engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
-from starlette.middleware.trustedhost import TrustedHostMiddleware
+from starlette.responses import PlainTextResponse
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from paperwatch.admission import load_admission
 from paperwatch.agent.citations import NO_SUPPORT, CheckedAnswer
 from paperwatch.agent.graph import AnswerEvent, TokenEvent, ToolEvent
-from paperwatch.api.app import ErrorEvent, create_app, live_deps, run_question
-from paperwatch.config import get_settings
+from paperwatch.api.app import (
+    AgentDeps,
+    ErrorEvent,
+    create_app,
+    live_deps,
+    run_question,
+)
+from paperwatch.config import PROFILES_PATH, REPO_ROOT, get_settings
 from paperwatch.domain import Tier, load_profiles
 from paperwatch.ingest.pipeline import Sources, run_ingestion
 from paperwatch.llm.chat import ChatNotConfigured
@@ -67,7 +76,9 @@ _UNSAFE_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Zl", "Zp"})
 _SAFE_FORMAT = frozenset({"\n", "\t", "\u200c", "\u200d"})
 # The repository root: this module is src/paperwatch/cli.py, so parents[2] is the root. Data paths
 # resolve from here, not the current directory, so `paperwatch eval` works from any directory.
-_REPO_ROOT = Path(__file__).resolve().parents[2]
+_REPO_ROOT = REPO_ROOT
+# The hand-edited profile file, read from the repository for the same reason.
+_PROFILES_PATH = PROFILES_PATH
 _EVAL_DATA = _REPO_ROOT / "evals" / "data"
 _BASELINE_PATH = _REPO_ROOT / "evals" / "baseline.json"
 # The throwaway database's name. The name is built only through `_eval_db_name`, and the sweep's
@@ -235,7 +246,7 @@ def _models(ledger: Ledger) -> tuple[Classifier, Embedder]:
     # The classifier shares the embedder, so the local model is loaded once per run.
     s = get_settings()
     embedder = make_embedder(s, ledger)
-    profiles = load_profiles(Path("config/profiles.yaml"))
+    profiles = load_profiles(_PROFILES_PATH)
     return make_classifier(s, ledger, profiles, embedder), embedder
 
 
@@ -247,7 +258,7 @@ def ingest(live: bool = LIVE, since: str | None = SINCE) -> None:
     s = get_settings()
     configure_logging(s.log_level)
     http = make_http_client(s)
-    profiles = load_profiles(Path("config/profiles.yaml"))
+    profiles = load_profiles(_PROFILES_PATH)
     feeds = load_feeds(Path("config/feeds.yaml"))
     sources = Sources(
         ArxivOaiSource(http, profiles),
@@ -282,9 +293,8 @@ def ingest(live: bool = LIVE, since: str | None = SINCE) -> None:
 
 
 def _profile_names() -> frozenset[str]:
-    # Profile names are configuration, so a typo is only knowable from the file; the live commands
-    # already resolve it from the working directory.
-    return frozenset(p.name for p in load_profiles(Path("config/profiles.yaml")))
+    # Profile names are configuration, so a typo is only knowable from the file.
+    return frozenset(p.name for p in load_profiles(_PROFILES_PATH))
 
 
 def _validate_query(
@@ -298,7 +308,7 @@ def _validate_query(
         raise typer.BadParameter(
             f"--tier must be one of {', '.join(sorted(_TIER_VALUES))}; got {', '.join(unknown)}"
         )
-    known = _profile_names()
+    known = _profile_names() if profile else frozenset()
     unknown_profiles = [p for p in profile or [] if p not in known]
     if unknown_profiles:
         raise typer.BadParameter(
@@ -338,8 +348,6 @@ def eval_cmd(
         help="Use the configured embedding model; never gates and never writes the baseline",
     ),
 ) -> None:
-    import sys
-
     # The gate and the committed baseline belong to the offline FakeEmbedder, so a real-model run
     # is a manual checkpoint: refusing the combination keeps real numbers out of the baseline.
     if live and write_baseline:
@@ -389,16 +397,25 @@ def eval_cmd(
 
 
 def _interrupt_handler(cancel: threading.Event) -> Callable[[int, object], None]:
-    """Ctrl-C: tell the answer to stop before the interrupt unwinds its stream.
+    """Ctrl-C: stop the answer at its next chance, and leave at once on a second press.
 
     The signal is delivered in the main thread, inside the graph's own frame. Unwinding from
-    there joins the model call in flight, so the flag has to be set first; then the normal
-    KeyboardInterrupt exits the command.
+    there joins the model call in flight, so the flag has to be set first; the first press then
+    prints one line and lets that phase end (a token arrives, or a tool finishes). A model call
+    is a thread that cannot be interrupted, and Python joins it at exit, so a second press is
+    the way out of a stalled request: flush what is already written and leave.
     """
+    pressed = False
 
     def handler(signum: int, frame: object) -> None:
+        nonlocal pressed
         cancel.set()
-        raise KeyboardInterrupt
+        if pressed:
+            sys.stdout.flush()
+            sys.stderr.flush()
+            os._exit(130)
+        pressed = True
+        typer.echo("stopping; press Ctrl-C again to quit now", err=True)
 
     return handler
 
@@ -501,6 +518,14 @@ def ask(
     finally:
         signal.signal(signal.SIGINT, previous)
     if answer is None:
+        if cancel.is_set():
+            # The first Ctrl-C stopped the answer before it produced a checked one; the flag is
+            # also set by the run's own cleanup, so this only matters when nobody is listening.
+            if streamed:
+                # Tokens went to stdout without a newline; end that line before the message.
+                typer.echo()
+            typer.echo("interrupted: the answer was stopped", err=True)
+            raise typer.Exit(130)
         # The graph always ends in a checked answer, so a stream without one is a wiring bug.
         typer.echo("error (internal): the answer ended without a checked answer", err=True)
         raise typer.Exit(1)
@@ -511,13 +536,62 @@ def _is_loopback(host: str) -> bool:
     return host in {"127.0.0.1", "localhost", "::1"}
 
 
-def _served_app(deps: object, host: str) -> Any:
+# The names a browser uses for this machine. A DNS-rebinding page can reach a loopback API with
+# a hostile `Host` header, so only these are accepted.
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+# `serve` cancels an open stream after this long on shutdown. uvicorn otherwise waits for every
+# in-flight answer, which is minutes: Ctrl-C on a server would sit there until the model finished.
+GRACEFUL_SHUTDOWN_S = 5
+
+
+def _host_name(header: str) -> str:
+    """The host part of a `Host` header, lowercased, or "" when it is not a host at all.
+
+    A browser writes an IPv6 host in brackets (`[::1]:8000`), a port may follow any host, and a
+    trailing dot or embedded credentials make a name that is not one of the loopback ones. A
+    plain string comparison against `::1` can never match a real header, which is why the
+    starlette middleware made `--host ::1` refuse every request.
+    """
+    if header.startswith("["):
+        end = header.find("]")
+        if end < 0:
+            return ""
+        name, rest = header[1:end].lower(), header[end + 1 :]
+        # Only `[host]` and `[host]:port` are a host header; `[::1].evil.example` is not.
+        if rest and (not rest.startswith(":") or not rest[1:].isdigit()):
+            return ""
+        return name
+    name, sep, port = header.partition(":")
+    return name.lower() if not sep or port.isdigit() else ""
+
+
+class _LoopbackHosts:
+    """Refuse a request whose `Host` header is not a name a browser uses for this machine.
+
+    Plain ASGI rather than a `BaseHTTPMiddleware`: `/ask` streams a model answer for seconds, and
+    a middleware that buffered or wrapped the response would change the disconnect path
+    `_ClosingStream` depends on.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self._app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] not in {"http", "websocket"}:
+            await self._app(scope, receive, send)
+            return
+        header = dict(scope["headers"]).get(b"host", b"").decode("latin-1")
+        if _host_name(header) not in _LOOPBACK_HOSTS:
+            await PlainTextResponse("Invalid host header", status_code=400)(scope, receive, send)
+            return
+        await self._app(scope, receive, send)
+
+
+def _served_app(deps: AgentDeps, host: str) -> Any:
     """The app `serve` runs, with the host allow-list installed for a loopback bind."""
-    app_ = create_app(deps)  # type: ignore[arg-type]
+    app_ = create_app(deps)
     if _is_loopback(host):
-        # A DNS-rebinding page can reach a loopback API with a hostile Host header, so only the
-        # names a browser uses for this machine are accepted.
-        app_.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "::1"])
+        app_.add_middleware(_LoopbackHosts)
     else:
         # A public bind is the operator's choice, but the API has no sign-in until M3.
         typer.echo(f"warning: {host} is not loopback and the API has no sign-in yet", err=True)
@@ -536,7 +610,16 @@ def serve(host: str = HOST, port: int = PORT, live: bool = LIVE) -> None:
         typer.echo(str(exc), err=True)
         raise typer.Exit(2) from exc
     app_ = _served_app(deps, host)
-    typer.echo(f"serving on http://{host}:{port}")
+    # IPv6 literals go in brackets in a URL; `http://::1:8000` is not one.
+    url_host = f"[{host}]" if ":" in host else host
+    typer.echo(f"serving on http://{url_host}:{port}")
     # log_config=None keeps uvicorn from installing its own plain-text logging, so the app's
     # configured level and format stay in charge.
-    uvicorn.run(app_, host=host, port=port, log_config=None, log_level=s.log_level.lower())
+    uvicorn.run(
+        app_,
+        host=host,
+        port=port,
+        log_config=None,
+        log_level=s.log_level.lower(),
+        timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_S,
+    )

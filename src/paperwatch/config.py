@@ -1,11 +1,20 @@
 """All runtime configuration. The only module that names models and deployments."""
 
+# Absolute import of the standard library module, not paperwatch/logging.py.
+import logging
 from datetime import timedelta
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Repository-relative paths resolve from this file (src/paperwatch/config.py), never from the
+# working directory: `paperwatch eval` already works from anywhere, and a live command that read
+# `config/profiles.yaml` from the cwd died with a FileNotFoundError everywhere else.
+REPO_ROOT = Path(__file__).resolve().parents[2]
+PROFILES_PATH = REPO_ROOT / "config" / "profiles.yaml"
 
 # Vector size of the embedding model; the DB column and the model must agree on it. 384 is the
 # local production model below and both of its same-size fallbacks (bge-small-en-v1.5,
@@ -154,6 +163,17 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     # Sent with every HTTP request so source sites can identify us.
     user_agent: str = "paper-watch/0.1 (+https://github.com/enricoroncuzzi/paper-watch)"
+
+    @field_validator("log_level")
+    @classmethod
+    def _canonical_log_level(cls, value: str) -> str:
+        # `logging` accepts WARN and FATAL as aliases, but uvicorn looks the name up in its own
+        # table and raises KeyError for them, so `serve` would crash where `ask` works. Store the
+        # canonical name so both agree, and refuse a typo instead of failing at the first log.
+        number = logging.getLevelName(value.strip().upper())
+        if not isinstance(number, int):
+            raise ValueError(f"unknown log level: {value}")
+        return logging.getLevelName(number)
 
 
 @lru_cache

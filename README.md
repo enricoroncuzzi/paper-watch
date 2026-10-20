@@ -70,8 +70,8 @@ retrieval and retrieval evals.
 ## M2: ask questions
 
 Answers are streamed. The agent cites the stored items it retrieved, and code checks that each
-citation points at an item retrieved for this answer; sentences without a valid citation are
-flagged, not silently dropped.
+citation points at an item retrieved for this answer; claims without a valid citation are
+flagged, not silently dropped ([lesson 11](docs/learn/11-citations-and-grounding.md)).
 
 ```bash
 # Put PW_OPENROUTER_API_KEY in .env first (a free key from openrouter.ai; never commit it).

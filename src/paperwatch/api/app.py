@@ -28,12 +28,15 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import text
+from sqlalchemy.exc import TimeoutError as PoolTimeout
 from sqlalchemy.orm import Session, sessionmaker
-from starlette.types import Send
+from starlette.types import Receive, Send
 
+import paperwatch
 from paperwatch.agent.citations import NO_SUPPORT, CheckedAnswer
 from paperwatch.agent.graph import (
     AgentEvent,
+    AnswerAborted,
     AnswerEvent,
     TokenEvent,
     ToolEvent,
@@ -46,6 +49,7 @@ from paperwatch.config import (
     ANSWER_POOL_OVERFLOW,
     ANSWER_POOL_SIZE,
     ANSWER_POOL_TIMEOUT_S,
+    PROFILES_PATH,
     READY_CONCURRENCY,
     READY_TIMEOUT_S,
     USAGE_POOL_SIZE,
@@ -75,6 +79,13 @@ API_VERSION = "0.1"
 # The fixed text of the `internal` event: the client gets something it can show, and the detail
 # (which could carry a provider body or stored text) stays in the server log.
 INTERNAL_MESSAGE = "the answer failed; see the server log"
+# A saturated connection pool is not the same failure as a bug: the client is told to come back,
+# and the operator gets the code site in the log.
+BUSY_MESSAGE = "the server is busy; try again shortly"
+
+# The package's own directory, so `_failure_site` can tell the application's frames from a
+# library's by location. A checkout in a directory called `paperwatch` used to match every frame.
+_APP_ROOT = Path(paperwatch.__file__).parent
 
 QUESTION_MAX_CHARS = 1000
 # The corpus has a handful of profiles; a longer list is a client bug, and any unknown name would
@@ -99,6 +110,10 @@ class AgentDeps:
     chat_calls: ChatCallStore
     # The profile names the corpus knows, so a typo is refused before a model call is spent.
     profile_names: frozenset[str]
+    # `/readyz` queries the database through this factory. In production it is the usage engine,
+    # not the answer pool: with every answer connection held by a live answer, a healthy database
+    # would otherwise answer 503, which an orchestrator reads as "restart me".
+    ready_session_factory: Callable[[], Session] | None = None
 
 
 def live_deps(settings: Settings) -> AgentDeps:
@@ -121,7 +136,8 @@ def live_deps(settings: Settings) -> AgentDeps:
         max_overflow=0,
         pool_timeout=ANSWER_POOL_TIMEOUT_S,
     )
-    profiles = load_profiles(Path("config/profiles.yaml"))
+    profiles = load_profiles(PROFILES_PATH)
+    usage_factory = make_session_factory(usage_engine)
     return AgentDeps(
         session_factory=factory,
         # Local embeddings need no token budget of their own; the ledger is here because
@@ -130,8 +146,9 @@ def live_deps(settings: Settings) -> AgentDeps:
         models=models,
         settings=settings,
         clock=lambda: datetime.now(UTC),
-        chat_calls=ChatCallLog(make_session_factory(usage_engine)),
+        chat_calls=ChatCallLog(usage_factory),
         profile_names=frozenset(p.name for p in profiles),
+        ready_session_factory=usage_factory,
     )
 
 
@@ -191,14 +208,41 @@ class ErrorData(BaseModel):
 
 
 class StreamItem(BaseModel):
-    """One server-sent event: the `event` name and the JSON payload of its `data` line.
+    """Registration of the six payload models, not the shape of the wire.
 
-    On the wire each event is one `event: <event>` line and one `data: <json>` line, with no
-    blank line inside the payload; a client replaces its streamed text with `answer.data.text`.
+    A real event is one `event: <name>` line and one `data: <json payload>` line, so its payload
+    has no `event` key and no `data` wrapper. FastAPI needs a response model to register the
+    payload models in the contract, and the app's `openapi` post-processing replaces this envelope
+    with the honest `itemSchema`. A client replaces its streamed text with `answer.data.text`.
     """
 
     event: Literal["tool", "token", "answer", "error"]
     data: ToolData | TokenData | AnswerData | ErrorData
+
+
+# The schema of one parsed server-sent event, in the OpenAPI 3.1 form FastAPI's native SSE
+# response emits: `event` names the frame and `data` is a JSON string whose own schema is the
+# payload. A client reads the media type as "one message", so the response body's shape would be
+# the wrong answer.
+STREAM_ITEM_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "event": {"type": "string", "enum": ["tool", "token", "answer", "error"]},
+        "data": {
+            "type": "string",
+            "contentMediaType": "application/json",
+            "contentSchema": {
+                "anyOf": [
+                    {"$ref": "#/components/schemas/ToolData"},
+                    {"$ref": "#/components/schemas/TokenData"},
+                    {"$ref": "#/components/schemas/AnswerData"},
+                    {"$ref": "#/components/schemas/ErrorData"},
+                ]
+            },
+        },
+    },
+    "required": ["event", "data"],
+}
 
 
 def run_question(
@@ -213,9 +257,9 @@ def run_question(
     one answer. This is a generator, so a client that never starts reading spends nothing.
 
     `cancel` is set when the consumer leaves: a model call still in flight then stops at its next
-    token instead of writing a whole answer for nobody. A caller that can be interrupted from
-    outside (the CLI's Ctrl-C) passes its own event, because the interrupt unwinds the stream
-    before this function's `finally` could set it.
+    token, and the round after a running tool is never sent. The API's response sets it the moment
+    its disconnect listener fires; a caller that can be interrupted from outside (the CLI's
+    Ctrl-C) passes its own event.
     """
     session: Session | None = None
     stream: Generator[AgentEvent, None, None] | None = None
@@ -234,11 +278,16 @@ def run_question(
             deps.clock,
         )
         tools = make_tools(session, deps.embedder, registry, base_filters=filters)
-        stream = stream_answer(build_agent(deps.models, tools, registry, guard), question, cancel)
+        graph = build_agent(deps.models, tools, registry, guard, cancel)
+        stream = stream_answer(graph, question, cancel)
         # Not `yield from`: closing a generator suspended in a yield-from closes the sub-generator
         # before this frame can set the flag, and the flag has to be set first.
         for event in stream:  # noqa: UP028 - a yield-from would close the stream before the flag
             yield event
+    except AnswerAborted:
+        # The consumer left (see `AnswerAborted`): there is nobody to report to. The `finally`
+        # below still releases the session, and `ChatCallLog` has already committed any usage row.
+        return
     except DailyCapReached as exc:
         yield ErrorEvent("daily_cap", str(exc))
     except BudgetExceeded as exc:
@@ -247,6 +296,11 @@ def run_question(
         # `str(exc)` names providers and exception classes only. The cause holds the provider's
         # response text (Task 16 Step 8), which is never logged here nor sent to a client.
         yield ErrorEvent("model_unavailable", str(exc))
+    except PoolTimeout:
+        # The answer pool is small and its wait short, so a full pool arrives here; it is a busy
+        # server, not a bug, but the client gets a fixed sentence either way.
+        log.warning("answer_pool_exhausted")
+        yield ErrorEvent("internal", BUSY_MESSAGE)
     except Exception as exc:  # noqa: BLE001 - the stream has started, so the error travels inside it
         log.error(
             "ask_failed",
@@ -259,15 +313,18 @@ def run_question(
         # Runs on a normal end, on an error, on generator close (a client disconnect, a
         # GeneratorExit) and on Ctrl-C. Setting the flag is a no-op when nothing is in flight.
         cancel.set()
-        if stream is not None:
-            # Joins the graph's worker thread, so the aborted call records its usage row before
-            # the read-only session below is released.
-            stream.close()
-        # The session is read-only, so there is nothing to commit: the usage rows were already
-        # committed by ChatCallLog on its own session. rollback() also clears a failed statement.
-        if session is not None:
-            session.rollback()
-            session.close()
+        try:
+            if stream is not None:
+                # Joins the graph's worker thread, so the aborted call records its usage row
+                # before the read-only session below is released.
+                stream.close()
+        finally:
+            # The session is read-only, so there is nothing to commit: the usage rows were
+            # already committed by ChatCallLog on its own session. rollback() also clears a
+            # failed statement. In `finally` so a failing close cannot leak the connection.
+            if session is not None:
+                session.rollback()
+                session.close()
 
 
 def _failure_site(exc: BaseException, limit: int = 4) -> list[str]:
@@ -278,7 +335,7 @@ def _failure_site(exc: BaseException, limit: int = 4) -> list[str]:
     because it names the library call that actually failed.
     """
     frames = traceback.extract_tb(exc.__traceback__)
-    inside = [f for f in frames if "paperwatch" in Path(f.filename).parts]
+    inside = [f for f in frames if Path(f.filename).is_relative_to(_APP_ROOT)]
     chosen = inside[-limit:] if inside else frames[-limit:]
     if frames and frames[-1] not in chosen:
         chosen = [*chosen, frames[-1]]
@@ -353,6 +410,18 @@ def _filters(body: AskRequest) -> Filters:
     )
 
 
+def _refused(message: str, loc: list[str]) -> HTTPException:
+    """A route-level 422 in the shape the contract documents for a validation error.
+
+    FastAPI's own validators answer with an array of error objects, so a plain string `detail`
+    from `HTTPException` would break a typed client that parses the documented shape.
+    """
+    return HTTPException(
+        status_code=422,
+        detail=[{"type": "value_error", "loc": ["body", *loc], "msg": message}],
+    )
+
+
 def _json_safe(value: Any) -> Any:
     """Replace a non-finite float with null, everywhere in model-written tool arguments.
 
@@ -404,10 +473,13 @@ def _sse(name: str, payload: dict[str, Any]) -> str:
     return f"event: {name}\ndata: {json.dumps(payload, allow_nan=False)}\n\n"
 
 
-def _stream(deps: AgentDeps, body: AskRequest) -> Generator[str, None, None]:
+def _stream(
+    deps: AgentDeps, body: AskRequest, cancel: threading.Event
+) -> Generator[str, None, None]:
     # closing() releases the database session as soon as this generator is closed (a client
-    # disconnect) instead of waiting for garbage collection.
-    with closing(run_question(deps, body.question, _filters(body))) as events:
+    # disconnect) instead of waiting for garbage collection. The cancel event is the response's,
+    # so the flag is set the moment the client leaves, not when this generator is closed.
+    with closing(run_question(deps, body.question, _filters(body), cancel)) as events:
         for event in events:
             if isinstance(event, ToolEvent):
                 yield _sse(
@@ -429,11 +501,24 @@ class _ClosingStream(StreamingResponse):
     thread triggers the pass, and closing the graph joins its worker thread, which freezes the
     event loop or deadlocks that thread. Closing here is deterministic, and on a worker thread
     with cancellation shielded, so it never races the `next()` still in flight.
+
+    The same response owns the answer's cancel event. Setting it here is what reaches a model
+    call still in flight, or the round after a tool: closing the generator alone only happens
+    once the current step has returned.
     """
 
-    def __init__(self, events: Generator[str, None, None], **kwargs: Any) -> None:
+    def __init__(
+        self, events: Generator[str, None, None], cancel: threading.Event, **kwargs: Any
+    ) -> None:
         super().__init__(events, **kwargs)
         self._events = events
+        self._cancel = cancel
+
+    async def listen_for_disconnect(self, receive: Receive) -> None:
+        # Starlette's listener is the only thing that learns about a hang-up while the response
+        # task waits for the next chunk; the generator is closed later, when that wait ends.
+        await super().listen_for_disconnect(receive)
+        self._cancel.set()
 
     async def stream_response(self, send: Send) -> None:
         try:
@@ -462,6 +547,21 @@ def create_app(deps: AgentDeps) -> FastAPI:
     # one limiter (a limiter belongs to one event loop's concurrency budget).
     app.state.ready_limiter = anyio.CapacityLimiter(READY_CONCURRENCY)
 
+    # FastAPI types the SSE media type with the `StreamItem` envelope, which exists only to
+    # register the payload models. Post-processing swaps in the shape a client parses and drops
+    # the envelope, so the contract says what is on the wire (Task 17 review round 2, R5).
+    generate_openapi = app.openapi
+
+    def openapi() -> dict[str, Any]:
+        schema = generate_openapi()
+        media = schema["paths"]["/ask"]["post"]["responses"]["200"]["content"]["text/event-stream"]
+        media.pop("schema", None)
+        media["itemSchema"] = STREAM_ITEM_SCHEMA
+        schema["components"]["schemas"].pop("StreamItem", None)
+        return schema
+
+    app.openapi = openapi  # type: ignore[method-assign]
+
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
         """Liveness: the process is up. It deliberately does not touch the database."""
@@ -480,9 +580,13 @@ def create_app(deps: AgentDeps) -> FastAPI:
         try:
             with anyio.fail_after(READY_TIMEOUT_S):
                 # abandon_on_cancel: a check stuck on a paused database must not make the probe
-                # wait for it; the limiter above bounds how many such checks can pile up.
+                # wait for it. The limiter bounds how many checks are *started*; what bounds the
+                # abandoned ones is the connect timeout and the connection pool they queue on,
+                # which is why readiness uses the small usage engine rather than the answer pool.
                 await anyio.to_thread.run_sync(
-                    _select_one, deps.session_factory, abandon_on_cancel=True
+                    _select_one,
+                    deps.ready_session_factory or deps.session_factory,
+                    abandon_on_cancel=True,
                 )
         except TimeoutError:
             log.warning("readiness_timeout", timeout_s=READY_TIMEOUT_S)
@@ -503,16 +607,18 @@ def create_app(deps: AgentDeps) -> FastAPI:
         responses=_ASK_RESPONSES,
     )
     async def ask(body: AskRequest) -> Response:
-        """Answer one question as server-sent events, one `StreamItem` per event."""
-        # Refused here rather than in the model: both would only buy an empty search after a
-        # model call was paid for.
+        """Answer one question as server-sent events, one `itemSchema` event per frame."""
+        # Refused here rather than in `AskRequest`: both would only buy an empty search after a
+        # model call was paid for, and the profile names are the process's, not the model's.
         unknown = sorted(set(body.profiles or ()) - deps.profile_names)
         if unknown:
-            raise HTTPException(status_code=422, detail=f"unknown profiles: {', '.join(unknown)}")
+            raise _refused(f"unknown profiles: {', '.join(unknown)}", ["profiles"])
         if body.since is not None and body.since > deps.clock().astimezone(UTC).date():
-            raise HTTPException(status_code=422, detail="since must not be in the future")
+            raise _refused("since must not be in the future", ["since"])
+        cancel = threading.Event()
         return _ClosingStream(
-            _stream(deps, body),
+            _stream(deps, body, cancel),
+            cancel,
             media_type="text/event-stream",
             # A cached or proxy-buffered answer would arrive all at once, so the stream is
             # uncacheable and unbuffered end to end.

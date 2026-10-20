@@ -9,6 +9,7 @@ stream and never hangs up.
 import asyncio
 import contextlib
 import json
+import sys
 import threading
 import time
 from collections.abc import Callable
@@ -21,14 +22,16 @@ import anyio
 import pytest
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage
+from pydantic import ValidationError
 from sqlalchemy import Engine, delete, text
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import TimeoutError as PoolTimeout
 from sqlalchemy.orm import Session
 from starlette.responses import ClientDisconnect
 from structlog.testing import capture_logs
 
 from paperwatch.agent.citations import NO_SUPPORT, CheckedAnswer
-from paperwatch.agent.graph import AnswerEvent, ToolEvent
+from paperwatch.agent.graph import AnswerAborted, AnswerEvent, ToolEvent
 from paperwatch.agent.sources import SourceRegistry
 from paperwatch.agent.tools import make_tools
 from paperwatch.api import app as api
@@ -47,8 +50,10 @@ from paperwatch.config import (
     ANSWER_POOL_SIZE,
     ANSWER_POOL_TIMEOUT_S,
     CONNECT_TIMEOUT_S,
+    USAGE_POOL_SIZE,
     Settings,
 )
+from paperwatch.domain import load_profiles
 from paperwatch.llm.chat import ChatModel, ScriptedChatModel
 from paperwatch.llm.embedder import FakeEmbedder
 from paperwatch.retrieval.hybrid import Filters
@@ -163,6 +168,29 @@ class _FullLimiter:
         raise AssertionError("a slot that was never taken must not be released")
 
 
+def test_readyz_answers_every_time(db_session: Session) -> None:
+    # The limiter slot is released in a finally, so a check that timed out cannot leave /readyz
+    # answering 503 forever: the server would look permanently unready.
+    client = TestClient(create_app(deps(db_session, [])))
+    assert [client.get("/readyz").status_code for _ in range(5)] == [200] * 5
+
+
+def test_readyz_uses_the_readiness_factory(db_session: Session, engine: Engine) -> None:
+    # Readiness checks the database through its own small engine in production, so a saturated
+    # answer pool does not read as "the database is down".
+    seen: list[int] = []
+    factory = make_session_factory(engine)
+
+    def ready() -> Session:
+        seen.append(1)
+        return factory()
+
+    app_deps = deps(db_session, [])
+    app_deps.ready_session_factory = ready
+    assert TestClient(create_app(app_deps)).get("/readyz").status_code == 200
+    assert seen == [1]
+
+
 def test_readyz_is_503_when_the_check_slots_are_full(db_session: Session) -> None:
     app = create_app(deps(db_session, []))
     app.state.ready_limiter = _FullLimiter()
@@ -256,7 +284,7 @@ def test_the_question_is_stripped_before_it_reaches_the_agent(
 ) -> None:
     seen: list[str] = []
 
-    def record(deps_: AgentDeps, question: str, filters: Filters) -> Any:
+    def record(deps_: AgentDeps, question: str, filters: Filters, cancel: Any = None) -> Any:
         seen.append(question)
         yield AnswerEvent(CheckedAnswer(NO_SUPPORT, (), (), False))
 
@@ -270,7 +298,7 @@ def test_request_filters_reach_the_answer(
 ) -> None:
     seen: list[Filters] = []
 
-    def record(deps_: AgentDeps, question: str, filters: Filters) -> Any:
+    def record(deps_: AgentDeps, question: str, filters: Filters, cancel: Any = None) -> Any:
         seen.append(filters)
         yield AnswerEvent(CheckedAnswer(NO_SUPPORT, (), (), False))
 
@@ -309,12 +337,27 @@ def test_an_unknown_profile_is_refused(db_session: Session) -> None:
     response = ask(deps(db_session, []), {"question": "q", "profiles": ["not-a-profile"]})
     assert response.status_code == 422
     assert "not-a-profile" in response.text
+    # The contract documents 422 as an array of error objects, so a typed client can parse it.
+    [error] = response.json()["detail"]
+    assert error["msg"] == "unknown profiles: not-a-profile"
+    assert error["loc"] == ["body", "profiles"]
 
 
 def test_a_future_since_is_refused(db_session: Session) -> None:
     tomorrow = (NOW + timedelta(days=1)).date().isoformat()
     response = ask(deps(db_session, []), {"question": "q", "since": tomorrow})
     assert response.status_code == 422
+    [error] = response.json()["detail"]
+    assert error["msg"] == "since must not be in the future"
+    assert error["loc"] == ["body", "since"]
+
+
+def test_today_is_an_acceptable_since_boundary(db_session: Session) -> None:
+    # `since` is a date, so "today" is the last value that is not in the future: the whole of
+    # today is searched, not refused.
+    today = NOW.date().isoformat()
+    response = ask(deps(db_session, search_then()), {"question": "q", "since": today})
+    assert response.status_code == 200
 
 
 def test_profile_lists_are_bounded(db_session: Session) -> None:
@@ -370,6 +413,69 @@ def test_an_internal_failure_logs_the_site_and_no_text(
     assert "secret question" not in caplog.text
 
 
+def test_an_internal_failure_sends_only_the_fixed_message(db_session: Session) -> None:
+    # The event body is a fixed sentence: a failure's text can hold a provider body or the question.
+    def broken_factory() -> Session:
+        raise RuntimeError("provider body: the captain's secret question")
+
+    app_deps = deps(db_session, [])
+    app_deps.session_factory = broken_factory
+    response = ask(app_deps, {"question": "q"})
+    name, data = events(response.text)[-1]
+    assert (name, data["code"], data["message"]) == ("error", "internal", api.INTERNAL_MESSAGE)
+    assert "secret question" not in response.text
+
+
+def test_the_internal_log_names_the_cause_type(db_session: Session) -> None:
+    # `cause_type` is how an operator tells a driver error from a bug without reading its text.
+    def broken_factory() -> Session:
+        try:
+            raise ValueError("the real cause")
+        except ValueError as exc:
+            raise RuntimeError("provider body") from exc
+
+    app_deps = deps(db_session, [])
+    app_deps.session_factory = broken_factory
+    with capture_logs() as logs:
+        ask(app_deps, {"question": "q"})
+    [failure] = [entry for entry in logs if entry["event"] == "ask_failed"]
+    assert (failure["error_type"], failure["cause_type"]) == ("RuntimeError", "ValueError")
+
+    # A failure with no chained cause logs None rather than a missing key.
+    def plain_factory() -> Session:
+        raise RuntimeError("no cause")
+
+    app_deps.session_factory = plain_factory
+    with capture_logs() as logs:
+        ask(app_deps, {"question": "q"})
+    [failure] = [entry for entry in logs if entry["event"] == "ask_failed"]
+    assert failure["cause_type"] is None
+
+
+def test_a_library_under_a_paperwatch_directory_is_not_application_code(tmp_path: Path) -> None:
+    # A checkout (or a virtualenv) under a directory named `paperwatch` used to match every frame,
+    # so a library frame was logged as the application's and the real one was not. The filter
+    # compares against the package's own directory instead.
+    lib = tmp_path / "paperwatch"
+    lib.mkdir()
+    (lib / "fakelib.py").write_text(
+        "from paperwatch.api import app\n\n\ndef boom():\n    app._select_one(None)\n"
+    )
+    sys.path.insert(0, str(lib))
+    try:
+        import fakelib  # a module that only exists for this test
+
+        with pytest.raises(TypeError) as raised:
+            fakelib.boom()
+    finally:
+        sys.path.remove(str(lib))
+        sys.modules.pop("fakelib", None)
+    # The only application frame is the one that called the failing factory, and it is the whole
+    # site: the `paperwatch/fakelib.py` frame is a stranger's code despite its directory name.
+    site = api._failure_site(raised.value)
+    assert len(site) == 1 and site[0].startswith("app.py:"), site
+
+
 def test_daily_cap_streams_an_error_event(db_session: Session) -> None:
     response = ask(deps(db_session, search_then(), chat_max_calls_per_day=1), {"question": "q"})
     # The first call fits the cap of 1; the second is refused.
@@ -390,6 +496,24 @@ def test_budget_exhaustion_streams_an_error_event(db_session: Session) -> None:
         {"question": "q"},
     )
     assert events(response.text)[-1][1]["code"] == "budget"
+
+
+def test_a_saturated_pool_is_a_busy_server_not_a_bug(db_session: Session) -> None:
+    # The answer pool is small and its wait short, so a full pool arrives as a pool timeout. The
+    # client is told to retry, and the pool's own text never reaches the stream.
+    def exhausted() -> Session:
+        raise PoolTimeout("QueuePool limit of size 6 overflow 2 reached, connection timed out")
+
+    app_deps = deps(db_session, [])
+    app_deps.session_factory = exhausted
+    response = ask(app_deps, {"question": "q"})
+    name, data = events(response.text)[-1]
+    assert (name, data["code"], data["message"]) == (
+        "error",
+        "internal",
+        api.BUSY_MESSAGE,
+    )
+    assert "QueuePool" not in response.text
 
 
 def test_closing_the_stream_closes_the_session(db_session: Session, seed_items: Seed) -> None:
@@ -422,6 +546,7 @@ def test_closing_the_sse_stream_closes_the_answer(
     # when the frame dies, so the explicit close is observable.
     closed: list[bool] = []
     created: list[Any] = []
+    handed: list[Any] = []
 
     def answer(deps: AgentDeps, question: str, filters: Filters, cancel: Any = None) -> Any:
         def events() -> Any:
@@ -430,14 +555,32 @@ def test_closing_the_sse_stream_closes_the_answer(
             finally:
                 closed.append(True)
 
+        handed.append(cancel)
         created.append(events())
         return created[-1]
 
     monkeypatch.setattr(api, "run_question", answer)
-    stream = api._stream(_dummy_deps(), api.AskRequest(question="q"))
+    cancel = threading.Event()
+    stream = api._stream(_dummy_deps(), api.AskRequest(question="q"), cancel)
     next(stream)
     stream.close()
     assert closed == [True] and len(created) == 1
+    # The response's own event is the answer's abort signal, so a hang-up reaches the model call
+    # without waiting for this generator to be closed.
+    assert handed == [cancel]
+
+
+def test_the_response_sets_the_cancel_event_when_the_client_hangs_up() -> None:
+    # Starlette's listener is the only thing that sees a hang-up while the response task waits for
+    # the next chunk; without setting the flag there, a tool round would start one more request.
+    cancel = threading.Event()
+    response = api._ClosingStream((chunk for chunk in ()), cancel, media_type="text/event-stream")
+
+    async def receive() -> dict[str, Any]:
+        return {"type": "http.disconnect"}
+
+    asyncio.run(response.listen_for_disconnect(receive))
+    assert cancel.is_set()
 
 
 def _scope(spec_version: str) -> dict[str, Any]:
@@ -536,6 +679,16 @@ class _SlowModel(ScriptedChatModel):
             yield chunk
 
 
+def test_an_aborted_answer_ends_quietly(db_session: Session) -> None:
+    # The consumer left, so there is nobody to send an error event to: `run_question` returns with
+    # no events at all and still releases its session.
+    closed: list[float] = []
+    app_deps = deps(db_session, [ChatModel("openrouter", _AbortingModel(script=[]))])
+    app_deps.session_factory = lambda: _ClosableSpy(db_session, closed)  # type: ignore[assignment,return-value]
+    assert list(run_question(app_deps, "q", Filters())) == []
+    assert closed
+
+
 def test_disconnect_stops_the_in_flight_model_call_and_records_it(db_session: Session) -> None:
     # The client is gone, so the answer must stop producing tokens, and the request that reached
     # the provider must still be recorded: the daily cap counts what was spent.
@@ -558,6 +711,164 @@ def test_disconnect_stops_the_in_flight_model_call_and_records_it(db_session: Se
     # The tool event plus a handful of tokens, not the whole 90-chunk answer.
     assert len(slow.emitted) < 20, len(slow.emitted)
     assert store.models == [UNKNOWN_MODEL, "failed"]
+
+
+def test_the_abort_writes_its_usage_row_before_the_session_is_released(
+    db_session: Session,
+) -> None:
+    # Closing the stream joins the graph's worker thread, which records the aborted call. The row
+    # must not be lost to a session release that happens first.
+    order: list[str] = []
+
+    class OrderedStore(MemoryChatCalls):
+        def record_chat_call(self, **kwargs: Any) -> None:
+            order.append("usage")
+            super().record_chat_call(**kwargs)
+
+    class OrderedSession:
+        def __init__(self, inner: Session) -> None:
+            self._inner = inner
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._inner, name)
+
+        def close(self) -> None:
+            order.append("session.close")
+            self._inner.close()
+
+    text = " ".join(["Coding agents are scored on real bugs [S1]."] * 12)
+    slow = _SlowModel(
+        script=[
+            AIMessage(
+                "", tool_calls=[{"name": "search_corpus", "args": {"query": "x"}, "id": "c1"}]
+            ),
+            AIMessage(text),
+        ]
+    )
+    app_deps = deps(db_session, [ChatModel("openrouter", slow)], OrderedStore())
+    app_deps.session_factory = lambda: OrderedSession(db_session)  # type: ignore[assignment,return-value]
+    asyncio.run(
+        _hang_up_mid_stream(
+            create_app(app_deps), {"question": "q"}, spec_version="2.3", after_chunks=6
+        )
+    )
+    # Every usage row is written before the one session close: a close first would lose it.
+    assert order.count("session.close") == 1
+    assert order.index("session.close") > max(i for i, step in enumerate(order) if step == "usage")
+
+
+def test_the_answer_is_closed_on_a_worker_thread_not_the_event_loop() -> None:
+    # Closing joins the graph's worker thread, so running it on the event loop would freeze the
+    # server for the length of a model call.
+    threads: list[int] = []
+
+    def events() -> Any:
+        try:
+            yield _sse_line()
+        finally:
+            threads.append(threading.get_ident())
+
+    async def run() -> int:
+        loop_thread = threading.get_ident()
+        response = api._ClosingStream(events(), threading.Event(), media_type="text/event-stream")
+
+        async def send(message: dict[str, Any]) -> None:
+            # Let the response start and one chunk through, then the client is gone.
+            if message["type"] == "http.response.body" and message.get("body"):
+                raise OSError("connection lost")
+
+        with contextlib.suppress(Exception):
+            await response.stream_response(send)
+        return loop_thread
+
+    loop_thread = asyncio.run(run())
+    assert threads and threads[0] != loop_thread
+
+
+def _sse_line() -> str:
+    return api._sse("token", {"text": "a"})
+
+
+class _AbortingModel(ScriptedChatModel):
+    """A model whose request is aborted, as the callback aborts a real one mid-stream."""
+
+    def _next(self, messages: list[Any], kwargs: dict[str, Any]) -> AIMessage:
+        raise AnswerAborted
+
+
+class _CountingModel(_SlowModel):
+    """A slow scripted model that counts the provider requests it was asked for.
+
+    `ScriptedChatModel.seen` already holds one entry per request; `requests` names that count so
+    a test reads as what it means.
+    """
+
+    @property
+    def requests(self) -> int:
+        return len(self.seen)
+
+
+def test_no_new_request_starts_after_the_client_left_during_a_tool(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The client leaves while a tool runs. The tool itself cannot be interrupted, but the round
+    # after it must not be: one more request would be spent out of the free daily cap for an
+    # answer nobody is reading. The flag is what `listen_for_disconnect` sets; this drives the
+    # answer directly so the tool is provably running when it is set.
+    from paperwatch.agent import tools as tools_mod
+
+    started = threading.Event()
+
+    def search(*args: Any, **kwargs: Any) -> list[Any]:
+        started.set()
+        return []
+
+    monkeypatch.setattr(tools_mod, "hybrid_search", search)
+    tool_call = AIMessage(
+        "", tool_calls=[{"name": "search_corpus", "args": {"query": "x"}, "id": "c1"}]
+    )
+    model = _CountingModel(script=[tool_call, AIMessage(ANSWER)])
+    store = MemoryChatCalls()
+    cancel = threading.Event()
+    stream = run_question(
+        deps(db_session, [ChatModel("openrouter", model)], store), "q", Filters(), cancel
+    )
+    received: list[Any] = []
+
+    def consume() -> None:
+        for event in stream:
+            received.append(event)
+
+    consumer = threading.Thread(target=consume)
+    consumer.start()
+    assert started.wait(timeout=10), "the tool never ran"
+    cancel.set()
+    consumer.join(timeout=10)
+    assert not consumer.is_alive()
+    # Exactly the one request that made the tool call: the round after the tool was refused
+    # before it could reach the provider, so nothing was spent and nothing was recorded.
+    assert model.requests == 1
+    assert store.models == [UNKNOWN_MODEL]
+
+
+def test_disconnect_during_a_tool_call_round_starts_no_further_request(
+    db_session: Session,
+) -> None:
+    # The model is mid-round when the client leaves: it has streamed words and is about to call a
+    # tool. The round may finish, but the round after it must not start, so no second request is
+    # made and nothing more is spent.
+    tool_call = AIMessage(
+        "let me search",
+        tool_calls=[{"name": "search_corpus", "args": {"query": "x"}, "id": "c1"}],
+    )
+    model = _CountingModel(script=[tool_call, AIMessage(ANSWER)])
+    app_deps = deps(db_session, [ChatModel("openrouter", model)])
+    asyncio.run(
+        _hang_up_mid_stream(
+            create_app(app_deps), {"question": "q"}, spec_version="2.3", after_chunks=2
+        )
+    )
+    assert model.requests == 1
 
 
 def test_a_no_support_answer_sends_no_flags_and_logs_them(db_session: Session) -> None:
@@ -595,6 +906,22 @@ def test_tool_args_with_non_finite_numbers_become_null(db_session: Session) -> N
     assert tool["name"] == "search_corpus" and tool["args"]["tier"] is None
 
 
+def test_json_safe_cleans_non_finite_numbers_at_any_depth() -> None:
+    # A model can nest a runaway number anywhere in its tool arguments, and a client's JSON.parse
+    # rejects NaN or Infinity wherever it appears.
+    assert api._json_safe(
+        {"a": [1.0, float("inf"), {"b": float("nan")}], "c": 2, "d": (float("-inf"),)}
+    ) == {"a": [1.0, None, {"b": None}], "c": 2, "d": [None]}
+
+
+def test_a_profile_item_is_stripped_and_bounded() -> None:
+    # A name with surrounding spaces is the same profile; a blank or over-long one is a bug.
+    assert api.AskRequest(question="q", profiles=[" ai-forensics "]).profiles == ["ai-forensics"]
+    for bad in ("", "   ", "p" * (api.PROFILE_MAX_CHARS + 1)):
+        with pytest.raises(ValidationError):
+            api.AskRequest(question="q", profiles=[bad])
+
+
 def test_sse_escapes_every_non_ascii_character() -> None:
     # ensure_ascii=True (json.dumps' default) is what keeps a line separator or a lone surrogate
     # from breaking the frame or the encode; the client decodes the \uXXXX escapes itself.
@@ -620,7 +947,14 @@ def test_live_deps_wires_a_usage_log_on_its_own_engine(
     assert answer_engine.pool.size() == ANSWER_POOL_SIZE
     assert answer_engine.pool._max_overflow == ANSWER_POOL_OVERFLOW
     assert answer_engine.pool._timeout == ANSWER_POOL_TIMEOUT_S
-    assert usage_engine.pool.size() < ANSWER_POOL_SIZE
+    assert usage_engine.pool.size() == USAGE_POOL_SIZE < ANSWER_POOL_SIZE
+    assert usage_engine.pool._max_overflow == 0
+    assert usage_engine.pool._timeout == ANSWER_POOL_TIMEOUT_S
+    # The profile names the API validates against come from the repository's file, and readiness
+    # checks the database through this small engine rather than the answer pool.
+    assert app_deps.profile_names == {profile.name for profile in load_profiles(api.PROFILES_PATH)}
+    assert app_deps.ready_session_factory is not None
+    assert app_deps.ready_session_factory.kw["bind"] is usage_engine
     answer_engine.dispose()
     usage_engine.dispose()
 
@@ -685,18 +1019,30 @@ def test_the_openapi_contract_never_claims_verification(db_session: Session) -> 
 def test_the_openapi_contract_types_the_event_payloads(db_session: Session) -> None:
     # M3 generates its client from the contract, so the stream's payloads are schemas, not prose.
     schemas = create_app(deps(db_session, [])).openapi()["components"]["schemas"]
-    for name in (
-        "StreamItem",
-        "ToolData",
-        "TokenData",
-        "AnswerData",
-        "CitationData",
-        "FlagData",
-        "ErrorData",
-    ):
+    for name in ("ToolData", "TokenData", "AnswerData", "CitationData", "FlagData", "ErrorData"):
         assert name in schemas, name
-    stream = schemas["StreamItem"]
-    assert set(stream["required"]) == {"event", "data"}
+
+
+def test_the_contract_describes_one_parsed_event_not_the_body(db_session: Session) -> None:
+    # The media type's schema is read as the shape of one message, which for SSE is the `event`
+    # name plus the parsed JSON of the `data` line. An envelope with `event` and `data` keys in
+    # the same object does not exist on the wire (Task 17 review round 2, R5).
+    spec = create_app(deps(db_session, [])).openapi()
+    media = spec["paths"]["/ask"]["post"]["responses"]["200"]["content"]["text/event-stream"]
+    assert "schema" not in media
+    item = media["itemSchema"]
+    assert set(item["required"]) == {"event", "data"}
+    assert item["properties"]["event"]["enum"] == ["tool", "token", "answer", "error"]
+    data = item["properties"]["data"]
+    assert data["contentMediaType"] == "application/json"
+    assert {ref["$ref"] for ref in data["contentSchema"]["anyOf"]} == {
+        "#/components/schemas/ToolData",
+        "#/components/schemas/TokenData",
+        "#/components/schemas/AnswerData",
+        "#/components/schemas/ErrorData",
+    }
+    # The registration model is not part of the contract.
+    assert "StreamItem" not in spec["components"]["schemas"]
 
 
 def _dummy_deps() -> AgentDeps:

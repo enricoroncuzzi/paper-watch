@@ -77,3 +77,22 @@ def test_unknown_provider_or_non_positive_size_is_refused(
     monkeypatch.setenv(name, value)
     with pytest.raises(ValidationError):
         build_settings()
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [("warn", "WARNING"), ("WARN", "WARNING"), ("fatal", "CRITICAL"), ("info", "INFO")],
+)
+def test_a_log_level_alias_is_stored_as_its_canonical_name(
+    build_settings: Callable[..., Settings], raw: str, expected: str
+) -> None:
+    # `logging` accepts WARN and FATAL as aliases, but uvicorn looks the name up in its own table
+    # and raises KeyError for them, so `serve` crashed where `ask` worked. One canonical name
+    # serves both.
+    assert build_settings(log_level=raw).log_level == expected
+
+
+def test_an_unknown_log_level_is_refused(build_settings: Callable[..., Settings]) -> None:
+    # A typo must fail at startup rather than at the first log call.
+    with pytest.raises(ValidationError, match="unknown log level"):
+        build_settings(log_level="LOUD")
