@@ -25,8 +25,13 @@ the standing rules.
 - `src/paperwatch/retrieval/hybrid.py` fuses a pgvector cosine search with Postgres full-text
   search using reciprocal rank fusion. Only `admitted` items are searchable.
 - `src/paperwatch/llm/` is the provider boundary: the local fastembed embedder, the
-  embedding-similarity classifier, the Azure implementations kept for the Azure proof, and the
-  token ledger with its per-run cap (`ledger.py`).
+  embedding-similarity classifier, the Azure implementations kept for the Azure proof, the token
+  ledger with its per-run cap (`ledger.py`), and the OpenAI-compatible chat models with the
+  daily-call `CallGuard` (`chat.py`).
+- `src/paperwatch/agent/` is the answering layer: the read-only corpus tools (`tools.py`) with
+  the per-answer `SourceRegistry` that issues the aliases S1, S2, ... (`sources.py`), and
+  `citations.py`, which checks every finished answer's citations against the sources those tools
+  retrieved (`docs/learn/11`).
 - `evals/` holds the retrieval eval (`retrieval_eval.py`: recall@k, MRR, nDCG@k over the
   deterministic fake embedder) and the relevance eval (`relevance_eval.py`: classifier
   calibration and held-out scores), each with a committed baseline.
