@@ -39,7 +39,8 @@ log = structlog.get_logger()
 
 
 class AgentState(TypedDict):
-    """One answer's state: the conversation, the tool rounds used, and the checked answer."""
+    """One answer's state: the conversation, the tool rounds used plus one for the answer
+    round, and the checked answer."""
 
     messages: Annotated[list[AnyMessage], add_messages]
     rounds: int
@@ -85,7 +86,9 @@ def build_agent(
     registry: SourceRegistry,
     guard: CallGuard,
 ) -> AgentGraph:
-    """Build the graph for one answer. Do not ask it a second question (see `call_agent`)."""
+    """Build the graph for one run. Do not start a second run on it (see `call_agent`)."""
+    if not models:
+        raise ValueError("an agent graph needs at least one chat model")
     # Both providers accept `parallel_tool_calls` (it is in OpenRouter's chat request schema and
     # in Groq's chat completions schema) and langchain-openai sends it with every request.
     # Disabling it is defence in depth: ToolNode would otherwise run one message's tool calls
@@ -95,12 +98,16 @@ def build_agent(
     ]
     # The answer round keeps the tool definitions and forbids calls with tool_choice="none": a
     # request that carries tool history must also carry `tools` (OpenRouter's tool-calling
-    # guide), and a strict upstream rejects history without them, which would turn every capped
+    # guide), and a strict upstream rejects history without them, which can turn a capped
     # question into ModelUnavailable. Groq documents the same "none" value.
     answer_only = [
         (m.provider, m.model.bind_tools(tools, parallel_tool_calls=False, tool_choice="none"))
         for m in models
     ]
+    # A graph answers one question, once: its registry and ledger belong to that run, so a second
+    # run is refused whatever the first one did (a retry after a provider failure included, since
+    # the ledger is already spent).
+    started = False
 
     def call_models(
         candidates: Sequence[tuple[str, _Model]], messages: list[AnyMessage]
@@ -121,8 +128,14 @@ def build_agent(
                 # error is what the caller needs to see.
                 try:
                     guard.after_failure(provider)
-                except Exception:  # recording a failure must not hide it
-                    log.warning("chat_failure_record_failed", provider=provider, exc_info=True)
+                except Exception as store_exc:  # noqa: BLE001 - never hide the provider error
+                    # The store error's own text is statement parameters, not provider text, but
+                    # a rendered traceback would chain to the provider error above it.
+                    log.warning(
+                        "chat_failure_record_failed",
+                        provider=provider,
+                        error_type=type(store_exc).__name__,
+                    )
                 # An SDK error's string is the whole response body, and OpenRouter's moderation
                 # errors echo the flagged question, so only the error's shape is logged.
                 log.warning(
@@ -144,10 +157,13 @@ def build_agent(
         raise ModelUnavailable(f"every chat model failed: {attempts}") from failures[-1][1]
 
     def call_agent(state: AgentState) -> dict[str, Any]:
-        # One graph holds one answer's registry (and ledger), so a second question must not start
-        # on it: it could cite an alias the first question's tools issued.
-        if len(state["messages"]) == 1 and registry.all():
-            raise RuntimeError("an agent graph answers one question")
+        nonlocal started
+        # The first model call of a run is the only one with just the question in the state; a
+        # second run would share this answer's registry and ledger.
+        if len(state["messages"]) == 1:
+            if started:
+                raise RuntimeError("an agent graph answers one question")
+            started = True
         # The system prompt is prepended at every call and never stored, so the transcript a
         # client sees holds only the question, the tool calls and the answer.
         messages = [SystemMessage(SYSTEM_PROMPT), *state["messages"]]
@@ -214,7 +230,7 @@ def _may_run_tools(state: AgentState) -> bool:
 def stream_answer(graph: AgentGraph, question: str) -> Iterator[AgentEvent]:
     """Yield tool calls and tokens as they happen, then exactly one `AnswerEvent`.
 
-    The graph answers one question: build a new one for the next (see `build_agent`).
+    One graph, one run: build a new one for the next question (see `build_agent`).
     """
     state = _initial_state(question)
     # With several stream modes LangGraph yields `(mode, chunk)` pairs; its type stub only says
@@ -248,7 +264,7 @@ def stream_answer(graph: AgentGraph, question: str) -> Iterator[AgentEvent]:
 def answer_question(graph: AgentGraph, question: str) -> tuple[CheckedAnswer, list[str]]:
     """Run the graph to the end: the checked answer, and the tools it called, in order.
 
-    The graph answers one question: build a new one for the next (see `build_agent`).
+    One graph, one run: build a new one for the next question (see `build_agent`).
     """
     state = graph.invoke(_initial_state(question))
     answer: CheckedAnswer | None = state["answer"]

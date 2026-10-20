@@ -16,14 +16,16 @@ are three nodes (`agent`, `tools`, `check`) and one conditional edge whose routi
 - `check` runs `check_answer(text, registry)` and stores the `CheckedAnswer`.
 
 The state is a `TypedDict`: `messages` (appended through `add_messages`, so a node returns only the
-new messages), `rounds` (how many model messages have asked for tools) and `answer` (the checked
-result). The system prompt is added at every call and never stored, so a trajectory test sees
-exactly what the model saw and a client's transcript holds only the question, the tool calls and
-the answer.
+new messages), `rounds` (tool rounds used, plus one for the answer round) and `answer` (the
+checked result). The system prompt is added at every call and never stored, so a trajectory test
+sees exactly what the model saw and a client's transcript holds only the question, the tool calls
+and the answer.
 
-One graph answers one question: `build_agent` binds that answer's `SourceRegistry` and token
-ledger, so the first model call of a second question on the same graph raises a `RuntimeError`.
-Without it, a second question could cite `S1` although no tool returned it for that question.
+One graph, one run: `build_agent` binds that run's `SourceRegistry` and token ledger, so a second
+run on the same graph raises a `RuntimeError` whatever the first one retrieved, a retry after a
+provider failure included (the ledger is spent either way). Without it, a second question could
+cite `S1` although no tool returned it for that question, and it would draw on a budget that
+answer already used.
 
 LangGraph's message streaming works because LangChain chat models detect a streaming callback
 handler on the run and call `_stream` instead of `_generate` even from `.invoke()`. That is why
@@ -39,8 +41,8 @@ used all tool calls for this question. Answer now from the sources you already h
 tools are still bound, with `tool_choice="none"`.
 
 Keeping the definitions is not cosmetic. A request whose history holds tool calls and tool results
-must still carry `tools`; OpenRouter's tool-calling guide says so, and a strict upstream would
-answer the capped round with a 400, turning almost every capped question into `ModelUnavailable`.
+must still carry `tools`; OpenRouter's tool-calling guide says so, and a strict upstream can
+answer the capped round with a 400, which can turn a capped question into `ModelUnavailable`.
 `"none"` forbids the call instead (OpenRouter and Groq both document that value), and that round
 counts as spent. Because a lenient provider can still return a call, the cap has two
 provider-independent halves: the node drops any call the answer round contains, and `route`
@@ -105,18 +107,29 @@ become server-sent events.
 ## What the tests pin
 
 `tests/integration/test_agent.py` drives the real graph, the real tools and a real Postgres against
-`ScriptedChatModel`, so no test needs a key or the network. It covers a search then an answer (with
-the cited item's id and two `chat_calls` rows), a search then `get_item` (and that the item's text
-reached the model), recovery from an alias the registry never issued, exactly four tool rounds with
-the fifth call bound to the tools with `tool_choice="none"` and carrying the final-round note, one
-message with two calls counting as one round, a model that ignores the final note (no fifth tool
-runs, no sixth model call, and the stream echoes no `ToolEvent` for the ignored call), the route
-refusing a tool call after the answer round, an invented alias flagged in the answer, the no-support
-answer for an empty corpus, a second question on the same graph refused, the daily cap refusing
-before any model call and again before a fallback attempt, the budget stopping mid-answer after two
-recorded calls, the fallback answering after the primary raised, a failed-usage write that does not
-hide the provider error, provider error text kept out of the log and `ModelUnavailable`, a wrong
-tool argument recovered from through an error message, every call bound with
-`parallel_tool_calls=False`, the event order and tool names of `stream_answer` (one `ToolEvent` per
-call, one `AnswerEvent` last, the streamed text equal to the final text), and the ledger charged
-from the aggregated message when the answer is streamed rather than from the individual chunks.
+`ScriptedChatModel`, so no test needs a key or the network. Every test in the file is named here.
+The happy paths are `test_search_then_answer` (the cited item's id and two `chat_calls` rows),
+`test_search_get_item_then_answer` (the item's text reached the model),
+`test_opening_an_unseen_alias_is_recoverable`,
+`test_every_model_call_starts_with_the_citation_prompt`,
+`test_an_answer_with_no_tool_call_is_refused` and
+`test_every_call_binds_tools_without_parallel_calls`. The cap is pinned by
+`test_tool_rounds_are_capped` (the fifth call bound with `tool_choice="none"` and the final note),
+`test_one_message_with_two_tool_calls_is_one_round`,
+`test_a_model_that_ignores_the_final_note_cannot_run_more_tools` and
+`test_a_tool_call_never_routes_after_the_answer_round`. The stream is covered by
+`test_stream_answer_yields_tools_tokens_then_one_answer` (one `ToolEvent` per call, one
+`AnswerEvent` last, the text intact), `test_the_stream_does_not_echo_an_ignored_tool_call` and
+`test_streaming_charges_the_aggregated_usage` (the ledger charged once per aggregated message). The
+guard and fallback are covered by `test_daily_cap_stops_before_any_model_call`,
+`test_fallback_attempt_passes_the_daily_cap`, `test_budget_exceeded_mid_answer`,
+`test_fallback_model_answers_when_primary_fails`,
+`test_a_failed_usage_write_does_not_hide_the_model_error`,
+`test_provider_error_text_stays_out_of_logs_and_errors`,
+`test_every_failed_model_is_named_in_order` and `test_a_provider_status_is_logged`. The single-run
+rule is covered by `test_a_graph_answers_only_one_question`,
+`test_a_second_question_is_refused_even_when_the_first_found_nothing` and
+`test_build_agent_rejects_an_empty_model_list`. The answers are checked by
+`test_answer_citing_an_unretrieved_alias_is_flagged`,
+`test_empty_corpus_gives_the_no_support_answer` and
+`test_a_wrong_tool_argument_comes_back_as_an_error_message`.

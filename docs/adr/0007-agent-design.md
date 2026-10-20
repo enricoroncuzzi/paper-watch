@@ -15,12 +15,12 @@ retrieved, invent an id, or write a confident sentence with no source at all. Th
 to run on a free chat tier (ADR 0006), so a question has hard limits: a per-answer token budget, a
 daily request cap, and a provider that can fail at any moment.
 
-The tools exist already (Task 14, which has no ADR of its own): `search_corpus`, `get_item`
-and `compare_items`, all
-read-only, all returning `<source>` blocks with escaped markup and program-issued aliases (`S1`,
-`S2`, ...). The checker exists too (Task 15): `check_answer(text, registry)` compares a finished
-answer against the sources this answer's tools actually returned. What was missing was the part
-that decides when to search, when to open an item, and when to answer.
+The tools exist already (Task 14, which has no ADR of its own): `search_corpus`, `get_item` and
+`compare_items`, all read-only, all returning `<source>` blocks with escaped markup and
+program-issued aliases (`S1`, `S2`, ...). The checker exists too (Task 15): `check_answer(text,
+registry)` compares a finished answer against the sources this answer's tools actually returned.
+What was missing was the part that decides when to search, when to open an item, and when to
+answer.
 
 ## Decision
 
@@ -35,9 +35,9 @@ it answered; `tools` is LangGraph's `ToolNode` over the Task 14 tools; `check` r
 and stores the `CheckedAnswer` in the state. `check` is last and deterministic, so an answer with
 no valid citation leaves the graph as the fixed `NO_SUPPORT` message, never as uncited prose.
 
-A graph belongs to one answer: its `SourceRegistry` and token ledger are bound at build time, so
-the first model call of a second question on the same graph is refused with a `RuntimeError`
-rather than being "supported" by aliases the first question retrieved.
+A graph holds one run: its `SourceRegistry` and token ledger are bound at build time, so a second
+run on the same graph is refused with a `RuntimeError` whatever the first one retrieved, a retry
+after a provider failure included (the ledger is already spent).
 
 State is typed and plain (`messages`, `rounds`, `answer`), which is what makes the trajectory
 tests cheap: a scripted model replays an exact sequence of tool calls, and the test asserts which

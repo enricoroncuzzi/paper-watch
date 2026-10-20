@@ -84,6 +84,12 @@ class _FailingStore:
         return 0
 
 
+class _StatusError(RuntimeError):
+    """A provider error that carries the HTTP status an SDK error exposes."""
+
+    status_code = 429
+
+
 def test_search_then_answer(db_session: Session, seed_items: Seed) -> None:
     ids = seed_items(AGENT_ROWS)
     model = ScriptedChatModel(
@@ -366,6 +372,27 @@ def test_a_graph_answers_only_one_question(db_session: Session, seed_items: Seed
         answer_question(graph, "q2")
 
 
+def test_a_second_question_is_refused_even_when_the_first_found_nothing(
+    db_session: Session,
+) -> None:
+    # The rule is one graph, one run: the ledger is spent even when no tool ran, so a second
+    # question on the same graph is refused rather than sharing that ledger.
+    model = ScriptedChatModel(script=[final("Quantum agents ship today [S1].")])
+    graph = agent(db_session, model)
+    answer_question(graph, "q1")
+    with pytest.raises(RuntimeError, match="one question"):
+        answer_question(graph, "q2")
+
+
+def test_build_agent_rejects_an_empty_model_list(db_session: Session) -> None:
+    # No models cannot answer; refuse with a message that names the mistake, not an IndexError
+    # when the fallback loop looks for the last failure.
+    reg = SourceRegistry()
+    guard = CallGuard(Repository(db_session), Ledger(10_000), 800, lambda: NOW)
+    with pytest.raises(ValueError, match="at least one chat model"):
+        build_agent([], [], reg, guard)
+
+
 def test_provider_error_text_stays_out_of_logs_and_errors(db_session: Session) -> None:
     # An SDK status error's string is the whole response body, and OpenRouter's moderation
     # errors echo the flagged question, so neither the log nor the error may carry it.
@@ -379,6 +406,44 @@ def test_provider_error_text_stays_out_of_logs_and_errors(db_session: Session) -
     assert "secret question text" not in str(logs)
     failures = [entry for entry in logs if entry["event"] == "chat_model_failed"]
     assert [entry["error_type"] for entry in failures] == ["RuntimeError"]
+
+    # A store failure while recording the attempt must not log a traceback either: structlog
+    # renders the chain, and the chain holds the provider error above it.
+    store_graph = build_agent(
+        [ChatModel("p0", ScriptedChatModel(script=[RuntimeError("secret question text")]))],
+        [],
+        reg,
+        CallGuard(_FailingStore(), Ledger(10_000), 800, lambda: NOW),
+    )
+    with capture_logs() as store_logs, pytest.raises(ModelUnavailable):
+        answer_question(store_graph, "q")
+    assert "secret question text" not in str(store_logs)
+    assert all("exc_info" not in entry for entry in store_logs)
+    record_failures = [e for e in store_logs if e["event"] == "chat_failure_record_failed"]
+    assert [entry["error_type"] for entry in record_failures] == ["RuntimeError"]
+
+
+def test_every_failed_model_is_named_in_order(db_session: Session) -> None:
+    primary = ScriptedChatModel(script=[RuntimeError("primary down")])
+    fallback = ScriptedChatModel(script=[ValueError("bad model id")])
+    with pytest.raises(ModelUnavailable) as raised:
+        answer_question(agent(db_session, primary, fallback), "q")
+    assert str(raised.value) == "every chat model failed: p0 (RuntimeError), p1 (ValueError)"
+    assert isinstance(raised.value.__cause__, ValueError)
+
+
+def test_a_provider_status_is_logged(db_session: Session) -> None:
+    # The HTTP status is the part of an SDK error worth keeping in the log: it says whether to
+    # retry later or change the model, without the response body.
+    reg = SourceRegistry()
+    guard = CallGuard(Repository(db_session), Ledger(10_000), 800, lambda: NOW)
+    graph = build_agent(
+        [ChatModel("p0", ScriptedChatModel(script=[_StatusError("limited")]))], [], reg, guard
+    )
+    with capture_logs() as logs, pytest.raises(ModelUnavailable):
+        answer_question(graph, "q")
+    failure = next(entry for entry in logs if entry["event"] == "chat_model_failed")
+    assert (failure["error_type"], failure["status"]) == ("_StatusError", 429)
 
 
 def test_a_wrong_tool_argument_comes_back_as_an_error_message(
@@ -402,9 +467,8 @@ def test_a_wrong_tool_argument_comes_back_as_an_error_message(
 
 def test_one_message_with_two_tool_calls_is_one_round(
     db_session: Session, seed_items: Seed
-) -> (
-    None
-):  # A round is one model message, however many calls it carries: counting calls instead would
+) -> None:
+    # A round is one model message, however many calls it carries: counting calls instead would
     # have cut the fourth message's call here, so four messages must run five tool calls.
     seed_items(AGENT_ROWS)
     two_calls = AIMessage(
