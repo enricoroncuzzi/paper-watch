@@ -1,5 +1,7 @@
 import re
 import sys
+import threading
+import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime
@@ -12,7 +14,7 @@ from sqlalchemy.orm import Session
 from structlog.testing import capture_logs
 
 from paperwatch.agent import tools as agent_tools
-from paperwatch.agent.sources import SourceRegistry
+from paperwatch.agent.sources import SourceRef, SourceRegistry
 from paperwatch.agent.tools import (
     AUTHOR_MAX_CHARS,
     AUTHORS_SHOWN,
@@ -29,7 +31,7 @@ from paperwatch.llm.embedder import FakeEmbedder
 from paperwatch.retrieval.hybrid import Filters
 from paperwatch.store.db import make_session_factory
 from paperwatch.store.models import Item
-from paperwatch.store.repository import Repository
+from paperwatch.store.repository import ItemDetail, Repository
 from tests.conftest import AGENT_ROWS, SeedRow
 
 pytestmark = pytest.mark.integration
@@ -494,8 +496,11 @@ def test_a_database_error_in_one_tool_does_not_poison_the_answer(
         return real(*args, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(agent_tools, "hybrid_search", flaky)
-    first = tools["search_corpus"].invoke({"query": "SWE-bench"})
-    assert "<source" not in first and "failed" in first.lower()
+    with capture_logs() as logs:
+        first = tools["search_corpus"].invoke({"query": "SWE-bench"})
+    assert first == "The search failed; try again or rephrase."
+    errors = [entry for entry in logs if entry["event"] == "tool_database_error"]
+    assert len(errors) == 1 and "table_that_does_not_exist" in errors[0]["error"]
     second = tools["search_corpus"].invoke({"query": "SWE-bench"})
     assert "<source" in second
 
@@ -508,7 +513,9 @@ def test_a_maximal_block_grows_at_most_six_times(db_session: Session, seed_items
         "worst",
         "&" * TITLE_MAX_CHARS,
         tuple("&" * AUTHOR_MAX_CHARS for _ in range(AUTHORS_SHOWN)),
-        "agents boundary " + "&" * GET_ITEM_MAX_CHARS,
+        # The clip keeps the first 6,000 characters, so the searchable token sits after them and
+        # the printed text is all worst-case.
+        "&" * GET_ITEM_MAX_CHARS + " agents boundary",
         '"' * URL_MAX_CHARS,
         datetime(2026, 10, 1, tzinfo=UTC),
     )
@@ -517,14 +524,21 @@ def test_a_maximal_block_grows_at_most_six_times(db_session: Session, seed_items
         Tier.VETTED_PREPRINT,
         "agentic-engineering",
         0.9,
-        Signals(),
+        Signals(venue="&" * 256),
         FakeEmbedder().embed(["agents boundary"])[0],
     )
     db_session.flush()
     tools = tools_for(db_session, SourceRegistry())
     tools["search_corpus"].invoke({"query": "agents boundary"})
     out = tools["get_item"].invoke({"source_id": "S1"})
-    raw = URL_MAX_CHARS + TITLE_MAX_CHARS + AUTHORS_SHOWN * AUTHOR_MAX_CHARS + GET_ITEM_MAX_CHARS
+    # The venue is not clipped by the schema; 256 characters is the width the lesson measures.
+    raw = (
+        URL_MAX_CHARS
+        + TITLE_MAX_CHARS
+        + AUTHORS_SHOWN * AUTHOR_MAX_CHARS
+        + GET_ITEM_MAX_CHARS
+        + 256
+    )
     assert len(out) <= 6 * raw
 
 
@@ -579,3 +593,69 @@ def test_a_savepoint_works_in_a_read_only_transaction(
     finally:
         with engine.begin() as cleanup:
             cleanup.execute(text("DELETE FROM items WHERE id = :id"), {"id": item_id})
+
+
+class OverlapRegistry(SourceRegistry):
+    """A registry that records whether two callers ever register at the same time."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.active = self.max_active = 0
+        self._guard = threading.Lock()
+
+    def register(self, detail: ItemDetail) -> SourceRef:
+        with self._guard:
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+        time.sleep(0.002)  # widens the window a racing caller needs
+        try:
+            return super().register(detail)
+        finally:
+            with self._guard:
+                self.active -= 1
+
+
+def test_the_registry_is_never_entered_concurrently(db_session: Session, seed_items: Seed) -> None:
+    seed_items(
+        [
+            (f"p{i}", f"Paper {i} on agents", f"Token unique{i} on agents.", Tier.VETTED_PREPRINT)
+            for i in range(60)
+        ]
+    )
+    reg = OverlapRegistry()
+    tools = tools_for(db_session, reg)
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        outs = list(
+            pool.map(
+                lambda q: tools["search_corpus"].invoke({"query": q}),
+                [f"unique{i}" for i in range(60)],
+            )
+        )
+    assert all("<source" in out for out in outs), [o for o in outs if "<source" not in o]
+    # The lock covers the registry write itself, not just the database calls.
+    assert reg.max_active == 1
+
+
+def test_parallel_read_tools_keep_their_output(db_session: Session, seed_items: Seed) -> None:
+    seed_items(AGENT_ROWS)
+    tools = tools_for(db_session, SourceRegistry())
+    tools["search_corpus"].invoke({"query": "agents"})
+    calls = [
+        {"source_id": f"S{i}"} if n % 2 else {"source_ids": ["S1", "S2", "S3"]}
+        for n in range(48)
+        for i in (n % 3 + 1,)
+    ]
+    names = ["compare_items" if n % 2 == 0 else "get_item" for n in range(48)]
+    interval = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)
+    try:
+        with ThreadPoolExecutor(max_workers=16) as pool:
+            outs = list(
+                pool.map(
+                    lambda pair: tools[pair[0]].invoke(pair[1]),
+                    zip(names, calls, strict=True),
+                )
+            )
+    finally:
+        sys.setswitchinterval(interval)
+    assert all("<source" in out for out in outs), [o for o in outs if "<source" not in o]

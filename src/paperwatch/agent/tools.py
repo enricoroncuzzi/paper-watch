@@ -162,7 +162,7 @@ def _database_work(session: Session) -> Iterator[None]:
         with session.begin_nested():
             yield
     except SQLAlchemyError as exc:
-        log.error("tool_database_error", error=str(exc))
+        log.error("tool_database_error", error=str(exc), exc_info=True)
         raise ToolException("The search failed; try again or rephrase.") from exc
 
 
