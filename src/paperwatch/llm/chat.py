@@ -219,9 +219,9 @@ class ScriptedChatModel(BaseChatModel):
     seen: list[list[BaseMessage]] = Field(default_factory=list)
     # Tool names bound for each call, [] for an unbound call: trajectory tests read it.
     bound_tools: list[list[str]] = Field(default_factory=list)
-    # Keyword arguments each `bind_tools` received (`parallel_tool_calls`, for one), so a test can
-    # prove what the agent asked a real model to do without a live call.
-    bound_kwargs: list[dict[str, Any]] = Field(default_factory=list)
+    # The binding keywords in force for each call, `parallel_tool_calls` and `tool_choice`
+    # included, so a test can tell which binding served which model call without a live model.
+    call_kwargs: list[dict[str, Any]] = Field(default_factory=list)
 
     @property
     def _llm_type(self) -> str:
@@ -229,14 +229,16 @@ class ScriptedChatModel(BaseChatModel):
 
     def bind_tools(self, tools: Sequence[Any], **kwargs: Any) -> Runnable[Any, AIMessage]:
         # Like ChatOpenAI, binding returns a wrapper that passes the tools on every call.
-        self.bound_kwargs.append(dict(kwargs))
         return self.bind(tools=[t.name for t in tools], **kwargs)
 
-    def _next(self, messages: list[BaseMessage], tools: list[str] | None) -> AIMessage:
+    def _next(self, messages: list[BaseMessage], kwargs: dict[str, Any]) -> AIMessage:
         # Each call consumes one script step, so a test proves the graph asked exactly as often
         # as it should; an empty script fails loudly instead of returning a made-up answer.
         self.seen.append(list(messages))
-        self.bound_tools.append(tools or [])
+        # `tools` is recorded as names because bind_tools sends names; the rest of the binding
+        # keywords (`parallel_tool_calls`, `tool_choice`) identify the binding for this call.
+        self.bound_tools.append(kwargs.get("tools") or [])
+        self.call_kwargs.append({k: v for k, v in kwargs.items() if k != "tools"})
         if not self.script:
             raise AssertionError("script exhausted")
         step = self.script.pop(0)
@@ -251,7 +253,7 @@ class ScriptedChatModel(BaseChatModel):
         run_manager: CallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> ChatResult:
-        message = self._next(messages, kwargs.get("tools"))
+        message = self._next(messages, kwargs)
         return ChatResult(generations=[ChatGeneration(message=message)])
 
     def _stream(
@@ -261,7 +263,7 @@ class ScriptedChatModel(BaseChatModel):
         run_manager: CallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> Iterator[ChatGenerationChunk]:
-        msg = self._next(messages, kwargs.get("tools"))
+        msg = self._next(messages, kwargs)
         chunks: list[AIMessageChunk] = []
         # A provider streams text before the call it decides to make, and invoke() keeps that
         # text; replaying it first keeps the stream and the invoke in agreement.

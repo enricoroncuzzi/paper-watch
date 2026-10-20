@@ -12,15 +12,18 @@ from typing import Any
 from uuid import UUID
 
 import pytest
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
+from structlog.testing import capture_logs
 
 from paperwatch.agent.citations import NO_SUPPORT
 from paperwatch.agent.graph import (
+    AgentState,
     AnswerEvent,
     TokenEvent,
     ToolEvent,
+    _may_run_tools,
     answer_question,
     build_agent,
     stream_answer,
@@ -28,6 +31,7 @@ from paperwatch.agent.graph import (
 from paperwatch.agent.prompts import FINAL_ROUND_NOTE, SYSTEM_PROMPT
 from paperwatch.agent.sources import SourceRegistry
 from paperwatch.agent.tools import make_tools
+from paperwatch.config import MAX_TOOL_ROUNDS
 from paperwatch.llm.chat import (
     CallGuard,
     ChatModel,
@@ -131,8 +135,47 @@ def test_tool_rounds_are_capped(db_session: Session, seed_items: Seed) -> None:
     )
     answer, tools = answer_question(agent(db_session, model), "tell me about agents")
     assert len(tools) == 4
-    assert model.bound_tools[4] == [] and model.seen[4][-1].content == FINAL_ROUND_NOTE
+    # The answer round keeps the tool definitions and forbids calls with tool_choice="none": a
+    # request carrying tool history must include `tools` (OpenRouter's guide), and a strict
+    # upstream would reject history without them.
+    assert model.call_kwargs[4] == {"parallel_tool_calls": False, "tool_choice": "none"}
+    assert sorted(model.bound_tools[4]) == ["compare_items", "get_item", "search_corpus"]
+    assert model.seen[4][-1].content == FINAL_ROUND_NOTE
     assert answer.supported
+
+
+def test_a_model_that_ignores_the_final_note_cannot_run_more_tools(
+    db_session: Session, seed_items: Seed
+) -> None:
+    seed_items(AGENT_ROWS)
+    # The fifth reply is the answer round, and it still asks for a tool. Nothing may run it, and
+    # no sixth model call may happen: the old cap re-served a model that kept asking forever.
+    model = ScriptedChatModel(
+        script=[
+            *[call("search_corpus", n, query=f"agents {n}") for n in range(1, 5)],
+            call("search_corpus", 5, query="agents 5"),
+        ]
+    )
+    answer, tools = answer_question(agent(db_session, model), "q")
+    assert tools == ["search_corpus"] * 4
+    assert answer.text == NO_SUPPORT and not answer.supported
+    assert calls(db_session) == 5
+
+
+def test_the_stream_does_not_echo_an_ignored_tool_call(
+    db_session: Session, seed_items: Seed
+) -> None:
+    seed_items(AGENT_ROWS)
+    model = ScriptedChatModel(
+        script=[
+            *[call("search_corpus", n, query=f"agents {n}") for n in range(1, 5)],
+            call("search_corpus", 5, query="agents 5"),
+        ]
+    )
+    events = list(stream_answer(agent(db_session, model), "q"))
+    # An event for a tool call that never ran would tell a client work happened that did not.
+    assert [e.name for e in events if isinstance(e, ToolEvent)] == ["search_corpus"] * 4
+    assert sum(isinstance(e, AnswerEvent) for e in events) == 1
 
 
 def test_answer_citing_an_unretrieved_alias_is_flagged(
@@ -180,6 +223,17 @@ def test_budget_exceeded_mid_answer(db_session: Session, seed_items: Seed) -> No
     assert calls(db_session) == 2
 
 
+def test_fallback_attempt_passes_the_daily_cap(db_session: Session) -> None:
+    # Every attempt is checked against the cap, not one check per model call: the primary's
+    # failure spends the day's last request, so the fallback must never be reached.
+    primary = ScriptedChatModel(script=[RuntimeError("429")])
+    fallback = ScriptedChatModel(script=[final("never sent [S1].")])
+    with pytest.raises(DailyCapReached):
+        answer_question(agent(db_session, primary, fallback, cap=1), "q")
+    assert fallback.seen == []
+    assert calls(db_session) == 1
+
+
 def test_fallback_model_answers_when_primary_fails(db_session: Session, seed_items: Seed) -> None:
     seed_items(AGENT_ROWS)
     primary = ScriptedChatModel(script=[RuntimeError("429")])
@@ -207,8 +261,11 @@ def test_a_failed_usage_write_does_not_hide_the_model_error(db_session: Session)
     graph = build_agent([ChatModel("p0", model)], [], reg, guard)
     with pytest.raises(ModelUnavailable) as raised:
         answer_question(graph, "q")
-    assert "429 from the provider" in str(raised.value)
+    # The client-facing message names the provider and the exception class only; the provider's
+    # own text stays on the chained cause, for a debugger.
+    assert str(raised.value) == "every chat model failed: p0 (RuntimeError)"
     assert isinstance(raised.value.__cause__, RuntimeError)
+    assert str(raised.value.__cause__) == "429 from the provider"
 
 
 def test_an_answer_with_no_tool_call_is_refused(db_session: Session) -> None:
@@ -241,7 +298,9 @@ def test_every_model_call_starts_with_the_citation_prompt(
     assert "topic or summary sentence" in SYSTEM_PROMPT
 
 
-def test_tools_are_bound_without_parallel_calls(db_session: Session, seed_items: Seed) -> None:
+def test_every_call_binds_tools_without_parallel_calls(
+    db_session: Session, seed_items: Seed
+) -> None:
     seed_items(AGENT_ROWS)
     model = ScriptedChatModel(
         script=[
@@ -250,9 +309,12 @@ def test_tools_are_bound_without_parallel_calls(db_session: Session, seed_items:
         ]
     )
     answer_question(agent(db_session, model), "q")
-    # One bind at build time. ToolNode runs one message's tool calls on a thread pool otherwise,
-    # and the tools share one session and one registry.
-    assert model.bound_kwargs == [{"parallel_tool_calls": False}]
+    # ToolNode would otherwise run one message's tool calls on a thread pool, and the tools share
+    # one session and one registry.
+    assert model.call_kwargs == [
+        {"parallel_tool_calls": False},
+        {"parallel_tool_calls": False},
+    ]
 
 
 def test_stream_answer_yields_tools_tokens_then_one_answer(
@@ -264,6 +326,7 @@ def test_stream_answer_yields_tools_tokens_then_one_answer(
     events = list(stream_answer(agent(db_session, model), "q"))
     kinds = [type(e) for e in events]
     assert kinds[0] is ToolEvent and kinds[-1] is AnswerEvent and kinds.count(AnswerEvent) == 1
+    assert [e.name for e in events if isinstance(e, ToolEvent)] == ["search_corpus"]
     assert "".join(e.text for e in events if isinstance(e, TokenEvent)) == text
 
 
@@ -285,3 +348,97 @@ def test_streaming_charges_the_aggregated_usage(db_session: Session, seed_items:
     # Usage arrives on the stream's last chunk, not its first: charging the message each call
     # aggregated keeps a streamed answer honest without double-counting chunks.
     assert ledger.tokens_used == 2 * USAGE["total_tokens"]
+
+
+def test_a_graph_answers_only_one_question(db_session: Session, seed_items: Seed) -> None:
+    seed_items(AGENT_ROWS)
+    model = ScriptedChatModel(
+        script=[
+            call("search_corpus", query="SWE-bench"),
+            final("SWE-bench Verified measures coding agents on real bugs [S1]."),
+        ]
+    )
+    graph = agent(db_session, model)
+    answer_question(graph, "q1")
+    # The registry (and the ledger) belong to that answer: a second question could cite S1
+    # without any tool having returned it for that question, so it is refused outright.
+    with pytest.raises(RuntimeError, match="one question"):
+        answer_question(graph, "q2")
+
+
+def test_provider_error_text_stays_out_of_logs_and_errors(db_session: Session) -> None:
+    # An SDK status error's string is the whole response body, and OpenRouter's moderation
+    # errors echo the flagged question, so neither the log nor the error may carry it.
+    reg = SourceRegistry()
+    guard = CallGuard(Repository(db_session), Ledger(10_000), 800, lambda: NOW)
+    model = ScriptedChatModel(script=[RuntimeError("secret question text")])
+    graph = build_agent([ChatModel("p0", model)], [], reg, guard)
+    with capture_logs() as logs, pytest.raises(ModelUnavailable) as raised:
+        answer_question(graph, "q")
+    assert str(raised.value) == "every chat model failed: p0 (RuntimeError)"
+    assert "secret question text" not in str(logs)
+    failures = [entry for entry in logs if entry["event"] == "chat_model_failed"]
+    assert [entry["error_type"] for entry in failures] == ["RuntimeError"]
+
+
+def test_a_wrong_tool_argument_comes_back_as_an_error_message(
+    db_session: Session, seed_items: Seed
+) -> None:
+    # A small model misspells an argument. ToolNode(handle_tool_errors=True) turns the schema
+    # error into a message the model can read and recover from, instead of ending the answer.
+    seed_items(AGENT_ROWS)
+    model = ScriptedChatModel(
+        script=[
+            call("search_corpus", 1, qery="SWE-bench"),
+            call("search_corpus", 2, query="SWE-bench"),
+            final("SWE-bench Verified measures coding agents on real bugs [S1]."),
+        ]
+    )
+    answer, tools = answer_question(agent(db_session, model), "q")
+    assert tools == ["search_corpus", "search_corpus"] and answer.supported
+    errors = [m for m in model.seen[1] if isinstance(m, ToolMessage) and m.status == "error"]
+    assert len(errors) == 1
+
+
+def test_one_message_with_two_tool_calls_is_one_round(
+    db_session: Session, seed_items: Seed
+) -> (
+    None
+):  # A round is one model message, however many calls it carries: counting calls instead would
+    # have cut the fourth message's call here, so four messages must run five tool calls.
+    seed_items(AGENT_ROWS)
+    two_calls = AIMessage(
+        "",
+        tool_calls=[
+            {"name": "search_corpus", "args": {"query": "SWE-bench"}, "id": "c1"},
+            {"name": "search_corpus", "args": {"query": "agent memory"}, "id": "c2"},
+        ],
+        usage_metadata=USAGE,
+    )
+    model = ScriptedChatModel(
+        script=[
+            two_calls,
+            call("search_corpus", 3, query="agents 3"),
+            call("search_corpus", 4, query="agents 4"),
+            call("search_corpus", 5, query="agents 5"),
+            final("Agents plan better with memory across sessions [S1]."),
+        ]
+    )
+    _, tools = answer_question(agent(db_session, model), "q")
+    assert tools == ["search_corpus"] * 5
+    assert len(model.call_kwargs) == 5
+
+
+def test_a_tool_call_never_routes_after_the_answer_round() -> None:
+    # The provider-independent half of the cap, tested without a model: a reply that still
+    # carries a call once the cap is spent goes to the checker, never to the tools.
+    message = AIMessage(
+        "", tool_calls=[{"name": "search_corpus", "args": {"query": "q"}, "id": "c1"}]
+    )
+    state: AgentState = {
+        "messages": [HumanMessage("q"), message],
+        "rounds": MAX_TOOL_ROUNDS + 1,
+        "answer": None,
+    }
+    assert not _may_run_tools(state)
+    assert _may_run_tools({**state, "rounds": MAX_TOOL_ROUNDS})

@@ -15,7 +15,8 @@ retrieved, invent an id, or write a confident sentence with no source at all. Th
 to run on a free chat tier (ADR 0006), so a question has hard limits: a per-answer token budget, a
 daily request cap, and a provider that can fail at any moment.
 
-The tools exist already (ADR-free Task 14): `search_corpus`, `get_item` and `compare_items`, all
+The tools exist already (Task 14, which has no ADR of its own): `search_corpus`, `get_item`
+and `compare_items`, all
 read-only, all returning `<source>` blocks with escaped markup and program-issued aliases (`S1`,
 `S2`, ...). The checker exists too (Task 15): `check_answer(text, registry)` compares a finished
 answer against the sources this answer's tools actually returned. What was missing was the part
@@ -27,12 +28,16 @@ The agent is a LangGraph graph in `src/paperwatch/agent/graph.py`, single-turn: 
 answer, no conversation memory and no checkpointer. Follow-up questions need a thread id and
 persisted state, and they arrive with M3's page, not before.
 
-The graph is four nodes and one conditional edge. `agent` calls the model with the system prompt
-from `prompts.py`; `route` reads the last message and sends it to `tools` when the model asked for
-a tool, or to `check` when it answered; `tools` is LangGraph's `ToolNode` over the Task 14 tools;
-`check` runs `check_answer` and stores the `CheckedAnswer` in the state. `check` is last and
-deterministic, so an answer with no valid citation leaves the graph as the fixed `NO_SUPPORT`
-message, never as uncited prose.
+The graph has three nodes (`agent`, `tools`, `check`) and one conditional edge, whose routing
+function is `route`. `agent` calls the model with the system prompt from `prompts.py`; `route`
+reads the last message and sends it to `tools` when the model asked for a tool, or to `check` when
+it answered; `tools` is LangGraph's `ToolNode` over the Task 14 tools; `check` runs `check_answer`
+and stores the `CheckedAnswer` in the state. `check` is last and deterministic, so an answer with
+no valid citation leaves the graph as the fixed `NO_SUPPORT` message, never as uncited prose.
+
+A graph belongs to one answer: its `SourceRegistry` and token ledger are bound at build time, so
+the first model call of a second question on the same graph is refused with a `RuntimeError`
+rather than being "supported" by aliases the first question retrieved.
 
 State is typed and plain (`messages`, `rounds`, `answer`), which is what makes the trajectory
 tests cheap: a scripted model replays an exact sequence of tool calls, and the test asserts which
@@ -41,10 +46,14 @@ written, with no key and no network.
 
 Four limits sit around the loop:
 
-- **Tool rounds are capped** at `MAX_TOOL_ROUNDS = 4`. The fifth model call is made without tools
-  and with `FINAL_ROUND_NOTE`, so the model cannot answer by searching again. The cap works by
-  taking the tools away, not by asking the model to stop, so a model that ignores the note still
-  produces a final answer instead of looping.
+- **Tool rounds are capped** at `MAX_TOOL_ROUNDS = 4`. A round is one model message, however many
+  tool calls it carries. The fifth model call is the answer round: it carries `FINAL_ROUND_NOTE`
+  and the tool definitions with `tool_choice="none"` (a request that carries tool history must
+  also carry `tools`, and OpenRouter and Groq both document `"none"` as "do not call a tool").
+  That round counts as spent, so the cap cannot be escaped: `route` refuses to run a tool call
+  after it, and the node drops any call the reply still contains, which keeps it out of the
+  events and the tool list too. A model that ignores the note therefore gets its answer checked
+  (`NO_SUPPORT` when it cited nothing) instead of another turn.
 - **Every attempt is guarded** by the Task 13 `CallGuard`: `before_call` checks the daily cap,
   `after_call` records the real usage and charges the per-answer ledger, `after_failure` records an
   attempt that raised. The fallback chain is an explicit loop rather than
@@ -101,11 +110,16 @@ always attributed and visibly `lab_blog`; M2 never republishes that text.
   `chat_max_output_tokens`, so one question cannot silently cost more than the per-answer budget
   plus one call.
 - A provider outage costs one failed, counted attempt per configured model, then `ModelUnavailable`
-  or a fallback answer; it never hangs and never falls through to an unchecked answer.
-- The round cap is a hard stop, so a question that genuinely needs five searches gets a thinner
-  answer. The alternative, an uncapped loop, is a free-tier quota spent by one bad question.
+  or a fallback answer; it never hangs and never falls through to an unchecked answer. A dead
+  primary costs one failed request per model call of the answer (the primary is tried first every
+  time), which the per-answer bound of five calls keeps small.
+- The round cap is a hard stop even when the model ignores the note, so a question that genuinely
+  needs five searches gets a thinner answer. The alternative, an uncapped loop, is a free-tier
+  quota spent by one bad question.
 - The citation check is a heuristic (lesson 11): it guarantees aliases, evidence and tier labels,
   not truth. Its known limits are documented rather than fixed one round at a time.
-- `stream_answer` may emit tokens the checked answer then discards (an uncited answer becomes
-  `NO_SUPPORT`). The last event is authoritative, and the CLI and the API replace the streamed
-  text with it; showing the flags instead would require rendering the model's ungrounded prose.
+- `stream_answer` may emit tokens the checked answer then discards: an uncited answer becomes
+  `NO_SUPPORT`, text can precede a tool call, and a stream that dies mid-answer can be followed by
+  the fallback model's answer. The last event is authoritative, so a client replaces the streamed
+  text with it, never appends; showing the flags instead would require rendering the model's
+  ungrounded prose.
