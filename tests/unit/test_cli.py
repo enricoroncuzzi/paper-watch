@@ -1,4 +1,6 @@
 import json
+import signal
+import threading
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -140,13 +142,23 @@ def test_live_search_wires_the_filters_and_k_and_prints_hits(
     monkeypatch.setattr(cli, "hybrid_search", fake_hybrid_search)
     result = CliRunner().invoke(
         cli.app,
-        ["search", "SWE-bench", "--live", "--tier", "peer_reviewed", "--profile", "p1", "--k", "3"],
+        [
+            "search",
+            "SWE-bench",
+            "--live",
+            "--tier",
+            "peer_reviewed",
+            "--profile",
+            "ai-forensics",
+            "--k",
+            "3",
+        ],
     )
     assert result.exit_code == 0
     assert "A title" in result.output and "https://x/1" in result.output
     # The stub received the flags: k and both filters were forwarded.
     assert captured["k"] == 3
-    assert captured["filters"] == Filters(frozenset({"peer_reviewed"}), frozenset({"p1"}))
+    assert captured["filters"] == Filters(frozenset({"peer_reviewed"}), frozenset({"ai-forensics"}))
     assert built == ["embedder"]
     assert closed == [True]
 
@@ -305,13 +317,16 @@ def test_eval_db_name_always_matches_the_sweep_pattern() -> None:
     assert cli._EVAL_DB_RE.fullmatch(cli._eval_db_name(1792070000.987))
 
 
-# --- ask, serve and the terminal rendering (Task 17) ---
+# --- ask, serve and the terminal rendering (Task 17, review round 1) ---
+
+HOSTILE = "\u202e"
 
 
 def scripted_run(*evts: object) -> Callable[..., Iterator[object]]:
     # A generator, not iter(): `ask` closes the stream, which is how the database session is
-    # released when an error event ends the loop early.
-    return lambda deps, question, filters: (event for event in evts)
+    # released when an error event ends the loop early. `cancel` is accepted because `ask` passes
+    # the event its Ctrl-C handler sets.
+    return lambda deps, question, filters, cancel=None: (event for event in evts)
 
 
 def answer_with(
@@ -322,6 +337,19 @@ def answer_with(
     supported: bool = False,
 ) -> CheckedAnswer:
     return CheckedAnswer(text, citations, flags, supported)
+
+
+def citation(**overrides: object) -> Citation:
+    fields: dict[str, object] = {
+        "alias": "S1",
+        "item_id": uuid4(),
+        "title": "A title marker",
+        "url": "https://x/marker",
+        "tier": "peer_reviewed",
+        "basis": "venue",
+    }
+    fields.update(overrides)
+    return Citation(**fields)  # type: ignore[arg-type]
 
 
 def test_ask_requires_live(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -336,10 +364,11 @@ def test_serve_requires_live(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_ask_prints_answer_sources_and_flags(monkeypatch: pytest.MonkeyPatch) -> None:
-    ref = Citation("S1", uuid4(), "SWE-bench results", "https://x/swe", "peer_reviewed", "venue")
     flag = Flag("uncited_claim", "Most agents forget everything", "no citation")
     answer = answer_with(
-        "Coding agents are scored on real bugs [S1].", citations=(ref,), flags=(flag,)
+        "Coding agents are scored on real bugs [S1].",
+        citations=(citation(title="SWE-bench results", url="https://x/swe"),),
+        flags=(flag,),
     )
     monkeypatch.setattr(cli, "live_deps", lambda s: object())
     monkeypatch.setattr(
@@ -362,6 +391,29 @@ def test_ask_exits_1_on_error_event(monkeypatch: pytest.MonkeyPatch) -> None:
     # An error is not answer text, so it goes to stderr and stdout stays empty for a pipe.
     assert "800 calls today" in result.stderr
     assert result.stdout == ""
+
+
+def test_ask_ends_the_streamed_line_before_an_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli, "live_deps", lambda s: object())
+    monkeypatch.setattr(
+        cli,
+        "run_question",
+        scripted_run(TokenEvent("half an ans"), ErrorEvent("model_unavailable", "all failed")),
+    )
+    result = CliRunner().invoke(app, ["ask", "q", "--live"])
+    assert result.exit_code == 1
+    assert result.stdout.endswith("\n")
+    assert "half an ans" in result.stdout
+
+
+def test_ask_exits_1_when_the_stream_ends_without_an_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cli, "live_deps", lambda s: object())
+    monkeypatch.setattr(cli, "run_question", scripted_run(TokenEvent("nothing")))
+    result = CliRunner().invoke(app, ["ask", "q", "--live"])
+    assert result.exit_code == 1
+    assert "without a checked answer" in result.stderr and "Traceback" not in result.stderr
 
 
 def test_ask_prints_the_checked_text_again_when_it_differs(
@@ -417,6 +469,45 @@ def test_ask_hides_and_logs_flags_beside_no_support(
     assert logged and logged[0]["flags"][0]["sentence"] == flag.sentence
 
 
+@pytest.mark.parametrize(
+    "hostile",
+    [
+        "\r",  # carriage return: overwrites the line the reader is looking at
+        "\u2028",  # line separator
+        "\u2029",  # paragraph separator
+        "\u200b",  # zero-width space
+        "\u200e",  # left-to-right mark: reorders neutral characters
+        "\u061c",  # Arabic letter mark
+        "\U000e0041",  # a tag character: invisible text that survives a copy
+        "\ud800",  # a lone surrogate: typer.echo cannot encode it
+        "\x1b",  # ESC: starts every ANSI sequence, OSC 8 links included
+        "\x7f",  # DEL
+        "\x9b",  # C1 CSI
+        "\ufeff",  # byte-order mark
+        "\u00ad",  # soft hyphen
+    ],
+)
+def test_terminal_safe_removes_control_and_format_characters(hostile: str) -> None:
+    # The one escaping rule for everything `ask` prints: a terminal acts on these, so they become
+    # U+FFFD. The categories are Cc, Cf, Cs, Zl and Zp, minus the two formatting characters real
+    # text needs (see the next test).
+    assert cli.terminal_safe(f"a{hostile}b") == "a\ufffdb"
+
+
+def test_terminal_safe_keeps_newline_tab_and_the_joiners() -> None:
+    # ZWNJ and ZWJ are formatting characters, but Persian, Indic scripts and emoji sequences need
+    # them, so removing them would corrupt the text.
+    assert cli.terminal_safe("line\ttab\nnext\u200cjoin\u200djoin") == (
+        "line\ttab\nnext\u200cjoin\u200djoin"
+    )
+
+
+def test_terminal_safe_keeps_ordinary_unicode_readable() -> None:
+    assert cli.terminal_safe("Agents benchmark édité à Zürich, 日本, 42 %\nnext line\tlast") == (
+        "Agents benchmark édité à Zürich, 日本, 42 %\nnext line\tlast"
+    )
+
+
 def test_ask_neutralises_an_osc_8_link_in_a_streamed_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -432,103 +523,154 @@ def test_ask_neutralises_an_osc_8_link_in_a_streamed_token(
     assert "\ufffd" in result.output
 
 
-def test_ask_neutralises_a_screen_clear_in_a_flag_sentence(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    flag = Flag("uncited_claim", "\x1b[2Jhidden", "\u202edetail")
-    answer = answer_with("Some answer [S1].", flags=(flag,), supported=False)
-    monkeypatch.setattr(cli, "live_deps", lambda s: object())
-    monkeypatch.setattr(cli, "run_question", scripted_run(AnswerEvent(answer)))
-    result = CliRunner().invoke(app, ["ask", "q", "--live"])
-    assert result.exit_code == 0
-    # Click strips ANSI sequences from its own captured output, so the marker proves the helper
-    # ran before echo; the bidi override in the detail is not ANSI and must be gone as well.
-    assert "\ufffd" in result.output
-    assert "\u202e" not in result.output
-
-
-def test_ask_neutralises_a_bidi_override_in_a_title_and_url(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    ref = Citation(
-        "S1", uuid4(), "swe\u202ereversed", "https://x/\x9b2Jswe", "peer_reviewed", "venue"
-    )
+@pytest.mark.parametrize("field", ["alias", "title", "tier", "url"])
+def test_ask_escapes_every_citation_field(field: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    # One test per printed field: a mutant that drops terminal_safe from one call site must fail.
+    ref = citation(**{field: f"bad{HOSTILE}side marker"})
     answer = answer_with("Some answer [S1].", citations=(ref,), supported=True)
     monkeypatch.setattr(cli, "live_deps", lambda s: object())
     monkeypatch.setattr(cli, "run_question", scripted_run(AnswerEvent(answer)))
     result = CliRunner().invoke(app, ["ask", "q", "--live"])
     assert result.exit_code == 0
-    assert "\u202e" not in result.output
-    assert "\ufffd" in result.output
+    assert "marker" in result.output
+    assert HOSTILE not in result.output
 
 
-def test_ask_neutralises_a_bidi_override_in_the_checked_text(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # The checked text replaces the model's, and it is rendered too.
-    answer = answer_with("right\u202eto left [S1].", supported=True)
+@pytest.mark.parametrize("field", ["sentence", "detail"])
+def test_ask_escapes_every_flag_field(field: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    flag = Flag(
+        **{
+            "kind": "uncited_claim",
+            "sentence": "a claim",
+            "detail": "why",
+            field: f"bad{HOSTILE}side marker",
+        }
+    )  # type: ignore[arg-type]
+    answer = answer_with("Some answer [S1].", flags=(flag,))
     monkeypatch.setattr(cli, "live_deps", lambda s: object())
     monkeypatch.setattr(cli, "run_question", scripted_run(AnswerEvent(answer)))
     result = CliRunner().invoke(app, ["ask", "q", "--live"])
     assert result.exit_code == 0
-    assert "\u202e" not in result.output and "\ufffd" in result.output
+    assert "marker" in result.output
+    assert HOSTILE not in result.output
 
 
-def test_terminal_safe_removes_control_and_bidi_characters() -> None:
-    # The one escaping rule for everything `ask` prints: a terminal interprets these, so they
-    # become U+FFFD. OSC 8 is the important one: it turns text into a clickable link.
-    assert cli.terminal_safe("\x1b]8;;http://evil\x1b\\click\x1b]8;;\x1b\\") == (
-        "\ufffd]8;;http://evil\ufffd\\click\ufffd]8;;\ufffd\\"
+def test_ask_escapes_the_checked_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The checked text replaces the model's, and it is rendered too.
+    answer = answer_with(f"right{HOSTILE}to left [S1].", supported=True)
+    monkeypatch.setattr(cli, "live_deps", lambda s: object())
+    monkeypatch.setattr(cli, "run_question", scripted_run(AnswerEvent(answer)))
+    result = CliRunner().invoke(app, ["ask", "q", "--live"])
+    assert result.exit_code == 0
+    assert "left" in result.output and HOSTILE not in result.output
+
+
+def test_ask_escapes_the_error_message(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli, "live_deps", lambda s: object())
+    monkeypatch.setattr(
+        cli, "run_question", scripted_run(ErrorEvent("internal", f"bad{HOSTILE}side marker"))
     )
-    assert "\x1b" not in cli.terminal_safe("\x1b[2J")
-    assert cli.terminal_safe("\x07bell\x7fdel\x9bc1") == "\ufffdbell\ufffddel\ufffdc1"
-    assert cli.terminal_safe("a\u202eb\u2066c\u2069") == "a\ufffdb\ufffdc\ufffd"
-    # Tab and newline are how the answer is laid out, so they stay.
-    assert cli.terminal_safe("line\tone\nline two") == "line\tone\nline two"
+    result = CliRunner().invoke(app, ["ask", "q", "--live"])
+    assert result.exit_code == 1
+    assert "marker" in result.stderr and HOSTILE not in result.stderr
 
 
-def test_terminal_safe_keeps_ordinary_unicode_readable() -> None:
-    assert cli.terminal_safe("Agents benchmark édité à Zürich, 日本, 42 %\nnext line\tlast") == (
-        "Agents benchmark édité à Zürich, 日本, 42 %\nnext line\tlast"
-    )
-
-
-def test_ask_quotes_model_written_tool_arguments(monkeypatch: pytest.MonkeyPatch) -> None:
-    # The tool call is model output too. It is rendered as JSON, whose escaping keeps a control
-    # character as the text `\u001b` instead of a byte the terminal would act on.
-    event = ToolEvent("search_corpus", {"query": "\x1b[31mred"})
+def test_ask_escapes_the_tool_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    event = ToolEvent(f"search{HOSTILE}_corpus", {"query": "x"})
     monkeypatch.setattr(cli, "live_deps", lambda s: object())
     monkeypatch.setattr(
         cli, "run_question", scripted_run(event, AnswerEvent(answer_with("ok [S1].")))
     )
     result = CliRunner().invoke(app, ["ask", "q", "--live"])
     assert result.exit_code == 0
-    assert "search_corpus" in result.stderr
-    assert "\\u001b[31mred" in result.stderr
-    assert "\x1b" not in result.stderr
+    assert "corpus" in result.stderr and HOSTILE not in result.stderr
 
 
-def test_serve_runs_uvicorn_on_localhost_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    # The API has no sign-in until M3's Entra ID, so it must not listen on every interface.
-    captured: dict[str, object] = {}
-
-    def fake_run(app_: object, *, host: str, port: int) -> None:
-        captured.update(app=app_, host=host, port=port)
-
-    monkeypatch.setattr(cli, "live_deps", lambda s: "deps")
-    monkeypatch.setattr(cli, "create_app", lambda deps: f"app:{deps}")
-    monkeypatch.setattr(cli.uvicorn, "run", fake_run)
-    result = CliRunner().invoke(app, ["serve", "--live"])
+def test_ask_quotes_model_written_tool_arguments(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The tool call is model output too. It is rendered as JSON, whose escaping (ensure_ascii,
+    # the json.dumps default) keeps a hostile character as the text `\u202e` instead of a byte.
+    event = ToolEvent("search_corpus", {"query": f"bad{HOSTILE}side marker"})
+    monkeypatch.setattr(cli, "live_deps", lambda s: object())
+    monkeypatch.setattr(
+        cli, "run_question", scripted_run(event, AnswerEvent(answer_with("ok [S1].")))
+    )
+    result = CliRunner().invoke(app, ["ask", "q", "--live"])
     assert result.exit_code == 0
-    assert captured == {"app": "app:deps", "host": "127.0.0.1", "port": 8000}
+    assert "marker" in result.stderr
+    assert HOSTILE not in result.stderr
+    assert "\\u202e" in result.stderr
 
 
-def test_the_cli_never_claims_an_answer_was_verified() -> None:
-    # supported means "every visible claim points at a retrieved source", not "verified"
-    # (docs/learn/11): a CLI string must not say otherwise.
-    for command in (["--help"], ["ask", "--help"], ["serve", "--help"]):
-        output = CliRunner().invoke(app, command).output.lower()
-        assert "verified" not in output and "fact-check" not in output
+def test_ask_prints_a_lone_surrogate_as_replacement_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A provider can send "\ud800" in a JSON stream and the SDK decodes a lone surrogate, which
+    # cannot be encoded: the answer must print, not crash with a traceback (Review Focus 3).
+    monkeypatch.setattr(cli, "live_deps", lambda s: object())
+    monkeypatch.setattr(
+        cli,
+        "run_question",
+        scripted_run(TokenEvent("a\ud800b"), AnswerEvent(answer_with("a\ud800b", supported=False))),
+    )
+    result = CliRunner().invoke(app, ["ask", "q", "--live"])
+    assert result.exit_code == 0
+    assert "\ufffd" in result.output
+    assert "Traceback" not in result.output and "UnicodeEncodeError" not in result.stderr
+
+
+def test_ask_refuses_a_blank_question(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli, "live_deps", boom)
+    result = CliRunner().invoke(app, ["ask", "   ", "--live"])
+    assert result.exit_code == 2
+    assert "blank" in result.output.lower()
+
+
+def test_ask_refuses_an_unknown_tier(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli, "live_deps", boom)
+    result = CliRunner().invoke(app, ["ask", "q", "--live", "--tier", "bogus"])
+    assert result.exit_code == 2 and "tier" in result.output.lower()
+
+
+def test_ask_refuses_an_unknown_profile(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli, "live_deps", boom)
+    result = CliRunner().invoke(app, ["ask", "q", "--live", "--profile", "not-a-profile"])
+    assert result.exit_code == 2 and "profile" in result.output.lower()
+
+
+def test_search_refuses_an_unknown_profile(monkeypatch: pytest.MonkeyPatch) -> None:
+    # `search` and `ask` share one validation helper, so a typo is refused by both.
+    monkeypatch.setattr(cli, "make_embedder", boom)
+    result = CliRunner().invoke(app, ["search", "q", "--live", "--profile", "not-a-profile"])
+    assert result.exit_code == 2 and "profile" in result.output.lower()
+
+
+def test_ask_names_the_missing_chat_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    # No key: exit 2 with the variable's name, before any model, engine or embedder is built.
+    monkeypatch.setattr(cli, "make_embedder", boom)
+    monkeypatch.setattr(cli, "make_engine", boom)
+    result = CliRunner().invoke(app, ["ask", "q", "--live"])
+    assert result.exit_code == 2
+    assert "PW_OPENROUTER_API_KEY" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_ask_passes_the_filters_to_run_question(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[tuple[str, Filters]] = []
+
+    def stream(
+        deps: object, question: str, filters: Filters, cancel: object = None
+    ) -> Iterator[object]:
+        seen.append((question, filters))
+        yield AnswerEvent(answer_with("ok [S1].", supported=True))
+
+    monkeypatch.setattr(cli, "live_deps", lambda s: object())
+    monkeypatch.setattr(cli, "run_question", stream)
+    result = CliRunner().invoke(
+        app,
+        ["ask", "q", "--live", "--tier", "peer_reviewed", "--profile", "ai-forensics"],
+    )
+    assert result.exit_code == 0
+    assert seen == [("q", Filters(frozenset({"peer_reviewed"}), frozenset({"ai-forensics"})))]
 
 
 def test_ask_closes_the_stream_when_an_error_ends_it(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -536,7 +678,9 @@ def test_ask_closes_the_stream_when_an_error_ends_it(monkeypatch: pytest.MonkeyP
     # the answer's database session until it is closed.
     closed: list[bool] = []
 
-    def stream(deps: object, question: str, filters: object) -> Iterator[object]:
+    def stream(
+        deps: object, question: str, filters: object, cancel: object = None
+    ) -> Iterator[object]:
         try:
             yield ErrorEvent("internal", "boom")
         finally:
@@ -547,3 +691,102 @@ def test_ask_closes_the_stream_when_an_error_ends_it(monkeypatch: pytest.MonkeyP
     result = CliRunner().invoke(app, ["ask", "q", "--live"])
     assert result.exit_code == 1
     assert closed == [True]
+
+
+def test_ask_exits_130_on_ctrl_c(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Ctrl-C lands while the consumer waits for the next event. Closing the stream aborts the
+    # in-flight model call (Task 17 Step 9 item 1b); the command exits like a shell program
+    # interrupted by the user, with one line and no traceback.
+    closed: list[bool] = []
+    received: list[object] = []
+
+    def stream(
+        deps: object, question: str, filters: object, cancel: object = None
+    ) -> Iterator[object]:
+        received.append(cancel)
+        try:
+            yield TokenEvent("half an answer")
+            raise KeyboardInterrupt
+        finally:
+            closed.append(True)
+
+    monkeypatch.setattr(cli, "live_deps", lambda s: object())
+    monkeypatch.setattr(cli, "configure_logging", lambda level: None)
+    monkeypatch.setattr(cli, "run_question", stream)
+    result = CliRunner().invoke(app, ["ask", "q", "--live"])
+    assert result.exit_code == 130
+    assert closed == [True]
+    # `ask` hands its Ctrl-C event to the answer, so the handler can stop the model call before
+    # the interrupt unwinds the stream.
+    assert isinstance(received[0], threading.Event)
+    assert "interrupted" in result.stderr.lower()
+    assert "Traceback" not in result.stderr
+
+
+def test_the_interrupt_handler_sets_the_flag_before_it_raises() -> None:
+    # This ordering is the fix for Ctrl-C: the graph's cleanup joins the in-flight model call, so
+    # the abort flag has to be set before the interrupt starts unwinding.
+    cancel = threading.Event()
+    handler = cli._interrupt_handler(cancel)
+    with pytest.raises(KeyboardInterrupt):
+        handler(signal.SIGINT, None)
+    assert cancel.is_set()
+
+
+def test_serve_runs_uvicorn_on_localhost_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The API has no sign-in until M3's Entra ID, so it must not listen on every interface, and
+    # uvicorn is told not to configure logging: the app's own structured setup stays in charge.
+    captured: dict[str, object] = {}
+
+    def fake_run(app_: object, **kwargs: object) -> None:
+        captured.update(app=app_, **kwargs)
+
+    from fastapi import FastAPI
+
+    built = FastAPI()
+    monkeypatch.setattr(cli, "live_deps", lambda s: "deps")
+    monkeypatch.setattr(cli, "create_app", lambda deps: built)
+    monkeypatch.setattr(cli.uvicorn, "run", fake_run)
+    result = CliRunner().invoke(app, ["serve", "--live"])
+    assert result.exit_code == 0
+    assert captured["app"] is built
+    assert (captured["host"], captured["port"]) == ("127.0.0.1", 8000)
+    assert captured["log_config"] is None
+    assert captured["log_level"] == "info"
+    assert any(m.cls.__name__ == "TrustedHostMiddleware" for m in built.user_middleware)
+    assert "warning" not in result.stderr.lower()
+
+
+def test_a_loopback_server_refuses_a_foreign_host() -> None:
+    # The middleware must actually reject a rebound Host header, not just be installed.
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    built = FastAPI()
+    built.add_api_route("/healthz", lambda: {"status": "ok"}, methods=["GET"])
+    served = cli._served_app(object(), "127.0.0.1")
+    assert TestClient(served).get("/healthz", headers={"host": "127.0.0.1"}).status_code == 200
+    assert TestClient(served).get("/healthz", headers={"host": "evil.example"}).status_code == 400
+
+
+def test_serve_warns_about_a_public_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    from fastapi import FastAPI
+
+    built = FastAPI()
+    monkeypatch.setattr(cli, "live_deps", lambda s: "deps")
+    monkeypatch.setattr(cli, "create_app", lambda deps: built)
+    monkeypatch.setattr(cli.uvicorn, "run", lambda app_, **kwargs: None)
+    result = CliRunner().invoke(app, ["serve", "--live", "--host", "192.0.2.7"])
+    assert result.exit_code == 0
+    assert "warning" in result.stderr.lower()
+    # A public bind is the operator's choice; the loopback host allow-list would only fail
+    # requests there, so it is not installed.
+    assert not any(m.cls.__name__ == "TrustedHostMiddleware" for m in built.user_middleware)
+
+
+def test_the_cli_never_claims_an_answer_was_verified() -> None:
+    # supported means "every visible claim points at a retrieved source", not "verified"
+    # (docs/learn/11): a CLI string must not say otherwise.
+    for command in (["--help"], ["ask", "--help"], ["serve", "--help"]):
+        output = CliRunner().invoke(app, command).output.lower()
+        assert "verified" not in output and "fact-check" not in output

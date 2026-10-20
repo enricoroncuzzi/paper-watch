@@ -29,9 +29,12 @@ the standing rules.
   ledger with its per-run cap (`ledger.py`), and the OpenAI-compatible chat models with the
   daily-call `CallGuard` (`chat.py`).
 - `src/paperwatch/agent/` is the answering layer: the read-only corpus tools (`tools.py`) with
-  the per-answer `SourceRegistry` that issues the aliases S1, S2, ... (`sources.py`), and
-  `citations.py`, which checks every finished answer's citations against the sources those tools
-  retrieved (`docs/learn/11`).
+  the per-answer `SourceRegistry` that issues the aliases S1, S2, ... (`sources.py`), the LangGraph
+  graph that loops model and tools (`graph.py`), and `citations.py`, which checks every finished
+  answer's citations against the sources those tools retrieved (`docs/learn/11`).
+- `src/paperwatch/api/app.py` is the FastAPI app (`/healthz`, `/readyz`, SSE `POST /ask`) and
+  `run_question`, the one place an agent failure becomes an error event and the session is
+  released; `docs/api/openapi.json` is the committed contract, rewritten per `docs/api/README.md`.
 - `evals/` holds the retrieval eval (`retrieval_eval.py`: recall@k, MRR, nDCG@k over the
   deterministic fake embedder) and the relevance eval (`relevance_eval.py`: classifier
   calibration and held-out scores), each with a committed baseline.
@@ -52,8 +55,7 @@ the standing rules.
 - The default test suite mocks every HTTP call and never loads a real model; the CI `test`
   job runs exactly that suite (`-m 'not model'` in `pyproject.toml`). `paperwatch ingest`,
   `paperwatch search`, `paperwatch ask` and `paperwatch serve` refuse to run without `--live`
-  (`cli.py`), and real-model tests are opt-in
-  with `-m model`.
+  (`cli.py`), and real-model tests are opt-in with `-m model`.
 - Tests must build settings from the test's own environment: pass `_env_file=None` and clear
   `PW_*` (the `build_settings` fixture in `tests/unit/test_config.py`), so a developer's `.env`
   never changes a result.

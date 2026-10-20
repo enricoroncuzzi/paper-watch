@@ -23,7 +23,10 @@ fresh `SourceRegistry`, token ledger, `CallGuard` and tool set for this answer, 
 `stream_answer`'s events. A new `SourceRegistry` per answer is what makes `S1` mean "the first
 source this answer retrieved": a second question cannot cite the first one's aliases.
 
-Four events reach a client:
+Four events reach a client, and each one is a Pydantic model in `api/app.py` (`ToolData`,
+`TokenData`, `AnswerData` with `CitationData` and `FlagData`, `ErrorData`) combined by
+`StreamItem`. The models build the payloads and are the committed OpenAPI contract, so M3's
+generated client gets typed events and the code cannot drift from the document.
 
 | Event | Data | Meaning |
 |---|---|---|
@@ -43,7 +46,9 @@ fallback model, can produce a second run of words), so a client replaces its buf
 stream that has already started (the status code is 200; the error arrives in the body). The
 `model_unavailable` event names providers and exception classes only. The provider's own text stays
 on `ModelUnavailable.__cause__`, for a debugger, and is never logged or serialised: an SDK error's
-body can echo the question the provider refused.
+body can echo the question the provider refused. The `internal` branch logs the exception type,
+the cause's type and the code site (`file:line:function`), never a message, a variable value or a
+traceback, for the same reason.
 
 ## Why SSE and not WebSockets
 
@@ -60,17 +65,47 @@ as HTML, and takes every link from `citations[].url` (`docs/api/README.md`).
 ## The session is a resource
 
 A streamed response outlives the function that started it: Starlette runs a sync generator in a
-thread pool and writes each chunk as it appears. `run_question` therefore releases its session in
-a `finally`, so a normal end, an error and a generator close (what a framework does when the
-client disconnects) all take the same path. The session is read-only, so there is nothing to
-commit; the usage rows (`chat_calls`) were already committed by `ChatCallLog`, which opens its own
-short session per row precisely so a failed or abandoned request cannot hide calls it already
-spent against the free tier (`docs/learn/09-chat-models-and-openai-compatible-apis.md`).
+thread pool and writes each chunk as it appears. `run_question` releases its session in a
+`finally`. The session is read-only, so there is nothing to commit; the usage rows (`chat_calls`)
+were already committed by `ChatCallLog`, which opens its own short session per row precisely so a
+failed or abandoned request cannot hide calls it already spent against the free tier
+(`docs/learn/09-chat-models-and-openai-compatible-apis.md`). `ChatCallLog` also has its own small
+engine, so a usage write never queues behind an answer that holds a connection while it waits for
+the model.
+
+A disconnect is where the framework matters. Starlette 1.9 never closes the generator a
+`StreamingResponse` was given: when the client hangs up it cancels the response task and leaves
+the generator suspended at a `yield`. A later garbage-collection close would run on whatever
+thread happens to trigger the pass, and closing the LangGraph stream joins the graph's worker
+thread: on the event loop that freezes the server, and on the agent's own thread it deadlocks.
+So the response itself closes the generator: `_ClosingStream.stream_response` does it in a
+`finally`, on a worker thread, inside a shielded cancel scope, so the close is deterministic and
+never races the `next()` still in flight.
+
+Closing is also the abort signal. `run_question` keeps a `threading.Event`; its `finally` sets it
+before closing the stream. A callback handler on the graph raises `AnswerAborted` (a
+`BaseException`, so the fallback loop never mistakes it for provider trouble) at the model's next
+token. The in-flight call therefore stops within a token instead of writing a whole answer for
+nobody, and `call_models` still records the attempt, so the daily cap counts what the provider was
+asked for. The same path gives Ctrl-C in `paperwatch ask` a one-line exit (130) instead of a wait
+for the current model call.
+
+## Health and readiness
+
+`/healthz` is `async def` and never touches the database, so a liveness probe cannot queue behind a
+stalled one. `/readyz` runs one `SELECT 1` in a worker thread, under a two-slot
+`anyio.CapacityLimiter` and a two-second `anyio.fail_after`, and answers 503 when no slot is free
+or the bound passes. The engine also gets a three-second libpq connect timeout, so a paused
+database turns into a quick failure rather than a hung request.
 
 ## What a test can see without a live model
 
-`tests/integration/test_api.py` drives the real app through `TestClient` with a scripted chat
-model, so the SSE wire format, the event order, the error events and the OpenAPI contract are all
-checked offline. The committed `docs/api/openapi.json` is compared with the app's own document, so
-an API change that skips the contract fails the suite; `docs/api/README.md` holds the one-liner
+`tests/integration/test_api.py` drives the real app with a scripted chat model, so the SSE wire
+format, the event order, the error events and the OpenAPI contract are all checked offline. The
+disconnect tests speak raw ASGI, because a `TestClient` reads the whole stream and never hangs up:
+one hangs up under ASGI 2.3 (where Starlette listens for `http.disconnect`) and one under 2.4
+(where it notices on a failed send), and both assert the session was released without a
+`gc.collect()`. A third hangs up mid-answer and asserts the model stopped early and its usage row
+was still recorded. The committed `docs/api/openapi.json` is compared with the app's own document,
+so an API change that skips the contract fails the suite; `docs/api/README.md` holds the one-liner
 that rewrites it.

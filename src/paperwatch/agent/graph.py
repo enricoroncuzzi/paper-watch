@@ -10,11 +10,13 @@ parts this project wants to show.
 then one checked answer); `answer_question` is the synchronous form for tests and the CLI.
 """
 
-from collections.abc import Iterator, Sequence
+import threading
+from collections.abc import Generator, Iterator, Sequence
 from dataclasses import dataclass
 from typing import Annotated, Any, TypedDict, cast
 
 import structlog
+from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import (
     AIMessage,
     AIMessageChunk,
@@ -22,7 +24,7 @@ from langchain_core.messages import (
     HumanMessage,
     SystemMessage,
 )
-from langchain_core.runnables import Runnable
+from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_core.tools import BaseTool
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
@@ -80,6 +82,31 @@ AgentGraph = CompiledStateGraph[AgentState, Any, Any, Any]
 _Model = Runnable[Any, Any]
 
 
+class AnswerAborted(BaseException):
+    """The consumer is gone, so the answer stops at the model's next token.
+
+    A BaseException on purpose: the model-failure handler in `call_models` catches `Exception`,
+    and an abort must not look like provider trouble and send the question to the fallback model,
+    which would spend another request for nobody.
+    """
+
+
+class _AbortOnDisconnect(BaseCallbackHandler):
+    """Raises `AnswerAborted` at the next token once the answer's consumer has gone away."""
+
+    # langchain-core logs and swallows a handler's exceptions unless this is set.
+    raise_error = True
+
+    def __init__(self, cancel: threading.Event) -> None:
+        self._cancel = cancel
+
+    def on_llm_new_token(self, token: str | list[str | dict[str, Any]], **kwargs: Any) -> None:
+        # Called for every streamed chunk, so one flag check per token is the cost of an answer
+        # that can be stopped; a plain `invoke` without streaming never calls it.
+        if self._cancel.is_set():
+            raise AnswerAborted
+
+
 def build_agent(
     models: list[ChatModel],
     tools: list[BaseTool],
@@ -122,6 +149,18 @@ def build_agent(
             guard.before_call()
             try:
                 message = model.invoke(messages)
+            except AnswerAborted:
+                # The request reached the provider before the client left, so it counts against
+                # the daily cap. The store's own failure is logged, never raised over the abort.
+                try:
+                    guard.after_failure(provider)
+                except Exception as store_exc:  # noqa: BLE001 - never hide the abort
+                    log.warning(
+                        "chat_failure_record_failed",
+                        provider=provider,
+                        error_type=type(store_exc).__name__,
+                    )
+                raise
             except Exception as exc:  # noqa: BLE001 - any provider error moves to the next model
                 # The attempt reached the provider, so it counts against the daily cap (Task 13
                 # Step 11). A store that cannot record it is logged, never raised: the provider
@@ -227,16 +266,27 @@ def _may_run_tools(state: AgentState) -> bool:
     )
 
 
-def stream_answer(graph: AgentGraph, question: str) -> Iterator[AgentEvent]:
+def stream_answer(
+    graph: AgentGraph, question: str, cancel: threading.Event | None = None
+) -> Generator[AgentEvent, None, None]:
     """Yield tool calls and tokens as they happen, then exactly one `AnswerEvent`.
 
-    One graph, one run: build a new one for the next question (see `build_agent`).
+    `cancel` is the consumer's signal that nobody is listening any more: once it is set, the
+    in-flight model call raises at its next token instead of running to the end. One graph, one
+    run: build a new one for the next question (see `build_agent`).
     """
     state = _initial_state(question)
+    # The callback is attached to every run in the graph, so whichever model call is streaming
+    # hears the abort; without a cancel signal there is nothing to watch.
+    config: RunnableConfig | None = None
+    if cancel is not None:
+        callbacks: list[BaseCallbackHandler] = [_AbortOnDisconnect(cancel)]
+        config = {"callbacks": callbacks}
     # With several stream modes LangGraph yields `(mode, chunk)` pairs; its type stub only says
     # the modes' union, so the pair is named here once.
     stream = cast(
-        Iterator[tuple[str, Any]], graph.stream(state, stream_mode=["messages", "updates"])
+        Iterator[tuple[str, Any]],
+        graph.stream(state, config=config, stream_mode=["messages", "updates"]),
     )
     for mode, chunk in stream:
         if mode == "messages":

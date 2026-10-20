@@ -900,6 +900,7 @@ version = "0.2.1"
 source = { editable = "." }
 dependencies = [
     { name = "alembic" },
+    { name = "anyio" },
     { name = "fastapi" },
     { name = "fastembed" },
     { name = "feedparser" },
@@ -935,6 +936,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "alembic", specifier = ">=1.14" },
+    { name = "anyio", specifier = ">=4.4" },
     { name = "fastapi", specifier = ">=0.143" },
     { name = "fastembed", specifier = ">=0.9" },
     { name = "feedparser", specifier = ">=6.0.11" },

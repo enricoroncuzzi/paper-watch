@@ -1,11 +1,15 @@
 import json
 import re
+import signal
+import threading
 import time
+import unicodedata
 import uuid
 from collections.abc import Callable
 from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import structlog
 import typer
@@ -14,6 +18,7 @@ from sqlalchemy import Engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from paperwatch.admission import load_admission
 from paperwatch.agent.citations import NO_SUPPORT, CheckedAnswer
@@ -51,10 +56,15 @@ K = typer.Option(10, min=1)
 HOST = typer.Option("127.0.0.1", help="Bind address; the API has no sign-in yet")
 PORT = typer.Option(8000, min=1, max=65535)
 _TIER_VALUES = frozenset(t.value for t in Tier)
-# C0 controls except tab and newline, DEL, C1 controls, and the bidi overrides and isolates. An
-# ANSI sequence can clear or recolour a terminal, fake a `Sources:` line, or (OSC 8) turn
-# model-written text into a clickable link; bidi overrides can reorder a whole line.
-_UNSAFE_TERMINAL = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]")
+# Unicode categories a terminal or a renderer acts on rather than shows: Cc (C0/C1 controls and
+# DEL), Cf (bidi marks, zero-width and tag characters, the byte-order mark), Cs (lone surrogates,
+# which cannot even be encoded), Zl (line separator) and Zp (paragraph separator). An escape
+# sequence can clear or recolour a terminal, fake a `Sources:` line, or (OSC 8) turn model-written
+# text into a clickable link; a line separator can forge a new line of an answer.
+_UNSAFE_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Zl", "Zp"})
+# ZWNJ and ZWJ are Cf, but Persian and Indic scripts and emoji sequences need them, so removing
+# them would corrupt real text. Newline and tab are how the answer is laid out.
+_SAFE_FORMAT = frozenset({"\n", "\t", "\u200c", "\u200d"})
 # The repository root: this module is src/paperwatch/cli.py, so parents[2] is the root. Data paths
 # resolve from here, not the current directory, so `paperwatch eval` works from any directory.
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -205,13 +215,19 @@ def _parse_since(value: str | None) -> datetime | None:
 
 
 def terminal_safe(value: str) -> str:
-    """Replace control characters and bidi overrides with U+FFFD, leaving readable text alone.
+    """Replace characters a terminal acts on with U+FFFD, leaving readable text alone.
 
     Everything `ask` prints is either model-authored or stored third-party text. A terminal
-    interprets escape sequences, so they are neutralised rather than shown: only `Citation.url`
-    may produce a clickable link.
+    interprets escape sequences and some invisible characters reorder or hide text, so they are
+    neutralised rather than shown: only `Citation.url` may produce a clickable link. A lone
+    surrogate is also replaced here, because it cannot be encoded and would crash the echo.
     """
-    return _UNSAFE_TERMINAL.sub("\ufffd", value)
+    return "".join(
+        "\ufffd"
+        if unicodedata.category(char) in _UNSAFE_CATEGORIES and char not in _SAFE_FORMAT
+        else char
+        for char in value
+    )
 
 
 def _models(ledger: Ledger) -> tuple[Classifier, Embedder]:
@@ -265,6 +281,32 @@ def ingest(live: bool = LIVE, since: str | None = SINCE) -> None:
     raise typer.Exit(0 if res.status in {"succeeded", "partial"} else 1)
 
 
+def _profile_names() -> frozenset[str]:
+    # Profile names are configuration, so a typo is only knowable from the file; the live commands
+    # already resolve it from the working directory.
+    return frozenset(p.name for p in load_profiles(Path("config/profiles.yaml")))
+
+
+def _validate_query(
+    noun: str, text: str, tier: list[str] | None, profile: list[str] | None
+) -> None:
+    """Refuse a bad query as a usage error, before any model, client or engine is built."""
+    if not text.strip():
+        raise typer.BadParameter(f"{noun} must not be blank")
+    unknown = [t for t in tier or [] if t not in _TIER_VALUES]
+    if unknown:
+        raise typer.BadParameter(
+            f"--tier must be one of {', '.join(sorted(_TIER_VALUES))}; got {', '.join(unknown)}"
+        )
+    known = _profile_names()
+    unknown_profiles = [p for p in profile or [] if p not in known]
+    if unknown_profiles:
+        raise typer.BadParameter(
+            f"--profile must be one of {', '.join(sorted(known))}; "
+            f"got {', '.join(unknown_profiles)}"
+        )
+
+
 @app.command()
 def search(
     query: str,
@@ -274,14 +316,7 @@ def search(
     live: bool = SEARCH_LIVE,
 ) -> None:
     _require_live(live)
-    # Validate before building anything, so a bad argument is a usage error (exit 2).
-    if not query.strip():
-        raise typer.BadParameter("query must not be blank")
-    unknown = [t for t in tier or [] if t not in _TIER_VALUES]
-    if unknown:
-        raise typer.BadParameter(
-            f"--tier must be one of {', '.join(sorted(_TIER_VALUES))}; got {', '.join(unknown)}"
-        )
+    _validate_query("query", query, tier, profile)
     s = get_settings()
     # Only the embedder: building the classifier would embed every profile description for nothing.
     embedder = make_embedder(s, Ledger(s.max_tokens_per_run))
@@ -353,6 +388,21 @@ def eval_cmd(
     raise typer.Exit(1 if failures else 0)
 
 
+def _interrupt_handler(cancel: threading.Event) -> Callable[[int, object], None]:
+    """Ctrl-C: tell the answer to stop before the interrupt unwinds its stream.
+
+    The signal is delivered in the main thread, inside the graph's own frame. Unwinding from
+    there joins the model call in flight, so the flag has to be set first; then the normal
+    KeyboardInterrupt exits the command.
+    """
+
+    def handler(signum: int, frame: object) -> None:
+        cancel.set()
+        raise KeyboardInterrupt
+
+    return handler
+
+
 def _render_answer(answer: CheckedAnswer, streamed: str) -> None:
     """Print the checked answer and its sources after the streamed words, in a fixed shape."""
     if answer.text != streamed:
@@ -395,14 +445,7 @@ def ask(
 ) -> None:
     """Ask one question about the corpus and stream a citation-checked answer."""
     _require_live(live)
-    # Validate before building anything, so a bad argument is a usage error (exit 2).
-    if not question.strip():
-        raise typer.BadParameter("question must not be blank")
-    unknown = [t for t in tier or [] if t not in _TIER_VALUES]
-    if unknown:
-        raise typer.BadParameter(
-            f"--tier must be one of {', '.join(sorted(_TIER_VALUES))}; got {', '.join(unknown)}"
-        )
+    _validate_query("question", question, tier, profile)
     s = get_settings()
     configure_logging(s.log_level)
     # A missing key is a setup error (exit 2) with the variable's name, not a traceback from
@@ -418,31 +461,67 @@ def ask(
     )
     streamed: list[str] = []
     answer: CheckedAnswer | None = None
-    # closing() releases the database session at once, including when an error event ends the
-    # loop before the generator's last event was requested.
-    with closing(run_question(deps, question, filters)) as stream:
-        for event in stream:
-            if isinstance(event, TokenEvent):
-                streamed.append(event.text)
-                # No newline per token: the answer reads as it is written, and a redirect stays
-                # plain text.
-                typer.echo(terminal_safe(event.text), nl=False)
-            elif isinstance(event, ToolEvent):
-                # Progress goes to stderr so a piped answer is still just the answer.
-                typer.echo(
-                    f"tool: {terminal_safe(event.name)} {terminal_safe(json.dumps(event.args))}",
-                    err=True,
-                )
-            elif isinstance(event, AnswerEvent):
-                answer = event.answer
-            elif isinstance(event, ErrorEvent):
-                typer.echo(f"error ({event.code}): {terminal_safe(event.message)}", err=True)
-                raise typer.Exit(1)
+    cancel = threading.Event()
+    # Only the ask command takes over SIGINT, and only for as long as the answer runs: the
+    # default handler is restored in the finally below.
+    previous = signal.signal(signal.SIGINT, _interrupt_handler(cancel))
+    try:
+        # closing() releases the database session at once, including when an error event ends the
+        # loop before the generator's last event was requested; closing also aborts a model call
+        # still in flight (the Ctrl-C path sets the flag first, see `_interrupt_handler`).
+        with closing(run_question(deps, question, filters, cancel)) as stream:
+            for event in stream:
+                if isinstance(event, TokenEvent):
+                    streamed.append(event.text)
+                    # No newline per token: the answer reads as it is written, and a redirect
+                    # stays plain text.
+                    typer.echo(terminal_safe(event.text), nl=False)
+                elif isinstance(event, ToolEvent):
+                    # Progress goes to stderr so a piped answer is still just the answer.
+                    typer.echo(
+                        f"tool: {terminal_safe(event.name)} "
+                        f"{terminal_safe(json.dumps(event.args))}",
+                        err=True,
+                    )
+                elif isinstance(event, AnswerEvent):
+                    answer = event.answer
+                elif isinstance(event, ErrorEvent):
+                    if streamed:
+                        # Tokens already went to stdout without a newline; end that line first.
+                        typer.echo()
+                    typer.echo(f"error ({event.code}): {terminal_safe(event.message)}", err=True)
+                    raise typer.Exit(1)
+    except KeyboardInterrupt as exc:
+        # The flag was set by the handler and the stream is closed, so the in-flight model call
+        # was aborted; exit like a shell program interrupted by the user, one line, no traceback.
+        if streamed:
+            typer.echo()
+        typer.echo("interrupted: the answer was stopped", err=True)
+        raise typer.Exit(130) from exc
+    finally:
+        signal.signal(signal.SIGINT, previous)
     if answer is None:
         # The graph always ends in a checked answer, so a stream without one is a wiring bug.
         typer.echo("error (internal): the answer ended without a checked answer", err=True)
         raise typer.Exit(1)
     _render_answer(answer, "".join(streamed))
+
+
+def _is_loopback(host: str) -> bool:
+    return host in {"127.0.0.1", "localhost", "::1"}
+
+
+def _served_app(deps: object, host: str) -> Any:
+    """The app `serve` runs, with the host allow-list installed for a loopback bind."""
+    app_ = create_app(deps)  # type: ignore[arg-type]
+    if _is_loopback(host):
+        # A DNS-rebinding page can reach a loopback API with a hostile Host header, so only the
+        # names a browser uses for this machine are accepted.
+        app_.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "::1"])
+    else:
+        # A public bind is the operator's choice, but the API has no sign-in until M3.
+        typer.echo(f"warning: {host} is not loopback and the API has no sign-in yet", err=True)
+    return app_
 
 
 @app.command()
@@ -456,5 +535,8 @@ def serve(host: str = HOST, port: int = PORT, live: bool = LIVE) -> None:
     except ChatNotConfigured as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(2) from exc
+    app_ = _served_app(deps, host)
     typer.echo(f"serving on http://{host}:{port}")
-    uvicorn.run(create_app(deps), host=host, port=port)
+    # log_config=None keeps uvicorn from installing its own plain-text logging, so the app's
+    # configured level and format stay in charge.
+    uvicorn.run(app_, host=host, port=port, log_config=None, log_level=s.log_level.lower())

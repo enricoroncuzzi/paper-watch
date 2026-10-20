@@ -49,7 +49,7 @@
     "/ask": {
       "post": {
         "summary": "Ask",
-        "description": "Answer one question as server-sent events. See the response description.",
+        "description": "Answer one question as server-sent events, one `StreamItem` per event.",
         "operationId": "ask_ask_post",
         "requestBody": {
           "content": {
@@ -63,11 +63,11 @@
         },
         "responses": {
           "200": {
-            "description": "Server-sent events, one JSON object per `data:` line. `tool` carries {\"name\", \"args\"}; `token` carries {\"text\"}; `answer` carries {\"text\", \"supported\", \"citations\", \"flags\"} and is the last event unless an `error` follows; `error` carries {\"code\", \"message\"}. `supported` is true when every visible claim points at a retrieved source. That is not a verification: numbers and sentences under six words are not checked. A client replaces its streamed text with `answer.text`, never appends it, and takes every link from `citations[].url`.",
+            "description": "Server-sent events, one JSON object per `data:` line. The `event` line names the payload: `tool`, `token`, `answer` or `error`. `answer` is the last event unless an `error` follows; a client replaces its streamed text with the `answer` event's `text`, never appends it, and takes every link from its `citations[].url`.",
             "content": {
               "text/event-stream": {
                 "schema": {
-                  "type": "string"
+                  "$ref": "#/components/schemas/StreamItem"
                 }
               }
             }
@@ -88,6 +88,41 @@
   },
   "components": {
     "schemas": {
+      "AnswerData": {
+        "properties": {
+          "text": {
+            "type": "string",
+            "title": "Text"
+          },
+          "supported": {
+            "type": "boolean",
+            "title": "Supported",
+            "description": "True when every visible claim points at a retrieved source. That is not a verification: sentences under six words and numbers are not checked."
+          },
+          "citations": {
+            "items": {
+              "$ref": "#/components/schemas/CitationData"
+            },
+            "type": "array",
+            "title": "Citations"
+          },
+          "flags": {
+            "items": {
+              "$ref": "#/components/schemas/FlagData"
+            },
+            "type": "array",
+            "title": "Flags"
+          }
+        },
+        "type": "object",
+        "required": [
+          "text",
+          "supported",
+          "citations",
+          "flags"
+        ],
+        "title": "AnswerData"
+      },
       "AskRequest": {
         "properties": {
           "question": {
@@ -102,7 +137,8 @@
                 "items": {
                   "$ref": "#/components/schemas/Tier"
                 },
-                "type": "array"
+                "type": "array",
+                "maxItems": 3
               },
               {
                 "type": "null"
@@ -116,7 +152,8 @@
                 "items": {
                   "type": "string"
                 },
-                "type": "array"
+                "type": "array",
+                "maxItems": 8
               },
               {
                 "type": "null"
@@ -143,6 +180,92 @@
         ],
         "title": "AskRequest"
       },
+      "CitationData": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "The per-answer source alias, such as S1."
+          },
+          "item_id": {
+            "type": "string",
+            "title": "Item Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "url": {
+            "type": "string",
+            "title": "Url"
+          },
+          "tier": {
+            "type": "string",
+            "title": "Tier"
+          },
+          "basis": {
+            "type": "string",
+            "title": "Basis"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "item_id",
+          "title",
+          "url",
+          "tier",
+          "basis"
+        ],
+        "title": "CitationData"
+      },
+      "ErrorData": {
+        "properties": {
+          "code": {
+            "type": "string",
+            "enum": [
+              "daily_cap",
+              "budget",
+              "model_unavailable",
+              "internal"
+            ],
+            "title": "Code"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          }
+        },
+        "type": "object",
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "ErrorData"
+      },
+      "FlagData": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "sentence": {
+            "type": "string",
+            "title": "Sentence"
+          },
+          "detail": {
+            "type": "string",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind",
+          "sentence",
+          "detail"
+        ],
+        "title": "FlagData"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -156,6 +279,44 @@
         "type": "object",
         "title": "HTTPValidationError"
       },
+      "StreamItem": {
+        "properties": {
+          "event": {
+            "type": "string",
+            "enum": [
+              "tool",
+              "token",
+              "answer",
+              "error"
+            ],
+            "title": "Event"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ToolData"
+              },
+              {
+                "$ref": "#/components/schemas/TokenData"
+              },
+              {
+                "$ref": "#/components/schemas/AnswerData"
+              },
+              {
+                "$ref": "#/components/schemas/ErrorData"
+              }
+            ],
+            "title": "Data"
+          }
+        },
+        "type": "object",
+        "required": [
+          "event",
+          "data"
+        ],
+        "title": "StreamItem",
+        "description": "One server-sent event: the `event` name and the JSON payload of its `data` line.\n\nOn the wire each event is one `event: <event>` line and one `data: <json>` line, with no\nblank line inside the payload; a client replaces its streamed text with `answer.data.text`."
+      },
       "Tier": {
         "type": "string",
         "enum": [
@@ -164,6 +325,40 @@
           "lab_blog"
         ],
         "title": "Tier"
+      },
+      "TokenData": {
+        "properties": {
+          "text": {
+            "type": "string",
+            "title": "Text"
+          }
+        },
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "title": "TokenData",
+        "description": "The `token` event: a piece of the model's answer, before the citation check."
+      },
+      "ToolData": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "args": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Args"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "args"
+        ],
+        "title": "ToolData",
+        "description": "The `tool` event: the model called one of the corpus tools."
       },
       "ValidationError": {
         "properties": {

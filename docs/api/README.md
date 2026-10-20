@@ -2,7 +2,9 @@
 
 `paperwatch serve --live` runs the FastAPI app from `src/paperwatch/api/app.py` on
 `http://127.0.0.1:8000` by default. It has no sign-in yet (Entra ID arrives with M3), so it is
-bound to the loopback interface unless `--host` says otherwise.
+bound to the loopback interface unless `--host` says otherwise; a non-loopback bind prints a
+warning, and a loopback bind only accepts `Host: 127.0.0.1`, `localhost` or `::1`, so a
+DNS-rebinding page cannot reach it.
 
 | Route | Purpose |
 |---|---|
@@ -12,7 +14,9 @@ bound to the loopback interface unless `--host` says otherwise.
 
 `POST /ask` takes `{"question": "...", "tiers": [...], "profiles": [...], "since": "YYYY-MM-DD"}`
 (the last three optional) and answers with `text/event-stream`. Every event is one
-`event:` line and one `data:` line holding a JSON object:
+`event:` line and one `data:` line holding a JSON object. The event payloads are Pydantic models
+(`ToolData`, `TokenData`, `AnswerData`, `ErrorData`) combined by `StreamItem`, which is what the
+committed contract's `text/event-stream` schema references:
 
 - `tool` with `{"name", "args"}`, emitted when the model calls one of the read-only corpus tools;
 - `token` with `{"text"}`, the model's words as it writes them;
@@ -44,9 +48,13 @@ bound to the loopback interface unless `--host` says otherwise.
 `tests/integration/test_api.py`. Rewrite it only after an intended API change:
 
 ```bash
-uv run python -c "import json; from datetime import UTC, datetime; from paperwatch.api.app import AgentDeps, create_app; from paperwatch.config import Settings; from paperwatch.llm.embedder import FakeEmbedder; deps = AgentDeps(lambda: None, FakeEmbedder(), [], Settings(), lambda: datetime.now(UTC)); open('docs/api/openapi.json', 'w').write(json.dumps(create_app(deps).openapi(), indent=2) + '\n')"
+uv run python -c "import json; from datetime import UTC, datetime; from paperwatch.api.app import AgentDeps, ChatCallLog, create_app; from paperwatch.config import Settings; from paperwatch.llm.embedder import FakeEmbedder; deps = AgentDeps(lambda: None, FakeEmbedder(), [], Settings(), lambda: datetime.now(UTC), ChatCallLog(lambda: None), frozenset()); open('docs/api/openapi.json', 'w').write(json.dumps(create_app(deps).openapi(), indent=2) + '\n')"
 ```
 
 The dependencies are stubs because the OpenAPI document depends only on the routes and their
-models, so rewriting it needs no database and no API key. The streamed payloads are described in
-the `200` response's description, because server-sent events have no JSON body to model.
+models, so rewriting it needs no database and no API key.
+
+`API_VERSION` in `api/app.py` is the contract's own version, independent of the package version.
+Bump it, and rewrite `openapi.json` in the same change, when a route, a request field or an event
+changes in a way an existing client would notice. A release that only bumps the package must leave
+both alone, which is why the two versions are separate.

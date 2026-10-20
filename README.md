@@ -69,8 +69,9 @@ retrieval and retrieval evals.
 
 ## M2: ask questions
 
-Answers are streamed, and every claim cites a stored item whose text the agent actually retrieved;
-the citations are checked by code, not trusted from the model.
+Answers are streamed. The agent cites the stored items it retrieved, and code checks that each
+citation points at an item retrieved for this answer; sentences without a valid citation are
+flagged, not silently dropped.
 
 ```bash
 # Put PW_OPENROUTER_API_KEY in .env first (a free key from openrouter.ai; never commit it).

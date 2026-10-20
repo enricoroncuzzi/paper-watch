@@ -67,6 +67,24 @@ CHAT_MODEL = "google/gemma-4-31b-it:free"
 # the cap turns a model that loops on its tools into a final answer instead of a hung request.
 MAX_TOOL_ROUNDS = 4
 
+# Connection budget for `paperwatch serve` (one local user, a few tabs at most). One answer holds
+# a pooled connection for its whole life, which can be minutes while the model writes, so the pool
+# allows several at once and a short wait: a full pool becomes an `internal` event quickly instead
+# of a request hanging for the driver's 30 s default.
+ANSWER_POOL_SIZE = 6
+ANSWER_POOL_OVERFLOW = 2
+ANSWER_POOL_TIMEOUT_S = 3.0
+# The cap check and the usage write never wait behind an answer: they get their own tiny pool, and
+# a row is written in milliseconds.
+USAGE_POOL_SIZE = 2
+# libpq's connect timeout: a paused or unreachable database fails a probe or a request in seconds.
+CONNECT_TIMEOUT_S = 3
+# Readiness checks are cheap and must stay cheap: two may run at once, each bounded by this
+# timeout. A check past the bound answers 503 and is abandoned, so a stalled database cannot hold
+# the probe for the driver's own timeout.
+READY_CONCURRENCY = 2
+READY_TIMEOUT_S = 2.0
+
 
 class Settings(BaseSettings):
     # Each field is read from an env var with the PW_ prefix (database_url <- PW_DATABASE_URL),
