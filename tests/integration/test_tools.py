@@ -491,16 +491,24 @@ def test_a_database_error_in_one_tool_does_not_poison_the_answer(
         calls["n"] += 1
         if calls["n"] == 1:
             # A statement that really fails aborts the server-side transaction; a faked exception
-            # raised in Python would not poison anything.
-            db_session.execute(text("SELECT * FROM table_that_does_not_exist"))
+            # raised in Python would not poison anything. The query travels as a bound parameter,
+            # which is exactly what a log built from str(exc) would leak.
+            db_session.execute(
+                text("SELECT * FROM table_that_does_not_exist WHERE title = :q"),
+                {"q": args[2]},
+            )
         return real(*args, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(agent_tools, "hybrid_search", flaky)
     with capture_logs() as logs:
         first = tools["search_corpus"].invoke({"query": "SWE-bench"})
-    assert first == "The search failed; try again or rephrase."
+    assert first == "search_corpus failed on a database error; try the same call again."
     errors = [entry for entry in logs if entry["event"] == "tool_database_error"]
-    assert len(errors) == 1 and "table_that_does_not_exist" in errors[0]["error"]
+    assert len(errors) == 1 and errors[0]["tool"] == "search_corpus"
+    assert "table_that_does_not_exist" in errors[0]["error"]
+    # The model's query and the bound parameters stay out of the log.
+    assert "SWE-bench" not in errors[0]["error"] and "hidden" in errors[0]["error"]
+    assert "exc_info" not in errors[0]
     second = tools["search_corpus"].invoke({"query": "SWE-bench"})
     assert "<source" in second
 
@@ -531,7 +539,7 @@ def test_a_maximal_block_grows_at_most_six_times(db_session: Session, seed_items
     tools = tools_for(db_session, SourceRegistry())
     tools["search_corpus"].invoke({"query": "agents boundary"})
     out = tools["get_item"].invoke({"source_id": "S1"})
-    # The venue is not clipped by the schema; 256 characters is the width the lesson measures.
+    # items.venue is String(256), so 256 characters is its widest value; _meta does not clip it.
     raw = (
         URL_MAX_CHARS
         + TITLE_MAX_CHARS
@@ -540,6 +548,8 @@ def test_a_maximal_block_grows_at_most_six_times(db_session: Session, seed_items
         + 256
     )
     assert len(out) <= 6 * raw
+    # The tight bound: body text grows at most 5x and only the URL attribute can reach 6x.
+    assert len(out) <= 5 * raw + URL_MAX_CHARS + 500
 
 
 def test_a_savepoint_works_in_a_read_only_transaction(
@@ -586,7 +596,9 @@ def test_a_savepoint_works_in_a_read_only_transaction(
                 return real(*args, **kwargs)  # type: ignore[arg-type]
 
             monkeypatch.setattr(agent_tools, "hybrid_search", flaky)
-            assert "failed" in tools["search_corpus"].invoke({"query": marker}).lower()
+            assert tools["search_corpus"].invoke({"query": marker}) == (
+                "search_corpus failed on a database error; try the same call again."
+            )
             assert f"Token {marker}" in tools["search_corpus"].invoke({"query": marker})
             session.close()
             conn.rollback()

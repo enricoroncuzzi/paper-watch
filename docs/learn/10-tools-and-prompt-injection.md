@@ -51,8 +51,10 @@ connection.
 A tool body also runs inside `session.begin_nested()`. Postgres aborts the whole transaction after
 any failed statement, so without a savepoint one malformed query would fail every later tool call
 in the same answer, even though the model could have recovered by searching again. The savepoint
-rolls back only that call; a `SQLAlchemyError` is logged in full and becomes a short
-`ToolException` message the model can act on. Savepoints work in a `SET TRANSACTION READ ONLY`
+rolls back only that call; a `SQLAlchemyError` is logged once with its SQL but no bound
+parameters (`make_engine` sets `hide_parameters=True`, so the model's question and the embedding
+stay out of the log) and becomes a short `ToolException` naming the tool the model should retry.
+Savepoints work in a `SET TRANSACTION READ ONLY`
 transaction too, which is how Task 17 opens the agent's session, so the same isolation holds there.
 
 ## What the tests pin

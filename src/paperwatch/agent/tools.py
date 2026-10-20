@@ -155,15 +155,16 @@ def _meta(detail: ItemDetail) -> str:
 
 
 @contextmanager
-def _database_work(session: Session) -> Iterator[None]:
+def _database_work(session: Session, tool: str) -> Iterator[None]:
     # A failed statement aborts the session's transaction, which would fail every later tool call
     # in this answer; a savepoint contains the damage to this call.
     try:
         with session.begin_nested():
             yield
     except SQLAlchemyError as exc:
-        log.error("tool_database_error", error=str(exc), exc_info=True)
-        raise ToolException("The search failed; try again or rephrase.") from exc
+        # The engine hides bound parameters, so this carries the SQL but not the model's query.
+        log.error("tool_database_error", tool=tool, error=str(exc))
+        raise ToolException(f"{tool} failed on a database error; try the same call again.") from exc
 
 
 def make_tools(
@@ -190,7 +191,7 @@ def make_tools(
         if not query.strip():
             raise ToolException("query must not be blank.")
         clean_profiles = [_clean(p) for p in profiles] if profiles else profiles
-        with lock, _database_work(session):
+        with lock, _database_work(session, "search_corpus"):
             hits = hybrid_search(
                 session,
                 embedder,
@@ -229,7 +230,7 @@ def make_tools(
         return ref, detail
 
     def get_item(source_id: str) -> str:
-        with lock, _database_work(session):
+        with lock, _database_work(session, "get_item"):
             ref, detail = registered(source_id)
             text = detail.text[:GET_ITEM_MAX_CHARS]
             if len(detail.text) > GET_ITEM_MAX_CHARS:
@@ -244,7 +245,7 @@ def make_tools(
                 f"compare_items needs {COMPARE_MIN} to {COMPARE_MAX} distinct source ids, "
                 f"got {len(aliases)}."
             )
-        with lock, _database_work(session):
+        with lock, _database_work(session, "compare_items"):
             blocks = []
             for alias in aliases:
                 ref, detail = registered(alias)
