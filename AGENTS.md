@@ -38,7 +38,8 @@ the standing rules.
 - `config/` holds the hand-edited YAML (topic profiles, admission thresholds, feeds),
   `docs/adr/` records architecture decisions, `docs/learn/` explains each technology, and
   `docs/architecture.md` is the current unit map.
-- `src/paperwatch/cli.py` exposes `paperwatch ingest`, `paperwatch search` and `paperwatch eval`.
+- `src/paperwatch/cli.py` exposes `paperwatch ingest`, `paperwatch search`, `paperwatch ask`,
+  `paperwatch serve` and `paperwatch eval`.
 
 ## Standing rules
 
@@ -49,8 +50,9 @@ the standing rules.
   `config/profiles.yaml` are calibrated for that exact local model, and the classifier refuses
   to apply them to another one (`llm/classifier.py`).
 - The default test suite mocks every HTTP call and never loads a real model; the CI `test`
-  job runs exactly that suite (`-m 'not model'` in `pyproject.toml`). `paperwatch ingest` and
-  `paperwatch search` refuse to run without `--live` (`cli.py`), and real-model tests are opt-in
+  job runs exactly that suite (`-m 'not model'` in `pyproject.toml`). `paperwatch ingest`,
+  `paperwatch search`, `paperwatch ask` and `paperwatch serve` refuse to run without `--live`
+  (`cli.py`), and real-model tests are opt-in
   with `-m model`.
 - Tests must build settings from the test's own environment: pass `_env_file=None` and clear
   `PW_*` (the `build_settings` fixture in `tests/unit/test_config.py`), so a developer's `.env`

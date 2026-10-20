@@ -67,6 +67,34 @@ keep that download, for example one baked into a deployed image.
 **CV line (true as of M1):** Built a tiered AI-research corpus with hybrid (pgvector + full-text)
 retrieval and retrieval evals.
 
+## M2: ask questions
+
+Answers are streamed, and every claim cites a stored item whose text the agent actually retrieved;
+the citations are checked by code, not trusted from the model.
+
+```bash
+# Put PW_OPENROUTER_API_KEY in .env first (a free key from openrouter.ai; never commit it).
+uv run paperwatch ask "what is new on agent memory?" --live   # stream one answer in the terminal
+uv run paperwatch serve --live                                # POST /ask, server-sent events
+curl -N -X POST localhost:8000/ask \
+  -H 'content-type: application/json' \
+  -d '{"question": "which papers evaluate coding agents?"}'
+```
+
+The chat model is an OpenRouter free model by default, with Groq as an optional fallback
+(`PW_GROQ_API_KEY` and `PW_GROQ_CHAT_MODEL`); embedding and relevance classification stay local, so
+only the question and the retrieved abstracts and lab posts leave the machine. `ask` needs
+`--live`, the same as the other commands that touch a real service. `serve` listens on
+`127.0.0.1:8000` only: the API has no sign-in until M3, so do not put it on a public interface.
+
+`docs/api/README.md` documents the event stream and the client rules; `docs/learn/13` explains how
+the stream works. Every answer stays within `PW_CHAT_MAX_CALLS_PER_DAY` (800, counted from UTC
+midnight) and `PW_CHAT_MAX_TOKENS_PER_ANSWER`, and the real usage of every call is stored in the
+`chat_calls` table.
+
+**CV line (true as of M2):** Built a LangGraph agent with tool use and citation-checked answers
+over the corpus.
+
 ## Documentation
 
 - [`docs/learn/`](docs/learn/): one lesson per technology, starting with

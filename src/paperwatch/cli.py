@@ -1,20 +1,28 @@
+import json
 import re
 import time
 import uuid
 from collections.abc import Callable
+from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
 
+import structlog
 import typer
+import uvicorn
 from sqlalchemy import Engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from paperwatch.admission import load_admission
+from paperwatch.agent.citations import NO_SUPPORT, CheckedAnswer
+from paperwatch.agent.graph import AnswerEvent, TokenEvent, ToolEvent
+from paperwatch.api.app import ErrorEvent, create_app, live_deps, run_question
 from paperwatch.config import get_settings
 from paperwatch.domain import Tier, load_profiles
 from paperwatch.ingest.pipeline import Sources, run_ingestion
+from paperwatch.llm.chat import ChatNotConfigured
 from paperwatch.llm.classifier import Classifier, make_classifier
 from paperwatch.llm.embedder import Embedder, FakeEmbedder, make_embedder
 from paperwatch.llm.ledger import Ledger
@@ -27,6 +35,7 @@ from paperwatch.sources.hf_daily import HfDailySource
 from paperwatch.sources.semantic_scholar import SemanticScholarSource
 from paperwatch.store.db import make_engine, make_session_factory
 
+log = structlog.get_logger()
 app = typer.Typer(no_args_is_help=True)
 LIVE = typer.Option(False, "--live", help="Use real sources and the configured models")
 SINCE = typer.Option(None, "--since", help="ISO datetime; overrides every source cursor")
@@ -37,7 +46,15 @@ SEARCH_LIVE = typer.Option(
     False, "--live", help="Use the configured embedding model and the database"
 )
 K = typer.Option(10, min=1)
+# The API has no sign-in until M3's Entra ID, so it listens on the loopback interface by default:
+# a host option is a deliberate choice, never the default.
+HOST = typer.Option("127.0.0.1", help="Bind address; the API has no sign-in yet")
+PORT = typer.Option(8000, min=1, max=65535)
 _TIER_VALUES = frozenset(t.value for t in Tier)
+# C0 controls except tab and newline, DEL, C1 controls, and the bidi overrides and isolates. An
+# ANSI sequence can clear or recolour a terminal, fake a `Sources:` line, or (OSC 8) turn
+# model-written text into a clickable link; bidi overrides can reorder a whole line.
+_UNSAFE_TERMINAL = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]")
 # The repository root: this module is src/paperwatch/cli.py, so parents[2] is the root. Data paths
 # resolve from here, not the current directory, so `paperwatch eval` works from any directory.
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -187,6 +204,16 @@ def _parse_since(value: str | None) -> datetime | None:
     return parsed.replace(tzinfo=parsed.tzinfo or UTC).astimezone(UTC)
 
 
+def terminal_safe(value: str) -> str:
+    """Replace control characters and bidi overrides with U+FFFD, leaving readable text alone.
+
+    Everything `ask` prints is either model-authored or stored third-party text. A terminal
+    interprets escape sequences, so they are neutralised rather than shown: only `Citation.url`
+    may produce a clickable link.
+    """
+    return _UNSAFE_TERMINAL.sub("\ufffd", value)
+
+
 def _models(ledger: Ledger) -> tuple[Classifier, Embedder]:
     # Providers come from settings (Task 7b): local by default, so a live run needs no API key.
     # The classifier shares the embedder, so the local model is loaded once per run.
@@ -276,7 +303,6 @@ def eval_cmd(
         help="Use the configured embedding model; never gates and never writes the baseline",
     ),
 ) -> None:
-    import json
     import sys
 
     # The gate and the committed baseline belong to the offline FakeEmbedder, so a real-model run
@@ -325,3 +351,110 @@ def eval_cmd(
     for fail in failures:
         typer.echo(f"REGRESSION: {fail}")
     raise typer.Exit(1 if failures else 0)
+
+
+def _render_answer(answer: CheckedAnswer, streamed: str) -> None:
+    """Print the checked answer and its sources after the streamed words, in a fixed shape."""
+    if answer.text != streamed:
+        # The checked text is authoritative: an unknown alias is masked to [?], and an answer
+        # with no supporting source is replaced by the no-support message. Show it under a rule.
+        typer.echo("\n---")
+        typer.echo(terminal_safe(answer.text))
+    else:
+        typer.echo()
+    if answer.citations:
+        typer.echo("Sources:")
+        for citation in answer.citations:
+            typer.echo(
+                f"[{terminal_safe(citation.alias)}] {terminal_safe(citation.title)} "
+                f"({terminal_safe(citation.tier)}) {terminal_safe(citation.url)}"
+            )
+    if answer.text == NO_SUPPORT:
+        # The reader never saw the model's words, so its flags are kept for the operator only.
+        if answer.flags:
+            log.info(
+                "answer_unsupported",
+                flags=[
+                    {"kind": f.kind, "sentence": f.sentence, "detail": f.detail}
+                    for f in answer.flags
+                ],
+            )
+        return
+    for flag in answer.flags:
+        typer.echo(
+            f"warning: {flag.kind}: {terminal_safe(flag.sentence)} ({terminal_safe(flag.detail)})"
+        )
+
+
+@app.command()
+def ask(
+    question: str,
+    tier: list[str] | None = TIERS,
+    profile: list[str] | None = PROFILES_OPT,
+    live: bool = LIVE,
+) -> None:
+    """Ask one question about the corpus and stream a citation-checked answer."""
+    _require_live(live)
+    # Validate before building anything, so a bad argument is a usage error (exit 2).
+    if not question.strip():
+        raise typer.BadParameter("question must not be blank")
+    unknown = [t for t in tier or [] if t not in _TIER_VALUES]
+    if unknown:
+        raise typer.BadParameter(
+            f"--tier must be one of {', '.join(sorted(_TIER_VALUES))}; got {', '.join(unknown)}"
+        )
+    s = get_settings()
+    configure_logging(s.log_level)
+    # A missing key is a setup error (exit 2) with the variable's name, not a traceback from
+    # inside the first request.
+    try:
+        deps = live_deps(s)
+    except ChatNotConfigured as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(2) from exc
+    filters = Filters(
+        tiers=frozenset(tier) if tier else None,
+        profiles=frozenset(profile) if profile else None,
+    )
+    streamed: list[str] = []
+    answer: CheckedAnswer | None = None
+    # closing() releases the database session at once, including when an error event ends the
+    # loop before the generator's last event was requested.
+    with closing(run_question(deps, question, filters)) as stream:
+        for event in stream:
+            if isinstance(event, TokenEvent):
+                streamed.append(event.text)
+                # No newline per token: the answer reads as it is written, and a redirect stays
+                # plain text.
+                typer.echo(terminal_safe(event.text), nl=False)
+            elif isinstance(event, ToolEvent):
+                # Progress goes to stderr so a piped answer is still just the answer.
+                typer.echo(
+                    f"tool: {terminal_safe(event.name)} {terminal_safe(json.dumps(event.args))}",
+                    err=True,
+                )
+            elif isinstance(event, AnswerEvent):
+                answer = event.answer
+            elif isinstance(event, ErrorEvent):
+                typer.echo(f"error ({event.code}): {terminal_safe(event.message)}", err=True)
+                raise typer.Exit(1)
+    if answer is None:
+        # The graph always ends in a checked answer, so a stream without one is a wiring bug.
+        typer.echo("error (internal): the answer ended without a checked answer", err=True)
+        raise typer.Exit(1)
+    _render_answer(answer, "".join(streamed))
+
+
+@app.command()
+def serve(host: str = HOST, port: int = PORT, live: bool = LIVE) -> None:
+    """Serve the streaming API on the loopback interface (needs a chat API key)."""
+    _require_live(live)
+    s = get_settings()
+    configure_logging(s.log_level)
+    try:
+        deps = live_deps(s)
+    except ChatNotConfigured as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(2) from exc
+    typer.echo(f"serving on http://{host}:{port}")
+    uvicorn.run(create_app(deps), host=host, port=port)
