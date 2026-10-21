@@ -130,12 +130,42 @@ set, not models against the world. And `mean_tokens` mixes prompt tokens with co
 it is a cost signal, not an answer-length measure (the model calls include each round's growing
 history).
 
+**`abstention` counts the checker's `NO_SUPPORT`, not honesty.** A decline that cites nothing and
+a hallucination that cites nothing both become `NO_SUPPORT`, so both count as abstention; only an
+answer that points at a retrieved source is not an abstention. In ultra's recording q17 to q20
+are honest declines ("The sources retrieved from the corpus do not contain information about the
+energy consumption ..."), stored as raw text, and the checker turns them into `NO_SUPPORT` because
+they cite nothing. The metric says "did not cite", not "knew it did not know". A model that
+invented a confident uncited answer would score the same on this metric; a model that invented an
+answer *with* a valid citation would not.
+
+**`clean_rate` 0.5 is mostly paragraph-final citations, not half-wrong answers.** Ultra's eight
+unclean answerable answers (q02, q04, q07, q11, q12, q13, q15, q16) carry `uncited_claim` flags
+only; no other flag kind appears. q02 is the pattern: "According to the ToolBench benchmark paper,
+ToolBench measures argument correctness and call order when a model calls a function." is the first
+sentence and has no marker, while the next sentence ends in `[S1]`. The checker splits at the full
+stop, so the first sentence is an uncited claim. q15 has four such sentences across two paragraphs.
+`clean_rate` therefore measures where citations sit in sentences, which is the prompt's job, not
+whether the claims are true. A model that puts one citation at the end of each paragraph will look
+half-clean however good its answer is.
+
+**Malformed tool calls are not directly visible.** The HTTP logs are request status lines with no
+response bodies, so they cannot show a reply. The recordings store the model's final text. A reply
+made only of malformed tool calls has no valid `tool_calls`, so the graph's `route` sends it to the
+check node and the run ends with empty model text; a non-error row with an empty `answer_text`
+would therefore be that reply's signature. None of the three recordings has one: every row has
+text. So no final reply in this measurement consisted only of malformed tool calls. The evidence
+cannot rule out malformed calls alongside a valid call or alongside answer text, because those run
+or answer normally and the recording keeps only the final text, not the trajectory; the HTTP logs
+cannot settle those cases either.
+
+
 The recording does not store the round count, so the 4-round cap is visible only indirectly, in
 the tool counts: a question with four or more tool calls in a model that makes one call per round
 went through the capped answer round, which is the evidence that the chosen model accepts
-`tool_choice: "none"` with the tool definitions attached. The recording also cannot tell a plain
-`NO_SUPPORT` from one produced by a reply made only of malformed tool calls; if that shows up on a
-real model, the next step is to count it as a round and answer it with an error `ToolMessage`
+`tool_choice: "none"` with the tool definitions attached. An all-malformed reply, if it happened,
+would be the empty final text described above; none appears in these recordings. If one shows up
+on a real model, the next step is to count it as a round and answer it with an error `ToolMessage`
 (Task 16's note).
 
 The gate only fails on a drop. A checker that becomes more lenient can raise `clean_rate` (fewer
