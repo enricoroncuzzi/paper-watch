@@ -9,6 +9,7 @@ not at all) fails instead of quietly passing.
 import threading
 from collections.abc import Callable
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 from uuid import UUID
 
@@ -454,6 +455,22 @@ def test_a_raised_round_cap_does_not_hit_the_recursion_limit(
         events = list(stream_answer(graph, "q"))
         assert len([event for event in events if isinstance(event, ToolEvent)]) == 12
         assert isinstance(events[-1], AnswerEvent)
+
+
+# Resolved from this file, not the working directory, so a run started elsewhere still finds it;
+# the same pattern as `tests/unit/test_retrieval_eval.py`'s data path.
+LESSON = Path(__file__).resolve().parents[2] / "docs" / "learn" / "12-langgraph-agents.md"
+
+
+def test_the_lessons_graph_diagram_matches_the_built_graph(db_session: Session) -> None:
+    # The lesson draws the graph with LangGraph's own renderer. The committed block must be what a
+    # real build produces, or the picture drifts from the code; regenerate it by pasting
+    # `graph.get_graph().draw_mermaid()` for a graph from `build_agent`.
+    lesson = LESSON.read_text()
+    assert lesson.count("```mermaid\n") == 1, "the lesson must hold exactly one mermaid block"
+    committed = lesson.split("```mermaid\n", 1)[1].split("\n```", 1)[0] + "\n"
+    drawn = agent(db_session, ScriptedChatModel(script=[])).get_graph().draw_mermaid()
+    assert committed == drawn, "the lesson's diagram is stale: paste draw_mermaid()'s output"
 
 
 def test_build_agent_rejects_an_empty_model_list(db_session: Session) -> None:

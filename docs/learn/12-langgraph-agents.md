@@ -8,6 +8,35 @@ A pipeline runs fixed steps in a fixed order; an agent lets the model choose the
 are three nodes (`agent`, `tools`, `check`) and one conditional edge whose routing function is
 `route`:
 
+```mermaid
+---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	agent(agent)
+	tools(tools)
+	check(check)
+	__end__([<p>__end__</p>]):::last
+	__start__ --> agent;
+	agent -.-> check;
+	agent -.-> tools;
+	tools --> agent;
+	check --> __end__;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc
+```
+
+LangGraph drew that shape itself: `graph.get_graph().draw_mermaid()` on a graph from
+`build_agent` produced the block above, so regenerating it means pasting that output there, and
+`test_the_lessons_graph_diagram_matches_the_built_graph` fails when the committed block and a fresh
+build differ. Solid arrows are fixed edges and the dashed ones are the conditional edge, where
+`route` sends a message that calls a tool to `tools` and anything else to `check`: the round cap
+lives in that routing function, not in the drawing.
+
 - `agent` prepends the system prompt from `prompts.py` and calls the model chain.
 - `route` reads the last message: a tool call goes to `tools`, anything else goes to `check`.
 - `tools` is LangGraph's `ToolNode` over the three read-only tools from Task 14, with
