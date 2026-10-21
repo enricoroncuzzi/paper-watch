@@ -590,6 +590,26 @@ def test_ask_exits_1_when_the_stream_ends_without_an_answer(
     assert "without a checked answer" in result.stderr and "Traceback" not in result.stderr
 
 
+def test_a_cleanup_cancel_is_not_a_user_interrupt(monkeypatch: pytest.MonkeyPatch) -> None:
+    # `run_question` always calls `cancel.set()` in its finally, so a stream that ends without a
+    # checked answer used to look like Ctrl-C and exit 130. Only the handler's own event means the
+    # user asked to stop; a wiring bug must still exit 1.
+    def stream(
+        deps: object, question: str, filters: object, cancel: object = None
+    ) -> Iterator[object]:
+        try:
+            yield TokenEvent("nothing")
+        finally:
+            cancel.set()  # type: ignore[attr-defined] - what run_question's cleanup does
+
+    monkeypatch.setattr(cli, "live_deps", lambda s: object())
+    monkeypatch.setattr(cli, "run_question", stream)
+    result = CliRunner().invoke(app, ["ask", "q", "--live"])
+    assert result.exit_code == 1
+    assert "without a checked answer" in result.stderr
+    assert "interrupted" not in result.stderr.lower()
+
+
 def test_ask_prints_the_checked_text_again_when_it_differs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1032,12 +1052,12 @@ def test_the_second_ctrl_c_leaves_at_once(
 ) -> None:
     # A model call runs in a thread that cannot be interrupted, and Python joins it at exit, so
     # the second press is the only way out of a stalled request: flush and leave.
-    cancel = threading.Event()
+    cancel, interrupted = threading.Event(), threading.Event()
     exits: list[int] = []
     monkeypatch.setattr(cli.os, "_exit", exits.append)
-    handler = cli._interrupt_handler(cancel)
+    handler = cli._interrupt_handler(cancel, interrupted)
     handler(signal.SIGINT, None)
-    assert exits == [] and cancel.is_set()
+    assert exits == [] and cancel.is_set() and interrupted.is_set()
     handler(signal.SIGINT, None)
     assert exits == [130]
     assert "stopping; press Ctrl-C again to quit now" in capsys.readouterr().err

@@ -525,7 +525,9 @@ def qa_eval(
     raise typer.Exit(1 if failures else 0)
 
 
-def _interrupt_handler(cancel: threading.Event) -> Callable[[int, object], None]:
+def _interrupt_handler(
+    cancel: threading.Event, interrupted: threading.Event
+) -> Callable[[int, object], None]:
     """Ctrl-C: stop the answer at its next chance, and leave at once on a second press.
 
     The signal is delivered in the main thread, inside the graph's own frame. Unwinding from
@@ -533,12 +535,17 @@ def _interrupt_handler(cancel: threading.Event) -> Callable[[int, object], None]
     prints one line and lets that phase end (a token arrives, or a tool finishes). A model call
     is a thread that cannot be interrupted, and Python joins it at exit, so a second press is
     the way out of a stalled request: flush what is already written and leave.
+
+    `interrupted` is separate from `cancel` on purpose. `run_question` sets `cancel` in its own
+    finally on every ending, so only this handler's event records that the user asked to stop;
+    without it a stream that ended without an answer looked like Ctrl-C.
     """
     pressed = False
 
     def handler(signum: int, frame: object) -> None:
         nonlocal pressed
         cancel.set()
+        interrupted.set()
         if pressed:
             sys.stdout.flush()
             sys.stderr.flush()
@@ -608,9 +615,12 @@ def ask(
     streamed: list[str] = []
     answer: CheckedAnswer | None = None
     cancel = threading.Event()
+    # The run also sets `cancel` when it ends normally; only the handler's own event says the
+    # user pressed Ctrl-C, which is what decides between exit 130 and a wiring error.
+    interrupted = threading.Event()
     # Only the ask command takes over SIGINT, and only for as long as the answer runs: the
     # default handler is restored in the finally below.
-    previous = signal.signal(signal.SIGINT, _interrupt_handler(cancel))
+    previous = signal.signal(signal.SIGINT, _interrupt_handler(cancel, interrupted))
     try:
         # closing() releases the database session at once, including when an error event ends the
         # loop before the generator's last event was requested; closing also aborts a model call
@@ -647,9 +657,9 @@ def ask(
     finally:
         signal.signal(signal.SIGINT, previous)
     if answer is None:
-        if cancel.is_set():
-            # The first Ctrl-C stopped the answer before it produced a checked one; the flag is
-            # also set by the run's own cleanup, so this only matters when nobody is listening.
+        if interrupted.is_set():
+            # The user's Ctrl-C stopped the answer before it produced a checked one. `cancel`
+            # alone is not enough: the run's own finally sets it on every ending.
             if streamed:
                 # Tokens went to stdout without a newline; end that line before the message.
                 typer.echo()
