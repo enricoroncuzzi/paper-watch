@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.2.1...paperwatch-v0.3.0) (2026-10-21)
+
+
+### Features
+
+* **agent:** add question-answering agent, streaming API and QA eval ([#10](https://github.com/enricoroncuzzi/paper-watch/issues/10)) ([1b3e03c](https://github.com/enricoroncuzzi/paper-watch/commit/1b3e03cc4859457a1ca9cd4dcd7b5152d367a25a))
+
 ## [0.2.1](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.2.0...paperwatch-v0.2.1) (2026-10-19)
 
 
