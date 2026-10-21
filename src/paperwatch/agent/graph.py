@@ -11,7 +11,8 @@ then one checked answer); `answer_question` is the synchronous form for tests an
 """
 
 import threading
-from collections.abc import Generator, Iterator, Sequence
+from collections.abc import Generator, Sequence
+from contextlib import closing
 from dataclasses import dataclass
 from typing import Annotated, Any, TypedDict, cast
 from uuid import UUID
@@ -324,30 +325,33 @@ def stream_answer(
     # With several stream modes LangGraph yields `(mode, chunk)` pairs; its type stub only says
     # the modes' union, so the pair is named here once.
     stream = cast(
-        Iterator[tuple[str, Any]],
+        Generator[tuple[str, Any], None, None],
         graph.stream(state, config=config, stream_mode=["messages", "updates"]),
     )
-    for mode, chunk in stream:
-        if mode == "messages":
-            message, meta = chunk
-            # Only the agent node talks to a model, and only chunks with text are words: the
-            # empty ones carry a tool call or the usage.
-            if (
-                meta.get("langgraph_node") == "agent"
-                and isinstance(message, AIMessageChunk)
-                and message.content
-            ):
-                # ChatOpenAI streams string content; a content-block provider would stream a
-                # list, whose repr is not answer text.
-                yield TokenEvent(str(message.content))
-        elif mode == "updates":
-            if "agent" in chunk:
-                last = chunk["agent"]["messages"][-1]
-                # The call the model just decided to make, echoed so a client can show progress.
-                for tool_call in getattr(last, "tool_calls", []):
-                    yield ToolEvent(tool_call["name"], tool_call["args"])
-            if "check" in chunk:
-                yield AnswerEvent(chunk["check"]["answer"])
+    # Closed explicitly, not left to garbage collection: closing the graph's stream joins its worker
+    # thread, so the aborted call has written its usage row before the caller releases anything.
+    with closing(stream):
+        for mode, chunk in stream:
+            if mode == "messages":
+                message, meta = chunk
+                # Only the agent node talks to a model, and only chunks with text are words: the
+                # empty ones carry a tool call or the usage.
+                if (
+                    meta.get("langgraph_node") == "agent"
+                    and isinstance(message, AIMessageChunk)
+                    and message.content
+                ):
+                    # ChatOpenAI streams string content; a content-block provider would stream a
+                    # list, whose repr is not answer text.
+                    yield TokenEvent(str(message.content))
+            elif mode == "updates":
+                if "agent" in chunk:
+                    last = chunk["agent"]["messages"][-1]
+                    # The call the model just decided to make, echoed so a client can show progress.
+                    for tool_call in getattr(last, "tool_calls", []):
+                        yield ToolEvent(tool_call["name"], tool_call["args"])
+                if "check" in chunk:
+                    yield AnswerEvent(chunk["check"]["answer"])
 
 
 def answer_question(graph: AgentGraph, question: str) -> tuple[CheckedAnswer, list[str], str]:

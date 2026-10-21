@@ -415,7 +415,8 @@ class _ConfigSpy:
 
     def stream(self, state: Any, config: Any = None, stream_mode: Any = None) -> Any:
         self.config = config
-        return iter(())
+        # LangGraph's stream is a generator, which the caller closes.
+        yield from ()
 
 
 def test_both_surfaces_derive_the_recursion_limit_from_the_round_cap(

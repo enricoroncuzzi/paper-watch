@@ -91,7 +91,19 @@ jobs:
       # Known-vulnerable dependencies. The project itself is unpublished and so
       # cannot be audited; export the locked third-party set and audit that.
       - run: uv export --locked --no-emit-project --no-hashes --output-file "$RUNNER_TEMP/requirements.txt"
-      - run: uv run --with pip-audit pip-audit --strict --timeout 60 --no-deps -r "$RUNNER_TEMP/requirements.txt"
+      # Pillow 12.3.0 has eight advisories fixed only in 13.0.0, but fastembed 0.9.0 pins pillow<13
+      # and nothing newer is released. Pillow is only fastembed's image-embedding path; this project
+      # embeds text and never opens an image. Drop the ignores once fastembed allows pillow 13.
+      - run: |
+          uv run --with pip-audit pip-audit --strict --timeout 60 --no-deps -r "$RUNNER_TEMP/requirements.txt" \
+            --ignore-vuln CVE-2026-112895 \
+            --ignore-vuln CVE-2026-112400 \
+            --ignore-vuln CVE-2026-112397 \
+            --ignore-vuln CVE-2026-112896 \
+            --ignore-vuln CVE-2026-112897 \
+            --ignore-vuln CVE-2026-112395 \
+            --ignore-vuln CVE-2026-112404 \
+            --ignore-vuln CVE-2026-112899
       # Committed secrets. The token lets the action read the pull request's
       # commits; comments are off because this workflow cannot write to PRs.
       - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
