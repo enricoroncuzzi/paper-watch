@@ -37,6 +37,7 @@ uv run paperwatch ingest --live              # fetch, classify, admit and embed 
 uv run paperwatch search "agent memory" --live  # hybrid retrieval over the corpus
 uv run paperwatch eval                       # retrieval metrics against the committed baseline
 uv run paperwatch eval --live                # same set with the real local embedder; report only, never gates
+uv run paperwatch qa-eval                    # replay the recorded answers through the checker; no model or network
 ```
 
 The eval runs in a uniquely named throwaway database on the configured server: it creates it,
