@@ -42,8 +42,10 @@ alias the checker would have masked to `[?]` is still there for a later checker 
 ```
 
 `prompt_sha` is a fingerprint of `SYSTEM_PROMPT` and `FINAL_ROUND_NOTE`. A prompt change changes
-model behaviour, so `check_complete` refuses a recording made under another prompt and says to
-re-record it. The same function, used only by the `qa-eval` replay (the plan's single-row tests
+model behaviour, so `check_complete` refuses a recording made under another prompt, names the file
+and prints the re-record command. The fingerprint does not cover the tool names, descriptions and
+argument schemas, or `MAX_TOOL_ROUNDS`: those shape the model's behaviour too, but changing them
+does not make a recording stale. The same function, used only by the `qa-eval` replay (the plan's single-row tests
 call `score` directly and stay lenient), also refuses a recording that misses a question, carries
 another `QA_SET_VERSION`, or names another model than the file it lives in. A partial recording
 would otherwise score `abstention` 1.0 by dropping the unanswerable rows.

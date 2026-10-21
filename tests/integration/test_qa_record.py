@@ -124,3 +124,15 @@ def test_record_stores_the_models_own_text(db_session: Session) -> None:
     assert rows[0].answer_text == invented
     assert "S9" in rows[0].answer_text
     assert rows[0].prompt_sha == prompt_sha()
+
+
+def test_a_provider_failure_row_carries_the_prompt_fingerprint(db_session: Session) -> None:
+    # Without it the replay would call a recording with a tolerated provider error stale.
+    model = ScriptedChatModel(script=[RuntimeError("down") for _ in question_ids()])
+    rows = record(
+        db_session,
+        [ChatModel("scripted", model)],
+        DATA / "qa_questions.jsonl",
+        DATA / "corpus.jsonl",
+    )
+    assert {row.prompt_sha for row in rows} == {prompt_sha()}

@@ -90,7 +90,9 @@ left no recording.
 (1.000) and wins on `citation_precision` (0.826 against 0.186). Minimax answers every question,
 including the four unanswerable ones, and cites far more sources than the supporting set, so it
 scores 0.000 on `abstention`, and it spent 17188 tokens a question. Lightning is cheaper per
-answer but misses supporting evidence on three answerable questions.
+answer but misses supporting evidence on three answerable questions. Lightning's
+`citation_precision` (0.842) is actually higher than ultra's (0.826); the choice rests on
+`support_recall` being ranked first, and lightning is three answerable questions short there.
 
 The three named candidates from 2026-10-16 did not all survive the day. Gemma answered 429
 (upstream rate limit) on all 20 questions; nemotron-3-super answered an error on all 20 (429 in

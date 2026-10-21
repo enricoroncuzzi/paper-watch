@@ -15,16 +15,16 @@ from typer.testing import CliRunner
 
 import evals.qa_eval as evals_qa
 import evals.retrieval_eval as retrieval_eval
-from evals.qa_eval import QA_SET_VERSION, Recorded, RecordedSource
 from evals.retrieval_eval import GATED, DatabaseNotEmpty
 from paperwatch import cli
 from paperwatch.agent.citations import CheckedAnswer, Citation, Flag
 from paperwatch.agent.graph import AnswerEvent, TokenEvent, ToolEvent
-from paperwatch.agent.prompts import prompt_sha
 from paperwatch.api.app import ErrorEvent
 from paperwatch.cli import app
 from paperwatch.llm.embedder import FakeEmbedder
 from paperwatch.retrieval.hybrid import Filters
+from tests.unit.qa_helpers import qa_cli_paths as _qa_cli_paths
+from tests.unit.qa_helpers import qa_recording, qa_row
 
 
 def boom(*args: object, **kwargs: object) -> object:
@@ -325,55 +325,6 @@ def test_eval_db_name_always_matches_the_sweep_pattern() -> None:
 
 # --- qa-eval (Task 18) ---
 
-QA_ANSWER = "A coding harness edits files and runs tests [S1]."
-
-
-def qa_settings(model: str = "m/x:free") -> SimpleNamespace:
-    # The command only reads chat_model on the offline path; a real Settings would read .env.
-    return SimpleNamespace(chat_model=model, log_level="INFO")
-
-
-def qa_question_ids() -> list[str]:
-    return [
-        json.loads(line)["id"]
-        for line in (cli._EVAL_DATA / "qa_questions.jsonl").read_text().splitlines()
-        if line.strip()
-    ]
-
-
-def qa_row(
-    qid: str = "q01",
-    external_id: str = "ag-01",
-    *,
-    provider_error: bool = False,
-    model: str = "m/x:free",
-    sha: str | None = None,
-) -> Recorded:
-    return Recorded(
-        qid,
-        model,
-        QA_SET_VERSION,
-        QA_ANSWER,
-        (RecordedSource("S1", external_id, "peer_reviewed"),),
-        ("search_corpus",),
-        60,
-        provider_error,
-        prompt_sha() if sha is None else sha,
-    )
-
-
-def qa_recording() -> list[Recorded]:
-    return [qa_row(qid) for qid in qa_question_ids()]
-
-
-def _qa_cli_paths(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
-    monkeypatch.setattr(cli, "get_settings", lambda: qa_settings())
-    # The replay belongs to the committed default; pin it so the file name and the rows agree.
-    monkeypatch.setattr(cli, "CHAT_MODEL", "m/x:free")
-    monkeypatch.setattr(cli, "_QA_RECORDED_DIR", tmp_path)
-    monkeypatch.setattr(cli, "_QA_BASELINE_PATH", tmp_path / "baseline.json")
-    return tmp_path
-
 
 def test_qa_eval_refuses_live_with_write_baseline(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -489,6 +440,9 @@ def test_qa_eval_refuses_an_incomplete_recording(
     result = CliRunner().invoke(app, ["qa-eval"])
     assert result.exit_code == 2
     assert "covers 1 of 20 questions" in result.stderr
+    # The refusal names the file and says exactly how to fix it.
+    assert "m_x_free.jsonl" in result.stderr
+    assert "uv run paperwatch qa-eval --live --model m/x:free" in result.stderr
 
 
 # --- ask, serve and the terminal rendering (Task 17, review round 1) ---

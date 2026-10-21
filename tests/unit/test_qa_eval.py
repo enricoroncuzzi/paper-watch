@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+import paperwatch.agent.prompts as prompts
 from evals.qa_eval import (
     GATED,
     QA_SET_VERSION,
@@ -190,3 +191,42 @@ def test_recordings_match_the_question_set() -> None:
         rows = load_recorded(path)
         assert {r.question_id for r in rows} == ids
         assert {r.set_version for r in rows} == {QA_SET_VERSION}
+
+
+@pytest.mark.parametrize("name", ["SYSTEM_PROMPT", "FINAL_ROUND_NOTE"])
+def test_the_fingerprint_changes_with_either_prompt(
+    monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    before = prompts.prompt_sha()
+    monkeypatch.setattr(prompts, name, getattr(prompts, name) + " changed")
+    assert prompts.prompt_sha() != before
+
+
+def test_check_complete_refuses_a_recording_that_is_stale_in_one_row() -> None:
+    rows = _complete_rows()
+    rows[-1] = replace(rows[-1], prompt_sha="old")
+    with pytest.raises(ValueError, match="different prompt"):
+        check_complete(rows, DATA / "qa_questions.jsonl", "m")
+
+
+def test_check_complete_refuses_a_file_that_mixes_models() -> None:
+    rows = _complete_rows()
+    rows[0] = replace(rows[0], model="other")
+    with pytest.raises(ValueError, match="not m"):
+        check_complete(rows, DATA / "qa_questions.jsonl", "m")
+
+
+def test_check_complete_names_the_file_and_the_re_record_command() -> None:
+    rows = [replace(row, prompt_sha="old") for row in _complete_rows()]
+    path = Path("recording.jsonl")
+    with pytest.raises(ValueError) as raised:
+        check_complete(rows, DATA / "qa_questions.jsonl", "m", path)
+    assert "recording.jsonl" in str(raised.value)
+    assert "uv run paperwatch qa-eval --live --model m" in str(raised.value)
+    assert "uv run paperwatch qa-eval --write-baseline" in str(raised.value)
+
+
+def test_every_committed_recording_was_made_with_the_current_prompt() -> None:
+    # The default is chosen by comparing recordings, which is only fair under one prompt.
+    for path in (DATA / "qa_recorded").glob("*.jsonl"):
+        assert {row.prompt_sha for row in load_recorded(path)} == {prompts.prompt_sha()}, path.name

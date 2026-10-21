@@ -61,7 +61,7 @@ class RecordedSource:
 
 @dataclass(frozen=True)
 class Recorded:
-    """One recorded answer: the model's checked text and everything needed to rescore it.
+    """One recorded answer: the model's own text and everything needed to rescore it.
 
     `provider_error` marks a question the provider never answered. The row is kept, not dropped,
     so the recording says what happened and the score can count a failure as a failure instead
@@ -229,33 +229,50 @@ def _restore(row: Recorded) -> tuple[SourceRegistry, dict[uuid.UUID, str]]:
     return registry, by_item
 
 
-def check_complete(recorded: list[Recorded], questions: Path, model: str) -> None:
+def _re_record_hint(model: str) -> str:
+    # The exact command, not "re-record it": a stale file is only fixable by someone who knows
+    # how, and the baseline belongs to the default model alone.
+    return (
+        f"re-record it with `uv run paperwatch qa-eval --live --model {model}`, "
+        "then `uv run paperwatch qa-eval --write-baseline` if it is the default"
+    )
+
+
+def check_complete(
+    recorded: list[Recorded], questions: Path, model: str, path: Path | None = None
+) -> None:
     """Refuse a recording the replay cannot trust, before any metric is computed.
 
     `score` stays lenient because the plan's tests score a single row; the CLI replay uses this:
     a recording must cover the whole set, come from this set version and this prompt, and name the
-    model its file is for. A stale recording is re-recorded, never silently scored.
+    model its file is for. `path` names the file in the refusal when the caller has it. A stale
+    recording is re-recorded, never silently scored.
     """
+    where = f"{path}: " if path is not None else ""
     expected = set(_questions(questions))
     covered = {row.question_id for row in recorded}
     if covered != expected:
         raise ValueError(
-            f"the recording covers {len(covered)} of {len(expected)} questions; re-record it"
+            f"{where}the recording covers {len(covered)} of {len(expected)} questions; "
+            f"{_re_record_hint(model)}"
         )
     versions = {row.set_version for row in recorded}
     if versions != {QA_SET_VERSION}:
         raise ValueError(
-            f"the recording is set version {sorted(versions)}, not {QA_SET_VERSION}; re-record it"
+            f"{where}the recording is set version {sorted(versions)}, not {QA_SET_VERSION}; "
+            f"{_re_record_hint(model)}"
         )
     models = {row.model for row in recorded}
     if models != {model}:
-        raise ValueError(f"the recording is for {sorted(models)}, not {model}; check the file name")
+        raise ValueError(
+            f"{where}the recording is for {sorted(models)}, not {model}; {_re_record_hint(model)}"
+        )
     current = prompt_sha()
     stale = [row.question_id for row in recorded if row.prompt_sha != current]
     if stale:
         raise ValueError(
-            f"the recording was made with a different prompt ({len(stale)} of "
-            f"{len(recorded)} rows); re-record it"
+            f"{where}the recording was made with a different prompt "
+            f"({len(stale)} of {len(recorded)} rows); {_re_record_hint(model)}"
         )
 
 

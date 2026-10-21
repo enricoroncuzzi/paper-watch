@@ -1,4 +1,4 @@
-"""Proposed additions for Task 18: each test pins a mutant that survived the committed suite."""
+"""QA-eval edge cases: the metric boundaries, the recording guards and the CLI wiring."""
 
 import json
 from dataclasses import replace
@@ -21,6 +21,7 @@ from evals.qa_eval import (
 from paperwatch import cli
 from paperwatch.agent.prompts import prompt_sha
 from paperwatch.cli import app
+from tests.unit.qa_helpers import qa_cli_paths, qa_row
 from tests.unit.test_qa_eval import CLAIM, questions, rec
 
 
@@ -95,9 +96,7 @@ def test_qa_models_never_include_a_fallback() -> None:
 def test_exactly_two_provider_errors_are_tolerated(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    from tests.unit.test_cli import _qa_cli_paths, qa_row
-
-    path = _qa_cli_paths(monkeypatch, tmp_path)
+    path = qa_cli_paths(monkeypatch, tmp_path)
     monkeypatch.setattr(cli, "_qa_models", lambda settings, model: [object()])
     monkeypatch.setattr(cli, "_with_throwaway_database", lambda run: run(None))
     rows = [qa_row("q01"), qa_row("q02", provider_error=True), qa_row("q03", provider_error=True)]
@@ -107,9 +106,7 @@ def test_exactly_two_provider_errors_are_tolerated(
 
 
 def test_model_without_live_says_why(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    from tests.unit.test_cli import _qa_cli_paths
-
-    _qa_cli_paths(monkeypatch, tmp_path)
+    qa_cli_paths(monkeypatch, tmp_path)
     result = CliRunner().invoke(app, ["qa-eval", "--model", "m/x:free"])
     assert "only meaningful with --live" in result.stderr
 

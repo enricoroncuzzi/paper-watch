@@ -122,8 +122,9 @@ worst case of a bad model is an honest refusal, not an invented citation.
 
 ## What a caller sees
 
-`answer_question(graph, question)` runs the graph and returns the `CheckedAnswer` plus the tool
-names in call order; it is what the CLI and the tests use. `stream_answer` is a generator of
+`answer_question(graph, question)` runs the graph and returns the `CheckedAnswer`, the tool names
+in call order, and the model's own final text (before the checker rewrote or replaced it); it is
+what the CLI and the tests use. `stream_answer` is a generator of
 `ToolEvent(name, args)` when the model decides to call a tool, `TokenEvent(text)` as the answer is
 written, and exactly one final `AnswerEvent(answer)` (on success; a cap or budget error ends the
 stream without one). The tokens are previews, and the streamed text can differ from the checked text

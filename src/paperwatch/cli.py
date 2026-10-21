@@ -501,7 +501,7 @@ def qa_eval(
         raise typer.Exit(2)
     recorded = load_recorded(path)
     try:
-        check_complete(recorded, questions, target)
+        check_complete(recorded, questions, target, path)
     except ValueError as exc:
         # A partial, stale-prompt or wrong-model recording is not a gate result; the fix is to
         # re-record it, not to rescore a file the baseline does not describe.
