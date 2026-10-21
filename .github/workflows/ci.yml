@@ -76,6 +76,9 @@ jobs:
       # The eval creates and migrates its own throwaway database, so the service DB is only the
       # server it connects to; no `alembic upgrade head` against it is needed.
       - run: uv run paperwatch eval
+      # The QA eval replays a committed recording through the current checker: no model, no
+      # network and no database, so a checker or scoring regression fails here too.
+      - run: uv run paperwatch qa-eval
   security:
     runs-on: ubuntu-latest
     timeout-minutes: 10

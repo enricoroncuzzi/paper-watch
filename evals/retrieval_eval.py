@@ -81,6 +81,38 @@ def _branch_ids(rows: list[Any], by_item: dict[uuid.UUID, str], limit: int) -> l
     return [by_item.get(row.id) for row in ordered[:limit]]
 
 
+def seed_corpus(session: Session, embedder: Embedder, corpus: Path) -> dict[uuid.UUID, str]:
+    """Admit every corpus row exactly as the pipeline would, and map each id to its external id.
+
+    The retrieval eval and the QA eval share this so both measure the same retrieval: one seeded
+    eval corpus, embedded with the caller's embedder, through the real write path and the partial
+    HNSW index.
+    """
+    repo = Repository(session)
+    by_item: dict[uuid.UUID, str] = {}
+    for row in _load(corpus):
+        item = SourceItem(
+            "eval",
+            row["external_id"],
+            row["title"],
+            ("eval",),
+            row["text"],
+            _EVAL_URL.format(external_id=row["external_id"]),
+            datetime(2026, 1, 1, tzinfo=UTC),
+        )
+        item_id = repo.upsert_item(
+            item,
+            Tier(row["tier"]),
+            row["profile"],
+            1.0,
+            Signals(),
+            embedder.embed([f"{row['title']}\n{row['text']}"])[0],
+        )
+        by_item[item_id] = row["external_id"]
+    session.flush()
+    return by_item
+
+
 def evaluate(
     session: Session,
     embedder: Embedder,
@@ -94,33 +126,11 @@ def evaluate(
     foreign = session.scalar(select(func.count()).select_from(Item).where(Item.source != "eval"))
     if foreign:
         raise DatabaseNotEmpty(f"the eval needs an empty database; found {foreign} non-eval items")
-    repo = Repository(session)
-    by_url: dict[str, str] = {}
-    by_item: dict[uuid.UUID, str] = {}
-    # Seed the corpus first: every row is admitted exactly as the pipeline would admit it, so the
-    # eval exercises the real write path and the partial HNSW index.
-    for row in _load(corpus):
-        url = _EVAL_URL.format(external_id=row["external_id"])
-        item = SourceItem(
-            "eval",
-            row["external_id"],
-            row["title"],
-            ("eval",),
-            row["text"],
-            url,
-            datetime(2026, 1, 1, tzinfo=UTC),
-        )
-        item_id = repo.upsert_item(
-            item,
-            Tier(row["tier"]),
-            row["profile"],
-            1.0,
-            Signals(),
-            embedder.embed([f"{row['title']}\n{row['text']}"])[0],
-        )
-        by_url[url] = row["external_id"]
-        by_item[item_id] = row["external_id"]
-    session.flush()
+    # Seed the corpus first, then invert the map: a returned hit's url is its corpus external id.
+    by_item = seed_corpus(session, embedder, corpus)
+    by_url = {
+        _EVAL_URL.format(external_id=external_id): external_id for external_id in by_item.values()
+    }
 
     totals: defaultdict[str, float] = defaultdict(float)
     kind_totals: defaultdict[str, float] = defaultdict(float)

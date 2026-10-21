@@ -68,13 +68,18 @@ INGEST_LOCK_KEY = 0x5041_5052_5754_434B
 # card; Groq is an optional fallback for the day a free model is withdrawn or rate-limited.
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
-# Provisional default, checked against the public OpenRouter catalogue on 2026-10-19: present,
-# priced at 0, and listing `tools` in `supported_parameters`, which the agent's tools need.
-# Task 18 measures three candidates on the QA set and may replace this id.
-CHAT_MODEL = "google/gemma-4-31b-it:free"
+# The default, chosen by measurement on 2026-10-21 (Task 18): the best recorded QA scores of the
+# free models with tools (ADR 0006 holds the table). A model id is configuration, so a withdrawn
+# model is a settings change, and `paperwatch qa-eval` is what detects an answer-quality loss.
+CHAT_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free"
 # Tool rounds the agent may take before it is called once more without tools and must answer;
 # the cap turns a model that loops on its tools into a final answer instead of a hung request.
 MAX_TOOL_ROUNDS = 4
+# Defaults for the two chat limits. They are constants as well as settings so the QA eval can
+# build its own guard from the same numbers without reading the developer's `.env`; the settings
+# below still override both by name.
+CHAT_MAX_TOKENS_PER_ANSWER = 60_000
+CHAT_MAX_CALLS_PER_DAY = 800
 
 # Connection budget for `paperwatch serve` (one local user, a few tabs at most). One answer holds
 # a pooled connection for its whole life, which can be minutes while the model writes, so the pool
@@ -152,10 +157,10 @@ class Settings(BaseSettings):
     chat_max_output_tokens: int = Field(default=4096, ge=1)
     # Per-answer cap, charged through the same Ledger as the ingestion runs: one answer is one
     # graph run, so a tool loop cannot spend without bound.
-    chat_max_tokens_per_answer: int = Field(default=60_000, ge=1)
+    chat_max_tokens_per_answer: int = Field(default=CHAT_MAX_TOKENS_PER_ANSWER, ge=1)
     # 800 sits under the 1,000 free requests a day OpenRouter allows with the captain's credit:
     # the gap is headroom for questions asked at the same time, not for hidden SDK retries.
-    chat_max_calls_per_day: int = Field(default=800, ge=1)
+    chat_max_calls_per_day: int = Field(default=CHAT_MAX_CALLS_PER_DAY, ge=1)
 
     # Optional key for Semantic Scholar (works without it, with lower rate limits).
     semantic_scholar_api_key: SecretStr | None = None

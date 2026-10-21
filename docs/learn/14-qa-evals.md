@@ -1,0 +1,129 @@
+# QA evals
+
+A retrieval eval asks "did the right items come back?"; a QA eval asks "did the answer use them honestly?". It needs questions whose supporting evidence is known in advance, plus questions the corpus cannot answer, because a system that always answers looks perfect until you ask it something it does not know. Live model calls are slow, rate-limited and not reproducible, so the answers are recorded once per model and the scoring is replayed from the recording in CI: CI then guards the checker and the scoring exactly, and a new recording is the deliberate act of measuring a new model. The same frozen set later compares two agent frameworks on equal terms.
+
+## The set
+
+`evals/data/qa_questions.jsonl` holds 20 questions, each one JSON object:
+
+```json
+{"id": "q14", "question": "How do sparse attention and state space models each cut the cost of attention?", "supporting": ["ml-01", "ml-02"], "kind": "answerable"}
+```
+
+Sixteen are `answerable`, written from the 41 items of `evals/data/corpus.jsonl`, and four are
+`unanswerable` (training energy, robot-control RL, GPU counts, data-centre carbon) with
+`"supporting": []`. Three answerable questions need two items (the sparse-attention/state-space,
+mixture-of-experts/RoPE and text/image-watermark pairs), and five are paraphrases that share no
+content word with their target's title. A test pins the counts, the unique ids, that every
+supporting id exists in the corpus, and that the unanswerable set has no supporting item.
+
+`QA_SET_VERSION` (currently 1) is stored in every recorded row. Changing the file means bumping
+the version and re-recording: a recording made against another version of the set is not
+comparable, and the tests refuse a mixed recording.
+
+## Record once, score forever
+
+`record(session, models, questions, corpus)` seeds the shared eval corpus with
+`retrieval_eval.seed_corpus` and the offline `FakeEmbedder`, then answers every question through
+the real graph (`build_agent`, `make_tools`, `answer_question`). Every model therefore meets the
+same search results, and only the chat model differs. Each question gets a fresh
+`SourceRegistry`, `Ledger` and `CallGuard`, because aliases, spending and the call cap belong to
+one answer.
+
+The recording keeps what the model produced and what the tools gave it, not the checker's
+verdict:
+
+```json
+{"question_id": "q01", "model": "nvidia/nemotron-3-ultra-550b-a55b:free", "set_version": 1,
+ "answer_text": "... [S1]", "sources": [{"alias": "S1", "external_id": "ag-01", "tier": "vetted_preprint"}],
+ "tools": ["search_corpus"], "tokens": 6123, "provider_error": false}
+```
+
+`provider_error` marks a question the provider never answered. The row stays in the file, so the
+recording says what happened instead of silently shrinking the set, and the score counts it as a
+failure: not a clean answer, and not an abstention (the system did not choose to say so). A live
+recording that fails more than 2 of the 20 questions on provider errors is reported as
+unavailable and is not written at all (`QA_MAX_PROVIDER_ERRORS` in `cli.py`).
+
+`score(recorded, questions)` rebuilds each answer's registry from `sources` (aliases S1..Sn, with
+a synthetic deterministic item id per external id) and runs the current `check_answer` on the
+stored text. That is the point of the replay: a change to the citation checker is measured, not
+remembered.
+
+| Metric | Definition | Gated |
+|---|---|---|
+| `support_recall` | share of answerable questions whose valid citations include at least one supporting item | yes |
+| `citation_precision` | valid citations on answerable questions that are supporting items, over all valid citations there (1.0 when there are none) | yes |
+| `clean_rate` | share of answerable answers with no checker flag | yes |
+| `abstention` | share of unanswerable questions whose checked text is `NO_SUPPORT` | yes |
+| `mean_tools` | tool calls per answer | reported |
+| `mean_tokens` | tokens per answer, from the per-answer ledger | reported |
+| `provider_errors` | questions the provider never answered | reported |
+
+"A valid citation" means an alias the registry issued for that answer; `S9` when only `S1` was
+returned is masked by the checker and never reaches the metric.
+
+## What the measurement chose
+
+On 2026-10-21 three models were recorded, each answer once, with at most 99 requests apiece:
+
+| Model | Requests | support_recall | citation_precision | clean_rate | abstention | mean_tools | mean_tokens |
+|---|---|---|---|---|---|---|---|
+| `nvidia/nemotron-3-ultra-550b-a55b:free` | 76 | 1.000 | 0.826 | 0.688 | 1.000 | 3.25 | 7404 |
+| `nvidia/nemotron-3.5-lightning:free` | 76 | 0.813 | 0.696 | 0.500 | 1.000 | 2.80 | 7726 |
+| `minimax/minimax-m3.1-flash:free` | 99 | 1.000 | 0.196 | 0.000 | 0.000 | 9.80 | 18460 |
+
+`google/gemma-4-31b-it:free` answered 429 on all 20 questions and
+`nvidia/nemotron-3-super-120b-a12b:free` errored on all 20 (its upstream returned 404), so both
+are unavailable; `nvidia/nemotron-3.5-super-vl:free` failed 10 of 20 and was also reported
+unavailable rather than retried. The chosen default is the ultra model: it ties minimax on
+`support_recall` and wins on `citation_precision`, while minimax answers the unanswerable
+questions and cites far beyond the supporting set. The full table and the rules are in
+[ADR 0006](../adr/0006-free-chat-provider.md).
+
+The ready-made trap is visible in minimax's row: a model that always answers scores 1.000 on
+`support_recall` and 0.000 on `abstention`. That is why the four unanswerable questions and
+`clean_rate` exist.
+
+## The gate
+
+`evals/qa_baseline.json` holds the four gated metrics of the default model's recording. Scoring
+is deterministic, so `gate(metrics, baseline)` uses a tolerance of 0: any drop fails. `paperwatch
+qa-eval` replays the committed recording, prints every metric and exits 1 with a `REGRESSION:`
+line for each gated metric below its baseline. The CI `eval` job runs it next to `paperwatch
+eval`, and it needs no model, no network and no database.
+
+The gate bites: with `score` returning an empty registry to the checker (so every answer becomes
+`NO_SUPPORT`), `paperwatch qa-eval` exits 1 with `support_recall dropped from 1.000 to 0.000` and
+`clean_rate dropped from 0.688 to 0.000`; restoring the file exits 0. The plan's suggested probe,
+a checker that accepts unknown aliases, changes nothing on this recording, because the default
+model never cited an alias its tools did not return.
+
+A recording is a snapshot, not a live measurement: it says how one model answered on one day. A
+model that is withdrawn, rate-limited or silently changed is caught by recording again, not by CI
+going red on its own. The recording command is `paperwatch qa-eval --live --model <id>` (it needs
+`PW_OPENROUTER_API_KEY` and a database it can create), and `--write-baseline` is a deliberate,
+separate act for the default model.
+
+## What the number cannot say
+
+The score replays the checker, so it measures retrieval support and citation discipline as the
+checker defines them, not whether a sentence is true: a confidently wrong sentence with a valid
+citation still counts as supported, which is lesson 11's known limit. The set is small (20
+questions) and the corpus is synthetic, so the numbers compare models against each other on this
+set, not models against the world. And `mean_tokens` mixes prompt tokens with completion tokens:
+it is a cost signal, not an answer-length measure (the model calls include each round's growing
+history).
+
+The recording does not store the round count, so the 4-round cap is visible only indirectly, in
+the tool counts: a question with four or more tool calls in a model that makes one call per round
+went through the capped answer round, which is the evidence that the chosen model accepts
+`tool_choice: "none"` with the tool definitions attached. The recording also cannot tell a plain
+`NO_SUPPORT` from one produced by a reply made only of malformed tool calls; if that shows up on a
+real model, the next step is to count it as a round and answer it with an error `ToolMessage`
+(Task 16's note).
+
+The implementation is `evals/qa_eval.py` with the set and recordings under `evals/data/`, the
+committed baseline in `evals/qa_baseline.json`, the command in `src/paperwatch/cli.py`, and the
+tests in `tests/unit/test_qa_eval.py`, `tests/integration/test_qa_record.py` and the `qa-eval`
+section of `tests/unit/test_cli.py`.

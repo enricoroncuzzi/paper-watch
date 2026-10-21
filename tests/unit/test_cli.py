@@ -13,7 +13,9 @@ import structlog
 from structlog.testing import capture_logs
 from typer.testing import CliRunner
 
+import evals.qa_eval as evals_qa
 import evals.retrieval_eval as retrieval_eval
+from evals.qa_eval import QA_SET_VERSION, Recorded, RecordedSource
 from evals.retrieval_eval import GATED, DatabaseNotEmpty
 from paperwatch import cli
 from paperwatch.agent.citations import CheckedAnswer, Citation, Flag
@@ -318,6 +320,126 @@ def test_eval_db_name_always_matches_the_sweep_pattern() -> None:
     assert name.startswith("paperwatch_eval_1792070000_")
     # A fractional `now` is truncated to whole seconds, keeping the 10-digit epoch group.
     assert cli._EVAL_DB_RE.fullmatch(cli._eval_db_name(1792070000.987))
+
+
+# --- qa-eval (Task 18) ---
+
+QA_ANSWER = "A coding harness edits files and runs tests [S1]."
+
+
+def qa_settings(model: str = "m/x:free") -> SimpleNamespace:
+    # The command only reads chat_model on the offline path; a real Settings would read .env.
+    return SimpleNamespace(chat_model=model, log_level="INFO")
+
+
+def qa_row(qid: str, external_id: str = "ag-01", *, provider_error: bool = False) -> Recorded:
+    return Recorded(
+        qid,
+        "m/x:free",
+        QA_SET_VERSION,
+        QA_ANSWER,
+        (RecordedSource("S1", external_id, "peer_reviewed"),),
+        ("search_corpus",),
+        60,
+        provider_error,
+    )
+
+
+def _qa_cli_paths(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    monkeypatch.setattr(cli, "get_settings", lambda: qa_settings())
+    monkeypatch.setattr(cli, "_QA_RECORDED_DIR", tmp_path)
+    monkeypatch.setattr(cli, "_QA_BASELINE_PATH", tmp_path / "baseline.json")
+    return tmp_path
+
+
+def test_qa_eval_refuses_live_with_write_baseline(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # A live recording is evidence for one model and must never become the gate.
+    _qa_cli_paths(monkeypatch, tmp_path)
+    monkeypatch.setattr(cli, "_with_throwaway_database", boom)
+    result = CliRunner().invoke(app, ["qa-eval", "--live", "--write-baseline"])
+    assert result.exit_code == 2
+    assert "--live" in result.output and "--write-baseline" in result.output
+
+
+def test_qa_eval_model_requires_live(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _qa_cli_paths(monkeypatch, tmp_path)
+    result = CliRunner().invoke(app, ["qa-eval", "--model", "m/x:free"])
+    assert result.exit_code == 2 and "--live" in result.output
+
+
+def test_qa_eval_names_the_missing_recording(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _qa_cli_paths(monkeypatch, tmp_path)
+    result = CliRunner().invoke(app, ["qa-eval"])
+    assert result.exit_code == 2
+    assert "qa-eval --live --model m/x:free" in result.stderr
+
+
+def test_qa_eval_passes_and_bites(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    path = _qa_cli_paths(monkeypatch, tmp_path)
+    evals_qa.write_recorded(path / "m_x_free.jsonl", [qa_row("q01")])
+    (path / "baseline.json").write_text(json.dumps(dict.fromkeys(evals_qa.GATED, 0.5)))
+    result = CliRunner().invoke(app, ["qa-eval"])
+    assert result.exit_code == 0 and "support_recall" in result.output
+    # A wrong supporting item drops support_recall from 1.0 to 0.0, and the gate is exact.
+    (path / "baseline.json").write_text(json.dumps(dict.fromkeys(evals_qa.GATED, 0.0)))
+    baseline = json.loads((path / "baseline.json").read_text())
+    baseline["support_recall"] = 1.0
+    (path / "baseline.json").write_text(json.dumps(baseline))
+    evals_qa.write_recorded(
+        path / "m_x_free.jsonl",
+        [qa_row("q01", "ag-02")],
+    )
+    result = CliRunner().invoke(app, ["qa-eval"])
+    assert result.exit_code == 1
+    assert "REGRESSION: support_recall dropped from 1.000 to 0.000" in result.output
+
+
+def test_qa_eval_write_baseline_writes_only_the_gated_keys(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    path = _qa_cli_paths(monkeypatch, tmp_path)
+    (path / "m_x_free.jsonl").write_text("")
+    # The real score is stubbed: this test is about which keys reach the file, not the numbers.
+    monkeypatch.setattr(
+        evals_qa,
+        "score",
+        lambda rows, questions: {**dict.fromkeys(evals_qa.GATED, 1.0), "mean_tools": 2.0},
+    )
+    monkeypatch.setattr(evals_qa, "load_recorded", lambda p: [object()])
+    result = CliRunner().invoke(app, ["qa-eval", "--write-baseline"])
+    assert result.exit_code == 0
+    written = json.loads((path / "baseline.json").read_text())
+    assert set(written) == set(evals_qa.GATED)
+
+
+def test_qa_eval_live_writes_a_recording(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    path = _qa_cli_paths(monkeypatch, tmp_path)
+    monkeypatch.setattr(cli, "_qa_models", lambda settings, model: [object()])
+    monkeypatch.setattr(cli, "_with_throwaway_database", lambda run: run(None))
+    monkeypatch.setattr(evals_qa, "record", lambda session, models, q, c: [qa_row("q01")])
+    result = CliRunner().invoke(app, ["qa-eval", "--live", "--model", "m/x:free"])
+    assert result.exit_code == 0
+    assert "recorded 1 answers from m/x:free" in result.output
+    assert (path / "m_x_free.jsonl").exists()
+    assert not (path / "baseline.json").exists()
+
+
+def test_qa_eval_live_refuses_more_than_two_provider_errors(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    path = _qa_cli_paths(monkeypatch, tmp_path)
+    monkeypatch.setattr(cli, "_qa_models", lambda settings, model: [object()])
+    monkeypatch.setattr(cli, "_with_throwaway_database", lambda run: run(None))
+    rows = [qa_row(f"q0{i}", provider_error=True) for i in range(1, 4)]
+    monkeypatch.setattr(evals_qa, "record", lambda session, models, q, c: rows)
+    result = CliRunner().invoke(app, ["qa-eval", "--live", "--model", "m/x:free"])
+    assert result.exit_code == 2
+    assert "unavailable: 3 of 3" in result.stderr
+    assert not (path / "m_x_free.jsonl").exists()
 
 
 # --- ask, serve and the terminal rendering (Task 17, review round 1) ---

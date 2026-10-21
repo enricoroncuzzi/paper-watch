@@ -26,13 +26,13 @@ id. LangChain is used here only for that model and tool interface, not as an orc
 
 ## Decision
 
-Chat runs on OpenRouter (`https://openrouter.ai/api/v1`) with a free model, `google/gemma-4-31b-it:free`
-as the provisional default, checked against the public catalogue on 2026-10-19 for a price of
-zero and `tools` in `supported_parameters`; Task 18 measures three candidates on the QA set and
-may replace the id. Groq (`https://api.groq.com/openai/v1`) is an optional fallback, enabled only
-when both `PW_GROQ_API_KEY` and `PW_GROQ_CHAT_MODEL` are set, because Groq's free model list
-changes too often to pin a default. `PW_OPENROUTER_API_KEY` is the one required secret; without it
-the feature refuses to start rather than failing inside an HTTP request.
+Chat runs on OpenRouter (`https://openrouter.ai/api/v1`) with a free model,
+`nvidia/nemotron-3-ultra-550b-a55b:free` as the default, chosen by measurement on 2026-10-21
+(the table below), not by the catalogue alone. Groq (`https://api.groq.com/openai/v1`) is an
+optional fallback, enabled only when both `PW_GROQ_API_KEY` and `PW_GROQ_CHAT_MODEL` are set,
+because Groq's free model list changes too often to pin a default. `PW_OPENROUTER_API_KEY` is the
+one required secret; without it the feature refuses to start rather than failing inside an HTTP
+request.
 
 Two limits wrap every call, in `src/paperwatch/llm/chat.py`. `CallGuard.before_call` counts the
 `chat_calls` rows since UTC midnight and refuses at `chat_max_calls_per_day = 800`, a fifth under
@@ -60,6 +60,42 @@ Retries are explicit: the agent's fallback loop makes
 them, one guarded attempt at a time, because an SDK retry inside a call is a provider request the
 guard would never see. Keys are `SecretStr` in `Settings`, so a settings object in a log or a
 traceback shows `**********`, not the key.
+
+## Measured model choice (2026-10-21)
+
+The model id above was chosen by measurement, not by reading the catalogue: three models were
+recorded on the 20-question QA set (`paperwatch qa-eval --live --model <id>`), each answer once,
+with the same offline retrieval (`FakeEmbedder`) so only the chat model differs. The scores are the
+recorded answers replayed through the current checker, and the rules were: pick by
+`support_recall`, then `citation_precision`, then `abstention`, then the lower `mean_tokens`.
+
+| Model | Status | Requests | support_recall | citation_precision | clean_rate | abstention | mean_tools | mean_tokens |
+|---|---|---|---|---|---|---|---|---|
+| `nvidia/nemotron-3-ultra-550b-a55b:free` | recorded | 76 | 1.000 | 0.826 | 0.688 | 1.000 | 3.25 | 7404 |
+| `nvidia/nemotron-3.5-lightning:free` | recorded | 76 | 0.813 | 0.696 | 0.500 | 1.000 | 2.80 | 7726 |
+| `minimax/minimax-m3.1-flash:free` | recorded | 99 | 1.000 | 0.196 | 0.000 | 0.000 | 9.80 | 18460 |
+| `google/gemma-4-31b-it:free` | unavailable | 20 | - | - | - | - | - | - |
+| `nvidia/nemotron-3-super-120b-a12b:free` | unavailable | 20 | - | - | - | - | - | - |
+| `nvidia/nemotron-3.5-super-vl:free` | unavailable | 50 | - | - | - | - | - | - |
+
+`nvidia/nemotron-3-ultra-550b-a55b:free` is the default: it ties minimax on `support_recall`
+(1.000) and wins on `citation_precision` (0.826 against 0.196). Minimax answers every question,
+including the four unanswerable ones, and cites far more sources than the supporting set, so it
+scores 0.000 on `clean_rate` and `abstention`, and it spent 18460 tokens a question. Lightning is
+cheaper per answer but misses supporting evidence on three answerable questions.
+
+The three named candidates from 2026-10-16 did not all survive the day. Gemma answered 429
+(upstream rate limit) on all 20 questions; nemotron-3-super answered an error on all 20 (429 in
+the recording, and a direct probe showed its upstream answering 404 "Function not found for
+account"), so it was never a rate-limit retry. The plan's rule is
+to take the next most recent free model with `tools` instead, so minimax (the newest) and
+lightning were recorded; `nvidia/nemotron-3.5-super-vl:free` started fine but failed 10 of 20
+questions with upstream errors and was reported unavailable rather than retried. No measurement
+retried a provider failure to get a better number, and the unavailable rows carry no metrics.
+
+The recording files are committed under `evals/data/qa_recorded/`, so the comparison can be
+replayed and re-scored; `evals/qa_baseline.json` holds only the default model's four gated
+metrics, and `paperwatch qa-eval` fails on any drop because the replay has no model noise.
 
 ## Consequences
 

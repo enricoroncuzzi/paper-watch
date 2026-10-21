@@ -33,13 +33,18 @@ from paperwatch.api.app import (
     live_deps,
     run_question,
 )
-from paperwatch.config import PROFILES_PATH, REPO_ROOT, get_settings
+from paperwatch.config import PROFILES_PATH, REPO_ROOT, Settings, get_settings
 from paperwatch.domain import Tier, load_profiles
 from paperwatch.ingest.pipeline import Sources, run_ingestion
-from paperwatch.llm.chat import ChatNotConfigured
+from paperwatch.llm.chat import (
+    ChatModel,
+    ChatNotConfigured,
+    DailyCapReached,
+    make_chat_models,
+)
 from paperwatch.llm.classifier import Classifier, make_classifier
 from paperwatch.llm.embedder import Embedder, FakeEmbedder, make_embedder
-from paperwatch.llm.ledger import Ledger
+from paperwatch.llm.ledger import BudgetExceeded, Ledger
 from paperwatch.logging import configure_logging
 from paperwatch.retrieval.hybrid import Filters, hybrid_search
 from paperwatch.sources.arxiv import ArxivOaiSource
@@ -81,6 +86,11 @@ _REPO_ROOT = REPO_ROOT
 _PROFILES_PATH = PROFILES_PATH
 _EVAL_DATA = _REPO_ROOT / "evals" / "data"
 _BASELINE_PATH = _REPO_ROOT / "evals" / "baseline.json"
+_QA_BASELINE_PATH = _REPO_ROOT / "evals" / "qa_baseline.json"
+_QA_RECORDED_DIR = _EVAL_DATA / "qa_recorded"
+# A model is reported unavailable when more of the QA set fails on provider errors than this; two
+# failures can be an upstream hiccup, twenty mean the model cannot be measured today (Task 18).
+QA_MAX_PROVIDER_ERRORS = 2
 # The throwaway database's name. The name is built only through `_eval_db_name`, and the sweep's
 # SQL pattern and Python parse both use `_EVAL_DB_RE`, so the generator and the matcher cannot
 # drift apart. The first group is the creation epoch (10 digits, until the year 2286), which is
@@ -391,6 +401,107 @@ def eval_cmd(
         # A live run only reports; the gated baseline is the fake embedder's, so nothing to check.
         return
     failures = gate(m, json.loads(_BASELINE_PATH.read_text()))
+    for fail in failures:
+        typer.echo(f"REGRESSION: {fail}")
+    raise typer.Exit(1 if failures else 0)
+
+
+def _qa_record_path(model: str) -> Path:
+    # One file per measured model; the slug rule is fixed so a model id maps to one file name.
+    return _QA_RECORDED_DIR / f"{model.replace('/', '_').replace(':', '_')}.jsonl"
+
+
+def _qa_models(settings: Settings, model: str) -> list[ChatModel]:
+    # One model and no fallback: a recording is evidence for exactly this id, so a fallback
+    # provider quietly answering some questions would put two models in one file.
+    settings = settings.model_copy(
+        update={"chat_model": model, "groq_api_key": None, "groq_chat_model": None}
+    )
+    return make_chat_models(settings)
+
+
+@app.command(name="qa-eval")
+def qa_eval(
+    live: bool = typer.Option(False, "--live", help="Record live answers from a chat model"),
+    model: str | None = typer.Option(None, "--model", help="Model id to record (with --live)"),
+    write_baseline: bool = typer.Option(False, "--write-baseline"),
+) -> None:
+    """Score recorded answers against the committed QA baseline, or record a new model."""
+    # The baseline belongs to the committed recording of the default model, so a live recording
+    # is a manual measurement and can never rewrite the gate.
+    if live and write_baseline:
+        typer.echo("--live cannot be combined with --write-baseline", err=True)
+        raise typer.Exit(2)
+    if model is not None and not live:
+        typer.echo("--model is only meaningful with --live", err=True)
+        raise typer.Exit(2)
+
+    # The console script's path contains src, not the repository root, so the top-level evals
+    # package is invisible without adding the root (the same base the data paths use).
+    sys.path.insert(0, str(_REPO_ROOT))
+    from evals.qa_eval import GATED, gate, load_recorded, record, score, write_recorded
+
+    questions = _EVAL_DATA / "qa_questions.jsonl"
+    corpus = _EVAL_DATA / "corpus.jsonl"
+    s = get_settings()
+    if live:
+        target = model or s.chat_model
+        try:
+            models = _qa_models(s, target)
+        except ChatNotConfigured as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(2) from exc
+        configure_logging(s.log_level)
+        try:
+            rows = _with_throwaway_database(
+                lambda session: record(session, models, questions, corpus)
+            )
+        except DailyCapReached as exc:
+            # Our own cap, not the provider's: a recording that spends 800 calls in a day is a
+            # configuration problem, and a traceback would only hide the sentence that says so.
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(2) from exc
+        except BudgetExceeded as exc:
+            typer.echo(f"the recording exceeded one answer's token budget ({exc})", err=True)
+            raise typer.Exit(2) from exc
+        errors = sum(row.provider_error for row in rows)
+        if errors > QA_MAX_PROVIDER_ERRORS:
+            # Not written: a recording with more holes than the rule allows would be evidence for
+            # a model we cannot measure today, and retrying to chase a better number is refused.
+            typer.echo(
+                f"{target} is unavailable: {errors} of {len(rows)} questions failed with "
+                "provider errors",
+                err=True,
+            )
+            raise typer.Exit(2)
+        path = _qa_record_path(target)
+        write_recorded(path, rows)
+        typer.echo(json.dumps(score(rows, questions), indent=2))
+        typer.echo(f"recorded {len(rows)} answers from {target} to {path}")
+        return
+
+    target = s.chat_model
+    path = _qa_record_path(target)
+    if not path.exists():
+        typer.echo(
+            f"no recording for {target} at {path}; "
+            f"run `paperwatch qa-eval --live --model {target}`",
+            err=True,
+        )
+        raise typer.Exit(2)
+    m = score(load_recorded(path), questions)
+    typer.echo(json.dumps(m, indent=2))
+    if write_baseline:
+        # Only the gated metrics are committed: the gate validates exactly these keys.
+        _QA_BASELINE_PATH.write_text(json.dumps({name: m[name] for name in GATED}, indent=2) + "\n")
+        return
+    if not _QA_BASELINE_PATH.exists():
+        typer.echo(
+            f"no QA baseline at {_QA_BASELINE_PATH}; run `paperwatch qa-eval --write-baseline`",
+            err=True,
+        )
+        raise typer.Exit(2)
+    failures = gate(m, json.loads(_QA_BASELINE_PATH.read_text()))
     for fail in failures:
         typer.echo(f"REGRESSION: {fail}")
     raise typer.Exit(1 if failures else 0)
