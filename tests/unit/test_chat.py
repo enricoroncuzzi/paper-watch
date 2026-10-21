@@ -7,9 +7,15 @@ from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 
-from paperwatch.config import CHAT_MODEL, GROQ_BASE_URL, OPENROUTER_BASE_URL, Settings
+from paperwatch.config import (
+    CHAT_CALL_MODEL_MAX_CHARS,
+    CHAT_MODEL,
+    GROQ_BASE_URL,
+    OPENROUTER_BASE_URL,
+    Settings,
+)
 from paperwatch.llm.chat import (
     CallGuard,
     ChatNotConfigured,
@@ -335,3 +341,31 @@ def test_settings_defaults_hold_against_an_inherited_pw_variable() -> None:
         text=True,
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_a_streamed_model_id_repeated_by_the_merge_is_recorded_once() -> None:
+    # langchain-core merges streamed chunks by concatenating string metadata, so a provider that
+    # names the model on several chunks leaves "idid"; the guard stores the id once.
+    name = "vendor/model:free"
+    chunks = [AIMessageChunk(content="a", response_metadata={"model_name": name}) for _ in range(3)]
+    merged = chunks[0] + chunks[1] + chunks[2]
+    assert merged.response_metadata["model_name"] == name * 3  # langchain-core's own merge
+    repo = FakeRepo()
+    guard = CallGuard(repo, Ledger(1000), 10, lambda: NOW)
+    guard.after_call(
+        "p", AIMessage("x", usage_metadata=usage(1, 1), response_metadata=merged.response_metadata)
+    )
+    assert repo.recorded[0]["model"] == name
+
+
+def test_a_model_id_longer_than_the_column_is_clipped() -> None:
+    # The id is written to ChatCall.model (String(128)); a provider-left id longer than the
+    # column must not turn a usage write into an error that ends the answer.
+    name = "vendor/" + "a" * 193 + "/end"
+    assert len(name) > CHAT_CALL_MODEL_MAX_CHARS
+    repo = FakeRepo()
+    guard = CallGuard(repo, Ledger(1000), 10, lambda: NOW)
+    guard.after_call(
+        "p", AIMessage("x", usage_metadata=usage(1, 1), response_metadata={"model_name": name})
+    )
+    assert len(str(repo.recorded[0]["model"])) == CHAT_CALL_MODEL_MAX_CHARS

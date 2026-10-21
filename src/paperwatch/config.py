@@ -75,6 +75,9 @@ CHAT_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free"
 # Tool rounds the agent may take before it is called once more without tools and must answer;
 # the cap turns a model that loops on its tools into a final answer instead of a hung request.
 MAX_TOOL_ROUNDS = 4
+# The width of `chat_calls.model`: a usage row stores the provider's model id, and the guard clips
+# it so a provider that names its model on every streamed chunk cannot fail the write.
+CHAT_CALL_MODEL_MAX_CHARS = 128
 # Defaults for the two chat limits. They are constants as well as settings so the QA eval can
 # build its own guard from the same numbers without reading the developer's `.env`; the settings
 # below still override both by name.

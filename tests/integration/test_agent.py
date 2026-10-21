@@ -645,3 +645,27 @@ def test_a_tool_call_never_routes_after_the_answer_round() -> None:
     }
     assert not _may_run_tools(state)
     assert _may_run_tools({**state, "rounds": MAX_TOOL_ROUNDS})
+
+
+def test_a_streamed_model_id_repeated_on_every_chunk_is_recorded_once(
+    db_session: Session, seed_items: Seed
+) -> None:
+    # OpenRouter names the model on more than one streamed chunk, and langchain-core's merge
+    # concatenates string metadata, so the old guard stored "idid" (and a longer answer could
+    # overflow the column and kill the answer). The streamed path is what makes it happen.
+    seed_items(AGENT_ROWS)
+    name = "vendor/model:free"
+    model = ScriptedChatModel(
+        script=[
+            call("search_corpus", query="SWE-bench"),
+            final("SWE-bench Verified measures coding agents on real bugs [S1]."),
+        ],
+        stream_model_name=name,
+    )
+    reg = SourceRegistry()
+    guard = CallGuard(Repository(db_session), Ledger(10_000), 800, lambda: NOW)
+    graph = build_agent(
+        [ChatModel("p0", model)], make_tools(db_session, FakeEmbedder(), reg), reg, guard
+    )
+    list(stream_answer(graph, "q"))
+    assert list(db_session.scalars(select(ChatCall.model))) == [name, name]

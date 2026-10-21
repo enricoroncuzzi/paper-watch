@@ -22,7 +22,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import TSVECTOR, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-from paperwatch.config import EMBEDDING_DIM
+from paperwatch.config import CHAT_CALL_MODEL_MAX_CHARS, EMBEDDING_DIM
 
 # The only rows search may return. The HNSW index is partial on exactly this predicate, and
 # Task 10 repeats it as literal SQL so the planner can match the query to the index.
@@ -204,6 +204,6 @@ class ChatCall(Base):
     # place calls before or after a midnight boundary.
     at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     provider: Mapped[str] = mapped_column(String(32))
-    model: Mapped[str] = mapped_column(String(128))
+    model: Mapped[str] = mapped_column(String(CHAT_CALL_MODEL_MAX_CHARS))
     input_tokens: Mapped[int] = mapped_column(Integer)
     output_tokens: Mapped[int] = mapped_column(Integer)

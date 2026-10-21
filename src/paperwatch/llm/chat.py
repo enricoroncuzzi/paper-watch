@@ -26,7 +26,12 @@ from langchain_core.runnables import Runnable
 from langchain_openai import ChatOpenAI
 from pydantic import Field
 
-from paperwatch.config import GROQ_BASE_URL, OPENROUTER_BASE_URL, Settings
+from paperwatch.config import (
+    CHAT_CALL_MODEL_MAX_CHARS,
+    GROQ_BASE_URL,
+    OPENROUTER_BASE_URL,
+    Settings,
+)
 from paperwatch.llm.ledger import Ledger
 
 log = structlog.get_logger()
@@ -185,7 +190,7 @@ class CallGuard:
             output_tokens = int(usage["output_tokens"])
         # The model id the provider says it used, which may differ from the one requested when a
         # provider routes to a variant; "unknown" keeps the record complete either way.
-        model = str(message.response_metadata.get("model_name") or "unknown")
+        model = _single_name(str(message.response_metadata.get("model_name") or "unknown"))
         # Record before charging: the tokens were spent even when the ledger then refuses the
         # answer, so the usage row must survive the BudgetExceeded.
         self._record(provider, model, input_tokens, output_tokens)
@@ -204,10 +209,24 @@ class CallGuard:
         )
 
 
-def _word_chunks(content: object) -> list[AIMessageChunk]:
+def _single_name(name: str) -> str:
+    # langchain-core merges streamed chunks by concatenating string metadata, so a provider that
+    # repeats its model id on several chunks leaves "idid". The smallest repeating unit is the id.
+    # The clip is the `chat_calls.model` width: whatever a provider sends, the write still fits.
+    return name[: (name + name).find(name, 1)][:CHAT_CALL_MODEL_MAX_CHARS]
+
+
+def _word_chunks(
+    content: object, response_metadata: dict[str, Any] | None = None
+) -> list[AIMessageChunk]:
     # Word by word, so a test sees a real token stream rather than one blob.
     words = str(content).split(" ")
-    return [AIMessageChunk(content=w if i == 0 else f" {w}") for i, w in enumerate(words)]
+    return [
+        AIMessageChunk(
+            content=w if i == 0 else f" {w}", response_metadata=dict(response_metadata or {})
+        )
+        for i, w in enumerate(words)
+    ]
 
 
 class ScriptedChatModel(BaseChatModel):
@@ -222,6 +241,9 @@ class ScriptedChatModel(BaseChatModel):
     # The binding keywords in force for each call, `parallel_tool_calls` and `tool_choice`
     # included, so a test can tell which binding served which model call without a live model.
     call_kwargs: list[dict[str, Any]] = Field(default_factory=list)
+    # When set, every streamed chunk carries this id in response_metadata, the way some providers
+    # name their model on each chunk; langchain-core's merge then concatenates the repeats.
+    stream_model_name: str | None = None
 
     @property
     def _llm_type(self) -> str:
@@ -264,17 +286,21 @@ class ScriptedChatModel(BaseChatModel):
         **kwargs: Any,
     ) -> Iterator[ChatGenerationChunk]:
         msg = self._next(messages, kwargs)
+        # Some providers (OpenRouter among them) name the model on more than one chunk; the option
+        # reproduces that so a test can prove the guard stores the id once.
+        meta = {"model_name": self.stream_model_name} if self.stream_model_name else {}
         chunks: list[AIMessageChunk] = []
         # A provider streams text before the call it decides to make, and invoke() keeps that
         # text; replaying it first keeps the stream and the invoke in agreement.
         if msg.content:
-            chunks.extend(_word_chunks(msg.content))
+            chunks.extend(_word_chunks(msg.content, meta))
         if msg.tool_calls:
             # A tool call streams as chunks that reassemble into the same call, which is how a
             # real provider delivers it and how LangGraph collects it.
             chunks.append(
                 AIMessageChunk(
                     content="",
+                    response_metadata=dict(meta),
                     tool_call_chunks=[
                         {
                             "name": c["name"],
@@ -293,7 +319,7 @@ class ScriptedChatModel(BaseChatModel):
             AIMessageChunk(
                 content="",
                 usage_metadata=msg.usage_metadata,
-                response_metadata=msg.response_metadata,
+                response_metadata={**meta, **msg.response_metadata},
                 chunk_position="last",
             )
         )
