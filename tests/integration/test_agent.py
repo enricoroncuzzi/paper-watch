@@ -18,7 +18,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from structlog.testing import capture_logs
 
-from paperwatch.agent.citations import NO_SUPPORT
+from paperwatch.agent.citations import NO_SUPPORT, CheckedAnswer
 from paperwatch.agent.graph import (
     AgentState,
     AnswerAborted,
@@ -396,6 +396,64 @@ def test_a_second_question_is_refused_even_when_the_first_found_nothing(
     answer_question(graph, "q1")
     with pytest.raises(RuntimeError, match="one question"):
         answer_question(graph, "q2")
+
+
+class _ConfigSpy:
+    """A stand-in graph that records the config each surface hands it."""
+
+    def __init__(self) -> None:
+        self.config: Any = None
+
+    def invoke(self, state: Any, config: Any = None) -> Any:
+        self.config = config
+        return {"answer": CheckedAnswer(NO_SUPPORT, (), (), False), "messages": []}
+
+    def stream(self, state: Any, config: Any = None, stream_mode: Any = None) -> Any:
+        self.config = config
+        return iter(())
+
+
+def test_both_surfaces_derive_the_recursion_limit_from_the_round_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The limit is a function of the cap, not a number: a cap change must move it too.
+    import paperwatch.agent.graph as graph_module
+
+    monkeypatch.setattr(graph_module, "MAX_TOOL_ROUNDS", 7)
+    spy = _ConfigSpy()
+    answer_question(spy, "q")
+    assert spy.config["recursion_limit"] == 2 * 7 + 5
+    list(stream_answer(spy, "q"))
+    assert spy.config["recursion_limit"] == 2 * 7 + 5
+
+
+@pytest.mark.parametrize("mode", ["invoke", "stream"])
+def test_a_raised_round_cap_does_not_hit_the_recursion_limit(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    # A run spends about two supersteps per tool round plus the answer round and the check, and
+    # LangGraph aborts a run that passes its `recursion_limit`. The documented default is 25, so a
+    # cap-12 run would end in GraphRecursionError before the answer round unless the agent passes
+    # its own limit. (The installed version defaults to 10007, which hides the bug; 25 is what the
+    # framework promises, so the test uses it.)
+    from langgraph._internal import _config as langgraph_config
+
+    import paperwatch.agent.graph as graph_module
+
+    monkeypatch.setattr(graph_module, "MAX_TOOL_ROUNDS", 12)
+    monkeypatch.setattr(langgraph_config, "DEFAULT_RECURSION_LIMIT", 25)
+    model = ScriptedChatModel(
+        script=[call("search_corpus", n, query="agents") for n in range(1, 13)]
+        + [final("SWE-bench Verified measures coding agents on real bugs [S1].")]
+    )
+    graph = agent(db_session, model)
+    if mode == "invoke":
+        _, tools = answer_question(graph, "q")
+        assert len(tools) == 12
+    else:
+        events = list(stream_answer(graph, "q"))
+        assert len([event for event in events if isinstance(event, ToolEvent)]) == 12
+        assert isinstance(events[-1], AnswerEvent)
 
 
 def test_build_agent_rejects_an_empty_model_list(db_session: Session) -> None:

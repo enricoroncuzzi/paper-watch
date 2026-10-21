@@ -100,7 +100,9 @@ always attributed and visibly `lab_blog`; M2 never republishes that text.
 - **An LLM judge for citations**: another model call, non-deterministic and unmeasurable in CI.
   The checker is code, and its limits are listed in lesson 11.
 - **Conversation memory now**: a checkpointer and a thread id are real M3 needs (the page shows a
-  conversation), and nothing in M2's CLI or eval uses them.
+  conversation), and nothing in M2's CLI or eval uses them. When history arrives, the first-run
+  check in `call_agent` (`len(state["messages"]) == 1`) stops identifying the first model call,
+  because the initial state will already carry messages, and must be replaced.
 
 ## Consequences
 

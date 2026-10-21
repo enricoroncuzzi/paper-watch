@@ -293,6 +293,23 @@ def _may_run_tools(state: AgentState) -> bool:
     )
 
 
+def _run_config(cancel: threading.Event | None = None) -> RunnableConfig:
+    """The config every run needs: an explicit recursion limit, plus the abort callback if any.
+
+    LangGraph aborts a run that takes more supersteps than `recursion_limit`, and inheriting its
+    default would tie the round cap to the framework: this version defaults to 10007 but the
+    documented default is 25, and a run spends about two supersteps per tool round plus one for
+    the answer round and one for the check. The limit is therefore derived from the round cap,
+    read here at call time so a raised cap moves both together.
+    """
+    config: RunnableConfig = {"recursion_limit": 2 * MAX_TOOL_ROUNDS + 5}
+    if cancel is not None:
+        # The callback is attached to every run in the graph, so whichever model call is
+        # streaming hears the abort; without a cancel signal there is nothing to watch.
+        config["callbacks"] = [_AbortOnDisconnect(cancel)]
+    return config
+
+
 def stream_answer(
     graph: AgentGraph, question: str, cancel: threading.Event | None = None
 ) -> Generator[AgentEvent, None, None]:
@@ -303,12 +320,7 @@ def stream_answer(
     run: build a new one for the next question (see `build_agent`).
     """
     state = _initial_state(question)
-    # The callback is attached to every run in the graph, so whichever model call is streaming
-    # hears the abort; without a cancel signal there is nothing to watch.
-    config: RunnableConfig | None = None
-    if cancel is not None:
-        callbacks: list[BaseCallbackHandler] = [_AbortOnDisconnect(cancel)]
-        config = {"callbacks": callbacks}
+    config = _run_config(cancel)
     # With several stream modes LangGraph yields `(mode, chunk)` pairs; its type stub only says
     # the modes' union, so the pair is named here once.
     stream = cast(
@@ -343,7 +355,7 @@ def answer_question(graph: AgentGraph, question: str) -> tuple[CheckedAnswer, li
 
     One graph, one run: build a new one for the next question (see `build_agent`).
     """
-    state = graph.invoke(_initial_state(question))
+    state = graph.invoke(_initial_state(question), config=_run_config())
     answer: CheckedAnswer | None = state["answer"]
     if answer is None:  # every path ends in the check node, so this is a wiring bug
         raise RuntimeError("the agent finished without checking its answer")
