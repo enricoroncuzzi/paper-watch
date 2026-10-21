@@ -12,11 +12,13 @@ from evals.qa_eval import (
     QA_SET_VERSION,
     Recorded,
     RecordedSource,
+    check_complete,
     gate,
     load_recorded,
     score,
     write_recorded,
 )
+from paperwatch.agent.prompts import prompt_sha
 
 # The repo-root-relative path is resolved from this file, like the retrieval eval's data paths,
 # so a run from another working directory still finds the committed set.
@@ -108,10 +110,52 @@ def test_score_refuses_an_empty_recording(tmp_path: Path) -> None:
 
 
 def test_recorded_rows_round_trip_through_jsonl(tmp_path: Path) -> None:
-    rows = [rec("a1", f"{CLAIM} [S1].", ("S1", "ag-01"))]
+    rows = [replace(rec("a1", f"{CLAIM} [S1].", ("S1", "ag-01")), prompt_sha="abc")]
     path = tmp_path / "recording.jsonl"
     write_recorded(path, rows)
     assert load_recorded(path) == rows
+
+
+def test_a_mixed_marker_keeps_its_unknown_source_flag_on_replay(tmp_path: Path) -> None:
+    # S9 was never returned; a recording of the model's own text must still flag it on replay.
+    row = rec("a1", f"{CLAIM} [S1, S9].", ("S1", "ag-01"))
+    assert score([row], questions(tmp_path))["clean_rate"] == 0.0
+
+
+def _complete_rows() -> list[Recorded]:
+    ids = [
+        json.loads(line)["id"]
+        for line in (DATA / "qa_questions.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+    return [replace(rec(qid, CLAIM), prompt_sha=prompt_sha()) for qid in ids]
+
+
+def test_check_complete_accepts_a_full_current_recording() -> None:
+    check_complete(_complete_rows(), DATA / "qa_questions.jsonl", "m")
+
+
+def test_check_complete_refuses_a_partial_recording() -> None:
+    with pytest.raises(ValueError, match="covers 19 of 20"):
+        check_complete(_complete_rows()[:-1], DATA / "qa_questions.jsonl", "m")
+
+
+def test_check_complete_refuses_a_stale_set_version() -> None:
+    rows = [replace(row, set_version=QA_SET_VERSION + 1) for row in _complete_rows()]
+    with pytest.raises(ValueError, match="set version"):
+        check_complete(rows, DATA / "qa_questions.jsonl", "m")
+
+
+def test_check_complete_refuses_another_models_recording() -> None:
+    rows = [replace(row, model="other") for row in _complete_rows()]
+    with pytest.raises(ValueError, match="not m"):
+        check_complete(rows, DATA / "qa_questions.jsonl", "m")
+
+
+def test_check_complete_refuses_a_recording_from_another_prompt() -> None:
+    rows = [replace(row, prompt_sha="old") for row in _complete_rows()]
+    with pytest.raises(ValueError, match="different prompt"):
+        check_complete(rows, DATA / "qa_questions.jsonl", "m")
 
 
 def test_question_file_is_well_formed() -> None:

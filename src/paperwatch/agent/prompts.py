@@ -4,6 +4,8 @@ A prompt is part of the product's behaviour, so it changes in a commit that show
 its eval result, not through an environment variable a deployment could silently alter.
 """
 
+import hashlib
+
 SYSTEM_PROMPT = """You answer questions about a private corpus of AI research papers and lab
 blog posts.
 Use the tools to find evidence before answering. Answer only from what the tools return.
@@ -21,3 +23,12 @@ Answer in English, concisely."""
 FINAL_ROUND_NOTE = (
     "You have used all tool calls for this question. Answer now from the sources you already have."
 )
+
+
+def prompt_sha() -> str:
+    """A fingerprint of the prompts a QA recording was made with.
+
+    A prompt change changes model behaviour, so a recording made under another prompt is stale;
+    the replay refuses it rather than compare two prompts under one baseline.
+    """
+    return hashlib.sha256(f"{SYSTEM_PROMPT}\n{FINAL_ROUND_NOTE}".encode()).hexdigest()

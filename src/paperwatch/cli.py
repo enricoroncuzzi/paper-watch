@@ -33,7 +33,7 @@ from paperwatch.api.app import (
     live_deps,
     run_question,
 )
-from paperwatch.config import PROFILES_PATH, REPO_ROOT, Settings, get_settings
+from paperwatch.config import CHAT_MODEL, PROFILES_PATH, REPO_ROOT, Settings, get_settings
 from paperwatch.domain import Tier, load_profiles
 from paperwatch.ingest.pipeline import Sources, run_ingestion
 from paperwatch.llm.chat import (
@@ -439,7 +439,15 @@ def qa_eval(
     # The console script's path contains src, not the repository root, so the top-level evals
     # package is invisible without adding the root (the same base the data paths use).
     sys.path.insert(0, str(_REPO_ROOT))
-    from evals.qa_eval import GATED, gate, load_recorded, record, score, write_recorded
+    from evals.qa_eval import (
+        GATED,
+        check_complete,
+        gate,
+        load_recorded,
+        record,
+        score,
+        write_recorded,
+    )
 
     questions = _EVAL_DATA / "qa_questions.jsonl"
     corpus = _EVAL_DATA / "corpus.jsonl"
@@ -480,7 +488,9 @@ def qa_eval(
         typer.echo(f"recorded {len(rows)} answers from {target} to {path}")
         return
 
-    target = s.chat_model
+    # The gate belongs to the committed default, never to a developer's `PW_CHAT_MODEL`: a
+    # replay that followed the environment could gate one model against another's baseline.
+    target = CHAT_MODEL
     path = _qa_record_path(target)
     if not path.exists():
         typer.echo(
@@ -489,7 +499,15 @@ def qa_eval(
             err=True,
         )
         raise typer.Exit(2)
-    m = score(load_recorded(path), questions)
+    recorded = load_recorded(path)
+    try:
+        check_complete(recorded, questions, target)
+    except ValueError as exc:
+        # A partial, stale-prompt or wrong-model recording is not a gate result; the fix is to
+        # re-record it, not to rescore a file the baseline does not describe.
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(2) from exc
+    m = score(recorded, questions)
     typer.echo(json.dumps(m, indent=2))
     if write_baseline:
         # Only the gated metrics are committed: the gate validates exactly these keys.

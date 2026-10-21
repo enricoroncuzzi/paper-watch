@@ -7,6 +7,7 @@ from langchain_core.messages import AIMessage
 from sqlalchemy.orm import Session
 
 from evals.qa_eval import QA_SET_VERSION, record
+from paperwatch.agent.prompts import prompt_sha
 from paperwatch.llm.chat import ChatModel, ScriptedChatModel
 
 pytestmark = pytest.mark.integration
@@ -72,3 +73,54 @@ def test_record_marks_a_provider_failure_instead_of_dropping_the_question(
     assert [row.question_id for row in rows] == question_ids()
     assert all(row.provider_error for row in rows)
     assert all(row.answer_text == "" and row.sources == () for row in rows)
+
+
+def test_each_question_starts_a_fresh_registry(db_session: Session) -> None:
+    def script(query: str) -> list[AIMessage]:
+        call = {"name": "search_corpus", "args": {"query": query}, "id": "c1"}
+        return [
+            AIMessage("", tool_calls=[call], usage_metadata=USAGE),
+            AIMessage(ANSWER, usage_metadata=USAGE),
+        ]
+
+    # Even questions search the harness paper, odd ones the ToolBench paper: a registry shared
+    # across questions would keep the first question's S1 for all of them.
+    steps = [
+        message
+        for i in range(len(question_ids()))
+        for message in script(["coding harness", "ToolBench"][i % 2])
+    ]
+    rows = record(
+        db_session,
+        [ChatModel("scripted", ScriptedChatModel(script=steps))],
+        DATA / "qa_questions.jsonl",
+        DATA / "corpus.jsonl",
+    )
+    assert [row.sources[0].external_id for row in rows[:2]] == ["ag-01", "ag-02"]
+
+
+def test_record_stores_the_models_own_text(db_session: Session) -> None:
+    # The checker would mask the invented S9 as [?]; the recording keeps what the model wrote, so
+    # a later checker change is measured against the original text, not an old verdict.
+    invented = "A coding harness edits files and runs tests [S1, S9]."
+    steps: list[AIMessage] = []
+    for _ in question_ids():
+        steps += [
+            AIMessage(
+                "",
+                tool_calls=[
+                    {"name": "search_corpus", "args": {"query": "coding harness"}, "id": "c1"}
+                ],
+                usage_metadata=USAGE,
+            ),
+            AIMessage(invented, usage_metadata=USAGE),
+        ]
+    rows = record(
+        db_session,
+        [ChatModel("scripted", ScriptedChatModel(script=steps))],
+        DATA / "qa_questions.jsonl",
+        DATA / "corpus.jsonl",
+    )
+    assert rows[0].answer_text == invented
+    assert "S9" in rows[0].answer_text
+    assert rows[0].prompt_sha == prompt_sha()

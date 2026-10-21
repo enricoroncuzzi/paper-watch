@@ -350,19 +350,24 @@ def stream_answer(
                 yield AnswerEvent(chunk["check"]["answer"])
 
 
-def answer_question(graph: AgentGraph, question: str) -> tuple[CheckedAnswer, list[str]]:
-    """Run the graph to the end: the checked answer, and the tools it called, in order.
+def answer_question(graph: AgentGraph, question: str) -> tuple[CheckedAnswer, list[str], str]:
+    """Run the graph to the end: the checked answer, the tools it called, and the model's text.
 
-    One graph, one run: build a new one for the next question (see `build_agent`).
+    The third value is the model's own final message, before `check_answer` rewrote or replaced
+    it. The QA eval records that raw text, so a replay re-runs the current checker instead of
+    reading a verdict an older checker already applied. One graph, one run: build a new one for
+    the next question (see `build_agent`).
     """
     state = graph.invoke(_initial_state(question), config=_run_config())
     answer: CheckedAnswer | None = state["answer"]
     if answer is None:  # every path ends in the check node, so this is a wiring bug
         raise RuntimeError("the agent finished without checking its answer")
+    last = state["messages"][-1]
     tool_names = [
         tool_call["name"]
         for message in state["messages"]
         if isinstance(message, AIMessage)
         for tool_call in message.tool_calls
     ]
-    return answer, tool_names
+    # The check node reads `str(last.content)` too, and every path ends with an agent message.
+    return answer, tool_names, str(last.content)

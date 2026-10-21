@@ -65,24 +65,32 @@ traceback shows `**********`, not the key.
 
 The model id above was chosen by measurement, not by reading the catalogue: three models were
 recorded on the 20-question QA set (`paperwatch qa-eval --live --model <id>`), each answer once,
-with the same offline retrieval (`FakeEmbedder`) so only the chat model differs. The scores are the
-recorded answers replayed through the current checker, and the rules were: pick by
-`support_recall`, then `citation_precision`, then `abstention`, then the lower `mean_tokens`.
+with the same offline retrieval (`FakeEmbedder`) so only the chat model differs. A recording stores
+the model's own final text (not the checker's rewrite) and a `prompt_sha`, so the scores below are
+the recorded answers replayed through the current checker and a prompt change makes a recording
+stale instead of silently comparable. The rules were: pick by `support_recall`, then
+`citation_precision`, then `abstention`, then the lower `mean_tokens`.
 
 | Model | Status | Requests | support_recall | citation_precision | clean_rate | abstention | mean_tools | mean_tokens |
 |---|---|---|---|---|---|---|---|---|
-| `nvidia/nemotron-3-ultra-550b-a55b:free` | recorded | 76 | 1.000 | 0.826 | 0.688 | 1.000 | 3.25 | 7404 |
-| `nvidia/nemotron-3.5-lightning:free` | recorded | 76 | 0.813 | 0.696 | 0.500 | 1.000 | 2.80 | 7726 |
-| `minimax/minimax-m3.1-flash:free` | recorded | 99 | 1.000 | 0.196 | 0.000 | 0.000 | 9.80 | 18460 |
+| `nvidia/nemotron-3-ultra-550b-a55b:free` | recorded | 79 | 1.000 | 0.826 | 0.500 | 1.000 | 3.20 | 7702 |
+| `nvidia/nemotron-3.5-lightning:free` | recorded | 71 | 0.813 | 0.842 | 0.250 | 1.000 | 2.55 | 7138 |
+| `minimax/minimax-m3.1-flash:free` | recorded | 98 | 1.000 | 0.186 | 0.188 | 0.000 | 8.75 | 17188 |
 | `google/gemma-4-31b-it:free` | unavailable | 20 | - | - | - | - | - | - |
 | `nvidia/nemotron-3-super-120b-a12b:free` | unavailable | 20 | - | - | - | - | - | - |
 | `nvidia/nemotron-3.5-super-vl:free` | unavailable | 50 | - | - | - | - | - | - |
 
+The first version of this table (same date, before the raw-text re-record) stored the checked text
+and so reported ultra at 1.000/0.826/0.688/1.000; the raw-text numbers above supersede it, because
+only they let a replay re-run the checker on what the model actually wrote. The request counts are
+the implementer's tally from each run's HTTP log, which is not committed; the unavailable models
+left no recording.
+
 `nvidia/nemotron-3-ultra-550b-a55b:free` is the default: it ties minimax on `support_recall`
-(1.000) and wins on `citation_precision` (0.826 against 0.196). Minimax answers every question,
+(1.000) and wins on `citation_precision` (0.826 against 0.186). Minimax answers every question,
 including the four unanswerable ones, and cites far more sources than the supporting set, so it
-scores 0.000 on `clean_rate` and `abstention`, and it spent 18460 tokens a question. Lightning is
-cheaper per answer but misses supporting evidence on three answerable questions.
+scores 0.000 on `abstention`, and it spent 17188 tokens a question. Lightning is cheaper per
+answer but misses supporting evidence on three answerable questions.
 
 The three named candidates from 2026-10-16 did not all survive the day. Gemma answered 429
 (upstream rate limit) on all 20 questions; nemotron-3-super answered an error on all 20 (429 in

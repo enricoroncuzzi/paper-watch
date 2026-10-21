@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session
 from evals.retrieval_eval import seed_corpus
 from paperwatch.agent.citations import NO_SUPPORT, check_answer
 from paperwatch.agent.graph import answer_question, build_agent
+from paperwatch.agent.prompts import prompt_sha
 from paperwatch.agent.sources import SourceRegistry
 from paperwatch.agent.tools import make_tools
 from paperwatch.config import CHAT_MAX_CALLS_PER_DAY, CHAT_MAX_TOKENS_PER_ANSWER
@@ -64,7 +65,8 @@ class Recorded:
 
     `provider_error` marks a question the provider never answered. The row is kept, not dropped,
     so the recording says what happened and the score can count a failure as a failure instead
-    of as a model that chose not to answer.
+    of as a model that chose not to answer. `prompt_sha` identifies the prompts it was made with;
+    a different prompt makes the recording stale and the replay refuses it.
     """
 
     question_id: str
@@ -75,6 +77,7 @@ class Recorded:
     tools: tuple[str, ...]
     tokens: int
     provider_error: bool = False
+    prompt_sha: str = ""
 
 
 def _rows(path: Path) -> list[dict[str, Any]]:
@@ -100,6 +103,7 @@ def load_recorded(path: Path) -> list[Recorded]:
             tools=tuple(row["tools"]),
             tokens=int(row["tokens"]),
             provider_error=bool(row.get("provider_error", False)),
+            prompt_sha=str(row.get("prompt_sha", "")),
         )
         for row in _rows(path)
     ]
@@ -149,7 +153,7 @@ def record(
         tools = make_tools(session, embedder, registry)
         graph = build_agent(models, tools, registry, guard)
         try:
-            answer, tool_names = answer_question(graph, question["question"])
+            _, tool_names, text = answer_question(graph, question["question"])
         except ModelUnavailable as exc:
             # Every provider failed for this question. Keep going so the run can apply Step 5's
             # 2-of-20 rule and record what the other questions said; the row carries the marker
@@ -167,6 +171,7 @@ def record(
                     tools=(),
                     tokens=ledger.tokens_used,
                     provider_error=True,
+                    prompt_sha=prompt_sha(),
                 )
             )
             continue
@@ -175,13 +180,14 @@ def record(
                 question_id=question["id"],
                 model=model_id,
                 set_version=QA_SET_VERSION,
-                answer_text=answer.text,
+                answer_text=text,
                 sources=tuple(
                     RecordedSource(ref.alias, by_item[ref.item_id], ref.tier)
                     for ref in registry.all()
                 ),
                 tools=tuple(tool_names),
                 tokens=ledger.tokens_used,
+                prompt_sha=prompt_sha(),
             )
         )
     return rows
@@ -223,6 +229,36 @@ def _restore(row: Recorded) -> tuple[SourceRegistry, dict[uuid.UUID, str]]:
     return registry, by_item
 
 
+def check_complete(recorded: list[Recorded], questions: Path, model: str) -> None:
+    """Refuse a recording the replay cannot trust, before any metric is computed.
+
+    `score` stays lenient because the plan's tests score a single row; the CLI replay uses this:
+    a recording must cover the whole set, come from this set version and this prompt, and name the
+    model its file is for. A stale recording is re-recorded, never silently scored.
+    """
+    expected = set(_questions(questions))
+    covered = {row.question_id for row in recorded}
+    if covered != expected:
+        raise ValueError(
+            f"the recording covers {len(covered)} of {len(expected)} questions; re-record it"
+        )
+    versions = {row.set_version for row in recorded}
+    if versions != {QA_SET_VERSION}:
+        raise ValueError(
+            f"the recording is set version {sorted(versions)}, not {QA_SET_VERSION}; re-record it"
+        )
+    models = {row.model for row in recorded}
+    if models != {model}:
+        raise ValueError(f"the recording is for {sorted(models)}, not {model}; check the file name")
+    current = prompt_sha()
+    stale = [row.question_id for row in recorded if row.prompt_sha != current]
+    if stale:
+        raise ValueError(
+            f"the recording was made with a different prompt ({len(stale)} of "
+            f"{len(recorded)} rows); re-record it"
+        )
+
+
 def score(recorded: list[Recorded], questions: Path) -> dict[str, float]:
     """Score recorded answers against the question set, re-running the current checker."""
     if not recorded:
@@ -246,8 +282,9 @@ def score(recorded: list[Recorded], questions: Path) -> dict[str, float]:
         if question["kind"] == "answerable":
             answerable += 1
             hits += bool(supporting.intersection(cited))
-            # A failed call was not a clean answer, whatever the empty text's flags say.
-            clean += not checked.flags and not row.provider_error
+            # A failed call, or an answer withheld as NO_SUPPORT, is not a clean answer, whatever
+            # the flags say: the NO_SUPPORT text is flagged today only because it is long enough.
+            clean += not checked.flags and checked.text != NO_SUPPORT and not row.provider_error
             cited_total += len(cited)
             cited_supporting += sum(external_id in supporting for external_id in cited)
         else:

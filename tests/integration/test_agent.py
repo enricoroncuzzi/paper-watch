@@ -115,7 +115,7 @@ def test_search_then_answer(db_session: Session, seed_items: Seed) -> None:
             ),
         ]
     )
-    answer, tools = answer_question(agent(db_session, model), "how are coding agents evaluated?")
+    answer, tools, _ = answer_question(agent(db_session, model), "how are coding agents evaluated?")
     assert tools == ["search_corpus"]
     assert answer.supported and answer.citations[0].item_id == ids["swe"]
     assert calls(db_session) == 2
@@ -130,7 +130,7 @@ def test_search_get_item_then_answer(db_session: Session, seed_items: Seed) -> N
             final("Agents that remember across sessions plan better over long tasks [S1]."),
         ]
     )
-    _, tools = answer_question(agent(db_session, model), "does memory help agents?")
+    _, tools, _ = answer_question(agent(db_session, model), "does memory help agents?")
     assert tools == ["search_corpus", "get_item"]
     assert "Ada Lovelace" in str(model.seen[2][-1].content)  # the get_item result reached the model
 
@@ -144,7 +144,7 @@ def test_opening_an_unseen_alias_is_recoverable(db_session: Session, seed_items:
             final("Agents that remember across sessions plan better over long tasks [S1]."),
         ]
     )
-    answer, tools = answer_question(agent(db_session, model), "does memory help agents?")
+    answer, tools, _ = answer_question(agent(db_session, model), "does memory help agents?")
     assert tools == ["get_item", "search_corpus"] and answer.supported
 
 
@@ -154,7 +154,7 @@ def test_tool_rounds_are_capped(db_session: Session, seed_items: Seed) -> None:
     model = ScriptedChatModel(
         script=[*script[:4], final("Agents plan better with memory across sessions [S1].")]
     )
-    answer, tools = answer_question(agent(db_session, model), "tell me about agents")
+    answer, tools, _ = answer_question(agent(db_session, model), "tell me about agents")
     assert len(tools) == 4
     # The answer round keeps the tool definitions and forbids calls with tool_choice="none": a
     # request carrying tool history must include `tools` (OpenRouter's guide), and a strict
@@ -177,7 +177,7 @@ def test_a_model_that_ignores_the_final_note_cannot_run_more_tools(
             call("search_corpus", 5, query="agents 5"),
         ]
     )
-    answer, tools = answer_question(agent(db_session, model), "q")
+    answer, tools, _ = answer_question(agent(db_session, model), "q")
     assert tools == ["search_corpus"] * 4
     assert answer.text == NO_SUPPORT and not answer.supported
     assert calls(db_session) == 5
@@ -212,7 +212,7 @@ def test_answer_citing_an_unretrieved_alias_is_flagged(
             ),
         ]
     )
-    answer, _ = answer_question(agent(db_session, model), "q")
+    answer, _, _ = answer_question(agent(db_session, model), "q")
     assert [f.kind for f in answer.flags] == ["unknown_source"]
 
 
@@ -223,7 +223,7 @@ def test_empty_corpus_gives_the_no_support_answer(db_session: Session) -> None:
             final("Quantum agents are widely deployed in production systems today."),
         ]
     )
-    answer, _ = answer_question(agent(db_session, model), "q")
+    answer, _, _ = answer_question(agent(db_session, model), "q")
     assert answer.text == NO_SUPPORT and not answer.supported
 
 
@@ -264,7 +264,7 @@ def test_fallback_model_answers_when_primary_fails(db_session: Session, seed_ite
             final("SWE-bench Verified measures coding agents on real bugs [S1]."),
         ]
     )
-    answer, _ = answer_question(agent(db_session, primary, fallback), "q")
+    answer, _, _ = answer_question(agent(db_session, primary, fallback), "q")
     assert answer.supported
     # The failed attempt is a request against the free tier and is on record (Task 13 Step 11);
     # every call that produced an answer came from the fallback.
@@ -295,7 +295,7 @@ def test_an_answer_with_no_tool_call_is_refused(db_session: Session) -> None:
     model = ScriptedChatModel(
         script=[final("Agents plan better with memory across sessions [S1].")]
     )
-    answer, tools = answer_question(agent(db_session, model), "q")
+    answer, tools, _ = answer_question(agent(db_session, model), "q")
     assert tools == []
     assert [f.kind for f in answer.flags] == ["unknown_source"]
     assert answer.text == NO_SUPPORT and not answer.supported
@@ -407,7 +407,11 @@ class _ConfigSpy:
 
     def invoke(self, state: Any, config: Any = None) -> Any:
         self.config = config
-        return {"answer": CheckedAnswer(NO_SUPPORT, (), (), False), "messages": []}
+        # The final message is what `answer_question` returns as the model's own text.
+        return {
+            "answer": CheckedAnswer(NO_SUPPORT, (), (), False),
+            "messages": [AIMessage("q")],
+        }
 
     def stream(self, state: Any, config: Any = None, stream_mode: Any = None) -> Any:
         self.config = config
@@ -449,7 +453,7 @@ def test_a_raised_round_cap_does_not_hit_the_recursion_limit(
     )
     graph = agent(db_session, model)
     if mode == "invoke":
-        _, tools = answer_question(graph, "q")
+        _, tools, _ = answer_question(graph, "q")
         assert len(tools) == 12
     else:
         events = list(stream_answer(graph, "q"))
@@ -598,7 +602,7 @@ def test_a_wrong_tool_argument_comes_back_as_an_error_message(
             final("SWE-bench Verified measures coding agents on real bugs [S1]."),
         ]
     )
-    answer, tools = answer_question(agent(db_session, model), "q")
+    answer, tools, _ = answer_question(agent(db_session, model), "q")
     assert tools == ["search_corpus", "search_corpus"] and answer.supported
     errors = [m for m in model.seen[1] if isinstance(m, ToolMessage) and m.status == "error"]
     assert len(errors) == 1
@@ -627,7 +631,7 @@ def test_one_message_with_two_tool_calls_is_one_round(
             final("Agents plan better with memory across sessions [S1]."),
         ]
     )
-    _, tools = answer_question(agent(db_session, model), "q")
+    _, tools, _ = answer_question(agent(db_session, model), "q")
     assert tools == ["search_corpus"] * 5
     assert len(model.call_kwargs) == 5
 

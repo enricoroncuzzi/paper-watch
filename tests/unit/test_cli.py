@@ -20,6 +20,7 @@ from evals.retrieval_eval import GATED, DatabaseNotEmpty
 from paperwatch import cli
 from paperwatch.agent.citations import CheckedAnswer, Citation, Flag
 from paperwatch.agent.graph import AnswerEvent, TokenEvent, ToolEvent
+from paperwatch.agent.prompts import prompt_sha
 from paperwatch.api.app import ErrorEvent
 from paperwatch.cli import app
 from paperwatch.llm.embedder import FakeEmbedder
@@ -332,21 +333,43 @@ def qa_settings(model: str = "m/x:free") -> SimpleNamespace:
     return SimpleNamespace(chat_model=model, log_level="INFO")
 
 
-def qa_row(qid: str, external_id: str = "ag-01", *, provider_error: bool = False) -> Recorded:
+def qa_question_ids() -> list[str]:
+    return [
+        json.loads(line)["id"]
+        for line in (cli._EVAL_DATA / "qa_questions.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+
+
+def qa_row(
+    qid: str = "q01",
+    external_id: str = "ag-01",
+    *,
+    provider_error: bool = False,
+    model: str = "m/x:free",
+    sha: str | None = None,
+) -> Recorded:
     return Recorded(
         qid,
-        "m/x:free",
+        model,
         QA_SET_VERSION,
         QA_ANSWER,
         (RecordedSource("S1", external_id, "peer_reviewed"),),
         ("search_corpus",),
         60,
         provider_error,
+        prompt_sha() if sha is None else sha,
     )
+
+
+def qa_recording() -> list[Recorded]:
+    return [qa_row(qid) for qid in qa_question_ids()]
 
 
 def _qa_cli_paths(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     monkeypatch.setattr(cli, "get_settings", lambda: qa_settings())
+    # The replay belongs to the committed default; pin it so the file name and the rows agree.
+    monkeypatch.setattr(cli, "CHAT_MODEL", "m/x:free")
     monkeypatch.setattr(cli, "_QA_RECORDED_DIR", tmp_path)
     monkeypatch.setattr(cli, "_QA_BASELINE_PATH", tmp_path / "baseline.json")
     return tmp_path
@@ -380,22 +403,20 @@ def test_qa_eval_names_the_missing_recording(
 
 def test_qa_eval_passes_and_bites(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     path = _qa_cli_paths(monkeypatch, tmp_path)
-    evals_qa.write_recorded(path / "m_x_free.jsonl", [qa_row("q01")])
-    (path / "baseline.json").write_text(json.dumps(dict.fromkeys(evals_qa.GATED, 0.5)))
+    questions = cli._EVAL_DATA / "qa_questions.jsonl"
+    rows = qa_recording()
+    evals_qa.write_recorded(path / "m_x_free.jsonl", rows)
+    # The baseline is whatever this recording scores; only the wrong-item edit can move it.
+    m = evals_qa.score(rows, questions)
+    (path / "baseline.json").write_text(json.dumps({name: m[name] for name in evals_qa.GATED}))
     result = CliRunner().invoke(app, ["qa-eval"])
     assert result.exit_code == 0 and "support_recall" in result.output
-    # A wrong supporting item drops support_recall from 1.0 to 0.0, and the gate is exact.
-    (path / "baseline.json").write_text(json.dumps(dict.fromkeys(evals_qa.GATED, 0.0)))
-    baseline = json.loads((path / "baseline.json").read_text())
-    baseline["support_recall"] = 1.0
-    (path / "baseline.json").write_text(json.dumps(baseline))
-    evals_qa.write_recorded(
-        path / "m_x_free.jsonl",
-        [qa_row("q01", "ag-02")],
-    )
+    rows[0] = qa_row("q01", "ag-02")
+    evals_qa.write_recorded(path / "m_x_free.jsonl", rows)
     result = CliRunner().invoke(app, ["qa-eval"])
     assert result.exit_code == 1
-    assert "REGRESSION: support_recall dropped from 1.000 to 0.000" in result.output
+    assert "REGRESSION: support_recall" in result.output
+    assert "REGRESSION: citation_precision" in result.output
 
 
 def test_qa_eval_write_baseline_writes_only_the_gated_keys(
@@ -410,6 +431,7 @@ def test_qa_eval_write_baseline_writes_only_the_gated_keys(
         lambda rows, questions: {**dict.fromkeys(evals_qa.GATED, 1.0), "mean_tools": 2.0},
     )
     monkeypatch.setattr(evals_qa, "load_recorded", lambda p: [object()])
+    monkeypatch.setattr(evals_qa, "check_complete", lambda *args, **kwargs: None)
     result = CliRunner().invoke(app, ["qa-eval", "--write-baseline"])
     assert result.exit_code == 0
     written = json.loads((path / "baseline.json").read_text())
@@ -440,6 +462,33 @@ def test_qa_eval_live_refuses_more_than_two_provider_errors(
     assert result.exit_code == 2
     assert "unavailable: 3 of 3" in result.stderr
     assert not (path / "m_x_free.jsonl").exists()
+
+
+def test_qa_eval_replay_ignores_pw_chat_model(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # A developer's environment must not choose the recording or the baseline: the gate is the
+    # committed default's. With PW_CHAT_MODEL set to another model the replay still passes.
+    path = _qa_cli_paths(monkeypatch, tmp_path)
+    rows = qa_recording()
+    evals_qa.write_recorded(path / "m_x_free.jsonl", rows)
+    m = evals_qa.score(rows, cli._EVAL_DATA / "qa_questions.jsonl")
+    (path / "baseline.json").write_text(json.dumps({name: m[name] for name in evals_qa.GATED}))
+    monkeypatch.setenv("PW_CHAT_MODEL", "other/model:free")
+    monkeypatch.setattr(cli, "get_settings", lambda: cli.Settings())
+    result = CliRunner().invoke(app, ["qa-eval"])
+    assert result.exit_code == 0
+    assert not (path / "other_model_free.jsonl").exists()
+
+
+def test_qa_eval_refuses_an_incomplete_recording(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    path = _qa_cli_paths(monkeypatch, tmp_path)
+    evals_qa.write_recorded(path / "m_x_free.jsonl", [qa_row("q01")])
+    result = CliRunner().invoke(app, ["qa-eval"])
+    assert result.exit_code == 2
+    assert "covers 1 of 20 questions" in result.stderr
 
 
 # --- ask, serve and the terminal rendering (Task 17, review round 1) ---
