@@ -1,11 +1,20 @@
 """All runtime configuration. The only module that names models and deployments."""
 
+# Absolute import of the standard library module, not paperwatch/logging.py.
+import logging
 from datetime import timedelta
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Repository-relative paths resolve from this file (src/paperwatch/config.py), never from the
+# working directory: `paperwatch eval` already works from anywhere, and a live command that read
+# `config/profiles.yaml` from the cwd died with a FileNotFoundError everywhere else.
+REPO_ROOT = Path(__file__).resolve().parents[2]
+PROFILES_PATH = REPO_ROOT / "config" / "profiles.yaml"
 
 # Vector size of the embedding model; the DB column and the model must agree on it. 384 is the
 # local production model below and both of its same-size fallbacks (bge-small-en-v1.5,
@@ -54,6 +63,45 @@ S2_MAX_PAPERS_PER_RUN = 12_500
 # spending the same token budget. The value is ASCII "PAPRWTCK", arbitrary but fixed.
 INGEST_LOCK_KEY = 0x5041_5052_5754_434B
 
+# Chat providers speak the OpenAI chat-completions shape, so only the base URL, the key and the
+# model id change between them (ADR 0006). OpenRouter is primary because its free tier needs no
+# card; Groq is an optional fallback for the day a free model is withdrawn or rate-limited.
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+GROQ_BASE_URL = "https://api.groq.com/openai/v1"
+# The default, chosen by measurement on 2026-10-21 (Task 18): the best recorded QA scores of the
+# free models with tools (ADR 0006 holds the table). A model id is configuration, so a withdrawn
+# model is a settings change, and `paperwatch qa-eval` is what detects an answer-quality loss.
+CHAT_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free"
+# Tool rounds the agent may take before it is called once more without tools and must answer;
+# the cap turns a model that loops on its tools into a final answer instead of a hung request.
+MAX_TOOL_ROUNDS = 4
+# The width of `chat_calls.model`: a usage row stores the provider's model id, and the guard clips
+# it so a provider that names its model on every streamed chunk cannot fail the write.
+CHAT_CALL_MODEL_MAX_CHARS = 128
+# Defaults for the two chat limits. They are constants as well as settings so the QA eval can
+# build its own guard from the same numbers without reading the developer's `.env`; the settings
+# below still override both by name.
+CHAT_MAX_TOKENS_PER_ANSWER = 60_000
+CHAT_MAX_CALLS_PER_DAY = 800
+
+# Connection budget for `paperwatch serve` (one local user, a few tabs at most). One answer holds
+# a pooled connection for its whole life, which can be minutes while the model writes, so the pool
+# allows several at once and a short wait: a full pool becomes an `internal` event quickly instead
+# of a request hanging for the driver's 30 s default.
+ANSWER_POOL_SIZE = 6
+ANSWER_POOL_OVERFLOW = 2
+ANSWER_POOL_TIMEOUT_S = 3.0
+# The cap check and the usage write never wait behind an answer: they get their own tiny pool, and
+# a row is written in milliseconds.
+USAGE_POOL_SIZE = 2
+# libpq's connect timeout: a paused or unreachable database fails a probe or a request in seconds.
+CONNECT_TIMEOUT_S = 3
+# Readiness checks are cheap and must stay cheap: two may run at once, each bounded by this
+# timeout. A check past the bound answers 503 and is abandoned, so a stalled database cannot hold
+# the probe for the driver's own timeout.
+READY_CONCURRENCY = 2
+READY_TIMEOUT_S = 2.0
+
 
 class Settings(BaseSettings):
     # Each field is read from an env var with the PW_ prefix (database_url <- PW_DATABASE_URL),
@@ -84,7 +132,9 @@ class Settings(BaseSettings):
 
     # Azure OpenAI: endpoint and key have no default, so they must come from the environment.
     azure_openai_endpoint: str | None = None
-    azure_openai_api_key: str | None = None
+    # Keys are SecretStr so a Settings object in a log or a traceback shows `**********`, not the
+    # key; every call site reads them with .get_secret_value().
+    azure_openai_api_key: SecretStr | None = None
     azure_openai_api_version: str = "2024-10-21"
     embedding_deployment: str = "text-embedding-3-small"
     classifier_deployment: str = "gpt-4o-mini"
@@ -92,12 +142,46 @@ class Settings(BaseSettings):
     # Safety cap: a run stops calling the model once it has spent this many tokens.
     max_tokens_per_run: int = 200_000
 
+    # Chat (M2). The key is unset by default and comes only from the environment; without it a
+    # chat call refuses to start rather than failing deep inside an HTTP request.
+    openrouter_api_key: SecretStr | None = None
+    chat_model: str = CHAT_MODEL
+    # Groq answers only when both the key and a model id are set: Groq's free models change too
+    # often to pin a default here, and a guessed id would fail on every fallback attempt.
+    groq_api_key: SecretStr | None = None
+    groq_chat_model: str | None = None
+    # A free model can stall; a timeout turns that into a fallback instead of a hang. There is no
+    # retry setting: the SDK's own retries would be invisible to the daily cap (ADR 0006).
+    chat_timeout_s: float = Field(default=60.0, gt=0)
+    # One response's output is capped too: the ledger is only charged after a call, and a streamed
+    # response is not bounded by `chat_timeout_s` (httpx applies it per read, not to the whole
+    # stream), so without this one runaway generation can pass the answer budget in a single call
+    # or stream until the context limit.
+    chat_max_output_tokens: int = Field(default=4096, ge=1)
+    # Per-answer cap, charged through the same Ledger as the ingestion runs: one answer is one
+    # graph run, so a tool loop cannot spend without bound.
+    chat_max_tokens_per_answer: int = Field(default=CHAT_MAX_TOKENS_PER_ANSWER, ge=1)
+    # 800 sits under the 1,000 free requests a day OpenRouter allows with the captain's credit:
+    # the gap is headroom for questions asked at the same time, not for hidden SDK retries.
+    chat_max_calls_per_day: int = Field(default=CHAT_MAX_CALLS_PER_DAY, ge=1)
+
     # Optional key for Semantic Scholar (works without it, with lower rate limits).
-    semantic_scholar_api_key: str | None = None
+    semantic_scholar_api_key: SecretStr | None = None
 
     log_level: str = "INFO"
     # Sent with every HTTP request so source sites can identify us.
     user_agent: str = "paper-watch/0.1 (+https://github.com/enricoroncuzzi/paper-watch)"
+
+    @field_validator("log_level")
+    @classmethod
+    def _canonical_log_level(cls, value: str) -> str:
+        # `logging` accepts WARN and FATAL as aliases, but uvicorn looks the name up in its own
+        # table and raises KeyError for them, so `serve` would crash where `ask` works. Store the
+        # canonical name so both agree, and refuse a typo instead of failing at the first log.
+        number = logging.getLevelName(value.strip().upper())
+        if not isinstance(number, int):
+            raise ValueError(f"unknown log level: {value}")
+        return logging.getLevelName(number)
 
 
 @lru_cache

@@ -1,0 +1,20 @@
+{"id": "q01", "question": "How does a coding harness fix repository bugs?", "supporting": ["ag-01"], "kind": "answerable"}
+{"id": "q02", "question": "What does ToolBench measure when a model calls a function?", "supporting": ["ag-02"], "kind": "answerable"}
+{"id": "q03", "question": "What stops multiple assistants from duplicating the same subtask?", "supporting": ["ag-03"], "kind": "answerable"}
+{"id": "q04", "question": "How can an assistant recall old notes without a huge context?", "supporting": ["ag-04"], "kind": "answerable"}
+{"id": "q05", "question": "How does a sandbox limit untrusted code?", "supporting": ["ag-06"], "kind": "answerable"}
+{"id": "q06", "question": "Why plan steps before acting, and who checks the outcome?", "supporting": ["ag-09"], "kind": "answerable"}
+{"id": "q07", "question": "When does self-correction work?", "supporting": ["ag-10"], "kind": "answerable"}
+{"id": "q08", "question": "What keeps a strict spending limit from being exceeded?", "supporting": ["ag-11"], "kind": "answerable"}
+{"id": "q09", "question": "What happens before a dangerous step runs in a workflow?", "supporting": ["ag-12"], "kind": "answerable"}
+{"id": "q10", "question": "What causes long-horizon tasks to fail?", "supporting": ["ag-14"], "kind": "answerable"}
+{"id": "q11", "question": "Where does telemetry show a program getting stuck or looping?", "supporting": ["ag-15"], "kind": "answerable"}
+{"id": "q12", "question": "How do you defend against instructions hidden in a web page?", "supporting": ["ag-16"], "kind": "answerable"}
+{"id": "q13", "question": "How does deepfake speech detection generalise to unseen speakers?", "supporting": ["af-04"], "kind": "answerable"}
+{"id": "q14", "question": "How do sparse attention and state space models each cut the cost of attention?", "supporting": ["ml-01", "ml-02"], "kind": "answerable"}
+{"id": "q15", "question": "How do mixture-of-experts routing and rotary encodings change a transformer?", "supporting": ["ml-03", "ml-04"], "kind": "answerable"}
+{"id": "q16", "question": "How does text watermarking differ from attacking an image watermark?", "supporting": ["af-02", "af-05"], "kind": "answerable"}
+{"id": "q17", "question": "How much energy does training a large language model consume?", "supporting": [], "kind": "unanswerable"}
+{"id": "q18", "question": "Which reinforcement learning algorithm works best for robot control?", "supporting": [], "kind": "unanswerable"}
+{"id": "q19", "question": "How many GPUs are needed to train a 70B parameter model?", "supporting": [], "kind": "unanswerable"}
+{"id": "q20", "question": "What is the carbon footprint of a data centre?", "supporting": [], "kind": "unanswerable"}

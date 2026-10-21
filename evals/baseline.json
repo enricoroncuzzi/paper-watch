@@ -1,7 +1,7 @@
 {
-  "recall_at_k": 0.8225806451612904,
-  "mrr": 0.8064516129032258,
-  "ndcg_at_k": 0.8070252438969676,
-  "recall_at_k:text_only:exact_name": 0.7777777777777778,
-  "mrr:text_only:exact_name": 0.7777777777777778
+  "recall_at_k": 0.8870967741935484,
+  "mrr": 0.8629032258064516,
+  "ndcg_at_k": 0.8604759194971068,
+  "recall_at_k:text_only:exact_name": 0.8888888888888888,
+  "mrr:text_only:exact_name": 0.8888888888888888
 }

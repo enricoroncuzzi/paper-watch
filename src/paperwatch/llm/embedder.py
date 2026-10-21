@@ -66,7 +66,8 @@ class FakeEmbedder:
 
 def make_azure_client(settings: Settings) -> openai.AzureOpenAI:
     # A whitespace-only key is as useless as an empty one, so strip before the check.
-    key = settings.azure_openai_api_key
+    secret = settings.azure_openai_api_key
+    key = secret.get_secret_value() if secret else None
     if not (settings.azure_openai_endpoint and key and key.strip()):
         raise RuntimeError("PW_AZURE_OPENAI_ENDPOINT and PW_AZURE_OPENAI_API_KEY are required")
     return openai.AzureOpenAI(

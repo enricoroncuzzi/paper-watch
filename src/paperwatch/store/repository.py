@@ -10,13 +10,13 @@ from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from sqlalchemy import and_, case, or_, select, update
+from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from paperwatch.config import MAX_ITEM_ATTEMPTS, S2_CADENCE
 from paperwatch.domain import AdmissionBasis, Signals, SourceItem, Tier
-from paperwatch.store.models import DeadLetter, Item, Run, SourceCursor, TierHistory
+from paperwatch.store.models import ChatCall, DeadLetter, Item, Run, SourceCursor, TierHistory
 
 # Semantic Scholar reports the preprint server while a paper is only a preprint. A real venue,
 # once seen, is never replaced by one of these, so a temporary answer cannot erase an acceptance.
@@ -35,6 +35,24 @@ class StoredItem:
     profile: str | None
     relevance: float
     signals: Signals
+
+
+@dataclass(frozen=True)
+class ItemDetail:
+    """One admitted item as the agent's tools may show it to the model."""
+
+    item_id: uuid.UUID
+    title: str
+    authors: tuple[str, ...]
+    text: str
+    url: str
+    tier: str
+    basis: str
+    published_at: datetime
+    venue: str | None
+    citation_count: int
+    hf_upvotes: int | None
+    profile: str | None
 
 
 def _is_preprint(venue: str | None) -> bool:
@@ -72,6 +90,26 @@ def _stored(row: Item) -> StoredItem:
         row.profile,
         row.relevance,
         _signals(row),
+    )
+
+
+def _detail(row: Item) -> ItemDetail:
+    # Only admitted rows are passed in; the check constraints give them a tier and a basis, and
+    # the assert narrows the columns for mypy instead of writing a fallback nobody should see.
+    assert row.tier is not None and row.admission_basis is not None
+    return ItemDetail(
+        item_id=row.id,
+        title=row.title,
+        authors=tuple(row.authors),
+        text=row.text,
+        url=row.url,
+        tier=row.tier,
+        basis=row.admission_basis,
+        published_at=row.published_at,
+        venue=row.venue,
+        citation_count=row.citation_count,
+        hf_upvotes=row.hf_upvotes,
+        profile=row.profile,
     )
 
 
@@ -127,6 +165,16 @@ class Repository:
         self._s.flush()
         assert new_id is not None
         return new_id
+
+    def admitted_details(self, ids: Collection[uuid.UUID]) -> dict[uuid.UUID, ItemDetail]:
+        # Admitted rows only: an id from anywhere else (a stale alias, a candidate item) is
+        # simply absent, so a caller cannot show text the corpus has not admitted. One query for
+        # every id the caller asks about, so a search does not run one query per hit.
+        wanted = list(ids)
+        if not wanted:
+            return {}
+        rows = self._s.scalars(select(Item).where(Item.id.in_(wanted), Item.status == "admitted"))
+        return {row.id: _detail(row) for row in rows}
 
     def has_item_url(self, source: str, url: str) -> bool:
         return (
@@ -435,3 +483,71 @@ class Repository:
             .values(resolved_at=at)
         )
         self._s.flush()
+
+    def record_chat_call(
+        self,
+        *,
+        at: datetime,
+        provider: str,
+        model: str,
+        input_tokens: int,
+        output_tokens: int,
+    ) -> None:
+        # One row per request: the daily cap counts these rows, so a restart cannot forget a call
+        # that was already made. `at` comes from the caller's clock, not the database's. This
+        # flushes only; the production guard writes through `ChatCallLog`, which commits.
+        self._s.add(
+            ChatCall(
+                at=at,
+                provider=provider,
+                model=model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+            )
+        )
+        self._s.flush()
+
+    def chat_calls_since(self, at: datetime) -> int:
+        # The cap is per UTC day, so the caller passes that day's midnight and this counts only
+        # the calls at or after it; the ix_chat_calls_at index keeps it a range scan.
+        return (
+            self._s.scalar(select(func.count()).select_from(ChatCall).where(ChatCall.at >= at)) or 0
+        )
+
+
+class ChatCallLog:
+    """The production `ChatCallStore`: every usage row is committed on its own short session.
+
+    The request's own session cannot carry these rows: a failed answer or a client that hangs up
+    rolls it back, and the calls it already spent against the free tier would vanish from the
+    daily cap (ADR 0006). A row also becomes visible to other requests at once, instead of at the
+    end of a long answer, which keeps the cap accurate when two questions run together.
+    """
+
+    def __init__(self, session_factory: sessionmaker[Session]) -> None:
+        self._session_factory = session_factory
+
+    def record_chat_call(
+        self,
+        *,
+        at: datetime,
+        provider: str,
+        model: str,
+        input_tokens: int,
+        output_tokens: int,
+    ) -> None:
+        # Its own transaction, committed before returning: this is the whole point of the class.
+        with self._session_factory() as session:
+            Repository(session).record_chat_call(
+                at=at,
+                provider=provider,
+                model=model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+            )
+            session.commit()
+
+    def chat_calls_since(self, at: datetime) -> int:
+        # A read-only session is enough, and closing it releases the connection at once.
+        with self._session_factory() as session:
+            return Repository(session).chat_calls_since(at)

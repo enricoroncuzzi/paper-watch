@@ -3,7 +3,14 @@
 Tests check that code does what it says; an eval checks that retrieval ranks well enough, and a
 committed baseline turns a quality drop into a CI failure. This runs with the deterministic
 `FakeEmbedder`, so it is fast, offline and reproducible; real-model numbers come from the
-corpus-size checkpoints on real data, not from the fake embedder.
+corpus-size checkpoints on real data, not from the fake embedder. The determinism guarantee is
+carried by the shared-rank and stable-key unit tests in `tests/integration/test_hybrid.py`; the
+same ordering runs here, and `tests/integration/test_eval_throwaway.py` checks four fresh
+databases score identically. The informational `fused_ties_in_top_k` metric counts the questions
+whose top k+1 hits hold an equal fused score, so a data edit that creates one, including a tie
+that straddles the cut, is visible; it
+replaced the old raising `_check_no_ties` tripwire, which merely caught the nondeterminism such a
+tie produced.
 """
 
 import json
@@ -48,19 +55,6 @@ def _load(path: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
-def _check_no_ties(hits: list[hybrid.Hit], question: str, k: int) -> None:
-    # A fused tie at the k-th place makes the top k depend on the fusion's random-id tie-break.
-    # This is a tripwire, not a proof: it sees only this run's ids, so a data edit that introduces
-    # a tie can still pass when the ids happen to order it, and ties inside a branch (ts_rank or
-    # the vector index) are not covered. It turns a silent drift into a loud stop.
-    scores = [round(h.score, 12) for h in hits]
-    if len(scores) != len(set(scores)):
-        raise ValueError(
-            f"fused scores tie within the top {k + 1} for {question!r}; a branch ordering may "
-            "have changed, or the data needs a change so the ranking is id-independent"
-        )
-
-
 def _recall(ranked: list[str | None], relevant: set[str]) -> float:
     return len(relevant.intersection(ranked)) / len(relevant)
 
@@ -79,6 +73,46 @@ def _ndcg(ranked: list[str | None], relevant: set[str], k: int) -> float:
     return dcg / ideal
 
 
+def _branch_ids(rows: list[Any], by_item: dict[uuid.UUID, str], limit: int) -> list[str | None]:
+    # Best score first, equal scores ordered by the stable (source, external_id) key, cut at
+    # `limit`: which rows fit the cut must not depend on the order the database returned a tie in.
+    ranks = hybrid.shared_ranks((row.id, row.score) for row in rows)
+    ordered = sorted(rows, key=lambda row: (ranks[row.id], row.source, row.external_id))
+    return [by_item.get(row.id) for row in ordered[:limit]]
+
+
+def seed_corpus(session: Session, embedder: Embedder, corpus: Path) -> dict[uuid.UUID, str]:
+    """Admit every corpus row exactly as the pipeline would, and map each id to its external id.
+
+    The retrieval eval and the QA eval share this so both measure the same retrieval: one seeded
+    eval corpus, embedded with the caller's embedder, through the real write path and the partial
+    HNSW index.
+    """
+    repo = Repository(session)
+    by_item: dict[uuid.UUID, str] = {}
+    for row in _load(corpus):
+        item = SourceItem(
+            "eval",
+            row["external_id"],
+            row["title"],
+            ("eval",),
+            row["text"],
+            _EVAL_URL.format(external_id=row["external_id"]),
+            datetime(2026, 1, 1, tzinfo=UTC),
+        )
+        item_id = repo.upsert_item(
+            item,
+            Tier(row["tier"]),
+            row["profile"],
+            1.0,
+            Signals(),
+            embedder.embed([f"{row['title']}\n{row['text']}"])[0],
+        )
+        by_item[item_id] = row["external_id"]
+    session.flush()
+    return by_item
+
+
 def evaluate(
     session: Session,
     embedder: Embedder,
@@ -92,61 +126,46 @@ def evaluate(
     foreign = session.scalar(select(func.count()).select_from(Item).where(Item.source != "eval"))
     if foreign:
         raise DatabaseNotEmpty(f"the eval needs an empty database; found {foreign} non-eval items")
-    repo = Repository(session)
-    by_url: dict[str, str] = {}
-    by_item: dict[uuid.UUID, str] = {}
-    # Seed the corpus first: every row is admitted exactly as the pipeline would admit it, so the
-    # eval exercises the real write path and the partial HNSW index.
-    for row in _load(corpus):
-        url = _EVAL_URL.format(external_id=row["external_id"])
-        item = SourceItem(
-            "eval",
-            row["external_id"],
-            row["title"],
-            ("eval",),
-            row["text"],
-            url,
-            datetime(2026, 1, 1, tzinfo=UTC),
-        )
-        item_id = repo.upsert_item(
-            item,
-            Tier(row["tier"]),
-            row["profile"],
-            1.0,
-            Signals(),
-            embedder.embed([f"{row['title']}\n{row['text']}"])[0],
-        )
-        by_url[url] = row["external_id"]
-        by_item[item_id] = row["external_id"]
-    session.flush()
+    # Seed the corpus first, then invert the map: a returned hit's url is its corpus external id.
+    by_item = seed_corpus(session, embedder, corpus)
+    by_url = {
+        _EVAL_URL.format(external_id=external_id): external_id for external_id in by_item.values()
+    }
 
     totals: defaultdict[str, float] = defaultdict(float)
     kind_totals: defaultdict[str, float] = defaultdict(float)
     counts: defaultdict[str, int] = defaultdict(int)
     nonempty: defaultdict[str, int] = defaultdict(int)
+    ties = 0
     qs = _load(questions)
     for q in qs:
         relevant = set(q["relevant"])
         kind = q["kind"]
-        # Request one extra hybrid hit so a tie at the k-th place is seen. The candidates count
-        # matches production's default, so the branch lists and the hybrid path agree.
+        # The candidates count matches production's default, so the branch lists and the hybrid
+        # path agree. One extra hit is requested for the tie counter only, so a tie that straddles
+        # the k/(k+1) boundary, the one case where the key decides membership, is visible; the
+        # metrics below cut at k. Tied branch scores share a rank and equal fused scores are
+        # ordered by the stable key, so the top k is reproducible; test_eval_throwaway checks it.
         hits = hybrid.hybrid_search(
             session, embedder, q["question"], k=k + 1, candidates=candidates
         )
-        _check_no_ties(hits, q["question"], k)
+        # Informational only: the key orders equal scores so the run stays reproducible, but a
+        # data edit that creates one should be visible.
+        if len({round(h.score, 12) for h in hits}) < len(hits):
+            ties += 1
         # The branch lists are the same public queries the fusion uses, limited like production and
         # then cut to k so the metrics are recall@k and MRR@k. The vector branch runs under the
         # same transaction-local settings hybrid_search set (shared helper), not by call order.
         qvec = embedder.embed([q["question"]])[0]
         hybrid.set_search_settings(session, candidates)
-        vector_ids = list(session.scalars(hybrid.vector_query(qvec, hybrid.Filters(), candidates)))
-        text_ids = list(
-            session.scalars(hybrid.text_query(q["question"], hybrid.Filters(), candidates))
+        vector_rows = list(session.execute(hybrid.vector_query(qvec, hybrid.Filters(), candidates)))
+        text_rows = list(
+            session.execute(hybrid.text_query(q["question"], hybrid.Filters(), candidates))
         )
         branch_lists = {
             "hybrid": [by_url.get(h.url) for h in hits[:k]],
-            "text_only": [by_item.get(i) for i in text_ids[:k]],
-            "vector_only": [by_item.get(i) for i in vector_ids[:k]],
+            "text_only": _branch_ids(text_rows, by_item, k),
+            "vector_only": _branch_ids(vector_rows, by_item, k),
         }
         for branch, ranked in branch_lists.items():
             # Hybrid keys carry no suffix; a branch-only key names the branch, then the kind.
@@ -167,6 +186,7 @@ def evaluate(
         "mrr": totals["mrr"] / n,
         "ndcg_at_k": totals["ndcg_at_k"] / n,
         "text_nonempty": nonempty["text_nonempty"] / n,
+        "fused_ties_in_top_k": float(ties),
     }
     for branch in BRANCHES:
         metrics[f"recall_at_k:{branch}"] = totals[f"recall_at_k:{branch}"] / n

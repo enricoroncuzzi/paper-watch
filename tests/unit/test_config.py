@@ -1,23 +1,9 @@
-import os
 from collections.abc import Callable
 
 import pytest
 from pydantic import ValidationError
 
 from paperwatch.config import EMBEDDING_DIM, LOCAL_EMBEDDING_MODEL, Settings
-
-
-@pytest.fixture
-def build_settings(monkeypatch: pytest.MonkeyPatch) -> Callable[[], Settings]:
-    """Build Settings from the test's own environment: no local .env and no leftover PW_* vars."""
-    for name in [n for n in os.environ if n.startswith("PW_")]:
-        monkeypatch.delenv(name, raising=False)
-
-    def build() -> Settings:
-        # _env_file=None ignores a developer's real .env; env vars the test sets still apply.
-        return Settings(_env_file=None)
-
-    return build
 
 
 def test_settings_read_from_environment(
@@ -91,3 +77,22 @@ def test_unknown_provider_or_non_positive_size_is_refused(
     monkeypatch.setenv(name, value)
     with pytest.raises(ValidationError):
         build_settings()
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [("warn", "WARNING"), ("WARN", "WARNING"), ("fatal", "CRITICAL"), ("info", "INFO")],
+)
+def test_a_log_level_alias_is_stored_as_its_canonical_name(
+    build_settings: Callable[..., Settings], raw: str, expected: str
+) -> None:
+    # `logging` accepts WARN and FATAL as aliases, but uvicorn looks the name up in its own table
+    # and raises KeyError for them, so `serve` crashed where `ask` worked. One canonical name
+    # serves both.
+    assert build_settings(log_level=raw).log_level == expected
+
+
+def test_an_unknown_log_level_is_refused(build_settings: Callable[..., Settings]) -> None:
+    # A typo must fail at startup rather than at the first log call.
+    with pytest.raises(ValidationError, match="unknown log level"):
+        build_settings(log_level="LOUD")

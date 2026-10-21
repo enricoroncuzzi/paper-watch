@@ -1,0 +1,6 @@
+{
+  "support_recall": 1.0,
+  "citation_precision": 0.8260869565217391,
+  "clean_rate": 0.5,
+  "abstention": 1.0
+}

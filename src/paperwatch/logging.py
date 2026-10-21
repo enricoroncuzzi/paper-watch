@@ -2,14 +2,40 @@
 
 # Absolute import: this is the standard library module, not this file.
 import logging
+import sys
+from typing import Any, TextIO, cast
 
 import structlog
 
 
+class _StderrAtCallTime:
+    """A file that always writes to the current `sys.stderr`.
+
+    A logger keeps the stream it was built with, and a test runner (pytest's capture, Click's
+    `CliRunner`) replaces and then closes `sys.stderr` between runs. A logger built earlier would
+    write to that closed file and raise ValueError on the next log line, so the stream is
+    resolved on every write instead.
+    """
+
+    def write(self, text: str) -> int:
+        return sys.stderr.write(text)
+
+    def flush(self) -> None:
+        sys.stderr.flush()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(sys.stderr, name)
+
+
 def configure_logging(level: str = "INFO") -> None:
-    # Route stdlib logging (used by libraries like httpx and SQLAlchemy) to stderr at this level.
-    logging.basicConfig(format="%(message)s", level=level)
+    # Progress and logs go to stderr, so a piped answer (`paperwatch ask q > answer.txt`) stays
+    # just the answer. This covers the stdlib logging that httpx and SQLAlchemy use, and structlog
+    # itself, whose default logger would otherwise print to stdout, inside the answer.
+    sink = _StderrAtCallTime()
+    logging.basicConfig(format="%(message)s", level=level, stream=cast(TextIO, sink))
     structlog.configure(
+        # Resolves stderr on every write, for the reason in `_StderrAtCallTime`.
+        logger_factory=structlog.PrintLoggerFactory(file=cast(TextIO, sink)),
         # Each log call flows through these steps in order, building one event dict.
         processors=[
             # Adds request-scoped context bound with structlog.contextvars (e.g. run_id).

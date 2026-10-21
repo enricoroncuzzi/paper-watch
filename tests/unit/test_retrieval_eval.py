@@ -2,6 +2,7 @@
 
 import json
 import math
+from collections import namedtuple
 from pathlib import Path
 from uuid import uuid4
 
@@ -9,13 +10,14 @@ import pytest
 
 from evals.retrieval_eval import (
     GATED,
-    _check_no_ties,
+    _branch_ids,
     _ndcg,
     _recall,
     _reciprocal_rank,
     gate,
 )
-from paperwatch.retrieval.hybrid import Hit
+
+_BranchRow = namedtuple("_BranchRow", "id score source external_id")
 
 DATA = Path(__file__).resolve().parents[2] / "evals" / "data"
 
@@ -42,6 +44,18 @@ def test_ndcg_matches_hand_computed_values() -> None:
     assert _ndcg([], {"a"}, 5) == 0.0
 
 
+def test_branch_ids_cuts_a_boundary_tie_by_key() -> None:
+    first, tied_z, tied_a = uuid4(), uuid4(), uuid4()
+    rows = [
+        _BranchRow(first, 0.9, "eval", "mmm"),
+        _BranchRow(tied_z, 0.5, "eval", "zzz"),
+        _BranchRow(tied_a, 0.5, "eval", "aaa"),
+    ]
+    by_item = {first: "mmm", tied_z: "zzz", tied_a: "aaa"}
+    # The cut at 2 falls inside the 0.5 tie, so the stable key picks "aaa" over "zzz".
+    assert _branch_ids(rows, by_item, 2) == ["mmm", "aaa"]
+
+
 def _metrics(**overrides: float) -> dict[str, float]:
     # A complete, all-perfect metric set, with the named keys overridden per test.
     base = {name: 1.0 for name in GATED}
@@ -64,17 +78,6 @@ def test_gate_tolerance_is_001() -> None:
     # A 0.012 drop fails, a 0.008 drop passes: the boundary is the documented 0.01.
     assert gate(_metrics(recall_at_k=0.988), baseline) != []
     assert gate(_metrics(recall_at_k=0.992), baseline) == []
-
-
-def test_tie_guard_rejects_equal_fused_scores() -> None:
-    def hit(score: float) -> Hit:
-        return Hit(uuid4(), "t", "https://x/i", "vetted_preprint", "seed", score, "s")
-
-    with pytest.raises(ValueError, match="tie"):
-        # The tie is exactly at the k-th and (k+1)-th hits, for k = 2.
-        _check_no_ties([hit(1 / 61), hit(1 / 62), hit(1 / 62)], "q", 2)
-    # Distinct scores are accepted, and a tie outside the requested hits does not matter.
-    _check_no_ties([hit(1 / 61), hit(1 / 62)], "q", 1)
 
 
 def test_gate_requires_exactly_the_gated_baseline_keys() -> None:
