@@ -210,7 +210,8 @@ If that run exits 1 or 3, read the journal before going on: 3 means it finished 
 day unhealthy, 1 means it did not finish its work. Once you have judged the result acceptable,
 run `systemctl --user reset-failed paperwatch-ingest.service`, because a failed unit is reported
 by the morning check until the next run starts. A row left `running` by a kill is closed as
-failed by the next run; until then the check reports it as stuck after two hours.
+failed by the next run, and the check reports it once as such; until then the check reports it
+as stuck after three hours, the unit's own start timeout.
 
 ## 8. The morning check
 
@@ -225,10 +226,12 @@ and size, and free disk. Exit code 0 means every check passed, 1 means at least 
 bad lines start with `FAIL`:
 
 - no finished run, or a status other than `succeeded` or `partial`;
+- the last run was killed or crashed and left no health verdict, which is what a killed run's
+  row looks like once the next run has closed it: one `FAIL` for the one event;
 - an unhealthy or missing health verdict, or a non-empty list of problems;
 - the last run started more than 25 hours ago, so a missed 06:00 morning is caught by 07:00;
-- a run left `running` for more than two hours (killed by the cap, hung, or a kill the next run has
-  not closed yet);
+- a run left `running` for more than three hours, matching the unit's `TimeoutStartSec`, so a live
+  run is never called dead while systemd would still let it finish;
 - `paperwatch-ingest.service` failed (a startup crash, an OOM kill, a timeout, exit 1 or 3), or
   `paperwatch-ingest.timer` not active, so no morning run is scheduled;
 - no dump in `~/backups/`, or the newest older than 26 hours or empty;

@@ -305,7 +305,7 @@ def test_check_fails_when_a_run_stayed_running(
     # A run killed by the memory cap or hung leaves its row 'running' and no finished row, so
     # without this the check reads yesterday's green run as today's.
     write_rows("succeeded", {"healthy": True, "problems": []})
-    write_rows("succeeded", {"healthy": True, "problems": []}, running_for=timedelta(hours=3))
+    write_rows("succeeded", {"healthy": True, "problems": []}, running_for=timedelta(hours=4))
     result = run_check()
     assert result.returncode == EXIT_BAD and "running" in result.stdout
 
@@ -313,12 +313,13 @@ def test_check_fails_when_a_run_stayed_running(
 @pytest.mark.parametrize(
     ("running_for", "expected"),
     [
-        # The 2 h default, pinned from both sides so no other value can pass this pair.
-        (timedelta(hours=2, minutes=30), EXIT_BAD),
-        (timedelta(hours=1, minutes=30), 0),
+        # The 3 h default, pinned from both sides so no other value can pass this pair. It matches
+        # the unit's TimeoutStartSec, so a run that is genuinely still working is not called dead.
+        (timedelta(hours=3, minutes=30), EXIT_BAD),
+        (timedelta(hours=2, minutes=30), 0),
     ],
 )
-def test_check_pins_the_two_hour_stuck_run_limit(
+def test_check_pins_the_three_hour_stuck_run_limit(
     write_rows: Callable[..., None],
     run_check: Callable[..., subprocess.CompletedProcess[str]],
     running_for: timedelta,
@@ -328,6 +329,21 @@ def test_check_pins_the_two_hour_stuck_run_limit(
     write_rows(None, running_for=running_for)
     result = run_check()
     assert result.returncode == expected, result.stdout + result.stderr
+
+
+def test_check_reports_a_closed_killed_run_once(
+    write_rows: Callable[..., None], run_check: Callable[..., subprocess.CompletedProcess[str]]
+) -> None:
+    # A run killed by the memory cap (or SIGKILL) is closed by the next run as `failed` with no
+    # health verdict, and the pipeline's own crash path writes the same shape. One event, one FAIL:
+    # the status, health and freshness lines would each report it again, and the last two are noise
+    # because a killed run has nothing to say about them.
+    write_rows("failed", None, started_ago=timedelta(hours=30))
+    result = run_check()
+    assert result.returncode == EXIT_BAD
+    assert result.stdout.count("FAIL") == 1, result.stdout
+    assert "killed or crashed" in result.stdout
+    assert "health:" not in result.stdout and "stale" not in result.stdout
 
 
 def test_check_accepts_a_run_that_is_still_working(

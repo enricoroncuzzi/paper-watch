@@ -10,7 +10,7 @@
 #   PW_CHECK_DB                  database to read (paperwatch)
 #   PW_CHECK_BACKUP_DIR          where the nightly dumps go ($HOME/backups)
 #   PW_CHECK_MAX_RUN_AGE_S       limit on the age of the last run, from its start (90000, 25 h)
-#   PW_CHECK_MAX_RUNNING_S       limit on how long a run may stay 'running' (7200, 2 h)
+#   PW_CHECK_MAX_RUNNING_S       limit on how long a run may stay 'running' (10800, 3 h)
 #   PW_CHECK_MAX_BACKUP_AGE_S    limit on the age of the newest dump (93600, 26 h)
 #   PW_CHECK_MIN_FREE_GB         free disk the home must keep (2)
 set -u
@@ -21,10 +21,11 @@ backup_dir=${PW_CHECK_BACKUP_DIR:-$HOME/backups}
 # what makes a missed 06:00 run visible by 07:00. It is measured from the run's start, so a long
 # run does not delay the alarm, and an hour of duration still fits.
 max_run_age_s=${PW_CHECK_MAX_RUN_AGE_S:-90000}
-# A run is killed by the memory cap, hung or dying far more often than it takes two hours, and its
-# row stays 'running' until the next run closes it: without this the check would report the run
-# before it and call a dead morning green.
-max_running_s=${PW_CHECK_MAX_RUNNING_S:-7200}
+# This is the ingest unit's own TimeoutStartSec: a run still working at two hours is alive, one
+# past three hours has been killed by systemd (and the failed-unit line below says so). The row
+# stays 'running' until the next run closes it, so without this a dead morning would read as the
+# previous green run.
+max_running_s=${PW_CHECK_MAX_RUNNING_S:-10800}
 max_backup_age_s=${PW_CHECK_MAX_BACKUP_AGE_S:-93600}
 # Below this the next dump, or the next Postgres write, is the thing that fills the disk.
 min_free_gb=${PW_CHECK_MIN_FREE_GB:-2}
@@ -143,6 +144,11 @@ EOF
 
 if [ "$status" = '(none)' ]; then
     fail 'no finished ingestion run in the database'
+elif [ "$status" = 'failed' ] && [ "$healthy" = '(unknown)' ]; then
+    # Killed (SIGKILL, the memory cap) and closed by the next run, or crashed out of the
+    # pipeline: both leave `failed` with no health verdict, and the health and freshness lines
+    # would only say the same thing again. One event, one line.
+    fail 'last run was killed or crashed and left no health verdict (journalctl --user -u paperwatch-ingest)'
 else
     case $status in
         succeeded | partial)
