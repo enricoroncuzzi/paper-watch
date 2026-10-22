@@ -183,11 +183,11 @@ give: stop and tell the captain, rather than raising the cap. A successful `--wa
 the transient unit, so `systemctl show` on it afterwards prints nothing useful; a failed attempt
 stays loaded, and the next try needs `systemctl --user reset-failed paperwatch-measure` first.
 
-Then set the real cap in a drop-in instead of editing the installed unit, so a later
-`git checkout` of a new release does not silently reset it. Use the measured peak plus about a
-third, and never less than the model's own 520 MB; the `950M` below is the repo's default, from
-the 706.8M peak measured on this machine on 2026-10-22, and only a run that measures higher needs
-its own value:
+Then set the cap in a drop-in instead of editing the installed unit, so a later `git checkout` of
+a new release does not silently reset it. Use the measured peak plus about a third, and never less
+than the model's own 520 MB. The installed unit already carries `950M`, the repo's default from the
+706.8M peak measured on this machine on 2026-10-22, so this step is only needed when your own peak
+differs from that measurement, or you want the value pinned against a future default:
 
 ```bash
 mkdir -p ~/.config/systemd/user/paperwatch-ingest.service.d
@@ -256,6 +256,11 @@ overridden for one invocation:
 `PW_CHECK_MAX_RUN_AGE_S`, `PW_CHECK_MAX_RUNNING_S`, `PW_CHECK_MAX_BACKUP_AGE_S`,
 `PW_CHECK_MIN_FREE_GB`, `PW_CHECK_BACKUP_DIR`, `PW_CHECK_DB`. It needs only `psql` and coreutils,
 and reads only the `paperwatch` database, the backup directory and the account's own user manager.
+
+A run's counts normally show `"s2_unchecked": 1`: one arXiv paper in the corpus is not in
+Semantic Scholar's index at all, so it is left unanswered and asked again next run. That is
+expected and does not make a run unhealthy; a much larger count comes with a degraded `s2` source
+and its own `FAIL`.
 
 At this point the timer is not enabled yet, so this dry run reports one `FAIL` for the timer.
 If you skipped the backup in step 7 it also fails on the backup, and before the first backup that
