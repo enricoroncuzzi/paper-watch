@@ -19,9 +19,11 @@ umask 077
 mkdir -p "$backup_dir"
 
 out=$backup_dir/paperwatch-$(date -u +%Y%m%dT%H%M%SZ).dump
-# One fixed temporary name, so an interrupted run leaves a single stale file that the next run
-# overwrites, and never a short file that looks like a backup.
+# One fixed temporary name, so an interrupted run overwrites it rather than accumulating parts,
+# and the EXIT trap removes it however the script ends: a pg_dump that dies halfway, or the unit's
+# timeout kill. The directory then only ever holds complete dumps.
 tmp=$backup_dir/.paperwatch.dump.part
+trap 'rm -f "$tmp"' EXIT
 
 pg_dump --format=custom --no-password --dbname="$db" --file="$tmp"
 if [ ! -s "$tmp" ]; then

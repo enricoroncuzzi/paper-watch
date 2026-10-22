@@ -4,6 +4,8 @@
 [Unit]
 Description=Paper Watch nightly database backup
 Documentation=https://github.com/enricoroncuzzi/paper-watch/blob/main/docs/deploy/vps.md
+# Nothing forces this before the 06:00 ingestion beyond the clock; if a catch-up starts both, an
+# overlap is harmless because pg_dump reads an MVCC snapshot and writes no schema.
 
 [Service]
 Type=oneshot
@@ -11,8 +13,8 @@ Type=oneshot
 ExecStart=/home/paperwatch/paper-watch/deploy/vps/backup.sh
 # Well past the time a dump of a corpus this size takes, and far short of the next trigger.
 TimeoutStartSec=1h
-# The dump dies with this process, and the script writes under a temporary name, so a timeout (or
-# a kill) can never leave a short file that looks like a usable backup.
+# The dump dies with this process, and the script writes under a temporary name that its EXIT trap
+# removes, so a timeout or a kill can never leave a short file that looks like a usable backup.
 Nice=10
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7

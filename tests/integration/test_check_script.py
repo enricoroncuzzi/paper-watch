@@ -3,6 +3,8 @@
 The script speaks `psql`, and the only psql here lives inside the test container, so the tests
 put a shim named `psql` first on PATH that forwards to the container's client. That keeps the
 script itself unchanged and still checks the real SQL against the real schema the code writes.
+A `systemctl` stub does the same for the unit and timer state, so a test never depends on whether
+the machine running the suite has a systemd user manager (macOS has none, CI may have one).
 """
 
 import os
@@ -37,6 +39,16 @@ SHELL = "/bin/sh"
 # A fixed instant, so a run's ages are arithmetic and not a race with the clock.
 NOW = datetime(2026, 10, 22, 4, 30, tzinfo=UTC)
 EXIT_BAD = 1
+# The systemctl stub's answers to `--user show-environment`, `is-failed` and `is-active`.
+SYSTEMCTL_STUB = """#!/bin/sh
+case "$*" in
+    "--user show-environment") exit "${STUB_SHOW_ENVIRONMENT:-0}" ;;
+    "--user is-failed --quiet paperwatch-ingest.service") exit "${STUB_IS_FAILED:-1}" ;;
+    "--user is-active --quiet paperwatch-ingest.timer") exit "${STUB_IS_ACTIVE:-0}" ;;
+esac
+echo "unexpected systemctl call: $*" >&2
+exit 99
+"""
 
 
 @pytest.fixture
@@ -52,20 +64,26 @@ def write_rows(engine: Engine) -> Iterator[Callable[..., None]]:
     items: list[uuid.UUID] = []
 
     def write(
-        status: str,
+        status: str | None,
         health: dict[str, object] | None = None,
         *,
         finished_ago: timedelta = timedelta(hours=2),
         admitted: int = 2,
+        running_for: timedelta | None = None,
     ) -> None:
-        finished = datetime.now(UTC) - finished_ago
-        started = finished - timedelta(minutes=21)
         with factory() as session:
             repo = Repository(session)
-            run_id = repo.start_run(started, finished, at=started)
-            counts = {"fetched": 12, "stored": 3, "failed": 0}
-            repo.finish_run(run_id, status, counts, 0, health, at=finished)
-            runs.append(run_id)
+            if status is not None:
+                finished = datetime.now(UTC) - finished_ago
+                started = finished - timedelta(minutes=21)
+                run_id = repo.start_run(started, finished, at=started)
+                counts = {"fetched": 12, "stored": 3, "failed": 0}
+                repo.finish_run(run_id, status, counts, 0, health, at=finished)
+                runs.append(run_id)
+            if running_for is not None:
+                # A run that never finished: killed by the memory cap, hung, or still working.
+                started = datetime.now(UTC) - running_for
+                runs.append(repo.start_run(started, started, at=started))
             for n in range(admitted):
                 item = SourceItem(
                     "arxiv",
@@ -105,8 +123,12 @@ def run_check(
 
     def run(
         *,
-        backup_age: timedelta | None = timedelta(hours=3),
+        backup: str = "fresh",
         min_free_gb: str = "0",
+        extra_env: dict[str, str] | None = None,
+        unit_failed: bool = False,
+        timer_active: bool = True,
+        user_manager: bool = True,
     ) -> subprocess.CompletedProcess[str]:
         shim_dir, home = tmp_path / "bin", tmp_path / "home"
         shim_dir.mkdir(exist_ok=True)
@@ -118,10 +140,19 @@ def run_check(
             f'exec docker exec -i {pg_container.get_container_id()} psql -U {user} "$@"\n'
         )
         shim.chmod(shim.stat().st_mode | stat.S_IXUSR)
-        if backup_age is not None:
-            dump = home / "backups" / "paperwatch-20261022T031500Z.dump"
-            dump.write_bytes(b"PGDMP" + b"\0" * 4096)
-            stamp = (datetime.now(UTC) - backup_age).timestamp()
+        systemctl = shim_dir / "systemctl"
+        systemctl.write_text(SYSTEMCTL_STUB)
+        systemctl.chmod(systemctl.stat().st_mode | stat.S_IXUSR)
+
+        backups = home / "backups"
+        if backup == "no-dir":
+            backups.rmdir()
+        elif backup != "missing":
+            dump = backups / "paperwatch-20261022T031501Z.dump"
+            # A stub dump: only its existence, size and mtime matter to the check.
+            dump.write_bytes(b"" if backup == "empty" else b"PGDMP" + b"\0" * 4092)
+            age = timedelta(hours=40) if backup == "old" else timedelta(hours=3)
+            stamp = (datetime.now(UTC) - age).timestamp()
             os.utime(dump, (stamp, stamp))
         env = {
             **os.environ,
@@ -129,6 +160,10 @@ def run_check(
             "PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}",
             "PW_CHECK_DB": make_url(db_url).database or "",
             "PW_CHECK_MIN_FREE_GB": min_free_gb,
+            "STUB_SHOW_ENVIRONMENT": "0" if user_manager else "1",
+            "STUB_IS_FAILED": "0" if unit_failed else "1",
+            "STUB_IS_ACTIVE": "0" if timer_active else "3",
+            **(extra_env or {}),
         }
         return subprocess.run(  # noqa: S603 (a fixed script path, no shell)
             [SHELL, str(SCRIPT)], capture_output=True, text=True, env=env, timeout=120, check=False
@@ -143,11 +178,40 @@ def test_check_passes_on_a_healthy_run(
     write_rows("succeeded", {"healthy": True, "problems": []})
     result = run_check()
     assert result.returncode == 0, result.stdout + result.stderr
-    # The four facts the captain reads every morning, from the columns the code writes.
+    # The facts the captain reads every morning, from the columns the code writes.
     assert "succeeded" in result.stdout
     assert '"stored": 3' in result.stdout  # the run's counts, read out of the JSON column
     assert "2 admitted" in result.stdout
     assert "backup" in result.stdout and "check passed" in result.stdout
+    assert "not failed" in result.stdout and "timer" in result.stdout
+
+
+def test_check_skips_the_unit_checks_without_a_user_manager(
+    write_rows: Callable[..., None], run_check: Callable[..., subprocess.CompletedProcess[str]]
+) -> None:
+    # A bare cron job, or a laptop: no user manager answers, so unit state must not be guessed.
+    write_rows("succeeded", {"healthy": True, "problems": []})
+    result = run_check(user_manager=False, unit_failed=True, timer_active=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "not checked" in result.stdout
+
+
+def test_check_fails_when_the_unit_is_failed(
+    write_rows: Callable[..., None], run_check: Callable[..., subprocess.CompletedProcess[str]]
+) -> None:
+    # A startup crash, an OOM kill, a timeout or exit 1/3 all leave the unit failed.
+    write_rows("succeeded", {"healthy": True, "problems": []})
+    result = run_check(unit_failed=True)
+    assert result.returncode == EXIT_BAD and "failed state" in result.stdout
+
+
+def test_check_fails_when_the_timer_is_not_active(
+    write_rows: Callable[..., None], run_check: Callable[..., subprocess.CompletedProcess[str]]
+) -> None:
+    # A disabled or stopped timer means no morning run at all, and no row would ever say so.
+    write_rows("succeeded", {"healthy": True, "problems": []})
+    result = run_check(timer_active=False)
+    assert result.returncode == EXIT_BAD and "not active" in result.stdout
 
 
 def test_check_names_the_health_problems(
@@ -162,12 +226,35 @@ def test_check_names_the_health_problems(
     assert "check failed" in result.stdout
 
 
-def test_check_fails_when_the_run_itself_failed(
+def test_check_fails_on_the_verdict_alone(
     write_rows: Callable[..., None], run_check: Callable[..., subprocess.CompletedProcess[str]]
 ) -> None:
-    write_rows("failed", {"healthy": False, "problems": ["status=failed"]})
+    # The verdict is its own check: no problems listed, and still unhealthy, must not pass.
+    write_rows("succeeded", {"healthy": False, "problems": []})
     result = run_check()
-    assert result.returncode == EXIT_BAD and "failed" in result.stdout
+    assert result.returncode == EXIT_BAD and "health: false" in result.stdout
+
+
+@pytest.mark.parametrize("status", ["failed", "budget_exhausted"])
+def test_check_fails_when_the_run_did_not_finish(
+    write_rows: Callable[..., None],
+    run_check: Callable[..., subprocess.CompletedProcess[str]],
+    status: str,
+) -> None:
+    # A healthy-looking verdict on a run that never finished its work must not pass either.
+    write_rows(status, {"healthy": True, "problems": []})
+    result = run_check()
+    assert result.returncode == EXIT_BAD and f"last run {status}" in result.stdout
+
+
+def test_check_accepts_a_finished_partial_run_with_a_healthy_verdict(
+    write_rows: Callable[..., None], run_check: Callable[..., subprocess.CompletedProcess[str]]
+) -> None:
+    # `partial` is a finished run: the status check accepts it and the health verdict decides.
+    # The code always marks a partial run unhealthy, so this pins that the two are separate.
+    write_rows("partial", {"healthy": True, "problems": []})
+    result = run_check()
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_check_fails_without_a_finished_run(
@@ -181,19 +268,64 @@ def test_check_fails_without_a_finished_run(
 def test_check_fails_when_the_last_run_is_stale(
     write_rows: Callable[..., None], run_check: Callable[..., subprocess.CompletedProcess[str]]
 ) -> None:
-    # 30 h is past the 26 h freshness limit, so a missed morning is caught even though the run
+    # 30 h is past the 25 h freshness limit, so a missed morning is caught even though the run
     # it reports on was healthy.
     write_rows("succeeded", {"healthy": True, "problems": []}, finished_ago=timedelta(hours=30))
     result = run_check()
     assert result.returncode == EXIT_BAD and "stale" in result.stdout
 
 
+def test_check_fails_when_a_run_stayed_running(
+    write_rows: Callable[..., None], run_check: Callable[..., subprocess.CompletedProcess[str]]
+) -> None:
+    # A run killed by the memory cap or hung leaves its row 'running' and no finished row, so
+    # without this the check reads yesterday's green run as today's.
+    write_rows("succeeded", {"healthy": True, "problems": []})
+    write_rows("succeeded", {"healthy": True, "problems": []}, running_for=timedelta(hours=3))
+    result = run_check()
+    assert result.returncode == EXIT_BAD and "running" in result.stdout
+
+
+def test_check_accepts_a_run_that_is_still_working(
+    write_rows: Callable[..., None], run_check: Callable[..., subprocess.CompletedProcess[str]]
+) -> None:
+    write_rows("succeeded", {"healthy": True, "problems": []})
+    write_rows(None, running_for=timedelta(minutes=10))
+    result = run_check()
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "in progress" in result.stdout
+
+
 def test_check_fails_without_a_recent_backup(
     write_rows: Callable[..., None], run_check: Callable[..., subprocess.CompletedProcess[str]]
 ) -> None:
     write_rows("succeeded", {"healthy": True, "problems": []})
-    result = run_check(backup_age=timedelta(hours=40))
-    assert result.returncode == EXIT_BAD and "backup" in result.stdout
+    result = run_check(backup="old")
+    assert result.returncode == EXIT_BAD and "backup:" in result.stdout
+
+
+def test_check_fails_on_a_zero_byte_dump(
+    write_rows: Callable[..., None], run_check: Callable[..., subprocess.CompletedProcess[str]]
+) -> None:
+    write_rows("succeeded", {"healthy": True, "problems": []})
+    result = run_check(backup="empty")
+    assert result.returncode == EXIT_BAD and "backup:" in result.stdout
+
+
+def test_check_fails_without_a_dump(
+    write_rows: Callable[..., None], run_check: Callable[..., subprocess.CompletedProcess[str]]
+) -> None:
+    write_rows("succeeded", {"healthy": True, "problems": []})
+    result = run_check(backup="missing")
+    assert result.returncode == EXIT_BAD and "no backup in" in result.stdout
+
+
+def test_check_fails_without_a_backup_directory(
+    write_rows: Callable[..., None], run_check: Callable[..., subprocess.CompletedProcess[str]]
+) -> None:
+    write_rows("succeeded", {"healthy": True, "problems": []})
+    result = run_check(backup="no-dir")
+    assert result.returncode == EXIT_BAD and "no backup directory" in result.stdout
 
 
 def test_check_fails_when_disk_is_short(
@@ -203,3 +335,13 @@ def test_check_fails_when_disk_is_short(
     # No disk has 10^9 GB free, so this fails on any machine the suite runs on.
     result = run_check(min_free_gb="1000000000")
     assert result.returncode == EXIT_BAD and "disk" in result.stdout
+
+
+def test_check_rejects_a_non_numeric_threshold(
+    write_rows: Callable[..., None], run_check: Callable[..., subprocess.CompletedProcess[str]]
+) -> None:
+    # A typo must be a clean exit 1 with a message, not a shell arithmetic error with exit 2.
+    write_rows("succeeded", {"healthy": True, "problems": []})
+    result = run_check(extra_env={"PW_CHECK_MIN_FREE_GB": "2 GB"})
+    assert result.returncode == EXIT_BAD
+    assert "PW_CHECK_MIN_FREE_GB" in result.stdout

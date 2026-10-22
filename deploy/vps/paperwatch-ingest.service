@@ -4,8 +4,9 @@
 [Unit]
 Description=Paper Watch daily ingestion
 Documentation=https://github.com/enricoroncuzzi/paper-watch/blob/main/docs/deploy/vps.md
-# Ordered after the backup, not required by it: a failed backup must not cost a day of ingestion,
-# but the dump that a restore would use should be the one from before the ingestion wrote.
+# The backup is scheduled 45 minutes earlier, so it usually finishes first: that is the clock, not
+# a guarantee, and a missed-trigger catch-up can start both at once. Ordering them is still worth
+# it, and an overlap is harmless: pg_dump reads an MVCC snapshot and ingestion only appends.
 After=paperwatch-backup.service
 
 [Service]
@@ -18,15 +19,19 @@ ExecStart=/home/paperwatch/.local/bin/uv run --frozen --no-dev paperwatch ingest
 # with the captain's contact, and PW_LOCAL_EMBEDDING_CACHE_DIR. Ingestion needs no chat key.
 EnvironmentFile=/home/paperwatch/.config/paperwatch/env
 # A first run classifies and embeds a wide window on a shared 1.9 GB machine; the cap is generous
-# in time so a slow model is never killed halfway, and a run that is killed leaves its run row
-# 'running' until the next one closes it as failed.
+# in time so a slow model is never killed halfway.
 TimeoutStartSec=3h
-# The local embedding model peaks near 520 MB, and the scraper next door is a production service.
-# MemoryHigh slows the run before MemoryMax kills it; both need the memory controller delegated to
-# the user manager, which docs/deploy/vps.md shows how to confirm.
-MemoryHigh=900M
-MemoryMax=1200M
-# Yield to the scraper: 06:00 is its quiet hour, but a fitted model must never starve it.
+# The local embedding model peaks near 520 MB, so 1 GB leaves room for Python, fastembed and the
+# source clients. MemorySwapMax=0 is the important half: without it the kernel keeps a capped run
+# alive by swapping, and the run crawls in the shared swap until the timeout instead of failing.
+# With no swap, the cgroup OOM killer stops it, and systemd's default OOMPolicy=stop marks the unit
+# failed. The run row stays 'running' until the next run closes it as failed, and the morning check
+# reports both. Task 20's measured run tunes the number. The cap needs the memory controller
+# delegated to the user manager; docs/deploy/vps.md shows how to confirm that.
+MemoryMax=1000M
+MemorySwapMax=0
+# Yield to the other production project on this machine: 06:00 is its quiet hour, but a fitted
+# model must never starve it.
 Nice=10
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7
