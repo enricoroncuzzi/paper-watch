@@ -12,20 +12,21 @@ role, pgvector, the swap file and linger were set up by the captain before this 
 
 - Debian 13, 2 CPU, 1.9 GB RAM (about 1.3 GB available), 2 GB swap (swappiness 10), 48 GB disk
   free, clock in Europe/Berlin (the same UTC offset as Rome all year), NTP on.
-- Shared with jd-scraper, a production service using about 650 MB: three Python services and its
-  own Postgres.
+- Shared with another production project using about 650 MB, with its own services and Postgres.
 - Postgres 17.11. Database `paperwatch`, owned by role `paperwatch`, with `vector` 0.8.0 enabled.
   Peer authentication over the local Unix socket: no password, no TCP.
 - Linger is on for `paperwatch`, so the user's systemd manager keeps running while nobody is
   logged in. `loginctl show-user paperwatch -p Linger` prints `Linger=yes`.
-- Python 3.13 and git are installed. `uv` is not, and lives in the user's home (step 1).
+- Python 3.13 and git are installed. `uv` is not, and lives in the user's home (step 1). The
+  project pins `>=3.12,<3.13`, so the first `uv sync` downloads its own managed Python 3.12 into
+  `~/.local/share/uv/python`: no root, nothing to install.
 - The SSH alias is `shared-vps`.
 
 ## Boundaries (binding on every change here)
 
 - Everything lives in `/home/paperwatch/` and runs as `paperwatch`.
-- Never read, stop, restart or modify anything under `/home/enrico/`, the `jds-*` services, their
-  watchdog, or the `jds` database. The two deployments share a machine, not a schema.
+- Never read, stop, restart or modify the other project's services, database or home directory.
+  The two deployments share a machine and a Postgres server, not a schema.
 - No changes to networking, firewall, SSH, VPN/proxy, system packages or the Postgres server
   configuration. A root step is the captain's decision, never a shortcut.
 - No Docker here: the units run the checkout directly.
@@ -38,16 +39,17 @@ curl -LsSf https://astral.sh/uv/install.sh | sh    # installs into ~/.local/bin,
 ~/.local/bin/uv --version
 ```
 
-## 2. Clone the repository at a release tag
+## 2. Clone the repository at the release that contains `deploy/`
 
 ```bash
 git clone https://github.com/enricoroncuzzi/paper-watch ~/paper-watch
 cd ~/paper-watch
-git checkout paperwatch-v0.3.0        # tags are paperwatch-vX.Y.Z
+git checkout paperwatch-v0.4.0        # the first release with deploy/vps; tags are paperwatch-vX.Y.Z
 ```
 
 Pin a tag, not `main`: a checkout that changes under a running ingestion is a different program
-halfway through. `deploy/vps/` ships the units and the two scripts, and git keeps them executable.
+halfway through, and only a release tag is known to contain the units and both scripts. `deploy/vps/`
+keeps the scripts executable through git, so a clone needs no `chmod`.
 
 ## 3. Create the environment
 
@@ -56,7 +58,8 @@ uv sync --frozen --no-dev
 ```
 
 `--frozen` installs exactly the committed `uv.lock` and never rewrites it; `--no-dev` leaves out
-the test, lint and type-check tools, which this server never runs.
+the test, lint and type-check tools, which this server never runs. The first sync also downloads
+the managed Python 3.12 described above.
 
 ## 4. Write the environment file
 
@@ -65,7 +68,7 @@ mkdir -p ~/.config/paperwatch
 umask 077
 cat > ~/.config/paperwatch/env <<'EOF'
 PW_DATABASE_URL=postgresql+psycopg://paperwatch@/paperwatch?host=/var/run/postgresql
-PW_USER_AGENT=paper-watch/0.3 (+https://github.com/enricoroncuzzi/paper-watch; you@example.com)
+PW_USER_AGENT="paper-watch/0.4 (+https://github.com/enricoroncuzzi/paper-watch; you@example.com)"
 PW_LOCAL_EMBEDDING_CACHE_DIR=/home/paperwatch/.cache/paperwatch-models
 EOF
 chmod 600 ~/.config/paperwatch/env
@@ -74,28 +77,41 @@ chmod 600 ~/.config/paperwatch/env
 - No host and no port: `?host=/var/run/postgresql` is the socket directory, so psycopg connects
   over the socket and peer authentication identifies the role by the Unix user. There is no
   password anywhere, and the URL cannot silently fall back to TCP.
-- Replace the address in `PW_USER_AGENT`: arXiv asks bulk harvesters for a contact.
+- The user agent is quoted on purpose: it holds spaces, parentheses and a semicolon, and without
+  the quotes `uv run --env-file` stops reading at that line and silently drops every line after
+  it. Quoted, systemd, bash, dash and `uv --env-file` all read the same three variables. Replace
+  the address: arXiv asks bulk harvesters for a contact.
 - The model cache stays outside the checkout, so switching to a new release does not throw away
   the 180 MB embedding model.
 - No chat key: ingestion never calls a chat model.
 
-Confirm the connection works without a password:
+Nothing reads this file implicitly: the units load it through `EnvironmentFile=`, and an
+interactive command has to pass `--env-file ~/.config/paperwatch/env`. Check that it parses and
+points at the socket:
 
 ```bash
+uv run --frozen --no-dev --env-file ~/.config/paperwatch/env python -c \
+  'from paperwatch.config import get_settings; s = get_settings(); print(s.database_url, s.user_agent)'
 psql -d paperwatch -c 'select current_user, current_database()'
+psql -d paperwatch -Atc 'show idle_in_transaction_session_timeout'    # must print 0
+command -v psql pg_dump ~/.local/bin/uv
 ```
+
+`idle_in_transaction_session_timeout` must be `0`: the run holds a transaction open around slow
+source calls, and a server-side timeout would kill it mid-run. If it is not 0, stop and tell the
+captain, because changing it is a root step.
 
 ## 5. Create the schema
 
 ```bash
-uv run --frozen --no-dev alembic upgrade head
+uv run --frozen --no-dev --env-file ~/.config/paperwatch/env alembic upgrade head
 psql -d paperwatch -c '\dt'      # items, tier_history, runs, dead_letters, source_cursors, chat_calls
 ```
 
 The role owns the database, so no grant is needed. Every later release runs the same command
 again; migrations are additive one version at a time.
 
-## 6. Install and enable the units
+## 6. Install the units
 
 ```bash
 mkdir -p ~/.config/systemd/user
@@ -105,56 +121,61 @@ cp ~/paper-watch/deploy/vps/paperwatch-ingest.service \
    ~/paper-watch/deploy/vps/paperwatch-backup.timer \
    ~/.config/systemd/user/
 systemctl --user daemon-reload
-systemctl --user enable --now paperwatch-backup.timer paperwatch-ingest.timer
-systemctl --user list-timers 'paperwatch-*'
 ```
 
-`list-timers` shows the next trigger for each: the backup at 05:15, the ingestion at 06:00, both
-in Rome time. `Persistent=true` means a trigger missed while the machine was down fires once when
-it can, instead of being skipped for the day.
+Nothing is enabled yet: the timers are switched on in step 9, after the measured first run and a
+dry run of the morning check, so an untuned cap never meets a 06:00 trigger.
 
 What the units do, and why:
 
 - `paperwatch-ingest.service` runs
   `uv run --frozen --no-dev paperwatch ingest --live` from `/home/paperwatch/paper-watch` with
-  the environment file above. It is capped at `MemoryHigh=900M` / `MemoryMax=1200M` so the
-  embedding model can never push the scraper into swap, and it runs at low CPU and I/O priority
-  (`Nice=10`, best-effort priority 7) so a morning run does not slow the scraper down.
-  `TimeoutStartSec=3h` covers a slow first run.
+  the environment file above. `MemoryMax=1000M` with `MemorySwapMax=0` keeps a runaway run from
+  touching the machine: with no swap the cgroup OOM killer stops it, systemd marks the unit failed,
+  the run row stays `running` until the next run closes it as failed, and the morning check reports
+  both. That is deliberate: a visible failed morning, never a slow one that starves the other
+  project in the shared swap. The cap needs the memory controller delegated to the user manager,
+  which Debian's `user@.service` does. The run also has low CPU and I/O priority (`Nice=10`,
+  best-effort priority 7) and a `TimeoutStartSec=3h` ceiling.
 - `paperwatch-backup.service` runs `deploy/vps/backup.sh`: `pg_dump -Fc` into
   `~/backups/paperwatch-<UTC stamp>.dump`, keeping seven nights, written under a temporary name
-  and renamed, so an interrupted dump never looks like a good one.
-- The backup is ordered before the ingestion, not required by it: a failed backup must not cost a
-  day of corpus.
+  that an EXIT trap removes, so an interrupted dump never looks like a good one. It creates the
+  directory 0700 and the files 0600 itself.
+- The backup starts 45 minutes before the ingestion, so it usually finishes first; that is the
+  clock, not a guarantee, and an overlap is harmless because `pg_dump` reads an MVCC snapshot.
 
 ## 7. The first run, measured
 
-Run it by hand under `time` first, so the memory cap is tuned from a measurement instead of a
-guess:
+Start it outside the other project's busy hours, roughly 07:00 to 15:00 Rome time: before 06:30,
+or after 15:00. The first run downloads the embedding model (about 180 MB) and covers a wider
+window than a daily one, so it is both the heaviest and the only one whose peak you cannot guess.
+
+There is no `/usr/bin/time` to rely on (the `time` package is not in a minimal Debian install and
+installing it is a root step), so run the real command in a transient unit with an explicit cap
+and read what systemd measured:
 
 ```bash
-cd ~/paper-watch
-/usr/bin/time -v uv run --frozen --no-dev paperwatch ingest --live
+systemd-run --user --wait --unit=paperwatch-measure \
+  --property=EnvironmentFile=/home/paperwatch/.config/paperwatch/env \
+  --property=WorkingDirectory=/home/paperwatch/paper-watch \
+  --property=MemoryMax=1800M \
+  /home/paperwatch/.local/bin/uv run --frozen --no-dev paperwatch ingest --live
+journalctl --user -u paperwatch-measure -n 40 --no-pager       # the run's own output
+systemctl --user show paperwatch-measure.service -p Result -p MemoryPeak -p MemorySwapPeak
 ```
 
-Record the `Maximum resident set size`, the wall clock and the last line (`succeeded: {...}`).
-The first run downloads the model (about 180 MB, once) and covers a wider window than a daily one,
-so it is the worst case. The local model peaks near 520 MB; if the measured peak is within about
-300 MB of `MemoryMax`, raise the caps in
-`~/.config/systemd/user/paperwatch-ingest.service`, then `systemctl --user daemon-reload`.
+`--wait` blocks until the run ends and the output goes to the journal. The journal also carries a
+`Consumed ... memory peak, ... memory swap peak` line for the unit.
 
-Confirm the caps are really applied, which needs the memory controller delegated to the user
-manager (Debian's `user@.service` does that):
+Then set `MemoryMax` in `~/.config/systemd/user/paperwatch-ingest.service` from that peak (a third
+or so above it, and never below the model's own 520 MB), reload, and run once through the real
+unit:
 
 ```bash
-systemctl --user show paperwatch-ingest.service -p MemoryHigh -p MemoryMax
-```
-
-Then start the timer's first run the same way the timer will:
-
-```bash
-systemctl --user start paperwatch-ingest.service
-journalctl --user -u paperwatch-ingest -n 50 --no-pager
+systemctl --user daemon-reload
+systemctl --user start --no-block paperwatch-ingest.service    # --no-block: a oneshot start blocks
+journalctl --user -fu paperwatch-ingest
+systemctl --user show paperwatch-ingest.service -p MemoryMax -p MemorySwapMax -p Result
 ```
 
 ## 8. The morning check
@@ -164,22 +185,43 @@ journalctl --user -u paperwatch-ingest -n 50 --no-pager
 ```
 
 It prints the last finished run's status, health verdict and problems, the run's counts and
-duration, the total admitted items, the newest backup's age and size, and free disk. Exit code 0
-means every check passed, 1 means at least one is bad, and the bad lines start with `FAIL`:
+duration, whether a run is still in progress or left `running` (a kill or a hang), the unit and
+timer state of the account's own user manager, the total admitted items, the newest backup's age
+and size, and free disk. Exit code 0 means every check passed, 1 means at least one is bad, and the
+bad lines start with `FAIL`:
 
 - no finished run, or a status other than `succeeded` or `partial`;
 - an unhealthy or missing health verdict, or a non-empty list of problems;
-- the last finished run older than 26 hours (the freshness SLO), so a missed morning is caught
-  even when the previous run was perfect;
+- the last finished run older than 25 hours, so a missed morning is caught by 07:00;
+- a run left `running` for more than two hours (killed by the cap, hung, or a kill the next run has
+  not closed yet);
+- `paperwatch-ingest.service` failed (a startup crash, an OOM kill, a timeout, exit 1 or 3), or
+  `paperwatch-ingest.timer` not active, so no morning run is scheduled;
 - no dump in `~/backups/`, or the newest older than 26 hours or empty;
 - less than 2 GB free in the home.
 
-Thresholds can be overridden for one invocation, for example while tuning:
-`PW_CHECK_MAX_RUN_AGE_S`, `PW_CHECK_MAX_BACKUP_AGE_S`, `PW_CHECK_MIN_FREE_GB`,
-`PW_CHECK_BACKUP_DIR`, `PW_CHECK_DB`. It needs only `psql` and coreutils, and reads only the
-`paperwatch` database.
+The unit and timer lines are skipped (reported as not checked) where no user manager answers, so
+the same script works from a cron job or a laptop. Thresholds can be overridden for one invocation:
+`PW_CHECK_MAX_RUN_AGE_S`, `PW_CHECK_MAX_RUNNING_S`, `PW_CHECK_MAX_BACKUP_AGE_S`,
+`PW_CHECK_MIN_FREE_GB`, `PW_CHECK_BACKUP_DIR`, `PW_CHECK_DB`. It needs only `psql` and coreutils,
+and reads only the `paperwatch` database, the backup directory and the account's own user manager.
 
-## 9. Exit codes and the journal
+At this point the timer is not enabled yet, so this dry run reports exactly one `FAIL`, for the
+timer. That is the expected result; step 9 removes it.
+
+## 9. Enable the timers
+
+```bash
+systemctl --user enable --now paperwatch-backup.timer paperwatch-ingest.timer
+systemctl --user list-timers 'paperwatch-*'
+~/paper-watch/deploy/vps/check.sh        # now green
+```
+
+`list-timers` shows the next trigger for each: the backup at 05:15, the ingestion at 06:00, both
+in Rome time. `Persistent=true` means a trigger missed while the machine was down fires once when
+it can, instead of being skipped for the day.
+
+## 10. Exit codes and the journal
 
 `paperwatch ingest --live` tells systemd exactly what happened:
 
@@ -191,26 +233,26 @@ Thresholds can be overridden for one invocation, for example while tuning:
 | 0 | Another ingestion held the single-run lock, so this invocation did nothing (`skipped`). | Nothing. |
 | 2 | A usage error, for example a missing `--live`. | Fix the command. |
 
-systemd records 1 and 3 as a failed unit, which is deliberate: both deserve a look, and
-`systemctl --user list-units --failed` is a second place to notice. The problems themselves are in
+systemd records 1 and 3 as a failed unit, which is deliberate: both deserve a look, and the morning
+check reports the failed unit too. The problems themselves are in
 `journalctl --user -u paperwatch-ingest`.
 
-## 10. Updating to a new release
+## 11. Updating to a new release
 
 ```bash
 cd ~/paper-watch
 git fetch --tags
 git checkout paperwatch-vX.Y.Z
 uv sync --frozen --no-dev
-uv run --frozen --no-dev alembic upgrade head
+uv run --frozen --no-dev --env-file ~/.config/paperwatch/env alembic upgrade head
 ```
 
 The timers keep pointing at the same path, so the next run uses the new code and nothing needs
 re-enabling. Run `systemctl --user daemon-reload` only when a unit file itself changed (copy the
 new `.service`/`.timer` first). Never edit files in the checkout: the next `git checkout` would
-refuse to overwrite them.
+refuse to overwrite them. Do not migrate while an ingestion or a dump is in progress.
 
-## 11. Browsing the database from the Mac
+## 12. Browsing the database from the Mac
 
 The Postgres server is not reachable from a network, and that stays true. An SSH tunnel forwards
 a local port to the server's Unix socket instead:
@@ -224,28 +266,38 @@ Community Edition (open source, the captain's chosen client):
 
 1. New connection, PostgreSQL.
 2. Host `localhost`, port `5433`, user `paperwatch`, database `paperwatch`, no password.
-3. Tick the read-only mode: the role owns the data, so the client is the only guard against an
-   accidental edit.
+3. Leave SSL off: the tunnel is already encrypted, and the server refuses TLS on a Unix socket.
+4. If the connection form offers a read-only or safe mode, turn it on. The role owns the data, so
+   nothing else stops an accidental edit; check it by trying `create table zz (i int)` and expecting
+   a refusal.
 
 Useful starting points: `select status, health, counts, started_at from runs order by started_at
 desc limit 5;` for recent runs, and `select tier, count(*) from items where status = 'admitted'
 group by tier;` for the corpus. Nothing here is exposed beyond the tunnel, so closing it closes the
 access.
 
-## 12. Restoring a backup
+## 13. Restoring a backup
 
-The drill is M4, but the shape is fixed. A restore goes into a new, empty database, and creating a
-`vector` database is a privilege this role deliberately does not have (see below), so the captain
-creates it and the restore itself runs as `paperwatch`:
+The drill is M4, but the shape is fixed. A restore goes into a new database that the captain
+creates, owned by `paperwatch` and with the `vector` extension in it: creating a database or an
+extension is a privilege this role deliberately does not have.
 
 ```bash
-pg_restore --dbname=paperwatch_restore ~/backups/paperwatch-20261022T031500Z.dump
+# the captain, as the admin:
+createdb -O paperwatch paperwatch_restore
+psql -d paperwatch_restore -c 'create extension vector'
+
+# then as paperwatch:
+pg_restore --no-comments --exit-on-error --dbname=paperwatch_restore \
+  ~/backups/paperwatch-20261022T031501Z.dump
 ```
 
-The custom format carries the schema, so the tables and indexes come back with the data. Never
-restore into `paperwatch` itself while an ingestion is running.
+`--no-comments` because `COMMENT ON EXTENSION vector` is refused for a role that does not own the
+extension, and that one error would make an otherwise good restore exit 1; `--exit-on-error`
+because a restore that stops halfway must not look finished. Never restore into `paperwatch` itself
+while an ingestion is running.
 
-## What must not run here
+## 14. What must not run here
 
 - `paperwatch eval`: it creates and drops its own throwaway database and needs the `vector`
   extension in it, which means `CREATEDB` and superuser. The role has neither, by design.
