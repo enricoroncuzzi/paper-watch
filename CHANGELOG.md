@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.4.0...paperwatch-v0.4.1) (2026-10-22)
+
+
+### Bug Fixes
+
+* **sources:** join Semantic Scholar rows by arXiv id and record real run duration ([#14](https://github.com/enricoroncuzzi/paper-watch/issues/14)) ([687c7b5](https://github.com/enricoroncuzzi/paper-watch/commit/687c7b5404f7a127065bfafbb95242d70c41423b))
+
 ## [0.4.0](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.3.0...paperwatch-v0.4.0) (2026-10-22)
 
 
