@@ -1,0 +1,21 @@
+# Nightly backup of the `paperwatch` database, as a systemd user unit for the `paperwatch`
+# account. Install: copy to ~/.config/systemd/user/ and enable it in step 9 of
+# docs/deploy/vps.md. Restore notes are there too.
+[Unit]
+Description=Paper Watch nightly database backup
+Documentation=https://github.com/enricoroncuzzi/paper-watch/blob/main/docs/deploy/vps.md
+# Nothing forces this before the 06:00 ingestion beyond the clock; if a catch-up starts both, an
+# overlap is harmless because pg_dump reads an MVCC snapshot and writes no schema.
+
+[Service]
+Type=oneshot
+# pg_dump -Fc over the local socket into ~/backups/, keeping the last seven nightly dumps.
+ExecStart=/home/paperwatch/paper-watch/deploy/vps/backup.sh
+# Well past the time a dump of a corpus this size takes, and far short of the next trigger.
+TimeoutStartSec=1h
+# The script writes under a hidden fixed temporary name and renames it only once the dump is
+# complete, so even a SIGKILL, which no trap can catch, cannot leave a short file that looks like
+# a usable backup. TERM, INT and HUP are trapped, so a stop or this timeout also removes it.
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

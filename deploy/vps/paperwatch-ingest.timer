@@ -1,0 +1,18 @@
+# The ingestion's timer: one run a morning, Rome time. Install: copy to
+# ~/.config/systemd/user/ and enable it in step 9 of docs/deploy/vps.md, never before the
+# first run has been measured and the memory cap tuned.
+[Unit]
+Description=Run the Paper Watch ingestion every morning
+
+[Timer]
+# 06:00 Europe/Rome: after arXiv's evening announcement has been indexed overnight and after the
+# nightly backup. The server clock is Europe/Berlin, the same offset all year, but the zone is
+# named so a move or a DST change cannot silently shift the run.
+OnCalendar=*-*-* 06:00:00 Europe/Rome
+# A start missed while the server was down runs once as soon as the timer can fire again, rather
+# than being skipped for the day.
+Persistent=true
+Unit=paperwatch-ingest.service
+
+[Install]
+WantedBy=timers.target

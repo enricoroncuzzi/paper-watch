@@ -21,7 +21,7 @@ from paperwatch.config import (
     S2_RECHECK_HORIZON,
 )
 from paperwatch.domain import Classification, Signals, SourceItem
-from paperwatch.ingest.health import assess_run
+from paperwatch.ingest.health import Health, assess_run
 from paperwatch.llm.classifier import Classifier
 from paperwatch.llm.embedder import Embedder, embedding_text
 from paperwatch.llm.ledger import BudgetExceeded, Ledger
@@ -50,6 +50,9 @@ class RunResult:
     status: str
     counts: dict[str, int]
     tokens: int
+    # The verdict the run judged itself by, carried out so the CLI can exit 3 for a finished but
+    # unhealthy run. None only when skipped, like run_id.
+    health: Health | None = None
 
 
 def item_to_payload(item: SourceItem) -> dict[str, object]:
@@ -560,4 +563,4 @@ def run_ingestion(
             problems=list(health.problems),
             **counts,
         )
-        return RunResult(run_id, status, counts, ledger.tokens_used)
+        return RunResult(run_id, status, counts, ledger.tokens_used, health)

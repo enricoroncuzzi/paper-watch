@@ -99,6 +99,8 @@ over the corpus.
 
 ## Documentation
 
+- [`docs/deploy/vps.md`](docs/deploy/vps.md): running the daily ingestion and its nightly backup
+  on the shared VPS, and browsing the corpus from a desktop client over an SSH tunnel.
 - [`docs/learn/`](docs/learn/): one lesson per technology, starting with
   [how to read this repo](docs/learn/00-how-to-read-this-repo.md).
 - [`docs/adr/`](docs/adr/): architecture decision records.

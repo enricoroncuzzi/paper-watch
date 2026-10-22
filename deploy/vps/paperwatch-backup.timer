@@ -1,0 +1,15 @@
+# The backup timer: every night at 05:15 Rome, before the 06:00 ingestion, so each morning
+# starts from a dump newer than the day it reports on. Install: copy to
+# ~/.config/systemd/user/ and enable it in step 9 of docs/deploy/vps.md.
+[Unit]
+Description=Back up the Paper Watch database every night
+
+[Timer]
+OnCalendar=*-*-* 05:15:00 Europe/Rome
+# A night the server was down is dumped as soon as it is back, instead of leaving a gap in the
+# seven days of backups.
+Persistent=true
+Unit=paperwatch-backup.service
+
+[Install]
+WantedBy=timers.target

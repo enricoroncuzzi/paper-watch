@@ -1,0 +1,37 @@
+# Daily Paper Watch ingestion, as a systemd user unit for the `paperwatch` account.
+# Install: copy to ~/.config/systemd/user/ and follow docs/deploy/vps.md; the timers are
+# enabled in step 9, after the measured first run (step 7) and the check's dry run (step 8).
+[Unit]
+Description=Paper Watch daily ingestion
+Documentation=https://github.com/enricoroncuzzi/paper-watch/blob/main/docs/deploy/vps.md
+# The backup is scheduled 45 minutes earlier, so it usually finishes first: that is the clock, not
+# a guarantee, and a missed-trigger catch-up can start both at once. Ordering them is still worth
+# it, and an overlap is harmless: pg_dump reads an MVCC snapshot and ingestion only appends.
+After=paperwatch-backup.service
+
+[Service]
+Type=oneshot
+# The checkout lives in the user's own home, which is the whole of this service's writable world.
+WorkingDirectory=/home/paperwatch/paper-watch
+# Absolute path, not PATH: a user unit's PATH is systemd's, not the one a login shell builds.
+ExecStart=/home/paperwatch/.local/bin/uv run --frozen --no-dev paperwatch ingest --live
+# 0600 and outside the repo: PW_DATABASE_URL (peer auth over the local socket), PW_USER_AGENT
+# with the captain's contact, and PW_LOCAL_EMBEDDING_CACHE_DIR. Ingestion needs no chat key.
+EnvironmentFile=/home/paperwatch/.config/paperwatch/env
+# A first run classifies and embeds a wide window on a shared 1.9 GB machine; the cap is generous
+# in time so a slow model is never killed halfway.
+TimeoutStartSec=3h
+# The local embedding model peaks near 520 MB, so 1 GB leaves room for Python, fastembed and the
+# source clients. MemorySwapMax=0 is the important half: without it the kernel keeps a capped run
+# alive by swapping, and the run crawls in the shared swap until the timeout instead of failing.
+# With no swap, the cgroup OOM killer stops it, and systemd's default OOMPolicy=stop marks the unit
+# failed. The run row stays 'running' until the next run closes it as failed, and the morning check
+# reports both. Task 20's measured run tunes the number. The cap needs the memory controller
+# delegated to the user manager; docs/deploy/vps.md shows how to confirm that.
+MemoryMax=1000M
+MemorySwapMax=0
+# Yield to the other production project on this machine: 06:00 is its quiet hour, but a fitted
+# model must never starve it.
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

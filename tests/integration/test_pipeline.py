@@ -25,6 +25,7 @@ from paperwatch.domain import (
     Tier,
     load_profiles,
 )
+from paperwatch.ingest.health import Health
 from paperwatch.ingest.pipeline import (
     RunResult,
     Sources,
@@ -1072,10 +1073,14 @@ def test_run_records_health_verdict(db_session: Session) -> None:
     healthy = run(db_session, fake_sources([paper("2510.1", "Agent harness")]))
     row_ = db_session.get_one(Run, healthy.run_id)
     assert row_.health == {"healthy": True, "problems": []}
+    # The verdict also travels on the result: `paperwatch ingest` turns it into exit code 3, so a
+    # row alone would never reach the process that systemd and the morning check look at.
+    assert healthy.health == Health(True, ())
     # An arXiv fetch that returns nothing over a 7-day-plus window is a broken run.
     empty = run(db_session, fake_sources([]), now=NOW + timedelta(days=1))
     problems = db_session.get_one(Run, empty.run_id).health["problems"]
     assert "arxiv fetched 0 items" in problems
+    assert empty.health == Health(False, ("arxiv fetched 0 items",))
 
 
 def test_signal_source_outage_is_visible_and_cursor_advances(db_session: Session) -> None:

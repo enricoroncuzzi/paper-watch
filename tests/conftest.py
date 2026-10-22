@@ -52,16 +52,23 @@ def build_settings() -> Callable[..., Settings]:
 
 
 @pytest.fixture(scope="session")
-def db_url() -> Iterator[str]:
+def pg_container() -> Iterator[PostgresContainer]:
     # One container for the whole test session: starting Postgres and migrating is the slow part.
     # Pin the pgvector release the search settings need: hnsw.iterative_scan needs 0.8 or later,
     # so an older image would make every search raise, not silently degrade.
+    # It is a fixture of its own so a test that runs a real shell script can reach the container
+    # itself: `deploy/vps/check.sh` needs `psql`, and the server's client lives in there.
     with PostgresContainer("pgvector/pgvector:0.8.7-pg16", driver="psycopg") as pg:
-        url = pg.get_connection_url()
-        cfg = Config("alembic.ini")
-        cfg.set_main_option("sqlalchemy.url", url)
-        command.upgrade(cfg, "head")
-        yield url
+        yield pg
+
+
+@pytest.fixture(scope="session")
+def db_url(pg_container: PostgresContainer) -> str:
+    url = pg_container.get_connection_url()
+    cfg = Config("alembic.ini")
+    cfg.set_main_option("sqlalchemy.url", url)
+    command.upgrade(cfg, "head")
+    return url
 
 
 @pytest.fixture(scope="session")
