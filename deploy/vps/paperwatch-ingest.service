@@ -1,0 +1,32 @@
+# Daily Paper Watch ingestion, as a systemd user unit for the `paperwatch` account.
+# Install: copy to ~/.config/systemd/user/, then `systemctl --user enable --now
+# paperwatch-ingest.timer`. Setup and operations: docs/deploy/vps.md.
+[Unit]
+Description=Paper Watch daily ingestion
+Documentation=https://github.com/enricoroncuzzi/paper-watch/blob/main/docs/deploy/vps.md
+# Ordered after the backup, not required by it: a failed backup must not cost a day of ingestion,
+# but the dump that a restore would use should be the one from before the ingestion wrote.
+After=paperwatch-backup.service
+
+[Service]
+Type=oneshot
+# The checkout lives in the user's own home, which is the whole of this service's writable world.
+WorkingDirectory=/home/paperwatch/paper-watch
+# Absolute path, not PATH: a user unit's PATH is systemd's, not the one a login shell builds.
+ExecStart=/home/paperwatch/.local/bin/uv run --frozen --no-dev paperwatch ingest --live
+# 0600 and outside the repo: PW_DATABASE_URL (peer auth over the local socket), PW_USER_AGENT
+# with the captain's contact, and PW_LOCAL_EMBEDDING_CACHE_DIR. Ingestion needs no chat key.
+EnvironmentFile=/home/paperwatch/.config/paperwatch/env
+# A first run classifies and embeds a wide window on a shared 1.9 GB machine; the cap is generous
+# in time so a slow model is never killed halfway, and a run that is killed leaves its run row
+# 'running' until the next one closes it as failed.
+TimeoutStartSec=3h
+# The local embedding model peaks near 520 MB, and the scraper next door is a production service.
+# MemoryHigh slows the run before MemoryMax kills it; both need the memory controller delegated to
+# the user manager, which docs/deploy/vps.md shows how to confirm.
+MemoryHigh=900M
+MemoryMax=1200M
+# Yield to the scraper: 06:00 is its quiet hour, but a fitted model must never starve it.
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
