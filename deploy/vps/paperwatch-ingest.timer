@@ -1,5 +1,6 @@
-# The ingestion's timer: one run a morning, Rome time. Install: copy to ~/.config/systemd/user/,
-# then `systemctl --user enable --now paperwatch-ingest.timer`. See docs/deploy/vps.md.
+# The ingestion's timer: one run a morning, Rome time. Install: copy to
+# ~/.config/systemd/user/ and enable it in step 9 of docs/deploy/vps.md, never before the
+# first run has been measured and the memory cap tuned.
 [Unit]
 Description=Run the Paper Watch ingestion every morning
 

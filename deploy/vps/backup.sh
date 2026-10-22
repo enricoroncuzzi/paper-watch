@@ -19,11 +19,17 @@ umask 077
 mkdir -p "$backup_dir"
 
 out=$backup_dir/paperwatch-$(date -u +%Y%m%dT%H%M%SZ).dump
-# One fixed temporary name, so an interrupted run overwrites it rather than accumulating parts,
-# and the EXIT trap removes it however the script ends: a pg_dump that dies halfway, or the unit's
-# timeout kill. The directory then only ever holds complete dumps.
+# One fixed temporary name, so an interrupted run overwrites it rather than accumulating parts.
 tmp=$backup_dir/.paperwatch.dump.part
+# The EXIT trap removes the partial file however the script ends, and TERM, INT and HUP are turned
+# into an exit so a `systemctl --user stop` or the unit's timeout runs it too: Debian's dash ends
+# on SIGTERM without running the EXIT trap otherwise. SIGKILL cannot be trapped, and that is why
+# the rename below matters more than the trap: the temporary name is hidden and fixed, so it
+# matches no `paperwatch-*.dump` glob, and a dump only ever appears under its final name, complete.
 trap 'rm -f "$tmp"' EXIT
+trap 'exit 143' TERM
+trap 'exit 130' INT
+trap 'exit 129' HUP
 
 pg_dump --format=custom --no-password --dbname="$db" --file="$tmp"
 if [ ! -s "$tmp" ]; then

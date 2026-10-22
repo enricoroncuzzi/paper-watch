@@ -67,15 +67,17 @@ def write_rows(engine: Engine) -> Iterator[Callable[..., None]]:
         status: str | None,
         health: dict[str, object] | None = None,
         *,
-        finished_ago: timedelta = timedelta(hours=2),
+        started_ago: timedelta = timedelta(hours=2, minutes=21),
         admitted: int = 2,
         running_for: timedelta | None = None,
     ) -> None:
         with factory() as session:
             repo = Repository(session)
             if status is not None:
-                finished = datetime.now(UTC) - finished_ago
-                started = finished - timedelta(minutes=21)
+                # The run took 21 minutes, so a freshness limit on its start and one on its end
+                # differ by exactly that much: a boundary test can tell the two apart.
+                started = datetime.now(UTC) - started_ago
+                finished = started + timedelta(minutes=21)
                 run_id = repo.start_run(started, finished, at=started)
                 counts = {"fetched": 12, "stored": 3, "failed": 0}
                 repo.finish_run(run_id, status, counts, 0, health, at=finished)
@@ -150,7 +152,7 @@ def run_check(
         elif backup != "missing":
             dump = backups / "paperwatch-20261022T031501Z.dump"
             # A stub dump: only its existence, size and mtime matter to the check.
-            dump.write_bytes(b"" if backup == "empty" else b"PGDMP" + b"\0" * 4092)
+            dump.write_bytes(b"" if backup == "empty" else b"PGDMP" + b"\0" * (4096 - 5))
             age = timedelta(hours=40) if backup == "old" else timedelta(hours=3)
             stamp = (datetime.now(UTC) - age).timestamp()
             os.utime(dump, (stamp, stamp))
@@ -190,10 +192,11 @@ def test_check_skips_the_unit_checks_without_a_user_manager(
     write_rows: Callable[..., None], run_check: Callable[..., subprocess.CompletedProcess[str]]
 ) -> None:
     # A bare cron job, or a laptop: no user manager answers, so unit state must not be guessed.
+    # It is a warning, not a pass, so a cron that lost its environment cannot hide.
     write_rows("succeeded", {"healthy": True, "problems": []})
     result = run_check(user_manager=False, unit_failed=True, timer_active=False)
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "not checked" in result.stdout
+    assert "WARN" in result.stdout and "not checked" in result.stdout
 
 
 def test_check_fails_when_the_unit_is_failed(
@@ -223,7 +226,7 @@ def test_check_names_the_health_problems(
     assert result.returncode == EXIT_BAD
     assert "arxiv fetched 0 items" in result.stdout
     assert "1 items failed" in result.stdout
-    assert "check failed" in result.stdout
+    assert "check failed (2 problem(s))" in result.stdout
 
 
 def test_check_fails_on_the_verdict_alone(
@@ -268,11 +271,32 @@ def test_check_fails_without_a_finished_run(
 def test_check_fails_when_the_last_run_is_stale(
     write_rows: Callable[..., None], run_check: Callable[..., subprocess.CompletedProcess[str]]
 ) -> None:
-    # 30 h is past the 25 h freshness limit, so a missed morning is caught even though the run
-    # it reports on was healthy.
-    write_rows("succeeded", {"healthy": True, "problems": []}, finished_ago=timedelta(hours=30))
+    # 30 h from the start is past the 25 h freshness limit, so a missed morning is caught even
+    # though the run it reports on was healthy.
+    write_rows("succeeded", {"healthy": True, "problems": []}, started_ago=timedelta(hours=30))
     result = run_check()
     assert result.returncode == EXIT_BAD and "stale" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("started_ago", "expected"),
+    [
+        (timedelta(hours=25, minutes=30), EXIT_BAD),
+        (timedelta(hours=24, minutes=30), 0),
+        # Started 25 h 11 m ago, finished 24 h 50 m ago: only a limit measured from the start sees
+        # this as stale, which is what makes a missed 06:00 run show by 07:00 rather than 07:21.
+        (timedelta(hours=25, minutes=11), EXIT_BAD),
+    ],
+)
+def test_check_measures_freshness_from_the_run_start(
+    write_rows: Callable[..., None],
+    run_check: Callable[..., subprocess.CompletedProcess[str]],
+    started_ago: timedelta,
+    expected: int,
+) -> None:
+    write_rows("succeeded", {"healthy": True, "problems": []}, started_ago=started_ago)
+    result = run_check()
+    assert result.returncode == expected, result.stdout + result.stderr
 
 
 def test_check_fails_when_a_run_stayed_running(
@@ -284,6 +308,26 @@ def test_check_fails_when_a_run_stayed_running(
     write_rows("succeeded", {"healthy": True, "problems": []}, running_for=timedelta(hours=3))
     result = run_check()
     assert result.returncode == EXIT_BAD and "running" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("running_for", "expected"),
+    [
+        # The 2 h default, pinned from both sides so no other value can pass this pair.
+        (timedelta(hours=2, minutes=30), EXIT_BAD),
+        (timedelta(hours=1, minutes=30), 0),
+    ],
+)
+def test_check_pins_the_two_hour_stuck_run_limit(
+    write_rows: Callable[..., None],
+    run_check: Callable[..., subprocess.CompletedProcess[str]],
+    running_for: timedelta,
+    expected: int,
+) -> None:
+    write_rows("succeeded", {"healthy": True, "problems": []})
+    write_rows(None, running_for=running_for)
+    result = run_check()
+    assert result.returncode == expected, result.stdout + result.stderr
 
 
 def test_check_accepts_a_run_that_is_still_working(
@@ -310,6 +354,17 @@ def test_check_fails_on_a_zero_byte_dump(
     write_rows("succeeded", {"healthy": True, "problems": []})
     result = run_check(backup="empty")
     assert result.returncode == EXIT_BAD and "backup:" in result.stdout
+
+
+def test_check_prints_a_small_dump_in_kilobytes(
+    write_rows: Callable[..., None], run_check: Callable[..., subprocess.CompletedProcess[str]]
+) -> None:
+    # A 4 KiB stub dump is not a plausible backup but is the smallest size the check accepts, and
+    # "0 MB" would read like an empty file.
+    write_rows("succeeded", {"healthy": True, "problems": []})
+    result = run_check()
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "backup: 4 KB" in result.stdout
 
 
 def test_check_fails_without_a_dump(

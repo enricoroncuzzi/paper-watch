@@ -39,6 +39,10 @@ curl -LsSf https://astral.sh/uv/install.sh | sh    # installs into ~/.local/bin,
 ~/.local/bin/uv --version
 ```
 
+The installer puts `uv` in `~/.local/bin`, which a login shell adds to `PATH` from `~/.profile`.
+Open a new session, or `. ~/.local/bin/env`, before step 3 relies on the bare `uv` name; the
+units always use the absolute path.
+
 ## 2. Clone the repository at the release that contains `deploy/`
 
 ```bash
@@ -138,8 +142,10 @@ What the units do, and why:
   which Debian's `user@.service` does. The run also has low CPU and I/O priority (`Nice=10`,
   best-effort priority 7) and a `TimeoutStartSec=3h` ceiling.
 - `paperwatch-backup.service` runs `deploy/vps/backup.sh`: `pg_dump -Fc` into
-  `~/backups/paperwatch-<UTC stamp>.dump`, keeping seven nights, written under a temporary name
-  that an EXIT trap removes, so an interrupted dump never looks like a good one. It creates the
+  `~/backups/paperwatch-<UTC stamp>.dump`, keeping seven nights. The dump is written under a
+  hidden fixed temporary name and renamed only once it is complete, so even a SIGKILL, which no
+  trap can catch, cannot leave a short file that looks like a backup; TERM, INT and HUP are
+  trapped too, so a stop or the 1 h timeout also removes the partial file. The script creates the
   directory 0700 and the files 0600 itself.
 - The backup starts 45 minutes before the ingestion, so it usually finishes first; that is the
   clock, not a guarantee, and an overlap is harmless because `pg_dump` reads an MVCC snapshot.
@@ -151,32 +157,60 @@ or after 15:00. The first run downloads the embedding model (about 180 MB) and c
 window than a daily one, so it is both the heaviest and the only one whose peak you cannot guess.
 
 There is no `/usr/bin/time` to rely on (the `time` package is not in a minimal Debian install and
-installing it is a root step), so run the real command in a transient unit with an explicit cap
-and read what systemd measured:
+installing it is a root step), so run the real command in a transient unit with a cap of 1200M
+and no swap: the run that has never been measured is exactly the one that must not be allowed to
+swap.
 
 ```bash
 systemd-run --user --wait --unit=paperwatch-measure \
   --property=EnvironmentFile=/home/paperwatch/.config/paperwatch/env \
   --property=WorkingDirectory=/home/paperwatch/paper-watch \
-  --property=MemoryMax=1800M \
+  --property=MemoryMax=1200M --property=MemorySwapMax=0 \
   /home/paperwatch/.local/bin/uv run --frozen --no-dev paperwatch ingest --live
-journalctl --user -u paperwatch-measure -n 40 --no-pager       # the run's own output
-systemctl --user show paperwatch-measure.service -p Result -p MemoryPeak -p MemorySwapPeak
 ```
 
-`--wait` blocks until the run ends and the output goes to the journal. The journal also carries a
-`Consumed ... memory peak, ... memory swap peak` line for the unit.
-
-Then set `MemoryMax` in `~/.config/systemd/user/paperwatch-ingest.service` from that peak (a third
-or so above it, and never below the model's own 520 MB), reload, and run once through the real
-unit:
+`--wait` blocks this session until the run ends, so run it inside `tmux` or accept a dropped
+SSH: the transient unit is independent of the client and keeps running. When it ends,
+`systemd-run` prints the numbers to copy, including `Service runtime:` and a `Memory peak:` line
+with the swap peak; the journal has the run's own output and a `Consumed ... memory peak` line.
 
 ```bash
+journalctl --user -u paperwatch-measure -n 40 --no-pager
+```
+
+If the run is killed instead (the line reads `oom-kill`), the peak is above what this machine can
+give: stop and tell the captain, rather than raising the cap. A successful `--wait` run removes
+the transient unit, so `systemctl show` on it afterwards prints nothing useful; a failed attempt
+stays loaded, and the next try needs `systemctl --user reset-failed paperwatch-measure` first.
+
+Then set the real cap in a drop-in instead of editing the installed unit, so a later
+`git checkout` of a new release does not silently reset it. Use the measured peak plus about a
+third, and never less than the model's own 520 MB; the `1000M` below is only the placeholder for
+that number:
+
+```bash
+mkdir -p ~/.config/systemd/user/paperwatch-ingest.service.d
+cat > ~/.config/systemd/user/paperwatch-ingest.service.d/memory.conf <<'EOF'
+[Service]
+MemoryMax=1000M
+EOF
 systemctl --user daemon-reload
+```
+
+Write the measured number down with the deployment notes: the repo's default should become that
+value in a later commit. Then run once through the real unit:
+
+```bash
 systemctl --user start --no-block paperwatch-ingest.service    # --no-block: a oneshot start blocks
 journalctl --user -fu paperwatch-ingest
 systemctl --user show paperwatch-ingest.service -p MemoryMax -p MemorySwapMax -p Result
 ```
+
+If that run exits 1 or 3, read the journal before going on: 3 means it finished and judged the
+day unhealthy, 1 means it did not finish its work. Once you have judged the result acceptable,
+run `systemctl --user reset-failed paperwatch-ingest.service`, because a failed unit is reported
+by the morning check until the next run starts. A row left `running` by a kill is closed as
+failed by the next run; until then the check reports it as stuck after two hours.
 
 ## 8. The morning check
 
@@ -192,7 +226,7 @@ bad lines start with `FAIL`:
 
 - no finished run, or a status other than `succeeded` or `partial`;
 - an unhealthy or missing health verdict, or a non-empty list of problems;
-- the last finished run older than 25 hours, so a missed morning is caught by 07:00;
+- the last run started more than 25 hours ago, so a missed 06:00 morning is caught by 07:00;
 - a run left `running` for more than two hours (killed by the cap, hung, or a kill the next run has
   not closed yet);
 - `paperwatch-ingest.service` failed (a startup crash, an OOM kill, a timeout, exit 1 or 3), or
@@ -200,21 +234,23 @@ bad lines start with `FAIL`:
 - no dump in `~/backups/`, or the newest older than 26 hours or empty;
 - less than 2 GB free in the home.
 
-The unit and timer lines are skipped (reported as not checked) where no user manager answers, so
-the same script works from a cron job or a laptop. Thresholds can be overridden for one invocation:
+The unit and timer lines are skipped with a `WARN` where no user manager answers, so the same
+script works from a cron job or a laptop without pretending it checked them. Thresholds can be
+overridden for one invocation:
 `PW_CHECK_MAX_RUN_AGE_S`, `PW_CHECK_MAX_RUNNING_S`, `PW_CHECK_MAX_BACKUP_AGE_S`,
 `PW_CHECK_MIN_FREE_GB`, `PW_CHECK_BACKUP_DIR`, `PW_CHECK_DB`. It needs only `psql` and coreutils,
 and reads only the `paperwatch` database, the backup directory and the account's own user manager.
 
-At this point the timer is not enabled yet, so this dry run reports exactly one `FAIL`, for the
-timer. That is the expected result; step 9 removes it.
+At this point the timer is not enabled yet, so this dry run reports one `FAIL` for the timer. If
+the run in step 7 exited 1 or 3 and you have not reset the unit, it reports that too. One `FAIL`
+for the timer, and nothing else, is the expected result; step 9 removes it.
 
 ## 9. Enable the timers
 
 ```bash
 systemctl --user enable --now paperwatch-backup.timer paperwatch-ingest.timer
 systemctl --user list-timers 'paperwatch-*'
-~/paper-watch/deploy/vps/check.sh        # now green
+~/paper-watch/deploy/vps/check.sh        # check passed, once no failed unit is left
 ```
 
 `list-timers` shows the next trigger for each: the backup at 05:15, the ingestion at 06:00, both

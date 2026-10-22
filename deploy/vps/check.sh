@@ -9,7 +9,7 @@
 #
 #   PW_CHECK_DB                  database to read (paperwatch)
 #   PW_CHECK_BACKUP_DIR          where the nightly dumps go ($HOME/backups)
-#   PW_CHECK_MAX_RUN_AGE_S       limit on the age of the last finished run (90000, 25 h)
+#   PW_CHECK_MAX_RUN_AGE_S       limit on the age of the last run, from its start (90000, 25 h)
 #   PW_CHECK_MAX_RUNNING_S       limit on how long a run may stay 'running' (7200, 2 h)
 #   PW_CHECK_MAX_BACKUP_AGE_S    limit on the age of the newest dump (93600, 26 h)
 #   PW_CHECK_MIN_FREE_GB         free disk the home must keep (2)
@@ -18,8 +18,8 @@ set -u
 db=${PW_CHECK_DB:-paperwatch}
 backup_dir=${PW_CHECK_BACKUP_DIR:-$HOME/backups}
 # A daily run plus an hour of slack: the design's freshness SLO is 26 hours, but a limit of 25 h is
-# what makes a missed 06:00 run visible by 07:00 instead of 08:20. A run that takes longer than an
-# hour still fits, and a slow morning shows as a warning to look at rather than a false green.
+# what makes a missed 06:00 run visible by 07:00. It is measured from the run's start, so a long
+# run does not delay the alarm, and an hour of duration still fits.
 max_run_age_s=${PW_CHECK_MAX_RUN_AGE_S:-90000}
 # A run is killed by the memory cap, hung or dying far more often than it takes two hours, and its
 # row stays 'running' until the next run closes it: without this the check would report the run
@@ -33,6 +33,12 @@ failed=0
 fail() {
     printf 'FAIL  %s\n' "$*"
     failed=$((failed + 1))
+}
+
+# A WARN is a fact worth seeing that does not make the morning bad, such as a check that cannot
+# run here at all. It is loud on purpose: silence would read as a pass.
+warn() {
+    printf 'WARN  %s\n' "$*"
 }
 
 # Every threshold is a whole number of seconds or of GB, and a typo must be a clean exit 1 with a
@@ -89,7 +95,7 @@ SELECT 'finished', coalesce(
     '(none)')
 UNION ALL
 SELECT 'age_s', coalesce(
-    (SELECT (extract(epoch FROM now() - finished_at))::bigint::text FROM last_run), '(unknown)')
+    (SELECT (extract(epoch FROM now() - started_at))::bigint::text FROM last_run), '(unknown)')
 UNION ALL
 SELECT 'took_s', coalesce(
     (SELECT (extract(epoch FROM finished_at - started_at))::bigint::text FROM last_run),
@@ -141,8 +147,8 @@ else
     case $status in
         succeeded | partial)
             # `partial` is a finished run: the verdict below, not the status, decides.
-            printf 'ok    last run %s, finished %s, %s ago, took %s\n' \
-                "$status" "$finished" "$(human "$age_s")" "$(human "$took_s")"
+            printf 'ok    last run %s, finished %s, took %s (started %s ago)\n' \
+                "$status" "$finished" "$(human "$took_s")" "$(human "$age_s")"
             ;;
         *)
             # failed or budget_exhausted.
@@ -164,10 +170,10 @@ else
             ;;
         *)
             if [ "$age_s" -le "$max_run_age_s" ]; then
-                printf 'ok    fresh: last run %s ago (limit %s)\n' \
+                printf 'ok    fresh: last run started %s ago (limit %s)\n' \
                     "$(human "$age_s")" "$(human "$max_run_age_s")"
             else
-                fail "stale: last run $(human "$age_s") ago (limit $(human "$max_run_age_s"))"
+                fail "stale: last run started $(human "$age_s") ago (limit $(human "$max_run_age_s"))"
             fi
             ;;
     esac
@@ -205,7 +211,7 @@ if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/d
         fail 'paperwatch-ingest.timer is not active: no morning run is scheduled'
     fi
 else
-    printf '      systemd: no user manager reachable, unit and timer state not checked\n'
+    warn 'systemd: no user manager reachable, unit and timer state not checked'
 fi
 
 # Facts, not checks: how much the run did, and how big the corpus is now.
@@ -254,7 +260,7 @@ else
 fi
 
 if [ "$failed" -ne 0 ]; then
-    printf 'check failed (%s problems)\n' "$failed"
+    printf 'check failed (%s problem(s))\n' "$failed"
     exit 1
 fi
 printf 'check passed\n'

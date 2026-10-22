@@ -1,6 +1,6 @@
 # Daily Paper Watch ingestion, as a systemd user unit for the `paperwatch` account.
-# Install: copy to ~/.config/systemd/user/, then `systemctl --user enable --now
-# paperwatch-ingest.timer`. Setup and operations: docs/deploy/vps.md.
+# Install: copy to ~/.config/systemd/user/ and follow docs/deploy/vps.md; the timers are
+# enabled in step 9, after the measured first run (step 7) and the check's dry run (step 8).
 [Unit]
 Description=Paper Watch daily ingestion
 Documentation=https://github.com/enricoroncuzzi/paper-watch/blob/main/docs/deploy/vps.md
