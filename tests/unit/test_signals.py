@@ -300,7 +300,7 @@ def test_s2_unattributable_row_degrades_but_keeps_the_paired_rows(monkeypatch) -
 
 @respx.mock
 def test_s2_degraded_on_a_longer_array(monkeypatch) -> None:
-    # More rows than ids: zip(strict=True) refuses, so no id is marked checked.
+    # More rows than ids, and none naming a requested id: nothing pairs and no id is checked.
     monkeypatch.setattr(time, "sleep", lambda _seconds: None)
     respx.post(S2_BATCH_URL).mock(
         return_value=httpx.Response(
@@ -315,6 +315,72 @@ def test_s2_degraded_on_a_longer_array(monkeypatch) -> None:
     src.lookup(["2510.00001"])
     assert src.degraded is True
     assert src.checked_ids == set()
+
+
+@respx.mock
+def test_s2_null_in_a_shifted_answer_stays_due() -> None:
+    # Three rows for four ids: the answer has shifted, so a null cannot be attributed to an id by
+    # position. Only the ids whose rows came back are checked, and a one-row gap is not degraded.
+    respx.post(S2_BATCH_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json=[_s2_row("2510.00001"), None, _s2_row("2510.00004")],
+        )
+    )
+    ids = ["2510.00001", "2510.00002", "2510.00003", "2510.00004"]
+    src = SemanticScholarSource(httpx.Client(), None, pause_s=0)
+    out = src.lookup(ids)
+    assert set(out) == {"2510.00001", "2510.00004"}
+    assert src.checked_ids == {"2510.00001", "2510.00004"}
+    assert src.degraded is False
+    assert src.failure is None
+
+
+@respx.mock
+def test_s2_row_for_an_id_not_asked_about_is_unpaired() -> None:
+    # A row for a paper we did not ask for is a broken answer, not something to attribute to a
+    # requested id; the id we did ask about keeps its own row.
+    respx.post(S2_BATCH_URL).mock(
+        return_value=httpx.Response(
+            200, json=[_s2_row("2510.00001"), _s2_row("2510.00099", citations=4)]
+        )
+    )
+    src = SemanticScholarSource(httpx.Client(), None, pause_s=0)
+    out = src.lookup(["2510.00001"])
+    assert set(out) == {"2510.00001"}
+    assert src.checked_ids == {"2510.00001"}
+    assert src.degraded is True
+    # The message names what came back, so a recurring anomaly can be recognised from the log.
+    assert "2510.00099" in str(src.failure)
+
+
+@respx.mock
+def test_s2_row_naming_a_version_still_pairs() -> None:
+    # The request strips vN, but S2 may echo the versioned id back; it is the same paper.
+    respx.post(S2_BATCH_URL).mock(
+        return_value=httpx.Response(200, json=[_s2_row("2510.00001v2", citations=3)])
+    )
+    src = SemanticScholarSource(httpx.Client(), None, pause_s=0)
+    out = src.lookup(["2510.00001"])
+    assert out["2510.00001"].citation_count == 3
+    assert src.checked_ids == {"2510.00001"}
+    assert src.degraded is False
+
+
+@respx.mock
+def test_s2_degrades_when_most_of_a_chunk_is_left_out() -> None:
+    # Two rows for ten ids is not S2 not knowing one paper: it is an answer this client cannot
+    # understand, so it is reported. The two rows that did pair are kept.
+    ids = [f"2510.{i:05d}" for i in range(10)]
+    respx.post(S2_BATCH_URL).mock(
+        return_value=httpx.Response(200, json=[_s2_row(ids[0], citations=1), _s2_row(ids[1])])
+    )
+    src = SemanticScholarSource(httpx.Client(), None, pause_s=0)
+    out = src.lookup(ids)
+    assert set(out) == set(ids[:2])
+    assert src.checked_ids == set(ids[:2])
+    assert src.degraded is True
+    assert "2 rows for 10 ids" in str(src.failure)
 
 
 @respx.mock

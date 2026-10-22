@@ -56,6 +56,18 @@ def _row_arxiv_id(paper: dict[str, Any]) -> str | None:
     return _base_id(value) if isinstance(value, str) and value else None
 
 
+def _row_label(paper: dict[str, Any]) -> str:
+    # A short, stable name for a row we could not attribute, so a logged anomaly says what came
+    # back instead of only how much.
+    external = paper.get("externalIds")
+    if not isinstance(external, dict):
+        return "no externalIds"
+    arxiv = external.get("ArXiv")
+    if isinstance(arxiv, str) and arxiv:
+        return arxiv
+    return f"externalIds={external!r}"
+
+
 def _signals(paper: dict[str, Any]) -> Signals:
     venue = (paper.get("venue") or "").strip() or None
     pv = paper.get("publicationVenue") or {}
@@ -114,9 +126,11 @@ class SemanticScholarSource:
                         raise
                     self.checked_ids.update(chunk)
                     continue
-                # S2 answers one row per requested id, null for an id it has no record for. Rows
-                # are joined back by the arXiv id they carry, never by position, and an id S2
-                # left out stays unanswered so the next run asks for it again.
+                # S2 normally answers one row per requested id, null for an id it knows but has no
+                # record for. Measured 2026-10-22, an id S2 does not know at all (1 of the
+                # server's 1321) is omitted from the answer rather than nulled: a known gap in its
+                # batch endpoint. Rows are joined back by the arXiv id they carry, never by
+                # position, and an id S2 left out stays unanswered so the next run asks again.
                 rows = resp.json()
                 if not isinstance(rows, list):
                     raise TypeError(f"S2 answer is not a list: {type(rows).__name__}")
@@ -124,6 +138,7 @@ class SemanticScholarSource:
                 known = set(wanted)
                 by_id: dict[str, dict[str, Any]] = {}
                 unpaired = 0
+                unpaired_labels: list[str] = []  # the first few, for the message
                 for paper in rows:
                     if paper is None:
                         continue
@@ -132,10 +147,12 @@ class SemanticScholarSource:
                     base = _row_arxiv_id(paper)
                     if base is None or base not in known:
                         unpaired += 1
+                        if len(unpaired_labels) < 3:
+                            unpaired_labels.append(_row_label(paper))
                         continue
                     by_id[base] = paper
-                # Position is trusted for the routine null row only where the answer lines up
-                # with the request: same length, every row naming the id at its position. A short
+                # Position is trusted for the normal null row only where the answer lines up with
+                # the request: same length, every row naming the id at its position. A short
                 # answer has already shifted, so a null there could not be attributed.
                 lines_up = len(rows) == len(chunk) and all(
                     paper is None or _row_arxiv_id(paper) == wanted[pos]
@@ -148,13 +165,26 @@ class SemanticScholarSource:
                         self.checked_ids.add(aid)
                     elif lines_up and rows[pos] is None:
                         self.checked_ids.add(aid)
+                problems: list[str] = []
                 if unpaired:
-                    # A row for an id we did not ask about, or naming none, is an anomaly worth
-                    # the morning check and the journal; it costs us neither the rows that did
-                    # pair nor the run.
+                    # Up to three values, so a one-off answer is named without a wall of ids.
+                    problems.append(
+                        f"{unpaired} rows matched no requested id: " + ", ".join(unpaired_labels)
+                    )
+                # One omitted id is S2 not knowing that paper, but a much shorter answer is not
+                # the shape this client understands: flag it and keep whatever rows did pair.
+                if len(chunk) - len(rows) > max(2, len(chunk) // 20):
+                    problems.append(f"{len(rows)} rows for {len(chunk)} ids")
+                if problems:
                     self.degraded = True
-                    self.failure = f"s2 chunk at {i}: {unpaired} rows matched no requested id"
-                    log.warning("s2_rows_unpaired", error=self.failure, count=len(chunk))
+                    self.failure = f"s2 chunk at {i}: " + "; ".join(problems)
+                    log.warning(
+                        "s2_answer_anomaly",
+                        error=self.failure,
+                        unpaired=unpaired,
+                        rows=len(rows),
+                        ids=len(chunk),
+                    )
             except (httpx.HTTPError, ValueError, TypeError, AttributeError) as exc:
                 # Optional enrichment: keep earlier chunks, record the failure, and
                 # let ingestion continue. A 4xx is a bug, never a retry.
