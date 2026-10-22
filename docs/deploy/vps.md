@@ -213,6 +213,18 @@ by the morning check until the next run starts. A row left `running` by a kill i
 failed by the next run, and the check reports it once as such; until then the check reports it
 as stuck after three hours, the unit's own start timeout.
 
+Take one backup by hand now, so `pg_dump` is proven on this database before a timer relies on it
+and the morning check has a dump to read. It needs no environment file: the defaults are this
+home's `backups/` and the database `paperwatch`, reached over the local socket as the `paperwatch`
+role.
+
+```bash
+~/paper-watch/deploy/vps/backup.sh
+```
+
+It creates `~/backups/` (0700) and one `paperwatch-<stamp>.dump` (0600), and prints the dump's
+size.
+
 ## 8. The morning check
 
 ```bash
@@ -234,7 +246,7 @@ bad lines start with `FAIL`:
   run is never called dead while systemd would still let it finish;
 - `paperwatch-ingest.service` failed (a startup crash, an OOM kill, a timeout, exit 1 or 3), or
   `paperwatch-ingest.timer` not active, so no morning run is scheduled;
-- no dump in `~/backups/`, or the newest older than 26 hours or empty;
+- no `~/backups/` directory, no dump in it, or the newest older than 26 hours or empty;
 - less than 2 GB free in the home.
 
 The unit and timer lines are skipped with a `WARN` where no user manager answers, so the same
@@ -244,9 +256,12 @@ overridden for one invocation:
 `PW_CHECK_MIN_FREE_GB`, `PW_CHECK_BACKUP_DIR`, `PW_CHECK_DB`. It needs only `psql` and coreutils,
 and reads only the `paperwatch` database, the backup directory and the account's own user manager.
 
-At this point the timer is not enabled yet, so this dry run reports one `FAIL` for the timer. If
-the run in step 7 exited 1 or 3 and you have not reset the unit, it reports that too. One `FAIL`
-for the timer, and nothing else, is the expected result; step 9 removes it.
+At this point the timer is not enabled yet, so this dry run reports one `FAIL` for the timer.
+If you skipped the backup in step 7 it also fails on the backup, and before the first backup that
+is a missing directory: `no backup directory /home/paperwatch/backups`. With `~/backups/` there
+but empty, or emptied later, it reads `no backup in /home/paperwatch/backups` instead. If the run
+in step 7 exited 1 or 3 and you have not reset the unit, it reports that too. One `FAIL` for the
+timer, and nothing else, is the expected result; step 9 removes it.
 
 ## 9. Enable the timers
 
