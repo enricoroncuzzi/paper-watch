@@ -21,6 +21,7 @@ from paperwatch.agent.citations import CheckedAnswer, Citation, Flag
 from paperwatch.agent.graph import AnswerEvent, TokenEvent, ToolEvent
 from paperwatch.api.app import ErrorEvent
 from paperwatch.cli import app
+from paperwatch.ingest.health import Health
 from paperwatch.llm.embedder import FakeEmbedder
 from paperwatch.retrieval.hybrid import Filters
 from tests.unit.qa_helpers import qa_cli_paths as _qa_cli_paths
@@ -75,15 +76,17 @@ def test_live_ingest_builds_models_through_models(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(
         cli,
         "run_ingestion",
-        lambda *args, **kwargs: SimpleNamespace(status="succeeded", counts={}, tokens=0),
+        lambda *args, **kwargs: SimpleNamespace(
+            status="succeeded", counts={}, tokens=0, health=Health(True, ())
+        ),
     )
     result = CliRunner().invoke(cli.app, ["ingest", "--live"])
     assert result.exit_code == 0
     assert built == {"embedder": True, "classifier": True}
 
 
-def test_ingest_prints_the_skip_and_exits_zero(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Another run holds the lock: the command is a successful no-op, not a failure.
+def _stub_live_ingest(monkeypatch: pytest.MonkeyPatch, result: SimpleNamespace) -> None:
+    """Stub every dependency of `ingest --live` so only the command's exit code is under test."""
     monkeypatch.setattr(cli, "make_embedder", lambda settings, ledger: object())
     monkeypatch.setattr(
         cli, "make_classifier", lambda settings, ledger, profiles, embedder: object()
@@ -91,14 +94,77 @@ def test_ingest_prints_the_skip_and_exits_zero(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(cli, "make_http_client", lambda settings: object())
     monkeypatch.setattr(cli, "make_engine", lambda url: object())
     monkeypatch.setattr(cli, "make_session_factory", lambda engine: lambda: object())
-    monkeypatch.setattr(
-        cli,
-        "run_ingestion",
-        lambda *args, **kwargs: SimpleNamespace(status="skipped", counts={}, tokens=0),
+    monkeypatch.setattr(cli, "run_ingestion", lambda *args, **kwargs: result)
+
+
+def test_ingest_prints_the_skip_and_exits_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Another run holds the lock: the command is a successful no-op, not a failure.
+    _stub_live_ingest(
+        monkeypatch, SimpleNamespace(status="skipped", counts={}, tokens=0, health=None)
     )
     result = CliRunner().invoke(cli.app, ["ingest", "--live"])
     assert result.exit_code == 0
     assert "skip" in result.output.lower()
+
+
+@pytest.mark.parametrize("status", ["succeeded", "partial"])
+def test_ingest_exits_three_and_prints_the_problems_when_unhealthy(
+    monkeypatch: pytest.MonkeyPatch, status: str
+) -> None:
+    # A finished run whose health verdict is unhealthy is neither a success nor a crash: the code
+    # did its job and judged the day bad, so it gets its own exit code and names the problems.
+    health = Health(False, ("arxiv fetched 0 items", "cursor not advanced: arxiv"))
+    _stub_live_ingest(
+        monkeypatch,
+        SimpleNamespace(status=status, counts={"fetched": 0}, tokens=0, health=health),
+    )
+    result = CliRunner().invoke(cli.app, ["ingest", "--live"])
+    assert result.exit_code == 3
+    assert "arxiv fetched 0 items" in result.stderr
+    assert "cursor not advanced: arxiv" in result.stderr
+    # The run's own line still reaches stdout, so a healthy summary is never swallowed.
+    assert f"{status}:" in result.output
+
+
+def test_ingest_exits_zero_when_a_finished_run_is_healthy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_live_ingest(
+        monkeypatch,
+        SimpleNamespace(
+            status="succeeded", counts={"fetched": 4}, tokens=0, health=Health(True, ())
+        ),
+    )
+    result = CliRunner().invoke(cli.app, ["ingest", "--live"])
+    assert result.exit_code == 0 and result.stderr == ""
+
+
+def test_ingest_exits_three_when_a_finished_run_carries_no_verdict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The pipeline always writes a verdict, so this is defensive: a finished run whose verdict went
+    # missing must fail closed rather than pass for a good morning.
+    _stub_live_ingest(
+        monkeypatch, SimpleNamespace(status="succeeded", counts={}, tokens=0, health=None)
+    )
+    result = CliRunner().invoke(cli.app, ["ingest", "--live"])
+    assert result.exit_code == 3 and "no health verdict" in result.stderr
+
+
+@pytest.mark.parametrize("status", ["failed", "budget_exhausted"])
+def test_ingest_exits_one_when_the_run_did_not_finish_its_work(
+    monkeypatch: pytest.MonkeyPatch, status: str
+) -> None:
+    # These are not "finished but unhealthy": the run itself did not complete, so the exit code
+    # stays 1 and nothing is mistaken for a day of data that needs a human's judgement.
+    _stub_live_ingest(
+        monkeypatch,
+        SimpleNamespace(
+            status=status, counts={}, tokens=0, health=Health(False, (f"status={status}",))
+        ),
+    )
+    result = CliRunner().invoke(cli.app, ["ingest", "--live"])
+    assert result.exit_code == 1
 
 
 def test_search_is_a_subcommand_and_requires_live(monkeypatch: pytest.MonkeyPatch) -> None:

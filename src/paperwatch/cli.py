@@ -299,7 +299,21 @@ def ingest(live: bool = LIVE, since: str | None = SINCE) -> None:
         typer.echo("skipped: another ingestion run is active")
         raise typer.Exit(0)
     typer.echo(f"{res.status}: {res.counts} tokens={res.tokens}")
-    raise typer.Exit(0 if res.status in {"succeeded", "partial"} else 1)
+    if res.status not in {"succeeded", "partial"}:
+        # The run itself did not finish its work (failed, over budget): exit 1.
+        raise typer.Exit(1)
+    if res.health is None or not res.health.healthy:
+        # A finished run whose health verdict is bad is not a crash and not a success: 3 tells the
+        # morning check and a timer apart from exit 1, and the problems go to stderr where a
+        # failure's diagnostics belong. A finished run without a verdict counts as unhealthy, so a
+        # lost verdict can never pass for a good morning.
+        problems = (
+            res.health.problems if res.health is not None else ("the run wrote no health verdict",)
+        )
+        for problem in problems:
+            typer.echo(f"unhealthy: {problem}", err=True)
+        raise typer.Exit(3)
+    raise typer.Exit(0)
 
 
 def _profile_names() -> frozenset[str]:
