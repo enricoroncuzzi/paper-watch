@@ -1,6 +1,6 @@
 import dataclasses
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -119,6 +119,13 @@ def _park_items(
             parked.add(item_key)
 
 
+def _wall_clock() -> datetime:
+    # Every other timestamp in a run comes from its `now`, so a test or a replay is
+    # deterministic; finished_at is the one exception, because a duration read from two equal
+    # stamps is zero and the morning check printed "took 0h00m" every morning.
+    return datetime.now(UTC)
+
+
 @contextmanager
 def _single_run_lock(session: Session) -> Iterator[bool]:
     """Hold the single-run advisory lock for the lifetime of the `with` block.
@@ -156,6 +163,7 @@ def run_ingestion(
     now: datetime,
     default_lookback: timedelta = timedelta(days=7),
     since_override: datetime | None = None,
+    clock: Callable[[], datetime] = _wall_clock,
 ) -> RunResult:
     repo = Repository(session)
     with _single_run_lock(session) as held:
@@ -537,7 +545,7 @@ def run_ingestion(
             # Anything that escapes the per-item handlers (SystemExit, KeyboardInterrupt) would
             # otherwise leave the run 'running' forever; finish it as failed, then re-raise.
             session.rollback()
-            repo.finish_run(run_id, "failed", counts, ledger.tokens_used, at=now)
+            repo.finish_run(run_id, "failed", counts, ledger.tokens_used, at=clock())
             session.commit()
             raise
 
@@ -553,7 +561,7 @@ def run_ingestion(
             arxiv_expected=arxiv_expected,
             arxiv_stopped_early=arxiv_stopped_early,
         )
-        repo.finish_run(run_id, status, counts, ledger.tokens_used, health.as_dict(), at=now)
+        repo.finish_run(run_id, status, counts, ledger.tokens_used, health.as_dict(), at=clock())
         session.commit()
         log.info(
             "ingestion_finished",
