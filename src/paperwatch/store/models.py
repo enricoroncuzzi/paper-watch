@@ -143,6 +143,7 @@ class Run(Base):
     # Set from the run's `now` when the run starts, never the database clock; the server default
     # is only a fallback for a row inserted outside the repository.
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # The wall clock read when the run ended, so finished_at - started_at is its real duration.
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 

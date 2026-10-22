@@ -3,6 +3,7 @@
 import random
 import re
 import time
+from typing import Any
 
 import httpx
 import structlog
@@ -41,6 +42,47 @@ def _no_known_ids(exc: httpx.HTTPStatusError) -> bool:
 def _base_id(arxiv_id: str) -> str:
     # S2 answers a versioned id with HTTP 400 for the whole chunk, so strip vN here too.
     return _VERSION.sub("", arxiv_id)
+
+
+def _row_arxiv_id(paper: dict[str, Any]) -> str | None:
+    # Each row says which paper it is, and that is the only safe way to join it back: measured
+    # over the server's 1321 ids on 2026-10-22, an id S2 has no record of (2603.17771) comes
+    # back neither as a null nor as a row, so the answer is one row short and every later row
+    # sits one position early.
+    external = paper.get("externalIds")
+    if not isinstance(external, dict):
+        return None
+    value = external.get("ArXiv")
+    return _base_id(value) if isinstance(value, str) and value else None
+
+
+def _row_label(paper: dict[str, Any]) -> str:
+    # A short, stable name for a row we could not attribute, so a logged anomaly says what came
+    # back instead of only how much.
+    external = paper.get("externalIds")
+    if not isinstance(external, dict):
+        return "no externalIds"
+    arxiv = external.get("ArXiv")
+    if isinstance(arxiv, str) and arxiv:
+        return arxiv
+    return f"externalIds={external!r}"
+
+
+def _signals(paper: dict[str, Any]) -> Signals:
+    venue = (paper.get("venue") or "").strip() or None
+    pv = paper.get("publicationVenue") or {}
+    # Some venues carry alternate_names as a bare string; only a list
+    # is trustworthy, otherwise unpacking would split it into letters.
+    alternate = pv.get("alternate_names")
+    if not isinstance(alternate, list):
+        alternate = []
+    # Keep the venue name and every alternate name, e.g. "ICLR".
+    aliases = tuple(a for a in [pv.get("name"), *alternate] if a)
+    return Signals(
+        venue=venue,
+        venue_aliases=aliases,
+        citation_count=int(paper.get("citationCount") or 0),
+    )
 
 
 class SemanticScholarSource:
@@ -84,26 +126,65 @@ class SemanticScholarSource:
                         raise
                     self.checked_ids.update(chunk)
                     continue
-                # S2 answers one element per requested id, null for an unknown id. The
-                # results are mapped back to the caller's ids, version suffix and all.
-                for aid, paper in zip(chunk, resp.json(), strict=True):
+                # S2 normally answers one row per requested id, null for an id it knows but has no
+                # record for. Measured 2026-10-22, an id S2 does not know at all (1 of the
+                # server's 1321) is omitted from the answer rather than nulled: a known gap in its
+                # batch endpoint. Rows are joined back by the arXiv id they carry, never by
+                # position, and an id S2 left out stays unanswered so the next run asks again.
+                rows = resp.json()
+                if not isinstance(rows, list):
+                    raise TypeError(f"S2 answer is not a list: {type(rows).__name__}")
+                wanted = [_base_id(a) for a in chunk]
+                known = set(wanted)
+                by_id: dict[str, dict[str, Any]] = {}
+                unpaired = 0
+                unpaired_labels: list[str] = []  # the first few, for the message
+                for paper in rows:
                     if paper is None:
                         continue
-                    venue = (paper.get("venue") or "").strip() or None
-                    pv = paper.get("publicationVenue") or {}
-                    # Some venues carry alternate_names as a bare string; only a list
-                    # is trustworthy, otherwise unpacking would split it into letters.
-                    alternate = pv.get("alternate_names")
-                    if not isinstance(alternate, list):
-                        alternate = []
-                    # Keep the venue name and every alternate name, e.g. "ICLR".
-                    aliases = tuple(a for a in [pv.get("name"), *alternate] if a)
-                    out[aid] = Signals(
-                        venue=venue,
-                        venue_aliases=aliases,
-                        citation_count=int(paper.get("citationCount") or 0),
+                    if not isinstance(paper, dict):
+                        raise TypeError(f"S2 answer row is not an object: {paper!r}")
+                    base = _row_arxiv_id(paper)
+                    if base is None or base not in known:
+                        unpaired += 1
+                        if len(unpaired_labels) < 3:
+                            unpaired_labels.append(_row_label(paper))
+                        continue
+                    by_id[base] = paper
+                # Position is trusted for the normal null row only where the answer lines up with
+                # the request: same length, every row naming the id at its position. A short
+                # answer has already shifted, so a null there could not be attributed.
+                lines_up = len(rows) == len(chunk) and all(
+                    paper is None or _row_arxiv_id(paper) == wanted[pos]
+                    for pos, paper in enumerate(rows)
+                )
+                for pos, aid in enumerate(chunk):
+                    paper = by_id.get(wanted[pos])
+                    if paper is not None:
+                        out[aid] = _signals(paper)
+                        self.checked_ids.add(aid)
+                    elif lines_up and rows[pos] is None:
+                        self.checked_ids.add(aid)
+                problems: list[str] = []
+                if unpaired:
+                    # Up to three values, so a one-off answer is named without a wall of ids.
+                    problems.append(
+                        f"{unpaired} rows matched no requested id: " + ", ".join(unpaired_labels)
                     )
-                self.checked_ids.update(chunk)
+                # One omitted id is S2 not knowing that paper, but a much shorter answer is not
+                # the shape this client understands: flag it and keep whatever rows did pair.
+                if len(chunk) - len(rows) > max(2, len(chunk) // 20):
+                    problems.append(f"{len(rows)} rows for {len(chunk)} ids")
+                if problems:
+                    self.degraded = True
+                    self.failure = f"s2 chunk at {i}: " + "; ".join(problems)
+                    log.warning(
+                        "s2_answer_anomaly",
+                        error=self.failure,
+                        unpaired=unpaired,
+                        rows=len(rows),
+                        ids=len(chunk),
+                    )
             except (httpx.HTTPError, ValueError, TypeError, AttributeError) as exc:
                 # Optional enrichment: keep earlier chunks, record the failure, and
                 # let ingestion continue. A 4xx is a bug, never a retry.

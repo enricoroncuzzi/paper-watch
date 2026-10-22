@@ -332,7 +332,8 @@ class Repository:
     def fail_open_runs(self, *, at: datetime) -> None:
         # A single-instance daily job closes rows a crash (`kill -9`) left 'running', so the
         # run table never accumulates rows that look in-flight forever. The close is stamped
-        # from the run's `now`, like every other business timestamp.
+        # from the run's `now`, like every other business timestamp: a row closed this way has
+        # the next run's start as its finished_at, not a measured end.
         self._s.execute(
             update(Run).where(Run.status == "running").values(status="failed", finished_at=at)
         )
@@ -357,6 +358,8 @@ class Repository:
     ) -> None:
         run = self._s.get_one(Run, run_id)
         run.status, run.counts, run.tokens, run.health = status, counts, tokens, health
+        # `at` is the wall clock the caller read when the run ended, not the run's start `now`,
+        # so the row's duration is the real one.
         run.finished_at = at
         self._s.flush()
 

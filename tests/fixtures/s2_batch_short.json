@@ -1,0 +1,125 @@
+[
+ {
+  "paperId": "9505ca5121fcf50db7d36c672b73dabad43f23bf",
+  "externalIds": {
+   "ArXiv": "2603.10564",
+   "CorpusId": 286457137
+  },
+  "publicationVenue": null,
+  "venue": "",
+  "citationCount": 0
+ },
+ {
+  "paperId": "8bb9b5311624766457ad8aed2ff8215609686d23",
+  "externalIds": {
+   "ArXiv": "2603.14360",
+   "DBLP": "journals/corr/abs-2603-14360",
+   "DOI": "10.48550/arXiv.2603.14360",
+   "CorpusId": 286572414
+  },
+  "publicationVenue": {
+   "id": "1901e811-ee72-4b20-8f7e-de08cd395a10",
+   "name": "arXiv.org",
+   "alternate_names": [
+    "ArXiv"
+   ],
+   "issn": "2331-8422",
+   "url": "https://arxiv.org"
+  },
+  "venue": "arXiv.org",
+  "citationCount": 8
+ },
+ {
+  "paperId": "f2953ec5e400915d8af890b7e7ade04779d37bf3",
+  "externalIds": {
+   "DBLP": "journals/corr/abs-2603-16557",
+   "ArXiv": "2603.16557",
+   "DOI": "10.48550/arXiv.2603.16557",
+   "CorpusId": 286584025
+  },
+  "publicationVenue": {
+   "id": "1901e811-ee72-4b20-8f7e-de08cd395a10",
+   "name": "arXiv.org",
+   "alternate_names": [
+    "ArXiv"
+   ],
+   "issn": "2331-8422",
+   "url": "https://arxiv.org"
+  },
+  "venue": "arXiv.org",
+  "citationCount": 9
+ },
+ {
+  "paperId": "848f97d5e6499338c0dc6c86d9270643f99972b9",
+  "externalIds": {
+   "ArXiv": "2603.18104",
+   "DBLP": "journals/corr/abs-2603-18104",
+   "DOI": "10.48550/arXiv.2603.18104",
+   "CorpusId": 286669679
+  },
+  "publicationVenue": {
+   "id": "1901e811-ee72-4b20-8f7e-de08cd395a10",
+   "name": "arXiv.org",
+   "alternate_names": [
+    "ArXiv"
+   ],
+   "issn": "2331-8422",
+   "url": "https://arxiv.org"
+  },
+  "venue": "arXiv.org",
+  "citationCount": 8
+ },
+ {
+  "paperId": "1dff973cc7b970f9c8f2658c848f44c2b2eb6460",
+  "externalIds": {
+   "DBLP": "conf/icde/GaoBFWZZ26",
+   "ArXiv": "2603.18712",
+   "DOI": "10.1109/ICDE65706.2026.00294",
+   "CorpusId": 286673622
+  },
+  "publicationVenue": {
+   "id": "764e3630-ddac-4c21-af4b-9d32ffef082e",
+   "name": "IEEE International Conference on Data Engineering",
+   "type": "conference",
+   "alternate_names": [
+    "ICDE",
+    "Int Conf Data Eng",
+    "IEEE Int Conf Data Eng",
+    "International Conference on Data Engineering"
+   ],
+   "url": "http://www.wikicfp.com/cfp/program?id=1331"
+  },
+  "venue": "IEEE International Conference on Data Engineering",
+  "citationCount": 0
+ },
+ {
+  "paperId": "716d7a3140f0157a38bf3702ff50a21bdea5d7a1",
+  "externalIds": {
+   "ArXiv": "2603.23101",
+   "DBLP": "journals/corr/abs-2603-23101",
+   "DOI": "10.48550/arXiv.2603.23101",
+   "CorpusId": 286773883
+  },
+  "publicationVenue": {
+   "id": "1901e811-ee72-4b20-8f7e-de08cd395a10",
+   "name": "arXiv.org",
+   "alternate_names": [
+    "ArXiv"
+   ],
+   "issn": "2331-8422",
+   "url": "https://arxiv.org"
+  },
+  "venue": "arXiv.org",
+  "citationCount": 0
+ },
+ {
+  "paperId": "a2171a3f6ab895f601fe578ef8f95671a498b51f",
+  "externalIds": {
+   "ArXiv": "2603.23844",
+   "CorpusId": 286775978
+  },
+  "publicationVenue": null,
+  "venue": "",
+  "citationCount": 0
+ }
+]

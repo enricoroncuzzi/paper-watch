@@ -176,6 +176,7 @@ def run(
     embedder: Embedder | None = None,
     ledger: Ledger | None = None,
     since_override: datetime | None = None,
+    clock: Callable[[], datetime] | None = None,
 ) -> RunResult:
     return run_ingestion(
         session,
@@ -186,6 +187,8 @@ def run(
         ADM,
         now,
         since_override=since_override,
+        # A test that does not care about the duration finishes in the same instant it starts.
+        clock=clock or (lambda: now),
     )
 
 
@@ -1170,11 +1173,13 @@ def test_second_run_is_skipped_while_the_lock_is_held(db_session: Session, engin
 def test_failed_run_releases_the_lock(db_session: Session) -> None:
     src = fake_sources([])
     src.arxiv.harvest.side_effect = SystemExit("killed during fetch")
+    # A crash is stamped with the clock too, so the row it closes shows when the run really died.
+    later = NOW + timedelta(minutes=2)
     with pytest.raises(SystemExit):
-        run(db_session, src)
-    # The failed row is closed with the run's clock, not the database's.
+        run(db_session, src, clock=lambda: later)
+    # The failed row is closed with the clock, not the database's.
     failed = db_session.scalars(select(Run).where(Run.status == "failed")).one()
-    assert failed.started_at == NOW and failed.finished_at == NOW
+    assert failed.started_at == NOW and failed.finished_at == later
     # The finally released the lock, so a following run is not skipped.
     src.arxiv.harvest.side_effect = _serve_papers(src)
     res = run(db_session, src, now=NOW + timedelta(minutes=1))
@@ -1249,11 +1254,13 @@ def test_feed_outage_letter_closes_but_a_malformed_entry_stays_open(db_session: 
 
 def test_run_timestamps_come_from_the_run_clock(db_session: Session) -> None:
     future = NOW + timedelta(days=90)  # far from the wall clock: the run's now, not the database's
+    finish = future + timedelta(minutes=47)
     src = fake_sources([paper("2510.1", "Agent harness")])
-    res = run(db_session, src, now=future)
+    res = run(db_session, src, now=future, clock=lambda: finish)
     assert res.run_id is not None
     run_row = db_session.get_one(Run, res.run_id)
-    assert run_row.started_at == future and run_row.finished_at == future
+    # A run starts at its `now` and ends at the wall clock, so its duration is real work.
+    assert run_row.started_at == future and run_row.finished_at == finish
     # The letter phase 1 parked for the stored paper was resolved with the run's clock.
     resolved = db_session.scalars(select(DeadLetter).where(DeadLetter.ref == "2510.1")).one()
     assert resolved.resolved_at == future

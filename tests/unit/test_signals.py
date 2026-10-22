@@ -141,6 +141,16 @@ def test_hf_page_cap_bounds_a_day() -> None:
     assert src.degraded is True
 
 
+def _s2_row(arxiv_id: str, *, citations: int = 0, venue: str = "arXiv.org") -> dict[str, object]:
+    # The smallest real answer row: every non-null row names the paper's arXiv id, which is what
+    # a row is joined back by.
+    return {
+        "externalIds": {"ArXiv": arxiv_id},
+        "venue": venue,
+        "citationCount": citations,
+    }
+
+
 @respx.mock
 def test_s2_lookup_handles_nulls_and_empty_venue() -> None:
     # The fixture is hand-authored to the documented batch shape: one venue, one
@@ -157,6 +167,46 @@ def test_s2_lookup_handles_nulls_and_empty_venue() -> None:
     assert out["2510.00001"].citation_count == 7
     assert out["2510.00002"].venue == "arXiv.org"
     assert "2510.09999" not in out
+    # A null row is an id S2 checked and has no record for, so it is not due again tomorrow.
+    assert src.checked_ids == {"2510.00001", "2510.00002", "2510.09999"}
+    assert src.degraded is False
+    assert src.failure is None
+
+
+@respx.mock
+def test_s2_keeps_the_rows_it_answered_when_an_id_is_left_out() -> None:
+    # The fixture is a real answer recorded 2026-10-22 over the server's 1321 arXiv ids: the
+    # 500-id chunk came back with 499 rows because S2 has no record at all for 2603.17771, so
+    # that id is missing rather than null and every later row sits one position early. Pairing
+    # by position would give the paper after the gap the next paper's venue.
+    respx.post(S2_BATCH_URL).mock(
+        return_value=httpx.Response(
+            200, json=json.loads(Path("tests/fixtures/s2_batch_short.json").read_text())
+        )
+    )
+    ids = [
+        "2603.10564",
+        "2603.14360",
+        "2603.16557",
+        "2603.17771",
+        "2603.18104",
+        "2603.18712",
+        "2603.23101",
+        "2603.23844",
+    ]
+    src = SemanticScholarSource(httpx.Client(), None, pause_s=0)
+    out = src.lookup(ids)
+    answered = set(ids) - {"2603.17771"}
+    assert set(out) == answered
+    # The paper S2 does not know stays unanswered, and its neighbours keep their own rows:
+    # 2603.18104 is an arXiv preprint, while the ICDE venue one row later in the answer belongs
+    # to 2603.18712, and the last id still gets its own empty-venue row.
+    assert out["2603.18104"].venue == "arXiv.org" and out["2603.18104"].citation_count == 8
+    assert out["2603.18712"].venue == "IEEE International Conference on Data Engineering"
+    assert out["2603.23844"].venue is None
+    assert out["2603.16557"].citation_count == 9
+    # Only the id S2 left out is due again; a short answer of this shape is not a degradation.
+    assert src.checked_ids == answered
     assert src.degraded is False
     assert src.failure is None
 
@@ -169,6 +219,7 @@ def test_s2_ignores_non_list_alternate_names() -> None:
             200,
             json=[
                 {
+                    "externalIds": {"ArXiv": "2510.00001"},
                     "venue": "International Conference on Learning Representations",
                     "publicationVenue": {
                         "name": "International Conference on Learning Representations",
@@ -222,24 +273,34 @@ def test_s2_degraded_on_non_json(monkeypatch) -> None:
 
 
 @respx.mock
-def test_s2_degraded_on_short_array(monkeypatch) -> None:
+def test_s2_unattributable_row_degrades_but_keeps_the_paired_rows(monkeypatch) -> None:
     monkeypatch.setattr(time, "sleep", lambda _seconds: None)
     respx.post(S2_BATCH_URL).mock(
-        return_value=httpx.Response(200, json=[{"venue": "arXiv.org", "citationCount": 0}])
+        return_value=httpx.Response(
+            200,
+            json=[
+                {
+                    "externalIds": {"ArXiv": "2510.00001", "CorpusId": 1},
+                    "venue": "arXiv.org",
+                    "citationCount": 0,
+                },
+                {"venue": "arXiv.org", "citationCount": 0},
+            ],
+        )
     )
     src = SemanticScholarSource(httpx.Client(), None, pause_s=0)
     out = src.lookup(["2510.00001", "2510.00002"])
-    # The pair already yielded is kept; the missing id is not invented, and the
-    # run is marked degraded instead of raising.
+    # A row that names no id we asked about cannot be trusted; it does not cost us the row that
+    # did, and the id it might have answered stays due.
     assert out["2510.00001"].venue == "arXiv.org"
     assert "2510.00002" not in out
     assert src.degraded is True
-    assert src.checked_ids == set()
+    assert src.checked_ids == {"2510.00001"}
 
 
 @respx.mock
 def test_s2_degraded_on_a_longer_array(monkeypatch) -> None:
-    # More rows than ids: zip(strict=True) refuses, so no id is marked checked.
+    # More rows than ids, and none naming a requested id: nothing pairs and no id is checked.
     monkeypatch.setattr(time, "sleep", lambda _seconds: None)
     respx.post(S2_BATCH_URL).mock(
         return_value=httpx.Response(
@@ -254,6 +315,72 @@ def test_s2_degraded_on_a_longer_array(monkeypatch) -> None:
     src.lookup(["2510.00001"])
     assert src.degraded is True
     assert src.checked_ids == set()
+
+
+@respx.mock
+def test_s2_null_in_a_shifted_answer_stays_due() -> None:
+    # Three rows for four ids: the answer has shifted, so a null cannot be attributed to an id by
+    # position. Only the ids whose rows came back are checked, and a one-row gap is not degraded.
+    respx.post(S2_BATCH_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json=[_s2_row("2510.00001"), None, _s2_row("2510.00004")],
+        )
+    )
+    ids = ["2510.00001", "2510.00002", "2510.00003", "2510.00004"]
+    src = SemanticScholarSource(httpx.Client(), None, pause_s=0)
+    out = src.lookup(ids)
+    assert set(out) == {"2510.00001", "2510.00004"}
+    assert src.checked_ids == {"2510.00001", "2510.00004"}
+    assert src.degraded is False
+    assert src.failure is None
+
+
+@respx.mock
+def test_s2_row_for_an_id_not_asked_about_is_unpaired() -> None:
+    # A row for a paper we did not ask for is a broken answer, not something to attribute to a
+    # requested id; the id we did ask about keeps its own row.
+    respx.post(S2_BATCH_URL).mock(
+        return_value=httpx.Response(
+            200, json=[_s2_row("2510.00001"), _s2_row("2510.00099", citations=4)]
+        )
+    )
+    src = SemanticScholarSource(httpx.Client(), None, pause_s=0)
+    out = src.lookup(["2510.00001"])
+    assert set(out) == {"2510.00001"}
+    assert src.checked_ids == {"2510.00001"}
+    assert src.degraded is True
+    # The message names what came back, so a recurring anomaly can be recognised from the log.
+    assert "2510.00099" in str(src.failure)
+
+
+@respx.mock
+def test_s2_row_naming_a_version_still_pairs() -> None:
+    # The request strips vN, but S2 may echo the versioned id back; it is the same paper.
+    respx.post(S2_BATCH_URL).mock(
+        return_value=httpx.Response(200, json=[_s2_row("2510.00001v2", citations=3)])
+    )
+    src = SemanticScholarSource(httpx.Client(), None, pause_s=0)
+    out = src.lookup(["2510.00001"])
+    assert out["2510.00001"].citation_count == 3
+    assert src.checked_ids == {"2510.00001"}
+    assert src.degraded is False
+
+
+@respx.mock
+def test_s2_degrades_when_most_of_a_chunk_is_left_out() -> None:
+    # Two rows for ten ids is not S2 not knowing one paper: it is an answer this client cannot
+    # understand, so it is reported. The two rows that did pair are kept.
+    ids = [f"2510.{i:05d}" for i in range(10)]
+    respx.post(S2_BATCH_URL).mock(
+        return_value=httpx.Response(200, json=[_s2_row(ids[0], citations=1), _s2_row(ids[1])])
+    )
+    src = SemanticScholarSource(httpx.Client(), None, pause_s=0)
+    out = src.lookup(ids)
+    assert set(out) == set(ids[:2])
+    assert src.checked_ids == set(ids[:2])
+    assert src.degraded is True
+    assert "2 rows for 10 ids" in str(src.failure)
 
 
 @respx.mock
@@ -288,7 +415,7 @@ def test_s2_retries_429_then_succeeds(monkeypatch) -> None:
     route = respx.post(S2_BATCH_URL).mock(
         side_effect=[
             httpx.Response(429),
-            httpx.Response(200, json=[{"venue": "arXiv.org", "citationCount": 0}]),
+            httpx.Response(200, json=[_s2_row("2510.00001")]),
         ]
     )
     src = SemanticScholarSource(httpx.Client(), None, pause_s=0)
@@ -305,7 +432,7 @@ def test_s2_honors_retry_after(monkeypatch) -> None:
     route = respx.post(S2_BATCH_URL).mock(
         side_effect=[
             httpx.Response(429, headers={"Retry-After": "7"}),
-            httpx.Response(200, json=[{"venue": "arXiv.org", "citationCount": 0}]),
+            httpx.Response(200, json=[_s2_row("2510.00001")]),
         ]
     )
     SemanticScholarSource(httpx.Client(), None, pause_s=0).lookup(["2510.00001"])
@@ -373,7 +500,7 @@ def test_s2_five_attempts_succeed(monkeypatch) -> None:
             httpx.Response(429),
             httpx.Response(429),
             httpx.Response(429),
-            httpx.Response(200, json=[{"venue": "arXiv.org", "citationCount": 0}]),
+            httpx.Response(200, json=[_s2_row("2510.00001")]),
         ]
     )
     src = SemanticScholarSource(httpx.Client(), None, pause_s=0)
@@ -411,7 +538,8 @@ def test_s2_strips_version_suffix_and_maps_back(caller_id: str, sent_id: str) ->
 
     def responder(request: httpx.Request) -> httpx.Response:
         seen.append(json.loads(request.content)["ids"])
-        return httpx.Response(200, json=[{"venue": "arXiv.org", "citationCount": 2}])
+        base = seen[-1][0].removeprefix("ARXIV:")
+        return httpx.Response(200, json=[_s2_row(base, citations=2)])
 
     respx.post(S2_BATCH_URL).mock(side_effect=responder)
     src = SemanticScholarSource(httpx.Client(), None, pause_s=0)
@@ -427,7 +555,7 @@ def test_s2_checked_ids_include_null_answers() -> None:
     respx.post(S2_BATCH_URL).mock(
         return_value=httpx.Response(
             200,
-            json=[None, {"venue": "arXiv.org", "citationCount": 1}],
+            json=[None, _s2_row("2510.00002", citations=1)],
         )
     )
     src = SemanticScholarSource(httpx.Client(), None, pause_s=0)
@@ -446,22 +574,16 @@ def test_s2_checked_ids_reset_each_call() -> None:
 
 
 @respx.mock
-def test_s2_two_versions_of_one_id_keep_their_own_rows() -> None:
-    # Both caller ids strip to one ARXIV: id, so each response row maps back to the id that asked
-    # for it rather than to a shared base id.
+def test_s2_two_versions_of_one_id_share_the_one_row() -> None:
+    # Both caller ids strip to one ARXIV: id, so S2 answers one row for the paper; both ids map
+    # back to it instead of to a position, and the row is never attributed to another paper.
     respx.post(S2_BATCH_URL).mock(
-        return_value=httpx.Response(
-            200,
-            json=[
-                {"venue": "arXiv.org", "citationCount": 5},
-                {"venue": "arXiv.org", "citationCount": 9},
-            ],
-        )
+        return_value=httpx.Response(200, json=[_s2_row("2106.09685", citations=5)])
     )
     src = SemanticScholarSource(httpx.Client(), None, pause_s=0)
     out = src.lookup(["2106.09685v1", "2106.09685v2"])
     assert out["2106.09685v1"].citation_count == 5
-    assert out["2106.09685v2"].citation_count == 9
+    assert out["2106.09685v2"].citation_count == 5
     assert src.checked_ids == {"2106.09685v1", "2106.09685v2"}
 
 
@@ -493,9 +615,12 @@ def test_s2_all_unknown_chunk_counts_as_checked_with_no_signals(monkeypatch) -> 
     monkeypatch.setattr(time, "sleep", lambda _seconds: None)
 
     def responder(request: httpx.Request) -> httpx.Response:
-        count = len(json.loads(request.content)["ids"])
-        if count == 500:
-            return httpx.Response(200, json=[{"venue": "arXiv.org", "citationCount": 1}] * count)
+        ids = json.loads(request.content)["ids"]
+        if len(ids) == 500:
+            return httpx.Response(
+                200,
+                json=[_s2_row(i.removeprefix("ARXIV:"), citations=1) for i in ids],
+            )
         return httpx.Response(400, json={"error": "No valid paper ids given"})
 
     respx.post(S2_BATCH_URL).mock(side_effect=responder)

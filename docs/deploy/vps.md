@@ -134,7 +134,7 @@ What the units do, and why:
 
 - `paperwatch-ingest.service` runs
   `uv run --frozen --no-dev paperwatch ingest --live` from `/home/paperwatch/paper-watch` with
-  the environment file above. `MemoryMax=1000M` with `MemorySwapMax=0` keeps a runaway run from
+  the environment file above. `MemoryMax=950M` with `MemorySwapMax=0` keeps a runaway run from
   touching the machine: with no swap the cgroup OOM killer stops it, systemd marks the unit failed,
   the run row stays `running` until the next run closes it as failed, and the morning check reports
   both. That is deliberate: a visible failed morning, never a slow one that starves the other
@@ -183,22 +183,23 @@ give: stop and tell the captain, rather than raising the cap. A successful `--wa
 the transient unit, so `systemctl show` on it afterwards prints nothing useful; a failed attempt
 stays loaded, and the next try needs `systemctl --user reset-failed paperwatch-measure` first.
 
-Then set the real cap in a drop-in instead of editing the installed unit, so a later
-`git checkout` of a new release does not silently reset it. Use the measured peak plus about a
-third, and never less than the model's own 520 MB; the `1000M` below is only the placeholder for
-that number:
+Then set the cap in a drop-in instead of editing the installed unit, so a later `git checkout` of
+a new release does not silently reset it. Use the measured peak plus about a third, and never less
+than the model's own 520 MB. The installed unit already carries `950M`, the repo's default from the
+706.8M peak measured on this machine on 2026-10-22, so this step is only needed when your own peak
+differs from that measurement, or you want the value pinned against a future default:
 
 ```bash
 mkdir -p ~/.config/systemd/user/paperwatch-ingest.service.d
 cat > ~/.config/systemd/user/paperwatch-ingest.service.d/memory.conf <<'EOF'
 [Service]
-MemoryMax=1000M
+MemoryMax=950M
 EOF
 systemctl --user daemon-reload
 ```
 
-Write the measured number down with the deployment notes: the repo's default should become that
-value in a later commit. Then run once through the real unit:
+Write the measured number down with the deployment notes, so a later release moves the repo
+default only from a real measurement. Then run once through the real unit:
 
 ```bash
 systemctl --user start --no-block paperwatch-ingest.service    # --no-block: a oneshot start blocks
@@ -212,6 +213,18 @@ run `systemctl --user reset-failed paperwatch-ingest.service`, because a failed 
 by the morning check until the next run starts. A row left `running` by a kill is closed as
 failed by the next run, and the check reports it once as such; until then the check reports it
 as stuck after three hours, the unit's own start timeout.
+
+Take one backup by hand now, so `pg_dump` is proven on this database before a timer relies on it
+and the morning check has a dump to read. It needs no environment file: the defaults are this
+home's `backups/` and the database `paperwatch`, reached over the local socket as the `paperwatch`
+role.
+
+```bash
+~/paper-watch/deploy/vps/backup.sh
+```
+
+It creates `~/backups/` (0700) and one `paperwatch-<stamp>.dump` (0600), and prints the dump's
+size.
 
 ## 8. The morning check
 
@@ -234,7 +247,7 @@ bad lines start with `FAIL`:
   run is never called dead while systemd would still let it finish;
 - `paperwatch-ingest.service` failed (a startup crash, an OOM kill, a timeout, exit 1 or 3), or
   `paperwatch-ingest.timer` not active, so no morning run is scheduled;
-- no dump in `~/backups/`, or the newest older than 26 hours or empty;
+- no `~/backups/` directory, no dump in it, or the newest older than 26 hours or empty;
 - less than 2 GB free in the home.
 
 The unit and timer lines are skipped with a `WARN` where no user manager answers, so the same
@@ -244,9 +257,17 @@ overridden for one invocation:
 `PW_CHECK_MIN_FREE_GB`, `PW_CHECK_BACKUP_DIR`, `PW_CHECK_DB`. It needs only `psql` and coreutils,
 and reads only the `paperwatch` database, the backup directory and the account's own user manager.
 
-At this point the timer is not enabled yet, so this dry run reports one `FAIL` for the timer. If
-the run in step 7 exited 1 or 3 and you have not reset the unit, it reports that too. One `FAIL`
-for the timer, and nothing else, is the expected result; step 9 removes it.
+A run's counts normally show `"s2_unchecked": 1`: one arXiv paper in the corpus is not in
+Semantic Scholar's index at all, so it is left unanswered and asked again next run. That is
+expected and does not make a run unhealthy; a much larger count comes with a degraded `s2` source
+and its own `FAIL`.
+
+At this point the timer is not enabled yet, so this dry run reports one `FAIL` for the timer.
+If you skipped the backup in step 7 it also fails on the backup, and before the first backup that
+is a missing directory: `no backup directory /home/paperwatch/backups`. With `~/backups/` there
+but empty, or emptied later, it reads `no backup in /home/paperwatch/backups` instead. If the run
+in step 7 exited 1 or 3 and you have not reset the unit, it reports that too. One `FAIL` for the
+timer, and nothing else, is the expected result; step 9 removes it.
 
 ## 9. Enable the timers
 

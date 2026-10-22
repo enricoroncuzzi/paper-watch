@@ -50,13 +50,17 @@ def test_record_covers_every_question_with_its_sources(db_session: Session) -> N
     assert {row.model for row in rows} == {"scripted"}
     for row in rows:
         # Each question gets its own registry, so every row carries the sources its own search
-        # returned and the tool it called, not the previous question's.
-        assert row.sources and row.sources[0].alias == "S1"
-        assert row.sources[0].external_id == "ag-01"
-        assert row.tools == ("search_corpus",)
+        # returned and the tool it called, not the previous question's. The messages name the
+        # question and what came back, so a failure here explains itself.
+        assert row.sources and row.sources[0].alias == "S1", row.question_id
+        assert row.sources[0].external_id == "ag-01", (
+            row.question_id,
+            [source.external_id for source in row.sources],
+        )
+        assert row.tools == ("search_corpus",), (row.question_id, row.tools)
         # Two model calls (the search round and the answer round), 60 usage tokens each.
-        assert row.tokens == 120
-        assert not row.provider_error
+        assert row.tokens == 120, (row.question_id, row.tokens)
+        assert not row.provider_error, row.question_id
 
 
 def test_record_marks_a_provider_failure_instead_of_dropping_the_question(

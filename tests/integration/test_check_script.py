@@ -184,6 +184,8 @@ def test_check_passes_on_a_healthy_run(
     assert "succeeded" in result.stdout
     assert '"stored": 3' in result.stdout  # the run's counts, read out of the JSON column
     assert "2 admitted" in result.stdout
+    # The duration the run really took, from finished_at - started_at: it used to print 0h00m.
+    assert "took 0h21m" in result.stdout
     assert "backup" in result.stdout and "check passed" in result.stdout
     assert "not failed" in result.stdout and "timer" in result.stdout
 
