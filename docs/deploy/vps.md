@@ -134,7 +134,7 @@ What the units do, and why:
 
 - `paperwatch-ingest.service` runs
   `uv run --frozen --no-dev paperwatch ingest --live` from `/home/paperwatch/paper-watch` with
-  the environment file above. `MemoryMax=1000M` with `MemorySwapMax=0` keeps a runaway run from
+  the environment file above. `MemoryMax=950M` with `MemorySwapMax=0` keeps a runaway run from
   touching the machine: with no swap the cgroup OOM killer stops it, systemd marks the unit failed,
   the run row stays `running` until the next run closes it as failed, and the morning check reports
   both. That is deliberate: a visible failed morning, never a slow one that starves the other
@@ -185,20 +185,21 @@ stays loaded, and the next try needs `systemctl --user reset-failed paperwatch-m
 
 Then set the real cap in a drop-in instead of editing the installed unit, so a later
 `git checkout` of a new release does not silently reset it. Use the measured peak plus about a
-third, and never less than the model's own 520 MB; the `1000M` below is only the placeholder for
-that number:
+third, and never less than the model's own 520 MB; the `950M` below is the repo's default, from
+the 706.8M peak measured on this machine on 2026-10-22, and only a run that measures higher needs
+its own value:
 
 ```bash
 mkdir -p ~/.config/systemd/user/paperwatch-ingest.service.d
 cat > ~/.config/systemd/user/paperwatch-ingest.service.d/memory.conf <<'EOF'
 [Service]
-MemoryMax=1000M
+MemoryMax=950M
 EOF
 systemctl --user daemon-reload
 ```
 
-Write the measured number down with the deployment notes: the repo's default should become that
-value in a later commit. Then run once through the real unit:
+Write the measured number down with the deployment notes, so a later release moves the repo
+default only from a real measurement. Then run once through the real unit:
 
 ```bash
 systemctl --user start --no-block paperwatch-ingest.service    # --no-block: a oneshot start blocks
