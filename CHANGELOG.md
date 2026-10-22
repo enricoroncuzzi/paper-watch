@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.3.0...paperwatch-v0.4.0) (2026-10-22)
+
+
+### Features
+
+* **deploy:** run the daily ingestion on a shared VPS with systemd timers, backups and a morning check ([#12](https://github.com/enricoroncuzzi/paper-watch/issues/12)) ([9ce374c](https://github.com/enricoroncuzzi/paper-watch/commit/9ce374ca797131e8e1c6eec4ac510ed89ef3d317))
+
 ## [0.3.0](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.2.1...paperwatch-v0.3.0) (2026-10-21)
 
 
