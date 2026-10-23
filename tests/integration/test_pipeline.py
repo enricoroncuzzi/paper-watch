@@ -1999,3 +1999,29 @@ def test_a_run_started_after_the_deadline_takes_no_pass(db_session: Session) -> 
     assert res.health is not None and res.health.followup == {"passes": 0, "stopped": "time_of_day"}
     assert res.health.warnings == ("s2 refused and no pass fit before 22:00: 1 ids",)
     assert res.health.healthy  # the first day of an outage is still a warning
+
+
+def test_each_pass_logs_one_line_with_the_idle_footprint(db_session: Session) -> None:
+    # The journal is the captain's view of a long morning, and a refusal can last hours: one line
+    # per pass (never one per attempt from the pipeline's side), carrying the waiting process's RSS,
+    # plus one line when the loop ends.
+    src = fake_sources([paper("2510.2", "Coding agent")])
+    src.hf.upvotes.return_value = {}
+    src.s2.lookup.return_value = S2_VENUE
+    src.s2.refused, src.s2.degraded = {"2510.2"}, True
+    left = [3]
+
+    def sleep(seconds: float) -> None:
+        left[0] -= 1
+        if left[0] == 0:  # the third pass answers
+            src.s2.refused, src.s2.degraded = set(), False
+
+    with capture_logs() as logs:
+        run(db_session, src, followup=True, sleep=sleep)
+    passes = [event for event in logs if event["event"] == "followup_pass"]
+    finished = [event for event in logs if event["event"] == "followup_finished"]
+    assert [event["pass_"] for event in passes] == [1, 2, 3]
+    assert all("rss_mb" in event and event["pending"] == 1 for event in passes)
+    assert [(event["passes"], event["stopped"], event["pending"]) for event in finished] == [
+        (3, "resolved", 0)
+    ]
