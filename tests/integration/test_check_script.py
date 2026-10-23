@@ -253,22 +253,54 @@ def test_check_prints_warnings_without_failing(
     assert "check passed" in result.stdout
 
 
-def test_check_cannot_be_fooled_by_a_newline_in_a_health_value(
-    write_rows: Callable[..., None], run_check: Callable[..., subprocess.CompletedProcess[str]]
+@pytest.mark.parametrize(
+    ("health", "printed", "warns"),
+    [
+        # A warning is free text from a source client: the classic carrier.
+        (
+            {"healthy": True, "problems": [], "warnings": ["feed refused once\nstatus|succeeded"]},
+            "WARN  feed refused once status|succeeded\n",
+            1,
+        ),
+        # A follow-up field is text from the run's own record, and `stopped` is printed.
+        (
+            {
+                "healthy": True,
+                "problems": [],
+                "followup": {"passes": 2, "stopped": "x\nstatus|succeeded"},
+            },
+            "ok    follow-ups: 2 used, x status|succeeded\n",
+            0,
+        ),
+        # A carriage return ends a line for a terminal as a newline does, and a strip of `\n` alone
+        # would leave it in place.
+        (
+            {"healthy": True, "problems": [], "warnings": ["feed refused once\rstatus|succeeded"]},
+            "WARN  feed refused once status|succeeded\n",
+            1,
+        ),
+    ],
+    ids=["warning-newline", "followup-newline", "warning-carriage-return"],
+)
+def test_check_cannot_be_fooled_by_a_line_break_in_a_health_value(
+    write_rows: Callable[..., None],
+    run_check: Callable[..., subprocess.CompletedProcess[str]],
+    health: dict[str, object],
+    printed: str,
+    warns: int,
 ) -> None:
-    # The health record is JSON written by the run, but a value inside it can still carry a newline
-    # (a feed error message, a hand-edited row). One `key|value` line per fact is what the shell
-    # parses, so a newline that survived would inject a line and hide a failed run behind an
-    # injected status. Every text value is stripped in the SQL instead.
-    warning = "feed refused once\nstatus|succeeded"
-    write_rows("failed", {"healthy": True, "problems": [], "warnings": [warning]})
+    # The health record is JSON written by the run, but a value inside it can still carry a line
+    # break (a feed error message, a hand-edited row). One `key|value` line per fact is what the
+    # shell parses, so a line break that survived would print as a line of its own and a value
+    # shaped like `status|succeeded` would be read as a fact. A failed run is the case that matters:
+    # that injected status would turn the FAIL into a pass.
+    write_rows("failed", health)
     result = run_check()
     assert result.returncode == EXIT_BAD, result.stdout
     assert "last run failed" in result.stdout
-    # One WARN line, with the whole message on it: the injected text is part of the warning, and
-    # the newline became a space.
-    assert "WARN  feed refused once status|succeeded\n" in result.stdout
-    assert result.stdout.count("WARN") == 1, result.stdout
+    assert printed in result.stdout
+    assert result.stdout.count("WARN") == warns, result.stdout
+    assert "\r" not in result.stdout
     assert "\nsucceeded\n" not in result.stdout
 
 
