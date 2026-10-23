@@ -24,9 +24,10 @@ extras, merged across the pages and days of the call: counts take the maximum, t
 extras the first non-null value, the listing time the earliest. `HfPaper` lives in `domain.py` next
 to `Signals`, so the store consumes it without importing the HTTP client. The paging, caps, health
 flags and failure behaviour are unchanged, and a malformed extra becomes `None` instead of costing
-the row its upvotes. Numbers the int4 columns cannot hold are dropped and the organisation is
-clipped to the column width, in the client and again in the store, so one hostile value cannot fail
-the whole write.
+the row its upvotes. Numbers the int4 columns cannot hold are dropped, the organisation is
+clipped to the column width in the client and again in the store, and control or surrogate
+characters are rejected at the client. A value the database still refuses costs only that step,
+which is a warning, so one hostile value cannot fail the run.
 
 - **Extras on `items`.** `hf_comments`, `github_repo`, `github_stars`, `project_page`, `hf_org`
   and `hf_listed_at` are new nullable columns. Upvotes keep their existing rule (the stored value
@@ -46,13 +47,14 @@ the whole write.
   savepoint; a failure rolls back only the snapshot writes, logs the error type, and appends
   "hugging face extras not stored this run" to the health warnings. Extras are presentation data,
   so they must never cost an item an admission attempt or make the run unhealthy.
-- **Links are filtered at the source.** Only an https GitHub repository URL and an https project
-  page of at most 2,048 characters are kept; the page must name an https host with no whitespace,
-  control character or credentials, so a `javascript:` scheme, a look-alike host or a malformed
-  URL is stored as no link at all.
-- **Every listed stored arXiv item gets a snapshot, not only re-check targets.** The step covers
-  every stored arXiv item whose id is in the listing window, including peer-reviewed ones that
-  `recheck_targets` never revisits, so the Rising shelf can be built over the whole corpus.
+- **Links and names are filtered at the source.** Only an https GitHub repository URL and an
+  https project page of at most 2,048 characters are kept; the page must name an https host with
+  no whitespace, control character, surrogate or credentials, so a `javascript:` scheme, a
+  look-alike host, a malformed URL or a name the database cannot store becomes no value at all.
+- **Every listed stored arXiv item gets a snapshot when it first appears and whenever a number
+  changes, not only re-check targets.** The step covers every stored arXiv item whose id is in the
+  listing window, including peer-reviewed ones that `recheck_targets` never revisits, so the
+  Rising shelf can be built over the whole corpus.
 - **Ignored rows.** An item classified `irrelevant` and a listing id with no stored item are left
   alone. Follow-up passes never re-read the listing, so they write no snapshots.
 

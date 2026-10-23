@@ -692,3 +692,17 @@ def test_a_listing_never_touches_a_feed_item_with_the_same_id(db_session: Sessio
         )
         == 1
     )
+
+
+def test_snapshots_with_the_same_observed_at_order_by_id(db_session: Session) -> None:
+    # Two runs can share one `now` (a replay, or a test); the newest write must still be the one
+    # compared, so the id tie-break is descending and the third run stays quiet.
+    repo = Repository(db_session)
+    item_id = repo.record_classified(ITEM, "candidate", "agentic-engineering", 0.9)
+    assert repo.apply_hf_listing({"2510.00001": HfPaper(upvotes=10)}, at=NOW) == 1
+    assert repo.apply_hf_listing({"2510.00001": HfPaper(upvotes=20)}, at=NOW) == 1
+    assert repo.apply_hf_listing({"2510.00001": HfPaper(upvotes=20)}, at=NOW) == 0
+    snapshots = db_session.scalars(
+        select(SignalSnapshot).where(SignalSnapshot.item_id == item_id).order_by(SignalSnapshot.id)
+    ).all()
+    assert [snapshot.hf_upvotes for snapshot in snapshots] == [10, 20]

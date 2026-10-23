@@ -1,6 +1,7 @@
 """Hugging Face daily papers: community attention and the extras the listing carries."""
 
 import re
+import unicodedata
 from datetime import UTC, date, datetime, timedelta
 from typing import cast
 from urllib.parse import urlsplit
@@ -50,19 +51,27 @@ def _github_repo(value: object) -> str | None:
     return None
 
 
+def _has_unstorable_characters(value: str) -> bool:
+    # Postgres text cannot hold a control character and a lone surrogate cannot be encoded at
+    # all, so a name or a link carrying either is a bad extra, not a value to store.
+    return any(unicodedata.category(character) in ("Cc", "Cs") for character in value)
+
+
 def _project_page(value: object) -> str | None:
     if not isinstance(value, str) or len(value) > PROJECT_PAGE_MAX_CHARS:
         return None
     if not value.startswith("https://"):
         return None
-    # A stored link is only ever as safe as its shape: no whitespace and no control character
-    # (a page cannot contain them), and urlsplit must name an https host with no credentials.
-    if any(
-        character.isspace() or ord(character) < 0x20 or ord(character) == 0x7F
-        for character in value
-    ):
+    # A stored link is only ever as safe as its shape: no whitespace (the shared check catches
+    # control and surrogate characters), and urlsplit must name an https host with no credentials.
+    if _has_unstorable_characters(value) or any(character.isspace() for character in value):
         return None
-    parts = urlsplit(value)
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        # A malformed IPv6 or normalization-hostile host raises here; it is a bad page, not a
+        # failed day.
+        return None
     if parts.scheme != "https" or not parts.hostname or parts.username or parts.password:
         return None
     return value
@@ -76,7 +85,7 @@ def _organization(paper: dict[str, object], entry: dict[str, object]) -> str | N
         if isinstance(org, dict):
             for key in ("fullname", "name"):
                 value = org.get(key)
-                if isinstance(value, str) and value:
+                if isinstance(value, str) and value and not _has_unstorable_characters(value):
                     # The column holds HF_ORG_MAX_CHARS; clipping here keeps a long name from
                     # failing the write, and the store clips again for a caller that skips us.
                     return value[:HF_ORG_MAX_CHARS]

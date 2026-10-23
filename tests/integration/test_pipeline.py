@@ -358,10 +358,26 @@ def test_a_bad_extra_row_does_not_sink_the_listing_step(db_session: Session) -> 
     assert len(snapshots) == 1 and snapshots[0].github_stars == 42
 
 
+def test_a_surrogate_in_the_listing_is_a_warning_not_a_failed_run(db_session: Session) -> None:
+    # A lone surrogate cannot be encoded into the database at all, so psycopg raises a raw
+    # UnicodeEncodeError rather than a SQLAlchemyError. A value that skipped the client must still
+    # cost only the step, never the run.
+    src = fake_sources([paper("2510.1", "Agent harness")])
+    src.hf.papers.return_value = {"2510.1": HfPaper(upvotes=50, organization="a\ud800b")}
+    with capture_logs() as logs:
+        res = run(db_session, src)
+    assert res.status == "succeeded"
+    assert res.health is not None and res.health.healthy
+    assert "hugging face extras not stored this run" in res.health.warnings
+    [failed] = [entry for entry in logs if entry.get("event") == "hf_listing_not_stored"]
+    assert failed["error_type"] == "UnicodeEncodeError"
+
+
 def test_a_real_database_error_in_the_listing_step_is_a_warning(db_session: Session) -> None:
-    # Extras are presentation data: a write the database really refuses (Postgres text cannot hold
-    # a NUL byte) must not cost an item an admission attempt or make the run unhealthy, and the
-    # failure must be logged.
+    # Extras are presentation data: a write the database really refuses must not cost an item an
+    # admission attempt or make the run unhealthy, and the failure must be logged. The NUL is fed
+    # straight to the repository (stubbed papers, bypassing the client, which now rejects it), so
+    # the error comes from Postgres and not from a stub.
     src = fake_sources([paper("2510.1", "Agent harness")])
     src.hf.papers.return_value = {"2510.1": HfPaper(upvotes=50, organization="bad\x00org")}
     with capture_logs() as logs:

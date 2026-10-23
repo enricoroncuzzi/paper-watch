@@ -132,6 +132,8 @@ def test_hf_out_of_range_numbers_become_none() -> None:
         # An upvote count the column cannot hold skips the row, as a malformed one does.
         {"paper": {"id": "2510.00002", "upvotes": INT4_MAX + 1}},
         {"paper": {"id": "2510.00003", "upvotes": 7, "githubStars": INT4_MAX}},
+        # _as_int must also refuse a value int() cannot take at all.
+        {"paper": {"id": "2510.00004", "upvotes": 4, "githubStars": []}},
     ]
     respx.get(HF_URL).mock(return_value=httpx.Response(200, json=rows))
     out = HfDailySource(httpx.Client()).papers(date(2026, 10, 9), date(2026, 10, 9))
@@ -140,6 +142,8 @@ def test_hf_out_of_range_numbers_become_none() -> None:
     assert out["2510.00001"].comments is None
     assert "2510.00002" not in out
     assert out["2510.00003"].github_stars == INT4_MAX
+    assert out["2510.00004"].github_stars is None
+    assert out["2510.00004"].upvotes == 4
 
 
 @respx.mock
@@ -244,6 +248,29 @@ def test_hf_repo_link_rejects_a_look_alike_host_and_an_extra_path() -> None:
 
 
 @respx.mock
+def test_hf_rejects_control_and_surrogate_characters() -> None:
+    # Postgres text cannot hold NUL and a lone surrogate cannot be encoded at all; both are bad
+    # extras, so the row survives with the value dropped instead of failing the listing write.
+    rows = [
+        {"paper": {"id": "2510.00001", "upvotes": 1, "organization": {"name": "a\x00b"}}},
+        {"paper": {"id": "2510.00002", "upvotes": 1, "organization": {"name": "a\ud800b"}}},
+        {"paper": {"id": "2510.00003", "upvotes": 1, "projectPage": "https://a.com/\ud800"}},
+        {"paper": {"id": "2510.00004", "upvotes": 1, "projectPage": "https://a.com/\x00"}},
+    ]
+    # Raw content, escaped by json.dumps: the client's own JSON encoder refuses a lone surrogate.
+    body = json.dumps(rows).encode()
+    respx.get(HF_URL).mock(return_value=httpx.Response(200, content=body))
+    src = HfDailySource(httpx.Client())
+    out = src.papers(date(2026, 10, 9), date(2026, 10, 9))
+    assert out["2510.00001"].organization is None
+    assert out["2510.00002"].organization is None
+    assert out["2510.00003"].project_page is None
+    assert out["2510.00004"].project_page is None
+    assert all(paper.upvotes == 1 for paper in out.values())
+    assert src.degraded is False
+
+
+@respx.mock
 def test_hf_project_page_length_boundary_and_hostile_shapes() -> None:
     # Both ends of the length bound are pinned, and a page must have a real https host: no
     # credentials, no whitespace and no control characters.
@@ -258,16 +285,29 @@ def test_hf_project_page_length_boundary_and_hostile_shapes() -> None:
         "2510.00005": "https://a\nb.example/c",
         "2510.00006": "https://user@example.com/c",
         "2510.00007": "https://example.com/\x00",
+        # A malformed host must not raise out of urlsplit and cost the whole day.
+        "2510.00008": "https://[::1/p",
+        "2510.00009": "https://[x]/p",
+        "2510.00010": "https://a.com\uff03@b.com/p",
+        # The scheme stays strictly the lowercase https the plan names.
+        "2510.00011": "HTTPS://example.com",
+        "2510.00012": "//]",
+        # DEL is a control character too, and a password-only URL still carries credentials.
+        "2510.00013": "https://example.com/\x7f",
+        "2510.00014": "https://:pw@example.com/c",
     }
     rows = [
         {"paper": {"id": pid, "upvotes": 1, "projectPage": page}} for pid, page in pages.items()
     ]
     respx.get(HF_URL).mock(return_value=httpx.Response(200, json=rows))
-    out = HfDailySource(httpx.Client()).papers(date(2026, 10, 9), date(2026, 10, 9))
+    src = HfDailySource(httpx.Client())
+    out = src.papers(date(2026, 10, 9), date(2026, 10, 9))
     assert out["2510.00001"].project_page == at_limit
-    for dropped in ("2510.00002", "2510.00003", "2510.00004", "2510.00005", "2510.00006"):
-        assert out[dropped].project_page is None
-    assert out["2510.00007"].project_page is None
+    for dropped in pages:
+        if dropped != "2510.00001":
+            assert out[dropped].project_page is None
+    # Every row survives a bad page, and the malformed host is a bad extra, not a failed day.
+    assert src.degraded is False
 
 
 @respx.mock

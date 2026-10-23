@@ -826,7 +826,9 @@ def run_ingestion(
                     with session.begin_nested():
                         counts["snapshots"] = repo.apply_hf_listing(papers, at=now)
                     session.commit()
-                except SQLAlchemyError as exc:
+                except (SQLAlchemyError, UnicodeError) as exc:
+                    # A lone surrogate raises UnicodeEncodeError before SQLAlchemy wraps it, so
+                    # the encoding failure is caught here too and stays a warning.
                     log.warning("hf_listing_not_stored", error_type=type(exc).__name__)
                     warnings.append("hugging face extras not stored this run")
 
