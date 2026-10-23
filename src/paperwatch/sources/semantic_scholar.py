@@ -45,16 +45,19 @@ def _no_known_ids(exc: httpx.HTTPStatusError) -> bool:
         return False
 
 
+def _refusal_details(exc: BaseException | None) -> tuple[int | None, str | None]:
+    # What the server said about a refusal, for the log: a transport error has neither.
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code, exc.response.headers.get("Retry-After")
+    return None, None
+
+
 def _log_refusal(state: RetryCallState) -> None:
     # One line per refused attempt, before the retry waits: the morning check reads these to
     # tell a congested hour from a blocked key, so the status, the server's Retry-After and the
     # wait actually taken are all on the line.
     exc = state.outcome.exception() if state.outcome is not None else None
-    status: int | None = None
-    retry_after: str | None = None
-    if isinstance(exc, httpx.HTTPStatusError):
-        status = exc.response.status_code
-        retry_after = exc.response.headers.get("Retry-After")
+    status, retry_after = _refusal_details(exc)
     log.warning(
         "s2_attempt_refused",
         status=status,
@@ -136,7 +139,8 @@ class SemanticScholarSource:
         self.checked_ids = set()
         self.refused_ids = set()
         out: dict[str, Signals] = {}
-        # Consecutive fully refused chunks; a chunk S2 answered any other way ends the streak.
+        # Consecutive fully refused chunks: a chunk that ends any other way, answered or a bug,
+        # ends the streak.
         refused_in_a_row = 0
         stopped = False
         for i in range(0, len(arxiv_ids), BATCH_SIZE):
@@ -230,15 +234,20 @@ class SemanticScholarSource:
                 self.degraded = True
                 self.failure = f"s2 chunk at {i}: {exc}"
                 if not is_retryable(exc):
+                    # A bug, not the pool refusing us, so it also ends the streak.
+                    refused_in_a_row = 0
                     log.warning("s2_lookup_failed", error=str(exc), count=len(chunk))
                 else:
                     # Every attempt was refused: the ids are still due, so the next pass asks
                     # again instead of them being recorded as checked with no signals.
+                    status, retry_after = _refusal_details(exc)
                     self.refused_ids.update(chunk)
                     refused_in_a_row += 1
                     log.warning(
                         "s2_chunk_refused",
                         error=str(exc),
+                        status=status,
+                        retry_after=retry_after,
                         ids=len(chunk),
                         refused_in_a_row=refused_in_a_row,
                     )

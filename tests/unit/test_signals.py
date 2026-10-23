@@ -774,6 +774,48 @@ def test_s2_logs_a_refused_chunk_and_the_stop(monkeypatch) -> None:
         src.lookup(ids)
     refused = [entry for entry in logs if entry["event"] == "s2_chunk_refused"]
     assert [entry["refused_in_a_row"] for entry in refused] == [1, 2]
+    # The status and Retry-After are structured fields, not only inside the error string.
+    assert {entry["status"] for entry in refused} == {503}
+    assert {entry["retry_after"] for entry in refused} == {None}
     [stop] = [entry for entry in logs if entry["event"] == "s2_stopped_asking"]
     assert stop["unasked"] == 500
     assert stop["refused_in_a_row"] == S2_REFUSED_CHUNKS
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    "bug",
+    [
+        pytest.param(lambda: httpx.Response(400), id="deterministic-4xx"),
+        pytest.param(
+            lambda: httpx.Response(200, json={"error": "Unrecognized field"}), id="non-list-body"
+        ),
+        pytest.param(
+            lambda: httpx.Response(400, json={"error": "No valid paper ids given"}),
+            id="unknown-400",
+        ),
+    ],
+)
+def test_s2_a_failure_that_is_not_a_refusal_ends_the_streak(monkeypatch, bug) -> None:
+    # Only a refusal carries the streak: a bug between two refusals must not stop the run, so the
+    # fourth chunk is still asked and only the two refused chunks are named.
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    asked = 0
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        nonlocal asked
+        asked += 1
+        count = len(json.loads(request.content)["ids"])
+        if asked == 6:  # the second chunk fails once, with the bug under test
+            return bug()
+        if asked == 12:  # the fourth chunk is answered
+            return httpx.Response(200, json=[None] * count)
+        return httpx.Response(429)  # chunks 1 and 3 are refused, 5 attempts each
+
+    route = respx.post(S2_BATCH_URL).mock(side_effect=responder)
+    ids = [f"2510.{i:05d}" for i in range(500 * 4)]
+    src = SemanticScholarSource(httpx.Client(), None, pause_s=0)
+    src.lookup(ids)
+    assert route.call_count == 12
+    assert src.refused_ids == set(ids[:500]) | set(ids[1000:1500])
+    assert set(ids[1500:]) <= src.checked_ids
