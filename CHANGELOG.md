@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.4](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.6.3...paperwatch-v0.6.4) (2026-10-23)
+
+
+### Documentation
+
+* **deploy:** give the admin the pg_hba and pg_ident steps for the database roles ([#27](https://github.com/enricoroncuzzi/paper-watch/issues/27)) ([2dbc235](https://github.com/enricoroncuzzi/paper-watch/commit/2dbc2353daa58b0f357e01310610d70cac9fa6c8))
+
 ## [0.6.3](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.6.2...paperwatch-v0.6.3) (2026-10-23)
 
 
