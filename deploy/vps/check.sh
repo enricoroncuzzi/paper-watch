@@ -26,12 +26,14 @@ backup_dir=${PW_CHECK_BACKUP_DIR:-$HOME/backups}
 # what makes a missed 06:00 run visible by 07:00. It is measured from the run's start, so a long
 # run does not delay the alarm, and an hour of duration still fits.
 max_run_age_s=${PW_CHECK_MAX_RUN_AGE_S:-90000}
-# This is the ingest unit's own TimeoutStartSec: a run still working at two hours is alive, one
-# past three hours has been killed by systemd (and the failed-unit line below says so). The row
-# stays 'running' until the next run closes it, so without this a dead morning would read as the
-# previous green run. The follow-up window (06:00 to 22:00) does not raise this limit: the run
-# finishes its row before it waits and rewrites it after every pass, so a waiting run is never
-# 'running', and a row older than three hours is still a run killed before its main pass ended.
+# Three hours is the expected ceiling for the main pass, not a kill switch: the unit's
+# TimeoutStartSec is 17 h now, so this limit is what names a run as stuck long before systemd
+# would act. Past it the row is reported as hung when the unit is still alive (the captain stops
+# it) or as killed when it is not. The row stays 'running' until the next run closes it, so
+# without this a dead morning would read as the previous green run. The follow-up window (06:00 to
+# 22:00) does not raise this limit: the run finishes its row before it waits and rewrites it after
+# every pass, so a waiting run is never 'running', and a row older than three hours is still a run
+# hung or dead before its main pass ended.
 max_running_s=${PW_CHECK_MAX_RUNNING_S:-10800}
 # A follow-up pass writes the row only when it starts waiting again, so between the moment its
 # `next_at` passes and that write the row still looks overdue. A pass is minutes (an S2 call with

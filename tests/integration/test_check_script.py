@@ -348,8 +348,10 @@ def test_check_fails_when_a_run_stayed_running(
 @pytest.mark.parametrize(
     ("running_for", "expected"),
     [
-        # The 3 h default, pinned from both sides so no other value can pass this pair. It matches
-        # the unit's TimeoutStartSec, so a run that is genuinely still working is not called dead.
+        # The 3 h default, pinned from both sides so no other value can pass this pair. It is the
+        # expected ceiling for the main pass, not the unit's timeout (17 h), so a run that is
+        # genuinely still working is not called dead and a hung one is named hours before systemd
+        # would act.
         (timedelta(hours=3, minutes=30), EXIT_BAD),
         (timedelta(hours=2, minutes=30), 0),
     ],
