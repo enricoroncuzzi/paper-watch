@@ -12,7 +12,8 @@ from sqlalchemy.orm import Session
 from paperwatch.config import ITEM_VENUE_MAX_CHARS, MAX_ITEM_ATTEMPTS, S2_RECHECK_SLACK
 from paperwatch.domain import AdmissionBasis, Signals, SourceItem, Tier
 from paperwatch.llm.embedder import FakeEmbedder
-from paperwatch.store.models import DeadLetter, Item, Run, TierHistory
+from paperwatch.sources.hf_daily import HfPaper
+from paperwatch.store.models import DeadLetter, Item, Run, SignalSnapshot, TierHistory
 from paperwatch.store.repository import Repository
 
 pytestmark = pytest.mark.integration
@@ -416,3 +417,106 @@ def test_an_over_long_venue_is_clipped_to_the_column(db_session: Session) -> Non
     assert merged.venue == long_venue[:ITEM_VENUE_MAX_CHARS]
     db_session.expire_all()
     assert db_session.get_one(Item, item_id).venue == long_venue[:ITEM_VENUE_MAX_CHARS]
+
+
+def test_apply_hf_listing_sets_extras_and_snapshots(db_session: Session) -> None:
+    # One write path: the extras land on the item and every changed reading leaves a snapshot, so
+    # momentum becomes a history instead of a running maximum.
+    repo = Repository(db_session)
+    item_id = repo.record_classified(ITEM, "candidate", "agentic-engineering", 0.9)
+    first = HfPaper(
+        upvotes=10,
+        comments=2,
+        github_repo="https://github.com/a/b",
+        github_stars=50,
+        project_page="https://example.com/p",
+        organization="MirroS",
+        listed_at=NOW - timedelta(days=2),
+    )
+    assert repo.apply_hf_listing({"2510.00001": first}, at=NOW) == 1
+    db_session.commit()
+    second = HfPaper(
+        upvotes=25,
+        comments=4,
+        github_repo="https://github.com/a/c",
+        github_stars=60,
+        project_page="https://example.com/q",
+        organization="MirroS",
+        listed_at=NOW - timedelta(days=1),
+    )
+    assert repo.apply_hf_listing({"2510.00001": second}, at=NOW + timedelta(days=1)) == 1
+    db_session.commit()
+    row = db_session.get_one(Item, item_id)
+    assert (
+        row.hf_upvotes,
+        row.hf_comments,
+        row.github_repo,
+        row.github_stars,
+        row.project_page,
+        row.hf_org,
+        row.hf_listed_at,
+    ) == (
+        25,
+        4,
+        "https://github.com/a/c",
+        60,
+        "https://example.com/q",
+        "MirroS",
+        NOW - timedelta(days=2),
+    )
+    snapshots = db_session.scalars(
+        select(SignalSnapshot)
+        .where(SignalSnapshot.item_id == item_id)
+        .order_by(SignalSnapshot.observed_at)
+    ).all()
+    assert [
+        (s.observed_at, s.hf_upvotes, s.hf_comments, s.github_stars, s.citation_count)
+        for s in snapshots
+    ] == [(NOW, 10, 2, 50, 0), (NOW + timedelta(days=1), 25, 4, 60, 0)]
+
+
+def test_apply_hf_listing_writes_no_snapshot_when_nothing_changed(db_session: Session) -> None:
+    # A run that sees the same numbers again is not a data point: only a change appends a row, so
+    # a long-listed paper does not write a flat line every morning.
+    repo = Repository(db_session)
+    repo.record_classified(ITEM, "candidate", "agentic-engineering", 0.9)
+    paper = HfPaper(upvotes=10, github_stars=50)
+    assert repo.apply_hf_listing({"2510.00001": paper}, at=NOW) == 1
+    db_session.commit()
+    assert repo.apply_hf_listing({"2510.00001": paper}, at=NOW + timedelta(days=1)) == 0
+    db_session.commit()
+    assert len(db_session.scalars(select(SignalSnapshot)).all()) == 1
+
+
+def test_apply_hf_listing_ignores_irrelevant_and_unknown_ids(db_session: Session) -> None:
+    # An irrelevant item was classified off-topic on purpose and a key with no item has nowhere to
+    # land; neither may grow a row or a snapshot.
+    repo = Repository(db_session)
+    item_id = repo.record_classified(ITEM, "irrelevant", None, 0.0)
+    paper = HfPaper(upvotes=10, github_stars=50)
+    assert repo.apply_hf_listing({"2510.00001": paper, "2510.99999": paper}, at=NOW) == 0
+    db_session.commit()
+    row = db_session.get_one(Item, item_id)
+    assert (row.hf_upvotes, row.github_stars) == (None, None)
+    assert db_session.scalars(select(SignalSnapshot)).all() == []
+
+
+def test_upvotes_in_items_never_go_down_but_stars_follow_the_listing(db_session: Session) -> None:
+    # Upvotes are evidence, so a lower reading is a lag and never undoes a stored one; stars are a
+    # snapshot of the repository right now, so the listing's newest number wins.
+    repo = Repository(db_session)
+    item_id = repo.record_classified(ITEM, "candidate", "agentic-engineering", 0.9)
+    repo.apply_hf_listing({"2510.00001": HfPaper(upvotes=30, github_stars=50)}, at=NOW)
+    db_session.commit()
+    repo.apply_hf_listing(
+        {"2510.00001": HfPaper(upvotes=20, github_stars=40)}, at=NOW + timedelta(days=1)
+    )
+    db_session.commit()
+    row = db_session.get_one(Item, item_id)
+    assert (row.hf_upvotes, row.github_stars) == (30, 40)
+    latest = db_session.scalars(
+        select(SignalSnapshot)
+        .where(SignalSnapshot.item_id == item_id)
+        .order_by(SignalSnapshot.observed_at.desc())
+    ).first()
+    assert latest is not None and (latest.hf_upvotes, latest.github_stars) == (30, 40)

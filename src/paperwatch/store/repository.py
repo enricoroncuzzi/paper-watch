@@ -6,12 +6,12 @@ or an embedding is refused by a check constraint.
 """
 
 import uuid
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from sqlalchemy import and_, case, func, or_, select, update
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.dialects.postgresql import distinct_on, insert
 from sqlalchemy.orm import Session, sessionmaker
 
 from paperwatch.config import (
@@ -21,7 +21,16 @@ from paperwatch.config import (
     S2_RECHECK_SLACK,
 )
 from paperwatch.domain import AdmissionBasis, Signals, SourceItem, Tier
-from paperwatch.store.models import ChatCall, DeadLetter, Item, Run, SourceCursor, TierHistory
+from paperwatch.sources.hf_daily import HfPaper
+from paperwatch.store.models import (
+    ChatCall,
+    DeadLetter,
+    Item,
+    Run,
+    SignalSnapshot,
+    SourceCursor,
+    TierHistory,
+)
 
 # Semantic Scholar reports the preprint server while a paper is only a preprint. A real venue,
 # once seen, is never replaced by one of these, so a temporary answer cannot erase an acceptance.
@@ -211,6 +220,80 @@ class Repository:
             row.hf_upvotes = max(row.hf_upvotes or 0, fresh.hf_upvotes)
         self._s.flush()
         return _signals(row)
+
+    def apply_hf_listing(self, papers: Mapping[str, HfPaper], *, at: datetime) -> int:
+        """Store the listing extras on stored arXiv items and append changed signal snapshots.
+
+        Returns the number of snapshots written. One read for the items and one for their latest
+        snapshots keeps this a fixed cost per run however many papers the window lists.
+        """
+        if not papers:
+            return 0
+        rows = self._s.scalars(
+            select(Item).where(Item.source == "arxiv", Item.external_id.in_(list(papers)))
+        ).all()
+        # An irrelevant item was classified off-topic on purpose; giving it presentation data
+        # would only make it look like a corpus candidate.
+        rows = [row for row in rows if row.status != "irrelevant"]
+        if not rows:
+            return 0
+        latest: dict[uuid.UUID, SignalSnapshot] = {}
+        for snapshot in self._s.scalars(
+            select(SignalSnapshot)
+            .where(SignalSnapshot.item_id.in_([row.id for row in rows]))
+            # DISTINCT ON keeps the newest row per item, so the comparison costs one query.
+            .ext(distinct_on(SignalSnapshot.item_id))
+            .order_by(
+                SignalSnapshot.item_id, SignalSnapshot.observed_at.desc(), SignalSnapshot.id.desc()
+            )
+        ):
+            latest[snapshot.item_id] = snapshot
+        written = 0
+        for row in rows:
+            paper = papers[row.external_id]
+            # Upvotes are evidence, so a lower reading is a lag; the extras describe the paper
+            # right now, so the newest non-null reading wins. A missing extra keeps the stored one.
+            row.hf_upvotes = max(row.hf_upvotes or 0, paper.upvotes)
+            if paper.comments is not None:
+                row.hf_comments = paper.comments
+            if paper.github_repo is not None:
+                row.github_repo = paper.github_repo
+            if paper.github_stars is not None:
+                row.github_stars = paper.github_stars
+            if paper.project_page is not None:
+                row.project_page = paper.project_page
+            if paper.organization is not None:
+                row.hf_org = paper.organization
+            if paper.listed_at is not None and (
+                row.hf_listed_at is None or paper.listed_at < row.hf_listed_at
+            ):
+                row.hf_listed_at = paper.listed_at
+            current = (row.hf_upvotes, row.hf_comments, row.github_stars, row.citation_count)
+            previous = latest.get(row.id)
+            if (
+                previous is not None
+                and (
+                    previous.hf_upvotes,
+                    previous.hf_comments,
+                    previous.github_stars,
+                    previous.citation_count,
+                )
+                == current
+            ):
+                continue
+            self._s.add(
+                SignalSnapshot(
+                    item_id=row.id,
+                    observed_at=at,
+                    hf_upvotes=row.hf_upvotes,
+                    hf_comments=row.hf_comments,
+                    github_stars=row.github_stars,
+                    citation_count=row.citation_count,
+                )
+            )
+            written += 1
+        self._s.flush()
+        return written
 
     def admit_item(
         self,

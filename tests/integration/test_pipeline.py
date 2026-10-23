@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from sqlalchemy import Engine, select, text
 from sqlalchemy.engine import Connection
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from structlog.testing import capture_logs
 
@@ -41,8 +42,9 @@ from paperwatch.llm.classifier import Classifier, FakeClassifier
 from paperwatch.llm.embedder import Embedder, FakeEmbedder
 from paperwatch.llm.ledger import Ledger
 from paperwatch.sources.feeds import Feed
+from paperwatch.sources.hf_daily import HfPaper
 from paperwatch.store.db import make_session_factory
-from paperwatch.store.models import DeadLetter, Item, Run, TierHistory
+from paperwatch.store.models import DeadLetter, Item, Run, SignalSnapshot, TierHistory
 from paperwatch.store.repository import Repository
 
 pytestmark = pytest.mark.integration
@@ -150,7 +152,7 @@ def fake_sources(papers: list[SourceItem], feed_items: list[SourceItem] | None =
     s.s2.degraded, s.s2.failure = False, None
     # A non-refusal answer problem (a shape anomaly); like the real client, it describes one call.
     s.s2.anomaly = None
-    s.hf.upvotes.return_value = {p.external_id: 50 for p in papers}
+    s.hf.papers.return_value = {p.external_id: HfPaper(upvotes=50) for p in papers}
     s.s2.lookup.return_value = {}
     s.s2.refused = set()  # ids whose Semantic Scholar chunk the stub refuses
     s.s2.refused_ids = set()  # like the real client, reset on every lookup
@@ -255,7 +257,7 @@ def test_rerun_is_idempotent_and_refreshes_signals(db_session: Session) -> None:
 def test_rerun_does_not_reclassify_rejected_papers(db_session: Session) -> None:
     clf = CountingClassifier()
     src = fake_sources([paper("2510.1", "Agent harness"), off_topic("2510.2")])
-    src.hf.upvotes.return_value = {}  # no evidence: 2510.1 stays a candidate
+    src.hf.papers.return_value = {}  # no evidence: 2510.1 stays a candidate
     for day in range(8):  # the whole announcement-lag overlap re-sends both papers daily
         run(db_session, src, now=NOW + timedelta(days=day), classifier=clf)
     assert clf.calls == 2
@@ -265,14 +267,14 @@ def test_rerun_does_not_reclassify_rejected_papers(db_session: Session) -> None:
 
 def test_candidate_admitted_when_upvotes_arrive_late(db_session: Session) -> None:
     src = fake_sources([paper("2510.1", "Agent harness")])
-    src.hf.upvotes.return_value = {"2510.1": 3}
+    src.hf.papers.return_value = {"2510.1": HfPaper(upvotes=3)}
     first = run(db_session, src)
     assert first.counts["stored"] == 0 and row(db_session, "2510.1").status == "candidate"
     day20 = NOW + timedelta(days=20)
     src.arxiv.papers = []  # long out of the arXiv fetch window
-    src.hf.upvotes.return_value = {"2510.1": 14}
+    src.hf.papers.return_value = {"2510.1": HfPaper(upvotes=14)}
     res = run(db_session, src, now=day20)
-    assert src.hf.upvotes.call_args.args == ((day20 - HF_RECHECK_HORIZON).date(), day20.date())
+    assert src.hf.papers.call_args.args == ((day20 - HF_RECHECK_HORIZON).date(), day20.date())
     assert res.counts["admitted_late"] == 1 and res.counts["stored"] == 1
     r = row(db_session, "2510.1")
     assert (r.status, r.tier, r.hf_upvotes) == ("admitted", "vetted_preprint", 14)
@@ -286,12 +288,72 @@ def test_candidate_admitted_when_upvotes_arrive_late(db_session: Session) -> Non
     assert h.evidence["hf_upvotes"] == 14
 
 
+def test_a_run_stores_hf_extras_for_listed_papers(db_session: Session) -> None:
+    # The listing step is the one write that turns the daily page into stored extras and a
+    # snapshot, so the page and the ranking read them without another request.
+    src = fake_sources([paper("2510.1", "Agent harness")])
+    src.hf.papers.return_value = {
+        "2510.1": HfPaper(
+            upvotes=50,
+            comments=4,
+            github_repo="https://github.com/a/b",
+            github_stars=120,
+            project_page="https://example.com/p",
+            organization="MirroS",
+            listed_at=NOW - timedelta(days=1),
+        )
+    }
+    res = run(db_session, src)
+    assert res.counts["snapshots"] == 1
+    r = row(db_session, "2510.1")
+    assert (
+        r.hf_upvotes,
+        r.hf_comments,
+        r.github_repo,
+        r.github_stars,
+        r.project_page,
+        r.hf_org,
+        r.hf_listed_at,
+    ) == (
+        50,
+        4,
+        "https://github.com/a/b",
+        120,
+        "https://example.com/p",
+        "MirroS",
+        NOW - timedelta(days=1),
+    )
+    [snapshot] = db_session.scalars(
+        select(SignalSnapshot).where(SignalSnapshot.item_id == r.id)
+    ).all()
+    assert (snapshot.observed_at, snapshot.hf_upvotes, snapshot.github_stars) == (NOW, 50, 120)
+
+
+def test_a_failing_listing_step_is_a_warning_not_a_failure(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Extras are presentation data: a write that fails must not cost an item an admission attempt
+    # or make the morning check say the run is unhealthy.
+    src = fake_sources([paper("2510.1", "Agent harness")])
+    src.hf.papers.return_value = {"2510.1": HfPaper(upvotes=50)}
+
+    def broken(self: Repository, papers: object, *, at: datetime) -> int:
+        raise SQLAlchemyError("listing store is down")
+
+    monkeypatch.setattr(Repository, "apply_hf_listing", broken)
+    res = run(db_session, src)
+    assert res.status == "succeeded"
+    assert res.health is not None and res.health.healthy
+    assert "hugging face extras not stored this run" in res.health.warnings
+    assert [item.admit_attempts for item in db_session.scalars(select(Item)).all()] == [0]
+
+
 def test_lab_report_admitted_same_day_then_basis_improves(db_session: Session) -> None:
     # A lab team's report is admitted on day one by authorship; when community evidence
     # arrives the tier stays, but the recorded basis says it is no longer authority alone.
     lab = dataclasses.replace(paper("2510.1", "Agent harness"), authors=("DeepSeek-AI",))
     src = fake_sources([lab])
-    src.hf.upvotes.return_value = {}
+    src.hf.papers.return_value = {}
     first = run(db_session, src)
     assert first.counts["stored"] == 1
     assert (row(db_session, "2510.1").tier, row(db_session, "2510.1").admission_basis) == (
@@ -300,7 +362,7 @@ def test_lab_report_admitted_same_day_then_basis_improves(db_session: Session) -
     )
     day3 = NOW + timedelta(days=3)
     src.arxiv.papers = []
-    src.hf.upvotes.return_value = {"2510.1": 120}
+    src.hf.papers.return_value = {"2510.1": HfPaper(upvotes=120)}
     res = run(db_session, src, now=day3)
     assert res.counts["basis_improved"] == 1 and res.counts["promoted"] == 0
     assert row(db_session, "2510.1").admission_basis == "hf_upvotes"
@@ -314,7 +376,7 @@ def test_lab_report_admitted_same_day_then_basis_improves(db_session: Session) -
 
 def test_vetted_preprint_promoted_when_venue_appears_months_later(db_session: Session) -> None:
     src = fake_sources([paper("2510.1", "Agent harness")])
-    src.hf.upvotes.return_value = {}
+    src.hf.papers.return_value = {}
     src.s2.lookup.return_value = {"2510.1": Signals(venue="arXiv.org", citation_count=6)}
     run(db_session, src)
     day90 = NOW + timedelta(days=90)
@@ -336,7 +398,7 @@ def test_vetted_preprint_promoted_when_venue_appears_months_later(db_session: Se
 
 def test_signal_outage_never_demotes(db_session: Session) -> None:
     src = fake_sources([paper("2510.1", "Agent harness"), paper("2510.2", "Coding agent")])
-    src.hf.upvotes.return_value = {}
+    src.hf.papers.return_value = {}
     src.s2.lookup.return_value = {
         "2510.1": Signals(venue="ICLR"),
         "2510.2": Signals(citation_count=6),
@@ -378,7 +440,7 @@ def test_recheck_respects_horizons_and_skips_peer_reviewed(db_session: Session) 
     db_session.commit()
     src = fake_sources([])
     # Featured on its third day: that listing date is still inside the 30-day re-read.
-    src.hf.upvotes.return_value = {"2510.31": 12}
+    src.hf.papers.return_value = {"2510.31": HfPaper(upvotes=12)}
     run(db_session, src)
     [ids] = src.s2.lookup.call_args.args
     assert ids == ["2510.31"]
@@ -397,7 +459,7 @@ def test_each_target_is_looked_up_once_per_run(db_session: Session) -> None:
 def test_s2_refused_chunk_stays_due(db_session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
     # Keyless: a refused chunk or a capped run delays a paper's evidence, never loses it.
     src = fake_sources([paper("2510.1", "Agent harness"), paper("2510.2", "Coding agent")])
-    src.hf.upvotes.return_value = {}  # no evidence: both stay candidates, checked daily
+    src.hf.papers.return_value = {}  # no evidence: both stay candidates, checked daily
     run(db_session, src)
     day1 = NOW + timedelta(days=1)
     src.arxiv.papers = []
@@ -449,7 +511,9 @@ def test_new_arxiv_version_replaces_text_without_reclassifying(db_session: Sessi
     day1 = datetime(2026, 10, 5, 6, tzinfo=UTC)
     day3 = datetime(2026, 10, 7, 6, tzinfo=UTC)
     src = fake_sources([])
-    src.hf.upvotes.return_value = {"2510.1": 50}  # admitted, so the v2 text is re-embedded
+    src.hf.papers.return_value = {
+        "2510.1": HfPaper(upvotes=50)
+    }  # admitted, so the v2 text is re-embedded
     # v1 is announced on day 1 and v2 only on day 3, not served on every day.
     src.arxiv.harvest.side_effect = _pages_for({day1.date(): [[v1]], day3.date(): [[v2]]})
     run(db_session, src, now=day1, since_override=day1, classifier=clf, embedder=emb)
@@ -629,7 +693,7 @@ def test_failed_source_window_is_replayed_next_run(db_session: Session) -> None:
     assert pinned == datetime(2026, 10, 5, tzinfo=UTC)  # midnight of the first missed day
     src.arxiv.harvest.side_effect = _serve_papers(src)
     src.arxiv.papers = [paper("2510.5", "Coding agent")]
-    src.hf.upvotes.return_value = {"2510.5": 50}
+    src.hf.papers.return_value = {"2510.5": HfPaper(upvotes=50)}
     before = src.arxiv.harvest.call_count
     second = run(db_session, src, now=NOW + timedelta(days=7))
     days = [c.args[0] for c in src.arxiv.harvest.call_args_list[before:]]
@@ -960,7 +1024,7 @@ def test_failure_on_a_later_page_keeps_completed_days_and_replays(db_session: Se
             yield [page2]
 
     src.arxiv.harvest.side_effect = replay
-    src.hf.upvotes.return_value = {"2510.4": 50}
+    src.hf.papers.return_value = {"2510.4": HfPaper(upvotes=50)}
     res = run(db_session, src, now=NOW + timedelta(days=1))
     assert set(db_session.scalars(select(Item.external_id))) == {
         "2510.1",
@@ -1020,7 +1084,7 @@ def test_crash_between_pages_loses_nothing(db_session: Session) -> None:
         run(db_session, src)
     # The page parked before the crash is picked up by the next run and admitted once.
     src.arxiv.harvest.side_effect = _pages_for({})
-    src.hf.upvotes.return_value = {"2510.77": 50}
+    src.hf.papers.return_value = {"2510.77": HfPaper(upvotes=50)}
     res = run(db_session, src, now=NOW + timedelta(days=1))
     assert row(db_session, "2510.77").status == "admitted" and res.status == "succeeded"
 
@@ -1276,7 +1340,7 @@ def test_daily_runs_over_a_week_lose_nothing(db_session: Session) -> None:
 
     src = fake_sources([], feed_items=[blog("p1")])
     src.arxiv.harvest.side_effect = announced
-    src.hf.upvotes.return_value = {eid: 50 for eid, _ in catalogue}
+    src.hf.papers.return_value = {eid: HfPaper(upvotes=50) for eid, _ in catalogue}
     statuses = []
     for day in range(7):
         now = day0 + timedelta(days=day)
@@ -1539,10 +1603,10 @@ def test_no_transaction_is_open_during_a_source_fetch(db_session: Session) -> No
         # Items on the first feed, so its cursor write is pending when the second fetch starts.
         return [blog("p1")] if feed.url == FEED.url else []
 
-    def upvotes(since: date, until: date) -> dict[str, int]:
+    def papers(since: date, until: date) -> dict[str, HfPaper]:
         checked.append("hf")
         in_transaction.append(("hf", db_session.in_transaction()))
-        return {"2510.1": 50}
+        return {"2510.1": HfPaper(upvotes=50)}
 
     def lookup(ids: list[str]) -> dict[str, Signals]:
         checked.append("s2")
@@ -1553,7 +1617,7 @@ def test_no_transaction_is_open_during_a_source_fetch(db_session: Session) -> No
     src.feed_list = [FEED, OTHER_FEED]
     src.arxiv.harvest.side_effect = harvest
     src.feeds.fetch_one.side_effect = feed
-    src.hf.upvotes.side_effect = upvotes
+    src.hf.papers.side_effect = papers
     src.s2.lookup.side_effect = lookup
     res = run(db_session, src)
     assert res.status == "succeeded" and res.health is not None and res.health.healthy
@@ -1768,7 +1832,7 @@ def test_a_refused_paper_is_admitted_in_the_first_follow_up_pass(db_session: Ses
     # The morning refusal clears before the first retry: the paper's own venue admits it, the run
     # ends healthy, and no day of evidence is lost.
     src = fake_sources([paper("2510.1", "Agent harness"), paper("2510.2", "Coding agent")])
-    src.hf.upvotes.return_value = {}
+    src.hf.papers.return_value = {}
     src.s2.lookup.return_value = S2_VENUE
     src.s2.refused, src.s2.degraded, src.s2.failure = {"2510.2"}, True, "HTTP 429 after 5 attempts"
     sleeps, wall, sleep = travelling_clock(NOW)
@@ -1802,7 +1866,7 @@ def test_a_pass_check_is_stamped_with_the_runs_now_and_due_the_next_day(
     # The pass runs at 06:05 but stamps `s2_checked_at` with the run's 06:00 `now`, so the daily
     # cadence is unchanged and the next run finds the paper due, not skipped for a day.
     src = fake_sources([paper("2510.2", "Coding agent")])
-    src.hf.upvotes.return_value = {}
+    src.hf.papers.return_value = {}
     src.s2.lookup.return_value = {}  # answered, but no venue or citations yet: still a candidate
     src.s2.refused, src.s2.degraded = {"2510.2"}, True
     _sleeps, wall, sleep = travelling_clock(NOW)
@@ -1827,7 +1891,7 @@ def test_a_refusal_that_never_clears_ends_at_the_end_of_the_day(db_session: Sess
     # 30, and the loop stops when the next pass would start after 22:00 Europe/Rome. The first day
     # of an S2 outage is a warning, like one missed lab-feed day.
     src = fake_sources([paper("2510.1", "Agent harness")])
-    src.hf.upvotes.return_value = {}
+    src.hf.papers.return_value = {}
     src.s2.degraded, src.s2.failure = True, "HTTP 429 after 5 attempts"
     sleeps, wall, sleep = travelling_clock(NOW)
     res = run(db_session, src, followup=True, sleep=sleep, clock=lambda: wall[0])
@@ -1856,7 +1920,7 @@ def test_a_second_day_of_refusals_is_a_failure(db_session: Session) -> None:
     # The s2/signals letter was opened by an earlier run: this is the second day in a row, so the
     # run is degraded and unhealthy, the same shape as a lab feed's second missed day.
     src = fake_sources([paper("2510.1", "Agent harness")])
-    src.hf.upvotes.return_value = {}
+    src.hf.papers.return_value = {}
     src.s2.degraded, src.s2.failure = True, "HTTP 429 after 5 attempts"
     first = run(db_session, src)
     assert first.status == "partial"  # without --followup nothing waits
@@ -1882,7 +1946,7 @@ def test_a_second_day_of_refusals_is_a_failure(db_session: Session) -> None:
 def test_the_pass_cap_stops_a_loop_that_never_reaches_its_deadline(db_session: Session) -> None:
     # A clock that never reaches 22:00 (a frozen test clock) leaves the pass cap as the only bound.
     src = fake_sources([paper("2510.1", "Agent harness")])
-    src.hf.upvotes.return_value = {}
+    src.hf.papers.return_value = {}
     src.s2.degraded, src.s2.failure = True, "HTTP 429 after 5 attempts"
     sleeps: list[float] = []
     res = run(db_session, src, followup=True, sleep=sleeps.append)
@@ -1906,7 +1970,7 @@ def test_a_follow_up_pass_fetches_nothing(db_session: Session) -> None:
     # A pass retries Semantic Scholar only: arXiv, the feeds, Hugging Face and the classifier ran
     # once, at 06:00, and are never repeated. Proved by the call counts recorded across passes.
     src = fake_sources([paper("2510.1", "Agent harness"), paper("2510.2", "Coding agent")])
-    src.hf.upvotes.return_value = {}
+    src.hf.papers.return_value = {}
     src.s2.lookup.return_value = S2_VENUE
     src.s2.refused, src.s2.degraded = {"2510.2"}, True
     calls: list[tuple[int, int, int]] = []
@@ -1917,7 +1981,7 @@ def test_a_follow_up_pass_fetches_nothing(db_session: Session) -> None:
             (
                 src.arxiv.harvest.call_count,
                 src.feeds.fetch_one.call_count,
-                src.hf.upvotes.call_count,
+                src.hf.papers.call_count,
             )
         )
         left[0] -= 1
@@ -1972,7 +2036,7 @@ def test_the_lock_is_held_and_the_row_is_finished_while_waiting(
     # is finished with a provisional verdict, never 'running', so the morning check reads a run
     # that is waiting rather than one that hung.
     src = fake_sources([paper("2510.2", "Coding agent")])
-    src.hf.upvotes.return_value = {}
+    src.hf.papers.return_value = {}
     src.s2.lookup.return_value = S2_VENUE
     src.s2.refused, src.s2.degraded = {"2510.2"}, True
     seen: dict[str, object] = {}
@@ -2017,7 +2081,7 @@ def test_a_pass_that_admits_nothing_does_not_rebuild_the_models(db_session: Sess
     import weakref
 
     src = fake_sources([paper("2510.2", "Coding agent")])
-    src.hf.upvotes.return_value = {}
+    src.hf.papers.return_value = {}
     src.s2.lookup.return_value = {}  # S2 answers, but has no venue or citations yet
     src.s2.refused, src.s2.degraded = {"2510.2"}, True
     refs: list[weakref.ref[FakeEmbedder]] = []
@@ -2055,7 +2119,7 @@ def test_a_pass_that_admits_something_rebuilds_the_models(db_session: Session) -
     import weakref
 
     src = fake_sources([paper("2510.2", "Coding agent")])
-    src.hf.upvotes.return_value = {}
+    src.hf.papers.return_value = {}
     src.s2.lookup.return_value = S2_VENUE  # a venue: the pass admits a first time, so it embeds
     src.s2.refused, src.s2.degraded = {"2510.2"}, True
     refs: list[weakref.ref[FakeEmbedder]] = []
@@ -2090,7 +2154,7 @@ def test_an_exception_inside_the_loop_still_fails_the_run(db_session: Session) -
     # The loop runs inside the run's try: a SystemExit or KeyboardInterrupt between passes must
     # still close the row as failed, not leave it waiting forever.
     src = fake_sources([paper("2510.2", "Coding agent")])
-    src.hf.upvotes.return_value = {}
+    src.hf.papers.return_value = {}
     src.s2.refused, src.s2.degraded = {"2510.2"}, True
     api_call = src.s2.lookup.side_effect
     calls = {"n": 0}
@@ -2113,7 +2177,7 @@ def test_a_pass_that_succeeds_late_in_the_window_still_rescues_the_day(db_sessio
     # The field evidence (2026-10-23): S2 refused at 06:03 and again at 09:52, so a burst can last
     # hours. A pass late in the window must still recover the day and leave it healthy.
     src = fake_sources([paper("2510.2", "Coding agent")])
-    src.hf.upvotes.return_value = {}
+    src.hf.papers.return_value = {}
     src.s2.lookup.return_value = S2_VENUE
     src.s2.refused, src.s2.degraded = {"2510.2"}, True
     sleeps, wall, sleep = travelling_clock(NOW)
@@ -2138,7 +2202,7 @@ def test_a_run_started_after_the_deadline_takes_no_pass(db_session: Session) -> 
     # window closes, so the run waits for nothing and says so; the refused papers stay due.
     late = datetime(2026, 10, 12, 21, tzinfo=UTC)  # 23:00 in Rome, past the 22:00 deadline
     src = fake_sources([paper("2510.2", "Coding agent")])
-    src.hf.upvotes.return_value = {}
+    src.hf.papers.return_value = {}
     src.s2.degraded, src.s2.failure = True, "HTTP 429 after 5 attempts"
     sleeps: list[float] = []
     res = run(db_session, src, now=late, followup=True, sleep=sleeps.append)
@@ -2154,7 +2218,7 @@ def test_each_pass_logs_one_line_with_the_idle_footprint(db_session: Session) ->
     # per pass (never one per attempt from the pipeline's side), carrying the waiting process's RSS,
     # plus one line when the loop ends.
     src = fake_sources([paper("2510.2", "Coding agent")])
-    src.hf.upvotes.return_value = {}
+    src.hf.papers.return_value = {}
     src.s2.lookup.return_value = S2_VENUE
     src.s2.refused, src.s2.degraded = {"2510.2"}, True
     left = [3]
@@ -2182,7 +2246,7 @@ def test_an_early_start_cannot_outlive_the_unit_timeout(db_session: Session) -> 
     rome = ZoneInfo("Europe/Rome")
     start = datetime(2026, 10, 13, 0, 30, tzinfo=rome).astimezone(UTC)
     src = fake_sources([paper("2510.2", "Coding agent")])
-    src.hf.upvotes.return_value = {}
+    src.hf.papers.return_value = {}
     src.s2.degraded, src.s2.failure = True, "HTTP 429 after 5 attempts"
     sleeps, wall, sleep = travelling_clock(start)
     res = run(db_session, src, now=start, followup=True, sleep=sleep, clock=lambda: wall[0])
@@ -2203,7 +2267,7 @@ def test_a_pass_starting_exactly_at_the_deadline_does_not_run(db_session: Sessio
     rome = ZoneInfo("Europe/Rome")
     start = datetime(2026, 10, 12, 21, 55, tzinfo=rome).astimezone(UTC)
     src = fake_sources([paper("2510.2", "Coding agent")])
-    src.hf.upvotes.return_value = {}
+    src.hf.papers.return_value = {}
     src.s2.degraded, src.s2.failure = True, "HTTP 429 after 5 attempts"
     sleeps: list[float] = []
     res = run(db_session, src, now=start, followup=True, sleep=sleeps.append)
@@ -2233,7 +2297,7 @@ def test_a_rebuild_failure_in_a_pass_fails_the_run_not_the_item(db_session: Sess
     # The pair released before the wait cannot be built again: that is the run's failure, not an
     # admission failure charged to the paper the pass was about to admit.
     src = fake_sources([paper("2510.2", "Coding agent")])
-    src.hf.upvotes.return_value = {}
+    src.hf.papers.return_value = {}
     src.s2.lookup.return_value = S2_VENUE
     src.s2.refused, src.s2.degraded = {"2510.2"}, True
     builds = {"n": 0}
@@ -2274,7 +2338,7 @@ def test_an_anomaly_is_not_masked_by_a_recovered_refusal(db_session: Session) ->
     # cannot read. The pass clears the refusal; the anomaly is not a throttle, so the run stays
     # degraded instead of reading healthy (the reviewer's masking probe, inverted).
     src = fake_sources([paper("2510.1", "Agent harness"), paper("2510.2", "Coding agent")])
-    src.hf.upvotes.return_value = {}
+    src.hf.papers.return_value = {}
     src.s2.lookup.return_value = {}
     src.s2.refused = {"2510.2"}
     src.s2.degraded = True
@@ -2306,7 +2370,7 @@ def test_a_pass_asks_only_the_refused_ids(db_session: Session) -> None:
             paper("2510.3", "Tool use survey"),
         ]
     )
-    src.hf.upvotes.return_value = {}
+    src.hf.papers.return_value = {}
     src.s2.refused, src.s2.degraded = {"2510.2"}, True
     # S2 knows 2510.1, refuses 2510.2 and has never heard of 2510.3 (it is omitted from the answer).
     unknown = {"2510.3"}
@@ -2336,7 +2400,7 @@ def test_an_id_s2_does_not_know_never_starts_a_loop(db_session: Session) -> None
     # An id S2 leaves out of an otherwise fine answer is not a refusal: it stays unchecked and due,
     # but it must never open a window of retries that could not possibly help.
     src = fake_sources([paper("2510.2", "Coding agent")])
-    src.hf.upvotes.return_value = {}
+    src.hf.papers.return_value = {}
 
     def unknown(ids: list[str]) -> dict[str, Signals]:
         src.s2.checked_ids = set()  # omitted from the answer
@@ -2356,7 +2420,7 @@ def test_no_transaction_is_open_while_waiting(db_session: Session) -> None:
     # The row is committed before the wait, not merely written: the morning check reads the
     # database through its own psql session, and an open transaction would hide the row for hours.
     src = fake_sources([paper("2510.2", "Coding agent")])
-    src.hf.upvotes.return_value = {}
+    src.hf.papers.return_value = {}
     src.s2.lookup.return_value = S2_VENUE
     src.s2.refused, src.s2.degraded = {"2510.2"}, True
 
@@ -2409,7 +2473,7 @@ def test_a_budget_stop_inside_a_pass_ends_the_loop(db_session: Session) -> None:
 
     ledger = Ledger(500)
     src = fake_sources([paper("2510.1", "Agent harness"), paper("2510.2", "Coding agent")])
-    src.hf.upvotes.return_value = {}  # nothing is admitted in the morning, so the budget survives
+    src.hf.papers.return_value = {}  # nothing is admitted in the morning, so the budget survives
     src.s2.lookup.return_value = S2_VENUE
     src.s2.refused, src.s2.degraded = {"2510.2"}, True
     sleeps, wall, sleep = travelling_clock(NOW)
@@ -2441,7 +2505,7 @@ def test_an_anomaly_that_first_appears_in_a_pass_survives_a_later_clean_one(
     # A pass can be the first to see the bad shape (its answer is short or unpaired) while a later
     # pass answers cleanly: the anomaly belongs to the run, so the day stays degraded.
     src = fake_sources([paper("2510.1", "Agent harness"), paper("2510.2", "Coding agent")])
-    src.hf.upvotes.return_value = {}
+    src.hf.papers.return_value = {}
     src.s2.refused, src.s2.degraded, src.s2.failure = {"2510.2"}, True, "HTTP 429 after 5 attempts"
     _sleeps, wall, sleep = travelling_clock(NOW)
     calls = {"n": 0}
@@ -2472,7 +2536,7 @@ def test_a_run_still_refused_at_the_deadline_keeps_an_anomaly_on_its_first_day(
     # The first day of a refusal is a warning, but an anomaly is not the refusal: it keeps the run
     # degraded, so the warning cannot make a month of bad answers look like a healthy morning.
     src = fake_sources([paper("2510.1", "Agent harness"), paper("2510.2", "Coding agent")])
-    src.hf.upvotes.return_value = {}
+    src.hf.papers.return_value = {}
     src.s2.refused, src.s2.degraded = {"2510.2"}, True
     src.s2.failure = "s2 chunk at 0: 400 rows for 500 ids"
     src.s2.anomaly = src.s2.failure
@@ -2487,7 +2551,7 @@ def test_a_recovered_pass_with_an_anomaly_closes_the_outage_letter(db_session: S
     # The source is answering again, so its outage letter closes; tomorrow's first refusal is a
     # first day, not a second one. The anomaly itself stays in this run's verdict.
     src = fake_sources([paper("2510.1", "Agent harness"), paper("2510.2", "Coding agent")])
-    src.hf.upvotes.return_value = {}
+    src.hf.papers.return_value = {}
     src.s2.refused, src.s2.degraded = {"2510.2"}, True
     src.s2.failure = "s2 chunk at 0: 400 rows for 500 ids"
     src.s2.anomaly = src.s2.failure
@@ -2511,7 +2575,7 @@ def test_the_window_cap_counts_from_the_start_not_from_the_end_of_the_main_pass(
     rome = ZoneInfo("Europe/Rome")
     start = datetime(2026, 10, 13, 0, 30, tzinfo=rome).astimezone(UTC)
     src = fake_sources([paper("2510.2", "Coding agent")])
-    src.hf.upvotes.return_value = {}
+    src.hf.papers.return_value = {}
     src.s2.degraded, src.s2.failure = True, "HTTP 429 after 5 attempts"
     # The main pass takes two hours: the clock is already two hours past the run's `now`.
     sleeps, wall, sleep = travelling_clock(start + timedelta(hours=2))

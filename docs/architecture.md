@@ -38,9 +38,13 @@ run then dedupes against the store, classifies each new item once with the embed
 classifier, admits it by tier and quality signal, embeds the admitted text locally, and upserts it
 idempotently; the unique `(source, external_id)` key makes a replay insert nothing. After
 fetching, the run re-checks the evidence of candidate and vetted-preprint papers whose age makes
-them due and promotes them if it improved, then writes a run row with counts, tokens and a health
-verdict, advances each feed's cursor only when it fully succeeded and the arXiv cursor after each
-completed day, and releases the lock.
+them due and promotes them if it improved. The same Hugging Face listing carries more than
+upvotes, so after admission the run stores each listed paper's GitHub repo and stars, project
+page, comment count, organisation and listing time on the item, and appends a `signal_snapshots`
+row with the numbers (upvotes, comments, stars, citations) whenever they changed since that item's
+latest snapshot; a failure there is a warning, never an item's failed admission. It then writes a
+run row with counts, tokens and a health verdict, advances each feed's cursor only when it fully
+succeeded and the arXiv cursor after each completed day, and releases the lock.
 A source outage stops that source for the run, is recorded as a dead letter over the whole missed
 window, and makes the run `partial` without stopping the others; for a lab feed only a second miss
 in a row does, because the first miss is a health warning and the next run retries the same window,

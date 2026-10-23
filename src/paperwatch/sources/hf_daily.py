@@ -1,6 +1,9 @@
-"""Hugging Face daily papers: community attention as a quality signal."""
+"""Hugging Face daily papers: community attention and the extras the listing carries."""
 
-from datetime import date, timedelta
+import re
+from dataclasses import dataclass
+from datetime import UTC, date, datetime, timedelta
+from typing import cast
 
 import httpx
 import structlog
@@ -18,7 +21,117 @@ MAX_PAGES_PER_DAY = 20
 # outage, which a gateway answering 504 after a minute stretches to hours. The remaining days are
 # re-read by every run anyway, so stopping loses nothing.
 HF_FAILED_DAYS = 2
+# Only an https GitHub repository URL becomes a stored link: everything else (a javascript:
+# scheme, a look-alike host) is dropped at the source, so nothing downstream can render it.
+GITHUB_REPO = re.compile(r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/?")
+# Bounds a project-page link the way the daily page itself does; anything longer is a payload.
+PROJECT_PAGE_MAX_CHARS = 2048
 log = structlog.get_logger()
+
+
+@dataclass(frozen=True)
+class HfPaper:
+    """One paper as the daily listing describes it, merged across a whole window."""
+
+    upvotes: int
+    comments: int | None = None
+    github_repo: str | None = None
+    github_stars: int | None = None
+    project_page: str | None = None
+    organization: str | None = None
+    listed_at: datetime | None = None
+
+
+def _as_int(value: object) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(cast("str | int | float", value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _github_repo(value: object) -> str | None:
+    if isinstance(value, str) and GITHUB_REPO.fullmatch(value):
+        return value
+    return None
+
+
+def _project_page(value: object) -> str | None:
+    if (
+        isinstance(value, str)
+        and value.startswith("https://")
+        and len(value) <= PROJECT_PAGE_MAX_CHARS
+    ):
+        return value
+    return None
+
+
+def _organization(paper: dict[str, object], entry: dict[str, object]) -> str | None:
+    # The paper's own organisation is the one the listing attaches; the entry's is the fallback
+    # for a paper row that carries none, and `fullname` reads better than the slug.
+    for holder in (paper, entry):
+        org = holder.get("organization")
+        if isinstance(org, dict):
+            for key in ("fullname", "name"):
+                value = org.get(key)
+                if isinstance(value, str) and value:
+                    return value
+    return None
+
+
+def _listed_at(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        stamp = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    # A timestamp without a zone would be stored as a different instant depending on the server's
+    # time zone; the listing only ever sends UTC, so that is the honest reading.
+    return stamp if stamp.tzinfo is not None else stamp.replace(tzinfo=UTC)
+
+
+def _paper(entry: dict[str, object]) -> tuple[str, HfPaper] | None:
+    # A non-dict paper stays a day-level failure, like any other shape this client cannot read;
+    # the cast only tells mypy what the listing promises.
+    paper = cast("dict[str, object]", entry.get("paper") or {})
+    base = arxiv_base_id(str(paper.get("id") or ""))
+    if not base:
+        return None
+    upvotes = _as_int(paper.get("upvotes") or 0)
+    if upvotes is None:
+        # A single malformed row is skipped, not the whole day.
+        return None
+    return base, HfPaper(
+        upvotes=upvotes,
+        comments=_as_int(entry.get("numComments")),
+        github_repo=_github_repo(paper.get("githubRepo")),
+        github_stars=_as_int(paper.get("githubStars")),
+        project_page=_project_page(paper.get("projectPage")),
+        organization=_organization(paper, entry),
+        listed_at=_listed_at(paper.get("submittedOnDailyAt")),
+    )
+
+
+def _highest(left: int | None, right: int | None) -> int | None:
+    values = [value for value in (left, right) if value is not None]
+    return max(values) if values else None
+
+
+def _merge(old: HfPaper, new: HfPaper) -> HfPaper:
+    # Counts only grow across a window; an extra the newest page has not filled in yet keeps the
+    # value an older page carried, and the listing time is the earliest one seen.
+    listed = [stamp for stamp in (old.listed_at, new.listed_at) if stamp is not None]
+    return HfPaper(
+        upvotes=max(old.upvotes, new.upvotes),
+        comments=_highest(old.comments, new.comments),
+        github_repo=old.github_repo or new.github_repo,
+        github_stars=_highest(old.github_stars, new.github_stars),
+        project_page=old.project_page or new.project_page,
+        organization=old.organization or new.organization,
+        listed_at=min(listed) if listed else None,
+    )
 
 
 class HfDailySource:
@@ -28,11 +141,11 @@ class HfDailySource:
         self.degraded = False
         self.failure: str | None = None
 
-    def upvotes(self, since: date, until: date) -> dict[str, int]:
+    def papers(self, since: date, until: date) -> dict[str, HfPaper]:
         # The health flags describe this call only.
         self.degraded = False
         self.failure = None
-        out: dict[str, int] = {}
+        out: dict[str, HfPaper] = {}
         failed_in_a_row = 0
         # Newest first, so a day that fails for its own reason costs the least valuable days: the
         # listing that carries a fresh paper's upvotes is the newest one, and `out` merges with
@@ -65,7 +178,7 @@ class HfDailySource:
             day -= timedelta(days=1)
         return out
 
-    def _merge_day(self, out: dict[str, int], day: date) -> None:
+    def _merge_day(self, out: dict[str, HfPaper], day: date) -> None:
         page = 0
         seen_today: set[str] = set()
         while True:
@@ -83,20 +196,15 @@ class HfDailySource:
             new_ids = 0
             for entry in rows:
                 # A null paper is a bad row to skip, not a failed page.
-                paper = entry.get("paper") or {}
-                base = arxiv_base_id(str(paper.get("id") or ""))
-                if not base:
+                parsed = _paper(entry)
+                if parsed is None:
                     continue
-                try:
-                    upvotes = int(paper.get("upvotes") or 0)
-                except (TypeError, ValueError):
-                    # A single malformed row is skipped, not the whole day.
-                    continue
+                base, record = parsed
                 if base not in seen_today:
                     seen_today.add(base)
                     new_ids += 1
                 # Key by base id so a versioned id joins the stored arXiv item.
-                out[base] = max(out.get(base, 0), upvotes)
+                out[base] = _merge(out[base], record) if base in out else record
             if len(rows) < PAGE_SIZE:
                 break
             if new_ids == 0:

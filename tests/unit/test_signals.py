@@ -2,7 +2,7 @@
 
 import json
 import time
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import httpx
@@ -10,7 +10,7 @@ import pytest
 import respx
 from structlog.testing import capture_logs
 
-from paperwatch.sources.hf_daily import HF_URL, MAX_PAGES_PER_DAY, HfDailySource
+from paperwatch.sources.hf_daily import HF_URL, MAX_PAGES_PER_DAY, HfDailySource, HfPaper
 from paperwatch.sources.semantic_scholar import (
     S2_BATCH_URL,
     S2_REFUSED_CHUNKS,
@@ -19,8 +19,13 @@ from paperwatch.sources.semantic_scholar import (
 
 
 def _hf_row(pid: str, upvotes: int = 1) -> dict[str, object]:
-    # One daily_papers row; the client reads only paper.id and paper.upvotes.
+    # One daily_papers row; the client reads paper.id, its upvotes and the optional extras.
     return {"paper": {"id": pid, "upvotes": upvotes}}
+
+
+def _upvotes(out: dict[str, HfPaper]) -> dict[str, int]:
+    # The existing tests assert the upvote map; the client now also returns the extras.
+    return {key: paper.upvotes for key, paper in out.items()}
 
 
 @respx.mock
@@ -31,8 +36,136 @@ def test_hf_upvotes_by_base_id() -> None:
             200, json=json.loads(Path("tests/fixtures/hf_daily.json").read_text())
         )
     )
-    up = HfDailySource(httpx.Client()).upvotes(date(2026, 10, 9), date(2026, 10, 9))
-    assert up["2510.00001"] == 42
+    up = HfDailySource(httpx.Client()).papers(date(2026, 10, 9), date(2026, 10, 9))
+    assert up["2510.00001"].upvotes == 42
+
+
+@respx.mock
+def test_hf_papers_keep_the_extras() -> None:
+    # The daily listing carries the repo, stars, project page, comments and organisation; the
+    # client keeps them so the page and the ranking can use them without another request.
+    respx.get(HF_URL).mock(
+        return_value=httpx.Response(
+            200, json=json.loads(Path("tests/fixtures/hf_daily.json").read_text())
+        )
+    )
+    out = HfDailySource(httpx.Client()).papers(date(2026, 10, 9), date(2026, 10, 9))
+    assert out["2510.00001"] == HfPaper(
+        upvotes=42,
+        comments=3,
+        github_repo="https://github.com/MirroS-Lab/AgentGarten",
+        github_stars=156,
+        project_page="https://mirros-lab.github.io/agent-garten/",
+        organization="MirroS",
+        listed_at=datetime(2026, 10, 9, tzinfo=UTC),
+    )
+
+
+@respx.mock
+def test_hf_extras_drop_non_github_repo_links() -> None:
+    # A hostile or malformed link from Hugging Face is stored as no link at all, so nothing
+    # later can render it; only an https GitHub repository URL survives.
+    long_page = "https://example.com/" + "a" * 2048
+    rows = [
+        {
+            "paper": {
+                "id": "2510.00001",
+                "upvotes": 1,
+                "githubRepo": "javascript:alert(1)",
+                "projectPage": "javascript:alert(1)",
+            }
+        },
+        {
+            "paper": {
+                "id": "2510.00002",
+                "upvotes": 1,
+                "githubRepo": "http://github.com/a/b",
+                "projectPage": "http://example.com/a",
+            }
+        },
+        {
+            "paper": {
+                "id": "2510.00003",
+                "upvotes": 1,
+                "githubRepo": "https://evil.example/a/b",
+                "projectPage": long_page,
+            }
+        },
+        {
+            "paper": {
+                "id": "2510.00004",
+                "upvotes": 1,
+                "githubRepo": "https://github.com/MirroS-Lab/AgentGarten/",
+                "projectPage": "https://example.com/page",
+            }
+        },
+    ]
+    respx.get(HF_URL).mock(return_value=httpx.Response(200, json=rows))
+    out = HfDailySource(httpx.Client()).papers(date(2026, 10, 9), date(2026, 10, 9))
+    for dropped in ("2510.00001", "2510.00002", "2510.00003"):
+        assert out[dropped].github_repo is None
+        assert out[dropped].project_page is None
+    assert out["2510.00004"].github_repo == "https://github.com/MirroS-Lab/AgentGarten/"
+    assert out["2510.00004"].project_page == "https://example.com/page"
+
+
+@respx.mock
+def test_hf_a_bad_extra_field_keeps_the_row() -> None:
+    # A malformed extra is dropped, not the paper: the upvotes still count.
+    respx.get(HF_URL).mock(
+        return_value=httpx.Response(
+            200, json=[{"paper": {"id": "2510.00001", "upvotes": 42, "githubStars": "many"}}]
+        )
+    )
+    out = HfDailySource(httpx.Client()).papers(date(2026, 10, 9), date(2026, 10, 9))
+    assert out["2510.00001"].upvotes == 42
+    assert out["2510.00001"].github_stars is None
+
+
+@respx.mock
+def test_hf_extras_merge_across_days() -> None:
+    # The window walks newest first: counts take the maximum, the first non-null extras win and
+    # the listing time is the earliest seen, so one record describes the whole window.
+    def responder(request: httpx.Request) -> httpx.Response:
+        if request.url.params["date"] == "2026-10-09":
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "paper": {
+                            "id": "2510.00001",
+                            "upvotes": 5,
+                            "githubStars": 12,
+                            "githubRepo": "https://github.com/a/b",
+                            "submittedOnDailyAt": "2026-10-09T00:00:00.000Z",
+                        }
+                    }
+                ],
+            )
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "paper": {
+                        "id": "2510.00001",
+                        "upvotes": 3,
+                        "githubStars": 10,
+                        "submittedOnDailyAt": "2026-10-08T00:00:00.000Z",
+                    }
+                }
+            ],
+        )
+
+    respx.get(HF_URL).mock(side_effect=responder)
+    out = HfDailySource(httpx.Client()).papers(date(2026, 10, 8), date(2026, 10, 9))
+    assert out == {
+        "2510.00001": HfPaper(
+            upvotes=5,
+            github_stars=12,
+            github_repo="https://github.com/a/b",
+            listed_at=datetime(2026, 10, 8, tzinfo=UTC),
+        )
+    }
 
 
 @respx.mock
@@ -43,8 +176,8 @@ def test_hf_versioned_id_maps_to_base_id() -> None:
             200, json=[_hf_row("2510.00003v2", 5), _hf_row("2510.00003", 3)]
         )
     )
-    up = HfDailySource(httpx.Client()).upvotes(date(2026, 10, 9), date(2026, 10, 9))
-    assert up == {"2510.00003": 5}
+    up = HfDailySource(httpx.Client()).papers(date(2026, 10, 9), date(2026, 10, 9))
+    assert _upvotes(up) == {"2510.00003": 5}
 
 
 @respx.mock
@@ -57,9 +190,9 @@ def test_hf_pages_until_a_short_page() -> None:
         return httpx.Response(200, json=[_hf_row("2510.00050", 7)])
 
     route = respx.get(HF_URL).mock(side_effect=responder)
-    up = HfDailySource(httpx.Client()).upvotes(date(2026, 10, 9), date(2026, 10, 9))
+    up = HfDailySource(httpx.Client()).papers(date(2026, 10, 9), date(2026, 10, 9))
     assert route.call_count == 2
-    assert up["2510.00050"] == 7
+    assert up["2510.00050"].upvotes == 7
 
 
 @respx.mock
@@ -67,7 +200,7 @@ def test_hf_queries_each_date() -> None:
     # One request per calendar day, newest first (the freshest listings carry the upvotes a run
     # needs) and paged from 0 with the API's 100-row cap.
     route = respx.get(HF_URL).mock(return_value=httpx.Response(200, json=[]))
-    HfDailySource(httpx.Client()).upvotes(date(2026, 10, 8), date(2026, 10, 9))
+    HfDailySource(httpx.Client()).papers(date(2026, 10, 8), date(2026, 10, 9))
     assert [c.request.url.params["date"] for c in route.calls] == [
         "2026-10-09",
         "2026-10-08",
@@ -87,8 +220,8 @@ def test_hf_day_failure_keeps_earlier_days_and_marks_degraded(monkeypatch) -> No
 
     respx.get(HF_URL).mock(side_effect=responder)
     src = HfDailySource(httpx.Client())
-    up = src.upvotes(date(2026, 10, 8), date(2026, 10, 9))
-    assert up == {"2510.00001": 42}
+    up = src.papers(date(2026, 10, 8), date(2026, 10, 9))
+    assert _upvotes(up) == {"2510.00001": 42}
     assert src.degraded is True
     assert src.failure is not None and "2026-10-09" in src.failure
 
@@ -97,7 +230,7 @@ def test_hf_day_failure_keeps_earlier_days_and_marks_degraded(monkeypatch) -> No
 def test_hf_clean_call_leaves_degraded_false() -> None:
     respx.get(HF_URL).mock(return_value=httpx.Response(200, json=[_hf_row("2510.00001", 42)]))
     src = HfDailySource(httpx.Client())
-    src.upvotes(date(2026, 10, 9), date(2026, 10, 9))
+    src.papers(date(2026, 10, 9), date(2026, 10, 9))
     assert src.degraded is False
     assert src.failure is None
 
@@ -115,8 +248,8 @@ def test_hf_skips_a_row_with_non_numeric_upvotes() -> None:
         )
     )
     src = HfDailySource(httpx.Client())
-    up = src.upvotes(date(2026, 10, 9), date(2026, 10, 9))
-    assert up == {"2510.00001": 42}
+    up = src.papers(date(2026, 10, 9), date(2026, 10, 9))
+    assert _upvotes(up) == {"2510.00001": 42}
     assert src.degraded is False
 
 
@@ -127,7 +260,7 @@ def test_hf_stops_when_a_full_page_adds_nothing() -> None:
     rows = [_hf_row(f"2510.{i:05d}") for i in range(100)]
     route = respx.get(HF_URL).mock(return_value=httpx.Response(200, json=rows))
     src = HfDailySource(httpx.Client())
-    up = src.upvotes(date(2026, 10, 9), date(2026, 10, 9))
+    up = src.papers(date(2026, 10, 9), date(2026, 10, 9))
     assert route.call_count == 2
     assert len(up) == 100
     assert src.degraded is True
@@ -142,7 +275,7 @@ def test_hf_page_cap_bounds_a_day() -> None:
 
     route = respx.get(HF_URL).mock(side_effect=responder)
     src = HfDailySource(httpx.Client())
-    src.upvotes(date(2026, 10, 9), date(2026, 10, 9))
+    src.papers(date(2026, 10, 9), date(2026, 10, 9))
     assert route.call_count == MAX_PAGES_PER_DAY
     assert src.degraded is True
 
@@ -911,7 +1044,7 @@ def test_hf_stops_asking_after_two_failed_days_in_a_row(monkeypatch) -> None:
     monkeypatch.setattr(time, "sleep", lambda _seconds: None)
     route = respx.get(HF_URL).mock(return_value=httpx.Response(504))
     src = HfDailySource(httpx.Client())
-    assert src.upvotes(date(2026, 10, 8), date(2026, 10, 31)) == {}
+    assert src.papers(date(2026, 10, 8), date(2026, 10, 31)) == {}
     assert route.call_count == 2 * 3  # two days, three attempts each, then it stopped
     assert src.degraded is True
     # The window is walked newest first, so the two days it gave up on are the newest ones; the
@@ -933,7 +1066,7 @@ def test_hf_failed_day_streak_ignores_a_deterministic_failure(monkeypatch) -> No
 
     route = respx.get(HF_URL).mock(side_effect=responder)
     src = HfDailySource(httpx.Client())
-    src.upvotes(date(2026, 10, 8), date(2026, 10, 31))
+    src.papers(date(2026, 10, 8), date(2026, 10, 31))
     # Newest first: 10-31 failed, 10-30 reset the streak, 10-29 and 10-28 tripped the breaker.
     asked = [call.request.url.params["date"] for call in route.calls]
     assert sorted(set(asked)) == ["2026-10-28", "2026-10-29", "2026-10-30", "2026-10-31"]
@@ -952,8 +1085,8 @@ def test_hf_answers_after_a_failed_day_keep_the_source_healthy(monkeypatch) -> N
 
     respx.get(HF_URL).mock(side_effect=responder)
     src = HfDailySource(httpx.Client())
-    up = src.upvotes(date(2026, 10, 8), date(2026, 10, 12))
-    assert up == {"2510.00001": 7}
+    up = src.papers(date(2026, 10, 8), date(2026, 10, 12))
+    assert _upvotes(up) == {"2510.00001": 7}
     assert src.degraded is True  # the failed day is still reported
     assert src.failure is not None and "2026-10-09" in src.failure
     assert "stopped" not in src.failure
@@ -966,7 +1099,7 @@ def test_hf_cap_reaches_the_source(monkeypatch) -> None:
     monkeypatch.setattr("paperwatch.sources.hf_daily.MAX_HF_BODY_BYTES", 16)
     respx.get(HF_URL).mock(return_value=httpx.Response(200, json=[_hf_row("2510.00001", 1)]))
     src = HfDailySource(httpx.Client())
-    src.upvotes(date(2026, 10, 9), date(2026, 10, 9))
+    src.papers(date(2026, 10, 9), date(2026, 10, 9))
     assert src.degraded is True
     assert src.failure is not None and "more than 16 bytes" in src.failure
 
@@ -997,8 +1130,8 @@ def test_hf_bad_old_days_do_not_stop_the_newest_ones(monkeypatch) -> None:
 
     respx.get(HF_URL).mock(side_effect=responder)
     src = HfDailySource(httpx.Client())
-    up = src.upvotes(date(2026, 9, 23), date(2026, 10, 23))
-    assert up == {"2510.00001": 9}
+    up = src.papers(date(2026, 9, 23), date(2026, 10, 23))
+    assert _upvotes(up) == {"2510.00001": 9}
     assert src.degraded is True  # the two bad days are still reported
     assert src.failure is not None and "2026-09-23" in src.failure
 
@@ -1016,8 +1149,8 @@ def test_hf_breaker_counts_consecutive_days_only(monkeypatch) -> None:
 
     route = respx.get(HF_URL).mock(side_effect=responder)
     src = HfDailySource(httpx.Client())
-    up = src.upvotes(date(2026, 10, 1), date(2026, 10, 31))
-    assert up == {"2510.00001": 5}
+    up = src.papers(date(2026, 10, 1), date(2026, 10, 31))
+    assert _upvotes(up) == {"2510.00001": 5}
     asked = {call.request.url.params["date"] for call in route.calls}
     assert len(asked) == 31  # every day, none skipped
     assert src.failure is not None and "2026-10-29" in src.failure
