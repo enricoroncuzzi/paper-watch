@@ -34,8 +34,11 @@ class HfDailySource:
         self.failure = None
         out: dict[str, int] = {}
         failed_in_a_row = 0
-        day = since
-        while day <= until:
+        # Newest first, so a day that fails for its own reason costs the least valuable days: the
+        # listing that carries a fresh paper's upvotes is the newest one, and `out` merges with
+        # max(), so the order never changes the answer.
+        day = until
+        while day >= since:
             try:
                 self._merge_day(out, day)
                 failed_in_a_row = 0
@@ -59,7 +62,7 @@ class HfDailySource:
                         error=str(exc),
                     )
                     break
-            day += timedelta(days=1)
+            day -= timedelta(days=1)
         return out
 
     def _merge_day(self, out: dict[str, int], day: date) -> None:
