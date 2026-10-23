@@ -21,6 +21,7 @@ from paperwatch.config import (
     FOLLOWUP_DELAYS_S,
     FOLLOWUP_INTERVAL_S,
     FOLLOWUP_MAX_PASSES,
+    FOLLOWUP_MAX_WINDOW,
     HF_RECHECK_HORIZON,
     INGEST_LOCK_KEY,
     MAX_ITEM_ATTEMPTS,
@@ -42,10 +43,14 @@ log = structlog.get_logger()
 # The follow-up loop's deadline is local time on the server, so it is named rather than inferred
 # from the machine's zone: a move or a DST change must not shift when the window closes.
 ROME = ZoneInfo("Europe/Rome")
-# Builds the classifier and embedder a run uses. It is called once at the start and again after
-# the follow-up loop released them between passes (ADR 0008); a caller may return the same
-# objects, which simply means the run cannot free the model while it waits.
+# Builds the classifier and embedder a run uses. It is called once at the start of the run, so a
+# model that cannot be built fails the run before any item is touched, and again after the
+# follow-up loop released them between passes (ADR 0008).
 ModelFactory = Callable[[], tuple[Classifier, Embedder]]
+
+
+class ModelUnavailable(RuntimeError):
+    """The run's classifier or embedder could not be built: a missing model or a wrong provider."""
 
 
 @dataclass(frozen=True)
@@ -55,6 +60,9 @@ class Followup:
     max_passes: int = FOLLOWUP_MAX_PASSES
     interval_s: int = FOLLOWUP_INTERVAL_S
     deadline_hour: int = FOLLOWUP_DEADLINE_HOUR
+    # A second bound on the window, relative to the start, so a late catch-up (00:30 Rome) cannot
+    # sleep past the unit's TimeoutStartSec; the clock face alone would allow 19 hours.
+    max_window: timedelta = FOLLOWUP_MAX_WINDOW
 
     def delay_s(self, pass_number: int) -> int:
         # One-based: the wait before the pass about to run. The first waits come from the fixed
@@ -80,7 +88,13 @@ class _Models:
 
     def _ensure(self) -> tuple[Classifier, Embedder]:
         if self._classifier is None or self._embedder is None:
-            self._classifier, self._embedder = self._build()
+            try:
+                self._classifier, self._embedder = self._build()
+            except Exception as exc:
+                # A model that cannot be built is a run-level failure, never an item's problem: the
+                # per-item handlers would spend every new item's attempt cap on it, and a paper
+                # would be dead-lettered after three days of a broken model file (review S3).
+                raise ModelUnavailable(f"could not build the run's models: {exc}") from exc
         return self._classifier, self._embedder
 
     def classifier(self) -> Classifier:
@@ -136,17 +150,26 @@ def _record_signal_source(
     causes: set[str],
     degraded_signals: set[str],
     counts: dict[str, int],
+    anomaly: str | None = None,
 ) -> None:
     """Apply one signal source's health to the run, in the main pass and in a follow-up pass.
 
     One dead letter per continuing outage, and a source that answers again closes its own: a
-    follow-up pass that recovers S2 must leave nothing of the morning's refusal behind.
+    follow-up pass that recovers S2 must leave nothing of the morning's refusal behind. A shape
+    anomaly the run saw earlier is not a throttle, though, so a later clean call must not erase
+    that finding (review S4).
     """
     if source.degraded:
         causes.add(name)
         degraded_signals.add(name)
         if not repo.has_open_dead_letter(name, "signals"):
             repo.add_dead_letter(run_id, name, "signals", source.failure or "degraded")
+    elif anomaly:
+        # The last call answered, but an earlier call in this run was not a refusal: the source is
+        # answering again, so its outage letter closes, and the run still carries the finding.
+        causes.add(name)
+        degraded_signals.add(name)
+        repo.resolve_open_dead_letters(name, "signals", at=now)
     else:
         causes.discard(name)
         degraded_signals.discard(name)
@@ -225,6 +248,10 @@ def _admit_targets(
             # Remaining targets keep their state; the next run re-checks them anyway.
             session.rollback()
             return "budget_exhausted"
+        except ModelUnavailable:
+            # A model that cannot be rebuilt is the run's problem, not this item's: charging it to
+            # every item's attempt cap would dead-letter them (review S3).
+            raise
         except Exception as exc:  # noqa: BLE001 - one item must not abort the run
             session.rollback()
             causes.add("admission")
@@ -438,6 +465,9 @@ def run_ingestion(
             s2_pending: set[str] = set()
             followed: dict[str, object] | None = None
             s2_problems: list[str] = []
+            # A non-refusal S2 problem (a short or unpaired answer) seen in this run. Sticky on
+            # purpose: a later pass that answers cleanly must not hide it (review S4).
+            s2_anomaly: str | None = None
             # Targets whose admission failed this run: a follow-up pass never retries them.
             failed_admissions: set[uuid.UUID] = set()
             stuck: list[str] = []  # cursors that could not advance this run, for the health verdict
@@ -445,6 +475,13 @@ def run_ingestion(
             fetched: list[SourceItem] = []
             # Keys phase 1 parked this run; resolving one is not a retry.
             parked: set[tuple[str, str]] = set()
+
+            # The run's models, releasable while a follow-up pass waits. The first build happens
+            # here, before any source is asked and outside the per-item handlers: a model that
+            # cannot load must fail the run (exit 1, row failed) instead of being charged to every
+            # new item's attempt cap (review S3).
+            models = _Models(build_models)
+            models.classifier()
 
             # Phase 1: fetch. Each source keeps its own cursor and fails alone.
             # Days to harvest, oldest first: a cursor re-reads one overlap day back, a first run
@@ -572,11 +609,8 @@ def run_ingestion(
             _park_items(repo, run_id, feed_fetched, parked)
             session.commit()
 
-            # The run's models, releasable while a follow-up pass waits, and the one place the
-            # verdict is built: the provisional verdicts the loop writes and the final one must
-            # judge the same facts the same way.
-            models = _Models(build_models)
-
+            # The one place the verdict is built: the provisional verdicts the loop writes and the
+            # final one must judge the same facts the same way.
             def _verdict(block: dict[str, object] | None, extra: tuple[str, ...] = ()) -> Health:
                 return assess_run(
                     # The effective status, so a provisional verdict and the final one judge the
@@ -728,6 +762,7 @@ def run_ingestion(
                     # it. The refused ones are what a follow-up pass asks for again.
                     checked = set(sources.s2.checked_ids)
                     s2_pending = set(sources.s2.refused_ids)
+                    s2_anomaly = sources.s2.anomaly
                     unchecked = set(paper_ids) - checked
                     counts["s2_unchecked"] = len(unchecked)
                     counts["s2_refused"] = len(s2_pending)
@@ -775,9 +810,14 @@ def run_ingestion(
             if followup and status != "budget_exhausted" and s2_pending:
                 stopped: str | None = None
                 passes = 0
-                # A pass starting at the deadline itself is too late: the window closes at that
-                # local hour, not after it.
-                deadline = _deadline(now, bounds.deadline_hour)
+                # A pass starting at the 22:00 deadline itself is too late, and the window is also
+                # capped relative to the start, so a catch-up that begins at 00:30 cannot sleep past
+                # the unit's timeout.
+                deadline = min(_deadline(now, bounds.deadline_hour), now + bounds.max_window)
+                # The main pass's pages, parked letters and evidence are not needed while waiting;
+                # dropping the references keeps a long window from holding a first-run window's
+                # worth of items, which the loop re-reads from the store anyway.
+                del fetched, items, pending, targets, s2, upvotes
                 while s2_pending and passes < bounds.max_passes:
                     delay = bounds.delay_s(passes + 1)
                     next_at = clock() + timedelta(seconds=delay)
@@ -818,6 +858,9 @@ def run_ingestion(
                     )
                     asked = set(s2_pending)
                     answers = sources.s2.lookup(sorted(asked))
+                    # A shape anomaly in any call of this run is not a throttle; it stays with the
+                    # run even when this pass answered cleanly.
+                    s2_anomaly = s2_anomaly or sources.s2.anomaly
                     # Same rule as the main pass: the source's own health, and its outage letter.
                     _record_signal_source(
                         repo,
@@ -828,6 +871,7 @@ def run_ingestion(
                         causes=causes,
                         degraded_signals=degraded_signals,
                         counts=counts,
+                        anomaly=s2_anomaly,
                     )
                     s2_pending = set(sources.s2.refused_ids)
                     answered = set(sources.s2.checked_ids)
@@ -891,10 +935,12 @@ def run_ingestion(
                     else:
                         # First day of the outage, the same shape as one missed lab-feed day: a
                         # warning, the letter stays open, and tomorrow counts as the second day.
+                        # A non-refusal anomaly is not a refusal, so it keeps its cause.
                         warnings.append(message)
-                        causes.discard("s2")
-                        degraded_signals.discard("s2")
-                        counts["signal_failures"] = len(degraded_signals)
+                        if s2_anomaly is None:
+                            causes.discard("s2")
+                            degraded_signals.discard("s2")
+                            counts["signal_failures"] = len(degraded_signals)
                 log.info(
                     "followup_finished",
                     passes=passes,

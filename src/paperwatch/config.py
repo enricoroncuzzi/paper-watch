@@ -77,6 +77,10 @@ FOLLOWUP_MAX_PASSES = 40
 # 22:00 local limit must not move with a DST change). A late Persistent catch-up must not retry
 # into the night on a machine another service shares during the day.
 FOLLOWUP_DEADLINE_HOUR = 22
+# The window is also capped relative to the start, not only by the clock face: a catch-up that
+# starts at 00:30 would otherwise sleep until 19:45 and outlive the unit's timeout in the middle
+# of a wait. 16 h is the 06:00 to 22:00 span itself, and `TimeoutStartSec` must stay above it.
+FOLLOWUP_MAX_WINDOW = timedelta(hours=16)
 # Single-key Postgres advisory lock (`pg_try_advisory_lock`) that lets one ingestion run at a
 # time: a session-level lock on a dedicated connection survives the run's many commits, so a
 # second overlapping run sees it held and skips instead of closing the first run's row or
@@ -190,10 +194,12 @@ class Settings(BaseSettings):
 
     # Follow-up pass bounds (ADR 0008), so a drop-in on the server can shorten or lengthen the
     # window without a release. The ramp of the first four waits is a constant: it is the shape
-    # of a burst, not a knob.
+    # of a burst, not a knob. The deadline hour can be moved earlier but never past 22:00, which
+    # is the captain's decision; the 16 h cap in `Followup` is what keeps every start inside the
+    # unit's timeout.
     followup_max_passes: int = Field(default=FOLLOWUP_MAX_PASSES, ge=1)
     followup_interval_s: int = Field(default=FOLLOWUP_INTERVAL_S, ge=60)
-    followup_deadline_hour: int = Field(default=FOLLOWUP_DEADLINE_HOUR, ge=1, le=23)
+    followup_deadline_hour: int = Field(default=FOLLOWUP_DEADLINE_HOUR, ge=1, le=22)
 
     log_level: str = "INFO"
     # Sent with every HTTP request so source sites can identify us.
