@@ -138,7 +138,8 @@ class Run(Base):
     status: Mapped[str] = mapped_column(String(32), default="running")
     counts: Mapped[dict[str, int]] = mapped_column(JSON, default=dict)
     tokens: Mapped[int] = mapped_column(Integer, default=0)
-    # Health verdict written when the run finishes: {"healthy": bool, "problems": [...]}.
+    # Health verdict written when the run finishes:
+    # {"healthy": bool, "problems": [...], "warnings": [...]}.
     health: Mapped[dict[str, object] | None] = mapped_column(JSON(none_as_null=True))
     # Set from the run's `now` when the run starts, never the database clock; the server default
     # is only a fallback for a row inserted outside the repository.

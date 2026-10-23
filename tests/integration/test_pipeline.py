@@ -458,14 +458,59 @@ def test_failed_reembedding_keeps_the_old_version(db_session: Session) -> None:
     assert row(db_session, "2510.1").version == 2
 
 
-def test_source_failure_records_dead_letter_and_partial_run(db_session: Session) -> None:
+def test_one_missed_feed_day_is_a_warning(db_session: Session) -> None:
+    # A 502 once is not a bad morning (2026-10-23: Microsoft Research answered 502 at 06:00).
+    # The dead letter and the pinned cursor stay, so the next run retries the same window and
+    # nothing is lost; the day it missed is a warning, not a degraded run.
     src = fake_sources([paper("2510.1", "Agent harness")])
-    src.feeds.fetch_one.side_effect = RuntimeError("HTTP 500")
+    src.feeds.fetch_one.side_effect = RuntimeError("HTTP 502")
     res = run(db_session, src)
-    assert res.status == "partial" and res.counts["stored"] == 1
+    assert res.status == "succeeded" and res.counts["stored"] == 1
+    warning = f"feed missed once, retried next run: {FEED.url}"
+    assert res.health == Health(True, (), (warning,))
+    assert db_session.get_one(Run, res.run_id).health == {
+        "healthy": True,
+        "problems": [],
+        "warnings": [warning],
+    }
     # The parked-letter row for the fetched paper is resolved; the feed failure is the open one.
     dl = db_session.scalars(select(DeadLetter).where(DeadLetter.ref == FEED.url)).one()
-    assert dl.window_end == NOW
+    assert dl.window_end == NOW and dl.resolved_at is None
+    # The failed feed's cursor is pinned to the window it missed, not listed as stuck.
+    assert Repository(db_session).cursor(f"feed:{FEED.url}") == NOW - timedelta(days=7)
+
+
+def test_a_second_missed_feed_day_is_a_failure(db_session: Session) -> None:
+    # The same feed failing on the next run is a continuing outage, not a blip: now the run is
+    # degraded, the cursor did not advance, and the morning check should say so.
+    src = fake_sources([paper("2510.1", "Agent harness")])
+    src.feeds.fetch_one.side_effect = RuntimeError("HTTP 502")
+    assert run(db_session, src).status == "succeeded"
+    res = run(db_session, src, now=NOW + timedelta(days=1))
+    assert res.status == "partial" and not res.health.healthy
+    health = db_session.get_one(Run, res.run_id).health
+    assert health["warnings"] == []
+    assert f"cursor not advanced: feed:{FEED.url}" in health["problems"]
+    # One letter per outage, however many runs it lasts.
+    letters = db_session.scalars(select(DeadLetter).where(DeadLetter.ref == FEED.url)).all()
+    assert len(letters) == 1
+
+
+def test_a_feed_that_recovers_resolves_its_warning(db_session: Session) -> None:
+    src = fake_sources([paper("2510.1", "Agent harness")])
+    src.feeds.fetch_one.side_effect = RuntimeError("HTTP 502")
+    assert run(db_session, src).status == "succeeded"
+
+    def good_feed(feed: Feed, since: datetime, until: datetime) -> list[SourceItem]:
+        src.feeds.newest[feed.url] = until  # answered, and its newest post is recent
+        return []
+
+    src.feeds.fetch_one.side_effect = good_feed
+    res = run(db_session, src, now=NOW + timedelta(days=1))
+    assert res.status == "succeeded" and res.health == Health(True, ())
+    dl = db_session.scalars(select(DeadLetter).where(DeadLetter.ref == FEED.url)).one()
+    assert dl.resolved_at == NOW + timedelta(days=1)
+    assert Repository(db_session).cursor(f"feed:{FEED.url}") == NOW + timedelta(days=1)
 
 
 def test_failed_source_window_is_replayed_next_run(db_session: Session) -> None:
@@ -1075,7 +1120,7 @@ def test_stale_feed_is_flagged_in_health(db_session: Session) -> None:
 def test_run_records_health_verdict(db_session: Session) -> None:
     healthy = run(db_session, fake_sources([paper("2510.1", "Agent harness")]))
     row_ = db_session.get_one(Run, healthy.run_id)
-    assert row_.health == {"healthy": True, "problems": []}
+    assert row_.health == {"healthy": True, "problems": [], "warnings": []}
     # The verdict also travels on the result: `paperwatch ingest` turns it into exit code 3, so a
     # row alone would never reach the process that systemd and the morning check look at.
     assert healthy.health == Health(True, ())
@@ -1129,7 +1174,7 @@ def test_daily_runs_over_a_week_lose_nothing(db_session: Session) -> None:
         now = day0 + timedelta(days=day)
         src.feeds.fetch_one.side_effect = RuntimeError("HTTP 503") if day == 3 else None
         statuses.append(run(db_session, src, now=now).status)
-    assert statuses[3] == "partial" and statuses.count("succeeded") == 6
+    assert statuses[3] == "succeeded" and statuses.count("succeeded") == 7
     admitted = sorted(
         db_session.scalars(
             select(Item.external_id).where(Item.source == "arxiv", Item.status == "admitted")
@@ -1225,7 +1270,8 @@ def test_arxiv_outage_letter_is_written_once_and_closed_on_recovery(db_session: 
 def test_feed_outage_letter_closes_but_a_malformed_entry_stays_open(db_session: Session) -> None:
     src = fake_sources([paper("2510.1", "Agent harness")])
     src.feeds.fetch_one.side_effect = RuntimeError("HTTP 503")
-    assert run(db_session, src).status == "partial"
+    # The first miss is a warning; only a second run in a row with the same feed failing degrades.
+    assert run(db_session, src).status == "succeeded"
     assert run(db_session, src, now=NOW + timedelta(days=1)).status == "partial"
     outage = db_session.scalars(
         select(DeadLetter).where(DeadLetter.source == "feed", DeadLetter.ref == FEED.url)
