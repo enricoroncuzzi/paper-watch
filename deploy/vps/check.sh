@@ -72,9 +72,10 @@ human() {
 
 # One query, one `key|value` line per fact, so a missing run cannot shift the columns around.
 # The values come from the columns the code writes: runs.status, runs.health (JSON, written as
-# {"healthy": bool, "problems": [...]}), runs.counts (JSON), runs.started_at/finished_at and
-# items.status. `open_age_s` is the oldest row still 'running', which is how a run killed before it
-# could finish stays visible.
+# {"healthy": bool, "problems": [...], "warnings": [...]}), runs.counts (JSON),
+# runs.started_at/finished_at and items.status. A health record from before warnings existed has
+# no such key, so it reads as no warnings. `open_age_s` is the oldest row still 'running', which
+# is how a run killed before it could finish stays visible.
 read_run() {
     psql --no-psqlrc --quiet --tuples-only --no-align --field-separator='|' \
         --set=ON_ERROR_STOP=1 --dbname="$db" <<'SQL'
@@ -104,6 +105,10 @@ SELECT 'took_s', coalesce(
 UNION ALL
 SELECT 'counts', coalesce((SELECT counts::text FROM last_run), '{}')
 UNION ALL
+-- One row per warning, so a warning is printed without parsing the JSON array in the shell.
+SELECT 'warning', w
+FROM last_run, json_array_elements_text(coalesce(health -> 'warnings', '[]'::json)) AS w
+UNION ALL
 SELECT 'open_age_s', coalesce(
     (SELECT (extract(epoch FROM now() - min(started_at)))::bigint::text
      FROM runs WHERE status = 'running' AND finished_at IS NULL), '(none)')
@@ -124,6 +129,7 @@ finished='(none)'
 age_s='(unknown)'
 took_s='(unknown)'
 counts='{}'
+warnings=''
 open_age_s='(none)'
 admitted='(unknown)'
 while IFS='|' read -r key value; do
@@ -135,6 +141,9 @@ while IFS='|' read -r key value; do
         age_s) age_s=$value ;;
         took_s) took_s=$value ;;
         counts) counts=$value ;;
+        # Collected, not printed here: psql's row order is not the order a reader wants.
+        warning) warnings="$warnings$value
+" ;;
         open_age_s) open_age_s=$value ;;
         admitted) admitted=$value ;;
     esac
@@ -184,6 +193,12 @@ else
             ;;
     esac
 fi
+
+# Each warning is a fact from the verdict that does not make the morning bad, so it never becomes
+# a FAIL. One per line, after the status and health lines it belongs to.
+printf '%s' "$warnings" | while IFS= read -r warning; do
+    [ -z "$warning" ] || warn "$warning"
+done
 
 case $open_age_s in
     '(none)')
