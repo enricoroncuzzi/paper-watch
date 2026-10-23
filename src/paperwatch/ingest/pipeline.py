@@ -195,6 +195,9 @@ def run_ingestion(
                 "basis_improved": 0,
                 "rechecked": 0,
                 "s2_unchecked": 0,
+                # A subset of s2_unchecked: the ids Semantic Scholar refused rather than did
+                # not know, so a congested run is told apart from a corpus S2 has no record of.
+                "s2_refused": 0,
                 "text_updated": 0,
                 "malformed": 0,
                 "signal_failures": 0,
@@ -466,6 +469,7 @@ def run_ingestion(
                     # it.
                     checked = sources.s2.checked_ids
                     counts["s2_unchecked"] = len(set(paper_ids) - checked)
+                    counts["s2_refused"] = len(sources.s2.refused_ids)
                     # Signal sources degrade instead of raising (Task 4). A degraded call is
                     # recorded so the run is partial and the outage is flagged every morning it
                     # lasts; stored evidence is untouched, and the papers it missed stay due.

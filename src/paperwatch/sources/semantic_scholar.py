@@ -3,13 +3,15 @@
 import random
 import re
 import time
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
 import structlog
+from tenacity import RetryCallState
 
 from paperwatch.domain import Signals
-from paperwatch.sources.base import send_with_retries
+from paperwatch.sources.base import is_retryable, send_with_retries
 
 S2_BATCH_URL = "https://api.semanticscholar.org/graph/v1/paper/batch"
 # The batch endpoint rejects more than 500 ids in one request body.
@@ -23,6 +25,10 @@ S2_MAX_WAIT_S = 60.0
 # the shared API Gateway throttle. Jitter keeps concurrent runs from synchronizing.
 S2_PAUSE_S = 10.0
 S2_JITTER = 0.2
+# Two fully refused chunks in a row mean the keyless pool is refusing this run, not this
+# chunk: asking the rest of a 12 500-paper re-check would spend an hour on refusals alone. They
+# stay refused (and so due) for the next pass instead.
+S2_REFUSED_CHUNKS = 2
 _VERSION = re.compile(r"v\d+$")
 # S2's 400 body when no id in the chunk is indexed yet, routine for papers announced the
 # same day: the chunk was checked and simply has no signals.
@@ -37,6 +43,29 @@ def _no_known_ids(exc: httpx.HTTPStatusError) -> bool:
         return bool(exc.response.json() == _NO_KNOWN_IDS)
     except ValueError:
         return False
+
+
+def _refusal_details(exc: BaseException | None) -> tuple[int | None, str | None]:
+    # What the server said about a refusal, for the log: a transport error has neither.
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code, exc.response.headers.get("Retry-After")
+    return None, None
+
+
+def _log_refusal(state: RetryCallState) -> None:
+    # One line per refused attempt, before the retry waits: the morning check reads these to
+    # tell a congested hour from a blocked key, so the status, the server's Retry-After and the
+    # wait actually taken are all on the line.
+    exc = state.outcome.exception() if state.outcome is not None else None
+    status, retry_after = _refusal_details(exc)
+    log.warning(
+        "s2_attempt_refused",
+        status=status,
+        retry_after=retry_after,
+        wait_s=round(state.upcoming_sleep, 1),
+        at=datetime.now(UTC).isoformat(timespec="seconds"),
+        error=type(exc).__name__ if exc is not None else None,
+    )
 
 
 def _base_id(arxiv_id: str) -> str:
@@ -98,13 +127,22 @@ class SemanticScholarSource:
         # Ids whose chunk S2 answered with 200, so Task 9 can tell "checked, nothing new"
         # from "not checked". Reset on every call.
         self.checked_ids: set[str] = set()
+        # Ids whose chunk ran out of attempts on a retryable error: S2 said "come back later",
+        # so these stay due. A deterministic 4xx, an omitted id and the all-unknown 400 are not
+        # refusals. Reset on every call.
+        self.refused_ids: set[str] = set()
 
     def lookup(self, arxiv_ids: list[str]) -> dict[str, Signals]:
         # The health flags describe this call only.
         self.degraded = False
         self.failure = None
         self.checked_ids = set()
+        self.refused_ids = set()
         out: dict[str, Signals] = {}
+        # Consecutive fully refused chunks: a chunk that ends any other way, answered or a bug,
+        # ends the streak.
+        refused_in_a_row = 0
+        stopped = False
         for i in range(0, len(arxiv_ids), BATCH_SIZE):
             chunk = arxiv_ids[i : i + BATCH_SIZE]
             has_more = i + BATCH_SIZE < len(arxiv_ids)
@@ -120,10 +158,13 @@ class SemanticScholarSource:
                         attempts=S2_ATTEMPTS,
                         min_wait_s=S2_MIN_WAIT_S,
                         max_wait_s=S2_MAX_WAIT_S,
+                        before_sleep=_log_refusal,
                     )
                 except httpx.HTTPStatusError as exc:
                     if not _no_known_ids(exc):
                         raise
+                    # The chunk was checked and has no signals, so it is not a refusal.
+                    refused_in_a_row = 0
                     self.checked_ids.update(chunk)
                     continue
                 # S2 normally answers one row per requested id, null for an id it knows but has no
@@ -185,16 +226,49 @@ class SemanticScholarSource:
                         rows=len(rows),
                         ids=len(chunk),
                     )
+                # S2 answered this chunk, however odd the answer: the pool is not refusing us.
+                refused_in_a_row = 0
             except (httpx.HTTPError, ValueError, TypeError, AttributeError) as exc:
                 # Optional enrichment: keep earlier chunks, record the failure, and
                 # let ingestion continue. A 4xx is a bug, never a retry.
                 self.degraded = True
                 self.failure = f"s2 chunk at {i}: {exc}"
-                log.warning("s2_lookup_failed", error=str(exc), count=len(chunk))
+                if not is_retryable(exc):
+                    # A bug, not the pool refusing us, so it also ends the streak.
+                    refused_in_a_row = 0
+                    log.warning("s2_lookup_failed", error=str(exc), count=len(chunk))
+                else:
+                    # Every attempt was refused: the ids are still due, so the next pass asks
+                    # again instead of them being recorded as checked with no signals.
+                    status, retry_after = _refusal_details(exc)
+                    self.refused_ids.update(chunk)
+                    refused_in_a_row += 1
+                    log.warning(
+                        "s2_chunk_refused",
+                        error=str(exc),
+                        status=status,
+                        retry_after=retry_after,
+                        ids=len(chunk),
+                        refused_in_a_row=refused_in_a_row,
+                    )
+                    if refused_in_a_row >= S2_REFUSED_CHUNKS:
+                        # The rest of the run is refused too, in all likelihood: record every
+                        # unasked id as refused and stop asking.
+                        unasked = arxiv_ids[i + BATCH_SIZE :]
+                        self.refused_ids.update(unasked)
+                        stopped = True
+                        log.warning(
+                            "s2_stopped_asking",
+                            refused_in_a_row=refused_in_a_row,
+                            unasked=len(unasked),
+                        )
             finally:
                 # Pace between chunks with a small jitter, even after a failure, but not
-                # after the last one. Jitter need not be cryptographic, hence S311.
-                if has_more:
+                # after the last one, and not when the run has stopped asking. Jitter need not
+                # be cryptographic, hence S311.
+                if has_more and not stopped:
                     factor = random.uniform(1 - S2_JITTER, 1 + S2_JITTER)  # noqa: S311
                     time.sleep(self._pause_s * factor)
+            if stopped:
+                break
         return out
