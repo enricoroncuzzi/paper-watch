@@ -104,11 +104,24 @@ def test_the_unit_timeout_stays_above_the_follow_up_window() -> None:
 BACKUP_UNIT = REPO_ROOT / "deploy" / "vps" / "paperwatch-backup.service"
 
 
+def _service_section(unit: Path) -> list[str]:
+    # The [Service] lines only: systemd ignores a setting in the wrong section with a warning, so a
+    # NoNewPrivileges line under [Unit] would silently vanish.
+    lines = unit.read_text().splitlines()
+    start = lines.index("[Service]") + 1
+    section: list[str] = []
+    for line in lines[start:]:
+        if line.startswith("[") and line.endswith("]"):
+            break
+        section.append(line)
+    return section
+
+
 @pytest.mark.parametrize("unit", [UNIT, BACKUP_UNIT], ids=["ingest", "backup"])
 def test_each_unit_refuses_to_gain_privileges(unit: Path) -> None:
     # Both units run code from the account's home. Neither needs a setuid or setgid binary, so the
     # setting that stops one from raising its own privileges costs nothing to keep.
-    assert "NoNewPrivileges=yes" in unit.read_text().splitlines()
+    assert "NoNewPrivileges=yes" in _service_section(unit)
 
 
 def test_the_guide_shows_how_to_read_the_unit_security_score() -> None:
@@ -130,5 +143,10 @@ def test_the_guide_binds_its_tunnel_to_loopback() -> None:
 def test_the_guide_recommends_the_read_only_role() -> None:
     # Beekeeper and the M3 API and agent only read: the owning role would let a stray query write.
     guide = GUIDE.read_text()
-    assert "paperwatch_ro" in guide
-    assert "read-only" in guide and "SELECT only" in guide
+    # The sentence itself, so an unrelated mention of a read-only mode cannot satisfy the test.
+    assert "the read-only role `paperwatch_ro` (SELECT only)" in guide
+    assert "recommended connection for Beekeeper and for the M3 API and agent" in guide
+    # Peer authentication sees the ssh account, so the role needs an ident map (or a password),
+    # and default privileges keep it reading tables that later migrations create.
+    assert "`pg_ident.conf` map" in guide
+    assert "ALTER DEFAULT PRIVILEGES FOR ROLE paperwatch" in guide
