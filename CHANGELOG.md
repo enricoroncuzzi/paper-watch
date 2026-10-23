@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.5](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.6.4...paperwatch-v0.6.5) (2026-10-23)
+
+
+### Bug Fixes
+
+* **sources:** bound every fetch by size, time and redirect policy, and keep no transaction open across HTTP ([#29](https://github.com/enricoroncuzzi/paper-watch/issues/29)) ([11adb2c](https://github.com/enricoroncuzzi/paper-watch/commit/11adb2c047a45fd3e0cfcd3e6e5bcad8677e7f32))
+
 ## [0.6.4](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.6.3...paperwatch-v0.6.4) (2026-10-23)
 
 
