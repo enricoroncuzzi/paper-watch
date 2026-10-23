@@ -2,8 +2,10 @@
 
 import ipaddress
 import math
+import socket
 import threading
 import time
+import weakref
 from collections.abc import Callable
 from contextlib import suppress
 from functools import partial
@@ -147,8 +149,9 @@ def _read_body_capped(resp: httpx.Response, *, max_bytes: int) -> bytes:
     """Read a streamed body, aborting as soon as it passes the cap.
 
     Bytes are counted as they arrive and the read is abandoned at the first byte over the cap, so
-    an endless body costs the cap and not the run's memory. The chunks are the ones the stream
-    handed over, joined once at the end, so the body is not copied twice over.
+    an endless body costs the cap and not the run's memory. The stream's own chunks are joined once
+    at the end, so the peak is the body plus that one joined copy, not a body built up and copied
+    again from scratch.
     """
     chunks: list[bytes] = []
     size = 0
@@ -171,6 +174,28 @@ def _body_headers(resp: httpx.Response) -> httpx.Headers:
     )
 
 
+# The connection each client holds per origin, remembered from the trace hook below. httpcore
+# reports the network stream only when it *creates* a connection, and the run reuses one pooled
+# connection across every request (arXiv's terms cap the pool at one), so without this a request
+# that lands on a reused connection would have no handle on the socket a header drip is stuck on.
+_CONNECTIONS: weakref.WeakKeyDictionary[httpx.Client, dict[str, Any]] = weakref.WeakKeyDictionary()
+_CONNECTIONS_LOCK = threading.Lock()
+
+
+def _origin(url: httpx.URL) -> str:
+    return f"{url.scheme}://{url.host}:{url.port}"
+
+
+def _remember_connection(client: httpx.Client, origin: str, network: Any) -> None:
+    with _CONNECTIONS_LOCK:
+        _CONNECTIONS.setdefault(client, {})[origin] = network
+
+
+def _pooled_connection(client: httpx.Client, origin: str) -> Any:
+    with _CONNECTIONS_LOCK:
+        return _CONNECTIONS.get(client, {}).get(origin)
+
+
 class _InFlight:
     """One request of one attempt, shared between the caller and the worker running it."""
 
@@ -179,12 +204,20 @@ class _InFlight:
         self.streamed: httpx.Response | None = None
         self.response: httpx.Response | None = None
         self.error: BaseException | None = None
+        # The connection's network stream, handed over by the trace hook below.
+        self.network: Any = None
         self.abandoned = threading.Event()
 
     def abandon(self) -> None:
-        # Tell the worker to stop, and close the response it is reading: a body drip then fails its
-        # next read instead of holding a thread and a pooled connection nobody will use.
+        # Tell the worker to stop, then break the connection itself. A header drip leaves the worker
+        # blocked in `recv` with no response object to close, and that is the one case that would
+        # otherwise keep the client's single pooled connection for hours; shutting the socket down
+        # wakes the read at once on both Linux and macOS (closing alone does not).
         self.abandoned.set()
+        network = self.network
+        if network is not None:
+            with suppress(Exception):
+                network.get_extra_info("socket").shutdown(socket.SHUT_RDWR)
         streamed = self.streamed
         if streamed is not None:
             with suppress(Exception):
@@ -206,16 +239,37 @@ def _send_once(
     None of httpx's timeouts bounds a whole request: the read timeout restarts on every byte, so a
     server dripping response headers (h11 allows 16 KiB of them) or body bytes outlasts all of them.
     So the request runs in a worker thread while the caller waits `join_s`, and on that timeout the
-    caller closes the response the worker is reading and raises `RequestDeadlineExceeded`. `join_s`
-    is the wall-clock budget left to this request, so the hops of one redirect chain share it.
+    caller shuts its connection down and closes the response the worker is reading, then raises
+    `RequestDeadlineExceeded`. An abandoned request therefore stops at the deadline and hands its
+    pool slot back instead of getting in the way of the next source. `join_s` is the wall-clock
+    budget left to this request, so the hops of one redirect chain share it.
     """
     state = _InFlight()
+    origin = _origin(target)
+    # The connection this client already holds for the target, which the request will reuse if it
+    # can; a new one is reported by the trace hook before the headers start arriving.
+    state.network = _pooled_connection(client, origin)
+
+    def trace(event: str, info: dict[str, Any]) -> None:
+        # httpcore reports the connection's network stream as soon as it exists, which is before the
+        # headers arrive; that handle is the only way to break a request that is stuck there.
+        if event in ("connection.connect_tcp.complete", "connection.start_tls.complete"):
+            _remember_connection(client, origin, info["return_value"])
+            state.network = info["return_value"]
+            if state.abandoned.is_set():
+                state.abandon()
 
     def work() -> None:
         try:
-            # Redirects are never followed here: the caller checks every target itself, so the
-            # policy cannot be skipped by a client built with follow_redirects=True.
-            with client.stream(method, target, follow_redirects=False, **kwargs) as resp:
+            # Redirects are never followed here: the caller checks every target itself, so a client
+            # built with follow_redirects=True cannot make this skip the policy by accident.
+            with client.stream(
+                method,
+                target,
+                follow_redirects=False,
+                extensions={"trace": trace},
+                **kwargs,
+            ) as resp:
                 state.streamed = resp
                 if state.abandoned.is_set():
                     return
@@ -331,18 +385,15 @@ def send_with_retries(
             target = first_target
             hops = 0
             while True:
-                remaining = request_deadline_s - (time.monotonic() - started)
-                if remaining <= 0:
-                    raise RequestDeadlineExceeded(
-                        f"{url} was still redirecting after {request_deadline_s:.0f} s"
-                    )
+                # Each hop gets what is left of one attempt's budget, so a chain cannot multiply
+                # the deadline, and a spent budget ends the chain on the very next hop.
                 result = _send_once(
                     client,
                     method,
                     target,
                     kwargs=kwargs,
                     max_bytes=max_bytes,
-                    join_s=remaining,
+                    join_s=request_deadline_s - (time.monotonic() - started),
                     deadline_s=request_deadline_s,
                 )
                 location = result.headers.get("location")

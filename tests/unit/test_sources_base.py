@@ -1,5 +1,7 @@
 """unit tests for the shared source HTTP client factory and retry waits."""
 
+import http.server
+import threading
 import time
 from collections.abc import Callable, Iterator
 
@@ -226,25 +228,29 @@ def test_a_request_within_the_deadline_is_returned() -> None:
 
 
 def test_the_request_deadline_bounds_the_whole_redirect_chain() -> None:
-    # Hops share one budget: a chain of slow redirects ends at the deadline, not after every hop
-    # was given the full one, and not at the hop cap.
+    # Hops share one budget: a chain of slow redirects ends at the deadline, instead of every hop
+    # getting the whole deadline again and the hop cap being what finally stops it.
     seen: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(str(request.url))
-        time.sleep(0.04)
+        time.sleep(0.06)
         return httpx.Response(302, headers={"location": f"/hop{len(seen)}"})
 
     client = httpx.Client(transport=httpx.MockTransport(handler))
+    started = time.monotonic()
     with pytest.raises(RequestDeadlineExceeded):
         send_with_retries(
             client,
             "GET",
             "https://lab.example/x",
-            request_deadline_s=0.1,
+            request_deadline_s=0.12,
             attempts=1,
         )
-    assert len(seen) < MAX_REDIRECTS + 1
+    # Two hops of 0.06 s use the budget, so the third is cut off there rather than walked to the
+    # hop cap (which would raise RedirectRefused several deadlines later).
+    assert len(seen) <= 3
+    assert time.monotonic() - started < 0.6
 
 
 def test_the_second_hop_may_not_leave_the_site() -> None:
@@ -316,7 +322,8 @@ def test_capped_requests_ask_for_an_uncompressed_body() -> None:
 
 def test_each_source_has_its_own_body_cap() -> None:
     # A body is parsed whole after the cap, and a 49 MiB page grew RSS by about 380 MiB against the
-    # unit's 950M limit: the owner set these from the measurement (S2 of the 2026-10-23 review).
+    # unit's 950M limit, so these are the sizes that measurement supports (the numbers are on the
+    # constants in `base.py`).
     assert MAX_FEED_BODY_BYTES == 10 * 1024 * 1024
     assert MAX_ARXIV_BODY_BYTES == 16 * 1024 * 1024
     assert MAX_HF_BODY_BYTES == 8 * 1024 * 1024
@@ -352,6 +359,42 @@ def test_registrable_domain_is_the_etld_plus_one() -> None:
     # An IP literal is its own host, not the suffix list's reading of it as a name ("0.1").
     assert registrable_domain("https://127.0.0.1/feed.xml") == "127.0.0.1"
     assert registrable_domain("https://[::1]/feed.xml") == "::1"
+
+
+@pytest.mark.parametrize("status", [301, 302, 303, 307, 308])
+def test_every_redirect_status_is_followed_under_the_same_rules(status: int) -> None:
+    # The policy is the same whatever the server calls the hop, so none of the five slips past.
+    client, seen = _redirecting_client(
+        {
+            "https://lab.example/x": httpx.Response(status, headers={"location": "/y"}),
+            "https://lab.example/y": httpx.Response(200, text="ok"),
+        }
+    )
+    resp = send_with_retries(client, "GET", "https://lab.example/x")
+    assert resp.text == "ok"
+    assert len(seen) == 2
+
+
+def test_a_redirect_to_a_non_http_scheme_is_refused() -> None:
+    # httpx would raise UnsupportedProtocol for this, which is a transport error and so retried;
+    # refusing it here makes the answer a policy decision, not a retryable blip.
+    client, seen = _redirecting_client(
+        {"https://lab.example/x": httpx.Response(302, headers={"location": "ftp://lab.example/x"})}
+    )
+    with pytest.raises(RedirectRefused):
+        send_with_retries(client, "GET", "https://lab.example/x")
+    assert len(seen) == 1
+
+
+def test_a_client_that_follows_redirects_itself_cannot_skip_the_policy() -> None:
+    # A client built to follow hops on its own still cannot: send_with_retries asks for no
+    # following, so the downgrade is refused instead of followed silently.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(302, headers={"location": "http://lab.example/y"})
+
+    client = httpx.Client(follow_redirects=True, transport=httpx.MockTransport(handler))
+    with pytest.raises(RedirectRefused):
+        send_with_retries(client, "GET", "https://lab.example/x")
 
 
 def test_a_redirect_to_plain_http_is_refused() -> None:
@@ -467,3 +510,97 @@ def test_a_source_that_refuses_redirects_does_not_follow_one() -> None:
     with pytest.raises(httpx.HTTPStatusError):
         send_with_retries(client, "GET", "https://example.test/x", follow_redirects=False)
     assert [str(url) for url in seen] == ["https://example.test/x"]
+
+
+class _DripServer(http.server.ThreadingHTTPServer):
+    """A loopback server that answers three ways, so a test can time a real socket.
+
+    `/drip-headers` writes the status line and then trickles header bytes without ever finishing
+    the headers, `/drip-body` finishes the headers and trickles the body, and `/ok` answers with one
+    complete response. Nothing leaves the loopback interface.
+    """
+
+    daemon_threads = True
+
+    def __init__(self) -> None:
+        super().__init__(("127.0.0.1", 0), _DripHandler)
+        self._thread = threading.Thread(target=self.serve_forever, daemon=True)
+        self._thread.start()
+        host, port = self.server_address[:2]
+        self.base_url = f"http://{host}:{port}"
+
+    def handle_error(self, request: object, client_address: object) -> None:
+        # A shut-down drip resets its socket, which is what this test is about, not a failure.
+        pass
+
+    def close(self) -> None:
+        self.shutdown()
+        self.server_close()
+        self._thread.join(timeout=5)
+
+
+class _DripHandler(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def do_GET(self) -> None:
+        if self.path in ("/drip-headers", "/drip-body"):
+            self._drip(headers_only=self.path == "/drip-headers")
+            return
+        body = b"ok"
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _drip(self, *, headers_only: bool) -> None:
+        if headers_only:
+            self.wfile.write(b"HTTP/1.1 200 OK\r\n")
+        else:
+            self.send_response(200)
+            self.send_header("Content-Length", "2000")
+            self.end_headers()
+        for _ in range(200):
+            try:
+                self.wfile.write(b"X-Drip: b\r\n" if headers_only else b"b")
+                self.wfile.flush()
+            except OSError:
+                # The client shut the connection down: nothing left to write to.
+                self.close_connection = True
+                return
+            time.sleep(0.02)
+
+    def log_message(self, format: str, *args: object) -> None:
+        pass  # a test needs no request log
+
+
+@pytest.mark.parametrize("path", ["/drip-headers", "/drip-body"])
+@pytest.mark.parametrize("reused", [False, True], ids=["fresh", "reused"])
+def test_an_abandoned_request_frees_the_shared_connection(path: str, reused: bool) -> None:
+    # The client the whole run shares has one pooled connection (arXiv's terms), so an abandoned
+    # request that keeps it makes every later source fail with a pool timeout. Both a header drip
+    # and a body drip must end at the deadline and hand the connection back before the next
+    # request, whether the drip is on a fresh connection or on the pooled one the run reuses.
+    server = _DripServer()
+    client = httpx.Client(timeout=5.0, limits=httpx.Limits(max_connections=1))
+    try:
+        if reused:
+            assert send_with_retries(client, "GET", f"{server.base_url}/ok").text == "ok"
+        started = time.monotonic()
+        with pytest.raises(RequestDeadlineExceeded):
+            send_with_retries(
+                client,
+                "GET",
+                f"{server.base_url}{path}",
+                request_deadline_s=0.3,
+                attempts=1,
+            )
+        assert time.monotonic() - started < 1.0
+        # The same client, right after: the abandoned request must not still hold its connection,
+        # so this returns at once instead of waiting for the drip to end or the pool to time out.
+        started = time.monotonic()
+        resp = send_with_retries(client, "GET", f"{server.base_url}/ok", request_deadline_s=5.0)
+        assert resp.text == "ok"
+        assert time.monotonic() - started < 1.0
+    finally:
+        client.close()
+        server.close()
