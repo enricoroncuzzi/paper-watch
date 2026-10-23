@@ -72,11 +72,12 @@ away with a retryable status stays due, so a follow-up pass asks again (ADR 0008
 - The deadline is real time, so the tests that exercise it use sub-second budgets and loopback
   sockets, not a mocked clock: the point is that a blocked socket read wakes. The loopback drip
   test (`test_an_abandoned_request_frees_the_shared_connection`: a header drip and a body drip, each
-  on a fresh and on a reused pooled connection) is the guard for the httpcore internals the abort
-  depends on, which no httpx API promises: the trace event names `connection.connect_tcp.complete`
-  and `connection.start_tls.complete` that hand over the connection, and `get_extra_info("socket")`
-  returning the socket to shut down. The `test` CI job fails if any of its four cases is skipped or
-  not collected, and a failure to start its loopback server fails the test rather than skipping it.
+  on a fresh and on a reused pooled connection) is the guard for the httpcore internals this relies
+  on, which no httpx API promises: the `connection.connect_tcp.complete` trace event that hands over
+  a plain connection, and `get_extra_info("socket")` returning the socket to shut down. The https
+  handover, `connection.start_tls.complete`, is not exercised by it, every drip request being plain
+  http to the loopback address. The `test` CI job fails if any of its four cases is skipped or not
+  collected, and a failure to start its loopback server fails the test rather than skipping it.
 - A feed that legitimately moves to a different registrable domain now fails until
   `config/feeds.yaml` names the new address, which is a visible morning FAIL rather than a silent
   change of subject.
