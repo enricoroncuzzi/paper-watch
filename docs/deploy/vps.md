@@ -98,12 +98,15 @@ uv run --frozen --no-dev --env-file ~/.config/paperwatch/env python -c \
   'from paperwatch.config import get_settings; s = get_settings(); print(s.database_url, s.user_agent)'
 psql -d paperwatch -c 'select current_user, current_database()'
 psql -d paperwatch -Atc 'show idle_in_transaction_session_timeout'    # must print 0
+psql -d paperwatch -Atc 'show idle_session_timeout'                   # must print 0
 command -v psql pg_dump ~/.local/bin/uv
 ```
 
 `idle_in_transaction_session_timeout` must be `0`: the run holds a transaction open around slow
-source calls, and a server-side timeout would kill it mid-run. If it is not 0, stop and tell the
-captain, because changing it is a root step.
+source calls, and a server-side timeout would kill it mid-run. `idle_session_timeout` must be `0`
+too: the single-run advisory lock lives on a connection that sits idle between follow-up passes,
+and a server-side idle timeout would close it and silently drop the lock. If either is not 0,
+stop and tell the captain, because changing them is a root step.
 
 ## 5. Create the schema
 
@@ -140,9 +143,12 @@ What the units do, and why:
   both. That is deliberate: a visible failed morning, never a slow one that starves the other
   project in the shared swap. The cap needs the memory controller delegated to the user manager,
   which Debian's `user@.service` does. The run also has low CPU and I/O priority (`Nice=10`,
-  best-effort priority 7) and a `TimeoutStartSec=17h` ceiling: `--followup` may keep the process
-  alive from 06:00 until 22:00 Rome time retrying Semantic Scholar refusals, and the extra hour
-  means systemd never kills a healthy window (the loop stops itself on the 22:00 bound anyway).
+  best-effort priority 7) and a `TimeoutStartSec=17h` ceiling. `--followup` may keep the process
+  alive from 06:00 until 22:00 Rome time retrying Semantic Scholar refusals, and the loop also
+  caps its own window at 16 h from the start, so no wait can outlive the timeout whatever the start
+  time. The timeout must stay above that 16 h cap: it is the last resort, never the normal end.
+  Because it is now 17 h, a hung main pass is no longer killed at 3 h: the morning check names it
+  `hung (still running)` and the action is `systemctl --user stop paperwatch-ingest`.
 - `paperwatch-backup.service` runs `deploy/vps/backup.sh`: `pg_dump -Fc` into
   `~/backups/paperwatch-<UTC stamp>.dump`, keeping seven nights. The dump is written under a
   hidden fixed temporary name and renamed only once it is complete, so even a SIGKILL, which no
@@ -248,16 +254,19 @@ bad lines start with `FAIL`:
   row looks like once the next run has closed it: one `FAIL` for the one event;
 - an unhealthy or missing health verdict, or a non-empty list of problems;
 - the last run started more than 25 hours ago, so a missed 06:00 morning is caught by 07:00;
-- a run left `running` for more than three hours, matching the unit's `TimeoutStartSec` before the
-  follow-up window existed, so a live run is never called dead while systemd would still let it
-  finish. A run waiting for a follow-up pass is finished, not `running`, so this limit does not
-  need the new 17 h timeout; a row older than three hours is still a run killed before its main
-  pass ended;
+- a run left `running` for more than three hours. A run waiting for a follow-up pass is finished,
+  not `running`, so this limit does not need the 17 h timeout; a row older than three hours is a run
+  killed or hung before its main pass ended. When the unit is still active the check says
+  `hung (still running)` and names `systemctl --user stop paperwatch-ingest`, because with a 17 h
+  timeout systemd will no longer kill it; otherwise it says `killed or hung`;
 - a follow-up pass that never came: while a run waits, the check prints
   `WAIT  follow-up N of 40 pending (s2: M ids), next pass HH:MM` and counts no failure (the run is
-  deliberately unhealthy until S2 answers). If that moment passes, it prints
+  deliberately unhealthy until S2 answers). For the minutes a pass itself takes, its due moment has
+  just passed and the row is not rewritten yet, so up to 20 minutes past it prints
+  `WAIT  follow-up pass N of 40 running (s2: M ids)`. Past that, it prints
   `FAIL  follow-up did not complete (killed?)`, one line for the one event: the process died inside
-  the window, and the next morning retries the same papers;
+  the window, and the next morning retries the same papers. A row whose follow-up time cannot be
+  read at all is one named `FAIL`, not a psql error that hides the rest of the morning;
 - `paperwatch-ingest.service` failed (a startup crash, an OOM kill, a timeout, exit 1 or 3), or
   `paperwatch-ingest.timer` not active, so no morning run is scheduled;
 - no `~/backups/` directory, no dump in it, or the newest older than 26 hours or empty;
@@ -271,8 +280,8 @@ nothing is lost. Only the same feed failing again on the next run is a real outa
 degraded and fails the check. Semantic Scholar's refusals work the same way: a day whose
 follow-up passes were all refused is one warning, and only a second day in a row is a failure.
 Thresholds can be overridden for one invocation:
-`PW_CHECK_MAX_RUN_AGE_S`, `PW_CHECK_MAX_RUNNING_S`, `PW_CHECK_MAX_BACKUP_AGE_S`,
-`PW_CHECK_MIN_FREE_GB`, `PW_CHECK_BACKUP_DIR`, `PW_CHECK_DB`. It needs only `psql` and coreutils,
+`PW_CHECK_MAX_RUN_AGE_S`, `PW_CHECK_MAX_RUNNING_S`, `PW_CHECK_FOLLOWUP_GRACE_S`,
+`PW_CHECK_MAX_BACKUP_AGE_S`, `PW_CHECK_MIN_FREE_GB`, `PW_CHECK_BACKUP_DIR`, `PW_CHECK_DB`. It needs only `psql` and coreutils,
 and reads only the `paperwatch` database, the backup directory and the account's own user manager.
 
 ### A morning with follow-ups
@@ -280,9 +289,9 @@ and reads only the `paperwatch` database, the backup directory and the account's
 The unit runs `paperwatch ingest --live --followup`, so when Semantic Scholar refuses papers the
 process stays alive instead of leaving them a day behind. The 06:00 run finishes its main pass and
 writes its row, then waits 5, 10, 20 and 40 minutes and every 30 minutes after that, retrying only
-the refused papers, until nothing is refused, 40 passes have run, or the next pass would start
-after 22:00 Rome time (ADR 0008). Nothing but Semantic Scholar is asked again: no arXiv harvest,
-no lab feeds, no Hugging Face, no classification.
+the refused papers, until nothing is refused, 40 passes have run, the next pass would start at or
+after 22:00 Rome time, or 16 hours have passed since the start (ADR 0008). Nothing but Semantic
+Scholar is asked again: no arXiv harvest, no lab feeds, no Hugging Face, no classification.
 
 What the captain sees:
 
@@ -296,6 +305,9 @@ What the captain sees:
 - a manual `paperwatch ingest --live` run in that window prints
   `skipped: another ingestion run is active` and exits 0: the follow-up loop holds the single-run
   lock for as long as it waits, by design;
+- a main pass that hangs is not killed by the timeout any more (it is 17 h, for the window). The
+  check reports `hung (still running)` after three hours and the captain stops it with
+  `systemctl --user stop paperwatch-ingest`; the next run closes the row as failed;
 - the run row's `health.followup` has the same facts as the journal (`next_at` while waiting,
   `passes` and `stopped` after), and `counts.followup_passes` says how many passes it used.
 

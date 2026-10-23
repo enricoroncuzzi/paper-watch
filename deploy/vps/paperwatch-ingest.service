@@ -22,9 +22,11 @@ ExecStart=/home/paperwatch/.local/bin/uv run --frozen --no-dev paperwatch ingest
 # with the captain's contact, and PW_LOCAL_EMBEDDING_CACHE_DIR. Ingestion needs no chat key.
 EnvironmentFile=/home/paperwatch/.config/paperwatch/env
 # A first run classifies and embeds a wide window on a shared 1.9 GB machine; the cap is generous
-# in time so a slow model is never killed halfway. The follow-up window runs 06:00 to 22:00 Rome
-# time (16 h), and 17 h leaves an hour of margin so systemd never kills a healthy window: the
-# loop stops itself on the time-of-day bound rather than on this timeout.
+# in time so a slow model is never killed halfway. The follow-up loop may run from 06:00 to 22:00
+# Rome time and caps its own window at 16 h from the start, so 17 h leaves an hour of margin and
+# no wait can outlive this timeout whatever the start time. Keep the timeout above that 16 h cap.
+# The flip side: a hung main pass is no longer killed here at 3 h; the morning check names it and
+# the captain stops the unit (docs/deploy/vps.md, "A morning with follow-ups").
 TimeoutStartSec=17h
 # The local embedding model peaks near 520 MB, so the cap leaves room for Python, fastembed and the
 # source clients. 950M is the peak measured on the shared VPS on 2026-10-22 (706.8M, no swap) plus

@@ -42,11 +42,16 @@ passes. A manual `paperwatch ingest --live` never waits.
 - **Bounds.** Waits before the passes are 5, 10, 20 and 40 minutes, then 30 minutes each, one scale
   up from the client's own 5/10/20/40 s backoff; at most 40 passes; and no pass starts at or after
   22:00 Europe/Rome, so a late catch-up never retries into the night on the shared machine. The
-  pass count, the interval and the deadline hour are `Settings` fields with constant defaults, so a
-  drop-in can shorten the window without a release.
+  window is also capped at 16 hours from the start, so a catch-up that begins at 00:30 cannot sleep
+  past the unit's timeout. The pass count, the interval and the deadline hour are `Settings` fields
+  with constant defaults, so a drop-in can shorten the window without a release; the 16 h cap is a
+  constant, and `TimeoutStartSec` must stay above it.
 - **Memory.** The run commits before every wait and releases the classifier and embedder, so the
   idle process holds only the interpreter rather than the model's ~520 MB; a pass rebuilds the pair
-  lazily, and only when it must embed a first admission.
+  lazily, and only when it must embed a first admission. The first build stays eager, before any
+  source is asked: a model that cannot load fails the run at once (exit 1, row failed) instead of
+  spending every new item's attempt cap on it, which is what a lazy first build did (review S3).
+  A rebuild that fails inside a pass is likewise a run failure, not an item's.
 - **Verdict.** The row is finished provisionally after the main pass (`health.followup` with the
   pass number, the cap, `next_at` and the pending count) and overwritten after every pass, so it is
   never `running` during the window and the 25 h freshness test keeps working. The final record is
@@ -57,20 +62,27 @@ passes. A manual `paperwatch ingest --live` never waits.
 - **Severity.** S2 still refusing after the last pass is the first day of an outage, like one
   missed lab-feed day: a health warning, with its `s2/signals` letter left open. When the open
   letter was opened by an earlier run (keyed on the letter's `run_id`, never on its existence), it
-  is the second day in a row and a failure. The same rule now decides a lab feed's first miss.
+  is the second day in a row and a failure. The same rule now decides a lab feed's first miss. A
+  refusal is the only reason a recovered pass may clear: an answer S2 got wrong (a short or
+  unpaired answer, a deterministic error) is recorded as an anomaly and stays in the verdict, so a
+  clean retry of the refused ids cannot hide it (review S4).
 - **The morning check.** `check.sh` prints `WAIT` while `next_at` is in the future (counting no
   failure), `FAIL follow-up did not complete (killed?)` once it has passed, and
-  `ok follow-ups: n used, <stopped>` after a finished loop. The unit's `TimeoutStartSec` rises to
-  17 h for the 06:00 to 22:00 window; the stuck-`running` limit stays at 3 h, because a waiting row
-  is finished, not `running`.
+  `WAIT follow-up pass N running` for the minutes a pass itself takes (a 20-minute grace, longer
+  than any pass and shorter than the 30-minute interval), and `ok follow-ups: n used, <stopped>`
+  after a finished loop. The unit's `TimeoutStartSec` rises to 17 h for the 06:00 to 22:00 window;
+  the stuck-`running` limit stays at 3 h, because a waiting row is finished, not `running`, and it
+  now names a still-active unit as `hung (still running)` with the stop command, since systemd no
+  longer kills a hung main pass at 3 h.
 
 ## Consequences
 
 - A burst of minutes to hours no longer costs a day of evidence, and the morning reads truthfully:
   recovered days are healthy and exit 0, while a whole-day refusal is one warning the first day.
-- A process may stay alive for up to 16 hours, from 06:00 to 22:00 Rome time. A fully refused day
-  costs about 33 S2 requests, one every 30 minutes, and no extra fetches, classification or
-  embeddings, with no model resident between passes.
+- A process may stay alive for up to 16 hours, from 06:00 to 22:00 Rome time (or 16 hours from a
+  later start). A fully refused day that starts at 06:00 costs 34 S2 requests, the main call plus
+  33 passes, one every 30 minutes, and no extra fetches, classification or embeddings, with no
+  model resident between passes.
 - A kill inside the window (`kill -9`, an OOM kill, a stop) loses the rest of that window and
   leaves a `next_at` in the past, which the check reports. The next morning's run is the backstop,
   because every refused paper is still due.

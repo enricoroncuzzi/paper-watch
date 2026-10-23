@@ -42,3 +42,28 @@ def test_the_documented_database_url_is_a_passwordless_socket_url() -> None:
     assert options["host"] == "/var/run/postgresql"
     assert options["dbname"] == "paperwatch" and options["user"] == "paperwatch"
     assert "password" not in options
+
+
+# The unit is the deployment contract for the follow-up window: it must enable the loop, and its
+# timeout must stay above the loop's own window cap, or systemd would kill a healthy wait.
+UNIT = REPO_ROOT / "deploy" / "vps" / "paperwatch-ingest.service"
+
+
+def test_the_ingest_unit_enables_follow_ups() -> None:
+    exec_start = [line for line in UNIT.read_text().splitlines() if line.startswith("ExecStart=")]
+    assert len(exec_start) == 1
+    assert exec_start[0].endswith("paperwatch ingest --live --followup")
+
+
+def test_the_unit_timeout_stays_above_the_follow_up_window() -> None:
+    # FOLLOWUP_MAX_WINDOW is the second bound on the loop (16 h from the start); the unit's
+    # TimeoutStartSec is the last resort, so it must be strictly larger.
+    import re
+
+    from paperwatch.config import FOLLOWUP_MAX_WINDOW
+
+    [line] = [line for line in UNIT.read_text().splitlines() if line.startswith("TimeoutStartSec=")]
+    value = line.split("=", 1)[1].strip()
+    match = re.fullmatch(r"(\d+)h", value)
+    assert match, f"unexpected TimeoutStartSec format: {value}"
+    assert int(match.group(1)) * 3600 > FOLLOWUP_MAX_WINDOW.total_seconds()
