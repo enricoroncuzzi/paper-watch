@@ -1253,6 +1253,38 @@ def test_ingest_followup_is_the_units_flag_and_carries_the_settings(
     assert seen["followup"] is False
 
 
+def test_ingest_reads_its_config_from_the_repository_not_the_cwd(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # The ingest unit sets WorkingDirectory to the checkout, but the command itself must not
+    # depend on it: `paperwatch ingest --live` from any other directory still needs
+    # config/feeds.yaml and config/admission.yaml, the way config.py resolves profiles.yaml.
+    _stub_live_ingest(
+        monkeypatch,
+        SimpleNamespace(
+            status="succeeded", counts={"fetched": 1}, tokens=0, health=Health(True, ())
+        ),
+    )
+    real_feeds, real_admission = cli.load_feeds, cli.load_admission
+    paths: dict[str, Path] = {}
+
+    def feeds(path: Path) -> object:
+        paths["feeds"] = path
+        return real_feeds(path)
+
+    def admission(path: Path) -> object:
+        paths["admission"] = path
+        return real_admission(path)
+
+    monkeypatch.setattr(cli, "load_feeds", feeds)
+    monkeypatch.setattr(cli, "load_admission", admission)
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(cli.app, ["ingest", "--live"], catch_exceptions=False)
+    assert result.exit_code == 0
+    assert paths["feeds"] == cli.REPO_ROOT / "config" / "feeds.yaml"
+    assert paths["admission"] == cli.REPO_ROOT / "config" / "admission.yaml"
+
+
 def test_sigterm_ends_the_run_instead_of_exiting_silently() -> None:
     # systemd stops a unit with SIGTERM: raising SystemExit is what lets the pipeline close the run
     # row as failed before the process leaves (docs/deploy/vps.md).
