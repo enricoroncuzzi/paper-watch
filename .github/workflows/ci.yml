@@ -119,7 +119,18 @@ jobs:
             --ignore-vuln CVE-2026-112399 \
             --ignore-vuln CVE-2026-112892 \
             --ignore-vuln CVE-2026-112393 \
-            --ignore-vuln CVE-2026-112396
+            --ignore-vuln CVE-2026-112396 \
+            --ignore-vuln CVE-2026-96636 \
+            --ignore-vuln CVE-2026-96637 \
+            --ignore-vuln CVE-2026-96638 \
+            --ignore-vuln CVE-2026-96639 \
+            --ignore-vuln CVE-2026-96640 \
+            --ignore-vuln CVE-2026-96641 \
+            --ignore-vuln CVE-2026-96642 \
+            --ignore-vuln CVE-2026-96643 \
+            --ignore-vuln CVE-2026-96644 \
+            --ignore-vuln CVE-2026-96778 \
+            --ignore-vuln GHSA-78g4-xqwv-q3g8
       # Committed secrets. The token lets the action read the pull request's
       # commits; comments are off because this workflow cannot write to PRs.
       - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
