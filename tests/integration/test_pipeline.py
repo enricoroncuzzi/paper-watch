@@ -363,6 +363,89 @@ def test_a_bad_extra_row_does_not_sink_the_listing_step(db_session: Session) -> 
 
 
 @respx.mock
+def test_an_edge_listing_time_reads_back_under_any_session_zone(db_session: Session) -> None:
+    # A Z stamp at the edge of the calendar reads back fine in UTC but not when the session time
+    # zone moves it across the edge; the plausible span drops it, so every read stays usable.
+    rows = [
+        {
+            "paper": {
+                "id": "2510.00001",
+                "upvotes": 50,
+                "submittedOnDailyAt": "0001-01-01T00:00:00Z",
+            }
+        },
+        {
+            "paper": {
+                "id": "2510.00002",
+                "upvotes": 50,
+                "submittedOnDailyAt": "9999-12-31T23:59:59Z",
+            }
+        },
+        {
+            "paper": {
+                "id": "2510.00003",
+                "upvotes": 50,
+                "submittedOnDailyAt": "2026-10-09T00:00:00Z",
+            }
+        },
+    ]
+    respx.get(HF_URL).mock(return_value=httpx.Response(200, json=rows))
+    src = fake_sources(
+        [
+            paper("2510.00001", "Agent harness"),
+            paper("2510.00002", "Coding agent"),
+            paper("2510.00003", "Agent loop"),
+        ]
+    )
+    src.hf = HfDailySource(httpx.Client())
+    res = run(db_session, src)
+    assert res.status == "succeeded" and res.health is not None and res.health.healthy
+    assert row(db_session, "2510.00001").hf_listed_at is None
+    assert row(db_session, "2510.00002").hf_listed_at is None
+    assert row(db_session, "2510.00003").hf_listed_at == datetime(2026, 10, 9, tzinfo=UTC)
+    for zone in ("America/New_York", "Asia/Tokyo"):
+        # The read-back conversion uses the session zone, so both directions are exercised.
+        db_session.execute(text(f"SET TIME ZONE '{zone}'"))
+        assert len(db_session.scalars(select(Item)).all()) == 3
+        assert Repository(db_session).recheck_targets(NOW + timedelta(days=1), S2_RECHECK_HORIZON)
+        assert hybrid_search(db_session, FakeEmbedder(), "Agent", k=5)
+
+
+@respx.mock
+def test_a_huge_json_integer_keeps_the_other_rows_and_the_run(db_session: Session) -> None:
+    # json.loads refuses an integer of more than 4,300 digits; one such value must not fail the
+    # page, the other rows or the run.
+    huge = "9" * 5_000
+    body = (
+        '[{"paper": {"id": "2510.00001", "upvotes": 50, "githubStars": '
+        + huge
+        + '}}, {"paper": {"id": "2510.00002", "upvotes": 50, "githubStars": 7}}]'
+    ).encode()
+    respx.get(HF_URL).mock(return_value=httpx.Response(200, content=body))
+    src = fake_sources([paper("2510.00001", "Agent harness"), paper("2510.00002", "Coding agent")])
+    src.hf = HfDailySource(httpx.Client())
+    res = run(db_session, src)
+    assert res.status == "succeeded" and res.health is not None and res.health.healthy
+    assert row(db_session, "2510.00001").github_stars is None
+    assert row(db_session, "2510.00002").github_stars == 7
+    assert res.counts["snapshots"] == 2
+
+
+@respx.mock
+def test_a_deeply_nested_answer_degrades_the_day_not_the_run(db_session: Session) -> None:
+    # A page nested deeper than Python can parse is a degraded day: the run completes, rather than
+    # dying with RecursionError and losing everything after the Hugging Face call.
+    nested = b'[{"paper": {"id": "2510.00001", "upvotes": 50, "x": ' + b"[" * 100_000
+    nested += b"0" + b"]" * 100_000 + b"}}]"
+    respx.get(HF_URL).mock(return_value=httpx.Response(200, content=nested))
+    src = fake_sources([paper("2510.00001", "Agent harness")])
+    src.hf = HfDailySource(httpx.Client())
+    res = run(db_session, src)
+    assert res.status == "partial"
+    assert res.run_id is not None and res.health is not None
+
+
+@respx.mock
 def test_a_hostile_listing_time_leaves_the_row_readable(db_session: Session) -> None:
     # A timestamp whose offset pushes the instant outside years 1..9999 cannot be read back from
     # Postgres; the client drops it, so the row, the next re-check and a search all stay usable.
@@ -384,9 +467,7 @@ def test_a_hostile_listing_time_leaves_the_row_readable(db_session: Session) -> 
     ]
     respx.get(HF_URL).mock(return_value=httpx.Response(200, json=rows))
     src = fake_sources([paper("2510.00001", "Agent harness"), paper("2510.00002", "Coding agent")])
-    src.hf.papers.side_effect = lambda since, until: HfDailySource(httpx.Client()).papers(
-        since, until
-    )
+    src.hf = HfDailySource(httpx.Client())
     res = run(db_session, src)
     assert res.status == "succeeded" and res.health is not None and res.health.healthy
     assert row(db_session, "2510.00001").hf_listed_at is None

@@ -52,9 +52,10 @@ which is a warning, so one hostile value cannot fail the run.
   are kept; the page must name an https host with no whitespace, control character, surrogate or
   credentials, so a `javascript:` scheme, a look-alike host, a malformed URL or a name the
   database cannot store becomes no value at all. A listing key must be a real arXiv id (new style
-  `2510.12345`, old style `hep-th/9901001`), and a listing time is normalised to UTC, with an
-  offset that pushes the instant outside years 1..9999 dropped because the driver could not read
-  the row back.
+  `2510.12345`, old style `hep-th/9901001`), and a listing time is normalised to UTC and kept only
+  inside a plausible listing span (2020 to 2100). An instant at the edge of the calendar could not
+  be read back under every session time zone, and a sentinel such as the Unix epoch would
+  otherwise be stored forever as the earliest listing.
 - **Every listed stored arXiv item gets a snapshot when it first appears and whenever a number
   changes, not only re-check targets.** The step covers every stored arXiv item whose id is in the
   listing window, including peer-reviewed ones that `recheck_targets` never revisits, so the

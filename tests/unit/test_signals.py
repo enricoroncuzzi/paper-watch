@@ -2,7 +2,7 @@
 
 import json
 import time
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -12,7 +12,6 @@ from structlog.testing import capture_logs
 
 from paperwatch.config import HF_ORG_MAX_CHARS, INT4_MAX
 from paperwatch.sources.hf_daily import (
-    GITHUB_REPO_MAX_CHARS,
     HF_URL,
     MAX_PAGES_PER_DAY,
     PROJECT_PAGE_MAX_CHARS,
@@ -274,17 +273,129 @@ def test_hf_a_hostile_listing_time_is_none() -> None:
             "paper": {
                 "id": "2510.00003",
                 "upvotes": 3,
-                "submittedOnDailyAt": "2026-10-09T00:00:00+00:00",
+                "submittedOnDailyAt": "0001-01-01T00:00:00Z",
+            }
+        },
+        {
+            "paper": {
+                "id": "2510.00004",
+                "upvotes": 4,
+                "submittedOnDailyAt": "9999-12-31T23:59:59Z",
+            }
+        },
+        {
+            "paper": {
+                "id": "2510.00005",
+                "upvotes": 5,
+                "submittedOnDailyAt": "1970-01-01T00:00:00Z",
+            }
+        },
+        {
+            "paper": {
+                "id": "2510.00006",
+                "upvotes": 6,
+                "submittedOnDailyAt": "2026-10-09T05:00:00+05:00",
             }
         },
     ]
     respx.get(HF_URL).mock(return_value=httpx.Response(200, json=rows))
     src = HfDailySource(httpx.Client())
     out = src.papers(date(2026, 10, 9), date(2026, 10, 9))
-    assert out["2510.00001"].listed_at is None
-    assert out["2510.00002"].listed_at is None
-    assert out["2510.00003"].listed_at == datetime(2026, 10, 9, tzinfo=UTC)
+    for dropped in ("2510.00001", "2510.00002", "2510.00003", "2510.00004", "2510.00005"):
+        assert out[dropped].listed_at is None
+    # The normal row keeps its instant, normalised to UTC whatever offset it arrived with.
+    assert out["2510.00006"].listed_at == datetime(2026, 10, 9, tzinfo=UTC)
+    assert out["2510.00006"].listed_at.utcoffset() == timedelta(0)
     assert src.degraded is False
+
+
+@respx.mock
+def test_hf_a_non_list_answer_is_a_failed_day() -> None:
+    # A 200 with an error envelope or a wrapped list is API drift: it must stay a visible failed
+    # day, not look like a day that legitimately listed nothing.
+    for body in (
+        b'{"error": "rate limited"}',
+        b'{"papers": [{"paper": {"id": "2510.00001", "upvotes": 5}}]}',
+        b'"oops"',
+    ):
+
+        def responder(request: httpx.Request, body: bytes = body) -> httpx.Response:
+            if request.url.params["date"] == "2026-10-09":
+                return httpx.Response(200, content=body)
+            return httpx.Response(200, json=[{"paper": {"id": "2510.00002", "upvotes": 7}}])
+
+        respx.get(HF_URL).mock(side_effect=responder)
+        src = HfDailySource(httpx.Client())
+        out = src.papers(date(2026, 10, 8), date(2026, 10, 9))
+        assert out == {"2510.00002": HfPaper(upvotes=7)}
+        assert src.degraded is True
+        assert src.failure is not None
+        respx.reset()
+
+
+@respx.mock
+def test_hf_a_deeply_nested_value_degrades_the_day() -> None:
+    # A page can nest JSON deeper than Python can parse: that day is degraded, the earlier day is
+    # kept and papers() returns instead of failing the whole run.
+    nested = b'[{"paper": {"id": "2510.00001", "upvotes": 1, "x": ' + b"[" * 100_000
+    nested += b"0" + b"]" * 100_000 + b"}}]"
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        if request.url.params["date"] == "2026-10-09":
+            return httpx.Response(200, content=nested)
+        return httpx.Response(200, json=[{"paper": {"id": "2510.00002", "upvotes": 7}}])
+
+    respx.get(HF_URL).mock(side_effect=responder)
+    src = HfDailySource(httpx.Client())
+    out = src.papers(date(2026, 10, 8), date(2026, 10, 9))
+    assert out == {"2510.00002": HfPaper(upvotes=7)}
+    assert src.degraded is True
+
+
+@respx.mock
+def test_hf_a_huge_json_integer_is_a_bad_extra() -> None:
+    # json.loads refuses an integer of more than 4,300 digits; one such value is dropped as an
+    # out-of-range count and the rest of the page still counts.
+    huge = "9" * 5_000
+    body = (
+        '[{"paper": {"id": "2510.00001", "upvotes": 1, "githubStars": '
+        + huge
+        + '}, "x": '
+        + huge
+        + '}, {"paper": {"id": "2510.00002", "upvotes": 2, "githubStars": 7}}]'
+    ).encode()
+    respx.get(HF_URL).mock(return_value=httpx.Response(200, content=body))
+    src = HfDailySource(httpx.Client())
+    out = src.papers(date(2026, 10, 9), date(2026, 10, 9))
+    assert out["2510.00001"].github_stars is None
+    assert out["2510.00002"].github_stars == 7
+    assert src.degraded is False
+
+
+@pytest.mark.parametrize(
+    ("arxiv_id", "kept"),
+    [
+        ("2510.12345", True),
+        ("2510.1234", True),
+        ("2510.12345v3", True),
+        ("hep-th/9901001", True),
+        ("2510.123", False),
+        ("2510.123456", False),
+        ("-/1234567", False),
+        ("hep-th/990100", False),
+        ("hep-th/99010011", False),
+        # Fullwidth digits are not an arXiv id: the class stays ASCII.
+        ("\uff12\uff15\uff11\uff10.\uff11\uff12\uff13\uff14\uff15", False),
+    ],
+)
+@respx.mock
+def test_hf_arxiv_id_shapes(arxiv_id: str, kept: bool) -> None:
+    # The exact id shape is pinned: both real styles are accepted and everything else is skipped.
+    respx.get(HF_URL).mock(
+        return_value=httpx.Response(200, json=[{"paper": {"id": arxiv_id, "upvotes": 1}}])
+    )
+    out = HfDailySource(httpx.Client()).papers(date(2026, 10, 9), date(2026, 10, 9))
+    assert (arxiv_id.removesuffix("v3") in out) is kept
 
 
 @respx.mock
@@ -329,12 +440,13 @@ def test_hf_a_row_that_is_not_an_object_skips_only_itself() -> None:
 
 @respx.mock
 def test_hf_repo_link_is_bounded_to_the_github_widths() -> None:
-    # GitHub allows a 39-character owner and a 100-character repo; the bound is the cheap guard,
-    # and a value past it is not a repository link.
+    # GitHub allows a 39-character owner and a 100-character repo, and the bound is 200
+    # characters, written here so the test pins the number rather than restating the constant.
     owner = "a" * 39
-    repo = "b" * (GITHUB_REPO_MAX_CHARS - len("https://github.com/") - len(owner) - 1)
+    repo = "b" * (200 - len("https://github.com/") - len(owner) - 1)
     at_limit = f"https://github.com/{owner}/{repo}"
     over_limit = at_limit + "c"
+    assert len(at_limit) == 200
     rows = [
         {"paper": {"id": "2510.00001", "upvotes": 1, "githubRepo": at_limit}},
         {"paper": {"id": "2510.00002", "upvotes": 1, "githubRepo": over_limit}},

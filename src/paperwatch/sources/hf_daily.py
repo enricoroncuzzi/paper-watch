@@ -35,8 +35,19 @@ GITHUB_REPO_MAX_CHARS = 200
 # Only a real arXiv id may key the listing. It has to match a stored external_id exactly, and a
 # hostile or enormous value would cost the whole write for every paper: new style 2510.12345, old
 # style hep-th/9901001 (arxiv_base_id has already stripped the version).
-ARXIV_ID = re.compile(r"\d{4}\.\d{4,5}|[a-z][a-z-]*/\d{7}")
+ARXIV_ID = re.compile(r"[0-9]{4}\.[0-9]{4,5}|[a-z][a-z-]*/[0-9]{7}")
+# The daily listing began in 2023. A stamp outside this span is a bad extra, and one at the edge of
+# years 1..9999 cannot be read back whenever the database session time zone moves it across the
+# edge, which would fail every later run and search.
+LISTED_AT_FLOOR = datetime(2020, 1, 1, tzinfo=UTC)
+LISTED_AT_CEILING = datetime(2100, 1, 1, tzinfo=UTC)
 log = structlog.get_logger()
+
+
+def _json_int(text: str) -> int:
+    # json.loads refuses an integer of more than 4,300 digits, which would fail the whole page for
+    # one value; anything this long is past int4 and is dropped as a bad count.
+    return int(text) if len(text) <= 64 else INT4_MAX + 1
 
 
 def _as_int(value: object) -> int | None:
@@ -112,12 +123,12 @@ def _listed_at(value: object) -> datetime | None:
         return None
     if stamp.tzinfo is None:
         # The listing only ever sends UTC, so that is the honest reading of a naive stamp.
-        return stamp.replace(tzinfo=UTC)
+        stamp = stamp.replace(tzinfo=UTC)
     try:
-        # An offset can push the instant outside years 1..9999, which the driver cannot read back.
-        return stamp.astimezone(UTC)
+        stamp = stamp.astimezone(UTC)
     except OverflowError:
         return None
+    return stamp if LISTED_AT_FLOOR <= stamp <= LISTED_AT_CEILING else None
 
 
 def _paper(entry: object) -> tuple[str, HfPaper] | None:
@@ -188,7 +199,13 @@ class HfDailySource:
             try:
                 self._merge_day(out, day)
                 failed_in_a_row = 0
-            except (httpx.HTTPError, ValueError, TypeError, AttributeError) as exc:
+            except (
+                httpx.HTTPError,
+                ValueError,
+                TypeError,
+                AttributeError,
+                RecursionError,
+            ) as exc:
                 # A failed day must not discard earlier days; record the outage so
                 # the run can dead-letter it and stay visible without blocking.
                 self.degraded = True
@@ -225,7 +242,11 @@ class HfDailySource:
                 params={"date": day.isoformat(), "limit": PAGE_SIZE, "p": page},
                 max_bytes=MAX_HF_BODY_BYTES,
             )
-            rows = resp.json()
+            rows = resp.json(parse_int=_json_int)
+            if not isinstance(rows, list):
+                # An error envelope or a wrapped list is API drift, not a day with no papers: it
+                # must stay a visible failed day rather than look like a healthy empty one.
+                raise TypeError(f"hf answer is not a list: {type(rows).__name__}")
             new_ids = 0
             for entry in rows:
                 # A null paper is a bad row to skip, not a failed page.
