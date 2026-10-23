@@ -3,6 +3,7 @@ from collections.abc import Callable, Iterator
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from unittest.mock import DEFAULT, MagicMock
+from zoneinfo import ZoneInfo
 
 import pytest
 from sqlalchemy import Engine, select, text
@@ -27,6 +28,8 @@ from paperwatch.domain import (
 )
 from paperwatch.ingest.health import Health
 from paperwatch.ingest.pipeline import (
+    Followup,
+    ModelUnavailable,
     RunResult,
     Sources,
     _park_items,
@@ -145,6 +148,8 @@ def fake_sources(papers: list[SourceItem], feed_items: list[SourceItem] | None =
     # Signal sources report outages through these flags instead of raising (Task 4).
     s.hf.degraded, s.hf.failure = False, None
     s.s2.degraded, s.s2.failure = False, None
+    # A non-refusal answer problem (a shape anomaly); like the real client, it describes one call.
+    s.s2.anomaly = None
     s.hf.upvotes.return_value = {p.external_id: 50 for p in papers}
     s.s2.lookup.return_value = {}
     s.s2.refused = set()  # ids whose Semantic Scholar chunk the stub refuses
@@ -156,7 +161,13 @@ def fake_sources(papers: list[SourceItem], feed_items: list[SourceItem] | None =
         outage = s.s2.degraded and not s.s2.refused
         s.s2.checked_ids = set() if outage else set(ids) - s.s2.refused
         s.s2.refused_ids = set(ids) if outage else set(s.s2.refused) & set(ids)
-        return DEFAULT  # then the mock returns lookup.return_value as usual
+        if not s.s2.degraded:
+            # The real client resets its per-call anomaly on every lookup; only a test that leaves
+            # the source degraded keeps the one it set.
+            s.s2.anomaly = None
+        # Only an answered id can carry a fresh answer; a refused one keeps the stored evidence.
+        answers: dict[str, Signals] = s.s2.lookup.return_value or {}
+        return {k: v for k, v in answers.items() if k in s.s2.checked_ids}
 
     s.s2.lookup.side_effect = s2_lookup
     s.feeds.fetch_one.return_value = feed_items or []
@@ -180,18 +191,23 @@ def run(
     ledger: Ledger | None = None,
     since_override: datetime | None = None,
     clock: Callable[[], datetime] | None = None,
+    followup: bool = False,
+    bounds: Followup | None = None,
+    sleep: Callable[[float], None] | None = None,
 ) -> RunResult:
     return run_ingestion(
         session,
         sources,
-        classifier or FakeClassifier(PROFILES),
-        embedder or FakeEmbedder(),
+        lambda: (classifier or FakeClassifier(PROFILES), embedder or FakeEmbedder()),
         ledger or Ledger(10**9),
         ADM,
         now,
         since_override=since_override,
         # A test that does not care about the duration finishes in the same instant it starts.
         clock=clock or (lambda: now),
+        followup=followup,
+        bounds=bounds,
+        sleep=sleep or (lambda _seconds: None),
     )
 
 
@@ -1587,3 +1603,783 @@ def test_raising_try_lock_closes_its_connection(
     # A failing try-lock still closes the connection it opened.
     assert opened and all(conn.closed for conn in opened)
     assert engine.pool.checkedout() == before
+
+
+# --- Follow-up passes (Task 24, ADR 0008) -------------------------------------------------------
+# A keyless Semantic Scholar burst can refuse every attempt for hours. A scheduled run may then
+# wait and ask again for exactly the refused papers, until 22:00 Europe/Rome, at most 40 times.
+# These tests drive the loop with an injected sleep and clock: the real schedule is arithmetic,
+# so nothing waits.
+
+VENUE = "ICLR"
+S2_VENUE = {"2510.2": Signals(venue=VENUE)}
+
+
+def travelling_clock(
+    start: datetime,
+) -> tuple[list[float], list[datetime], Callable[[float], None]]:
+    """A sleep that moves a clock, and the waits it was asked for: the loop's own time is fake."""
+    sleeps: list[float] = []
+    wall = [start]
+
+    def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        wall[0] += timedelta(seconds=seconds)
+
+    return sleeps, wall, sleep
+
+
+def test_a_refused_paper_is_admitted_in_the_first_follow_up_pass(db_session: Session) -> None:
+    # The morning refusal clears before the first retry: the paper's own venue admits it, the run
+    # ends healthy, and no day of evidence is lost.
+    src = fake_sources([paper("2510.1", "Agent harness"), paper("2510.2", "Coding agent")])
+    src.hf.upvotes.return_value = {}
+    src.s2.lookup.return_value = S2_VENUE
+    src.s2.refused, src.s2.degraded, src.s2.failure = {"2510.2"}, True, "HTTP 429 after 5 attempts"
+    sleeps, wall, sleep = travelling_clock(NOW)
+
+    def recover(seconds: float) -> None:
+        # From the next pass on Semantic Scholar answers: the stub resets its flags on every call,
+        # exactly as the real client does.
+        sleep(seconds)
+        src.s2.refused, src.s2.degraded, src.s2.failure = set(), False, None
+
+    res = run(db_session, src, followup=True, sleep=recover, clock=lambda: wall[0])
+    assert sleeps == [300]  # the first wait: 5 minutes
+    assert res.status == "succeeded" and res.health is not None and res.health.healthy
+    assert res.counts["followup_passes"] == 1
+    assert res.counts["s2_unchecked"] == 0 and res.counts["s2_refused"] == 0
+    assert res.health.followup == {"passes": 1, "stopped": "resolved"}
+    assert row(db_session, "2510.2").tier == "peer_reviewed"
+    # The check time is the run's `now`, not the moment of the pass, so the cadence is unchanged.
+    assert (row(db_session, "2510.1").s2_checked_at, row(db_session, "2510.2").s2_checked_at) == (
+        NOW,
+        NOW,
+    )
+    # The refusal's outage letter is closed by the recovery, as a healthy source's always is.
+    letters = db_session.scalars(select(DeadLetter).where(DeadLetter.ref == "signals")).all()
+    assert [letter.resolved_at for letter in letters] == [NOW]
+
+
+def test_a_pass_check_is_stamped_with_the_runs_now_and_due_the_next_day(
+    db_session: Session,
+) -> None:
+    # The pass runs at 06:05 but stamps `s2_checked_at` with the run's 06:00 `now`, so the daily
+    # cadence is unchanged and the next run finds the paper due, not skipped for a day.
+    src = fake_sources([paper("2510.2", "Coding agent")])
+    src.hf.upvotes.return_value = {}
+    src.s2.lookup.return_value = {}  # answered, but no venue or citations yet: still a candidate
+    src.s2.refused, src.s2.degraded = {"2510.2"}, True
+    _sleeps, wall, sleep = travelling_clock(NOW)
+
+    def recover(seconds: float) -> None:
+        sleep(seconds)
+        src.s2.refused, src.s2.degraded = set(), False
+
+    run(db_session, src, followup=True, sleep=recover, clock=lambda: wall[0])
+    item = row(db_session, "2510.2")
+    assert item.status == "candidate" and item.s2_checked_at == NOW
+    # The next morning: the paper is due again, and its own day's stamp is the next run's start.
+    src.arxiv.papers = []
+    run(db_session, src, now=NOW + timedelta(days=1))
+    [ids] = src.s2.lookup.call_args.args
+    assert ids == ["2510.2"]
+    assert row(db_session, "2510.2").s2_checked_at == NOW + timedelta(days=1)
+
+
+def test_a_refusal_that_never_clears_ends_at_the_end_of_the_day(db_session: Session) -> None:
+    # 06:00 start, a refusal that lasts all day: the waits are 5, 10, 20, 40 minutes and then every
+    # 30, and the loop stops when the next pass would start after 22:00 Europe/Rome. The first day
+    # of an S2 outage is a warning, like one missed lab-feed day.
+    src = fake_sources([paper("2510.1", "Agent harness")])
+    src.hf.upvotes.return_value = {}
+    src.s2.degraded, src.s2.failure = True, "HTTP 429 after 5 attempts"
+    sleeps, wall, sleep = travelling_clock(NOW)
+    res = run(db_session, src, followup=True, sleep=sleep, clock=lambda: wall[0])
+    # This run starts at 06:00 UTC, which is 08:00 in Rome (CEST), so its window closes at 20:00
+    # UTC. The ramp ends at 07:15 UTC and a 30-minute pass only fits while it starts by 20:00:
+    # 07:15 + 30 min x 25 = 19:45, and the 26th would start at 20:15. So 4 ramp passes plus 25 = 29,
+    # and 29 waits. (A 06:00 Rome start gets 33 passes, ADR 0008's 34 S2 lookups.)
+    assert sleeps == [300, 600, 1200, 2400] + [1800] * 25
+    assert res.counts["followup_passes"] == 29
+    assert res.health is not None
+    assert res.health.followup == {"passes": 29, "stopped": "time_of_day"}
+    # First day: a warning, a succeeded run, and the papers still refused (and due tomorrow).
+    assert res.status == "succeeded" and res.health.healthy
+    assert res.health.warnings == ("s2 still refused after 29 follow-up passes: 1 ids",)
+    assert res.counts["s2_refused"] == 1 and res.counts["s2_unchecked"] == 1
+    assert row(db_session, "2510.1").s2_checked_at is None
+    # The letter this run opened stays open, so tomorrow counts as the second day.
+    letter = db_session.scalars(select(DeadLetter).where(DeadLetter.ref == "signals")).one()
+    assert letter.resolved_at is None
+    assert db_session.scalars(select(DeadLetter).where(DeadLetter.ref == "signals")).all() == [
+        letter
+    ]
+
+
+def test_a_second_day_of_refusals_is_a_failure(db_session: Session) -> None:
+    # The s2/signals letter was opened by an earlier run: this is the second day in a row, so the
+    # run is degraded and unhealthy, the same shape as a lab feed's second missed day.
+    src = fake_sources([paper("2510.1", "Agent harness")])
+    src.hf.upvotes.return_value = {}
+    src.s2.degraded, src.s2.failure = True, "HTTP 429 after 5 attempts"
+    first = run(db_session, src)
+    assert first.status == "partial"  # without --followup nothing waits
+
+    sleeps, wall, sleep = travelling_clock(NOW + timedelta(days=1))
+    res = run(
+        db_session,
+        src,
+        now=NOW + timedelta(days=1),
+        followup=True,
+        sleep=sleep,
+        clock=lambda: wall[0],
+    )
+    assert sleeps == [300, 600, 1200, 2400] + [1800] * 25  # the loop really ran
+    assert res.status == "partial" and res.health is not None and not res.health.healthy
+    assert res.health.warnings == ()
+    assert "1 signal sources degraded" in res.health.problems
+    assert "s2 still refused after 29 follow-up passes: 1 ids" in res.health.problems
+    # One letter per continuing outage, not one per run or per pass.
+    assert len(db_session.scalars(select(DeadLetter).where(DeadLetter.ref == "signals")).all()) == 1
+
+
+def test_the_pass_cap_stops_a_loop_that_never_reaches_its_deadline(db_session: Session) -> None:
+    # A clock that never reaches 22:00 (a frozen test clock) leaves the pass cap as the only bound.
+    src = fake_sources([paper("2510.1", "Agent harness")])
+    src.hf.upvotes.return_value = {}
+    src.s2.degraded, src.s2.failure = True, "HTTP 429 after 5 attempts"
+    sleeps: list[float] = []
+    res = run(db_session, src, followup=True, sleep=sleeps.append)
+    assert sleeps == [300, 600, 1200, 2400] + [1800] * 36
+    assert res.counts["followup_passes"] == 40
+    assert res.health is not None and res.health.followup == {"passes": 40, "stopped": "attempts"}
+    assert res.health.warnings == ("s2 still refused after 40 follow-up passes: 1 ids",)
+
+
+def test_a_run_with_nothing_refused_never_waits(db_session: Session) -> None:
+    src = fake_sources([paper("2510.1", "Agent harness")])
+    sleeps: list[float] = []
+    res = run(db_session, src, followup=True, sleep=sleeps.append)
+    assert sleeps == []
+    assert res.counts["followup_passes"] == 0
+    assert res.health is not None and res.health.followup is None
+    assert "followup" not in (res.health.as_dict())
+
+
+def test_a_follow_up_pass_fetches_nothing(db_session: Session) -> None:
+    # A pass retries Semantic Scholar only: arXiv, the feeds, Hugging Face and the classifier ran
+    # once, at 06:00, and are never repeated. Proved by the call counts recorded across passes.
+    src = fake_sources([paper("2510.1", "Agent harness"), paper("2510.2", "Coding agent")])
+    src.hf.upvotes.return_value = {}
+    src.s2.lookup.return_value = S2_VENUE
+    src.s2.refused, src.s2.degraded = {"2510.2"}, True
+    calls: list[tuple[int, int, int]] = []
+    left = [3]
+
+    def sleep(seconds: float) -> None:
+        calls.append(
+            (
+                src.arxiv.harvest.call_count,
+                src.feeds.fetch_one.call_count,
+                src.hf.upvotes.call_count,
+            )
+        )
+        left[0] -= 1
+        if left[0] == 0:  # the third pass answers
+            src.s2.refused, src.s2.degraded = set(), False
+
+    res = run(db_session, src, followup=True, sleep=sleep)
+    # One capture before each of the three passes; the first three are the main pass's counts and
+    # a pass that fetched would raise the numbers after the first.
+    assert len(calls) == 3 and calls[0] == calls[1] == calls[2]
+    assert res.counts["followup_passes"] == 3
+    assert res.health is not None and res.health.healthy
+
+
+def test_a_failed_admission_is_not_retried_when_s2_later_supplies_a_venue(
+    db_session: Session,
+) -> None:
+    # The paper is refused by S2 and admitted from its Hugging Face upvotes in the morning, and
+    # that admission fails. The pass now has a venue to propose, so only the "failed this run"
+    # filter can stop it from being retried in-day: the attempt cap belongs to the next run.
+    src = fake_sources([paper("2510.2", "Coding agent")])
+    src.s2.lookup.return_value = S2_VENUE
+    src.s2.refused, src.s2.degraded = {"2510.2"}, True
+    embedder = FlakyEmbedder(failures=1)
+    _sleeps, wall, sleep = travelling_clock(NOW)
+
+    def recover(seconds: float) -> None:
+        sleep(seconds)
+        src.s2.refused, src.s2.degraded = set(), False
+
+    res = run(
+        db_session,
+        src,
+        embedder=embedder,
+        followup=True,
+        sleep=recover,
+        clock=lambda: wall[0],
+    )
+    assert res.counts["followup_passes"] == 1  # the pass ran and S2 answered
+    assert src.s2.lookup.call_count == 2
+    assert res.counts["failed"] == 1
+    # One embed attempt in the whole run: the pass did not retry the failed admission.
+    assert embedder.calls == 1
+    assert row(db_session, "2510.2").status == "candidate"
+    assert row(db_session, "2510.2").admit_attempts == 1
+
+
+def test_the_lock_is_held_and_the_row_is_finished_while_waiting(
+    db_session: Session, engine: Engine
+) -> None:
+    # During the wait the advisory lock is still held (a manual run would be skipped) and the row
+    # is finished with a provisional verdict, never 'running', so the morning check reads a run
+    # that is waiting rather than one that hung.
+    src = fake_sources([paper("2510.2", "Coding agent")])
+    src.hf.upvotes.return_value = {}
+    src.s2.lookup.return_value = S2_VENUE
+    src.s2.refused, src.s2.degraded = {"2510.2"}, True
+    seen: dict[str, object] = {}
+
+    def sleep(seconds: float) -> None:
+        # The row is read through the run's own session: `db_session` lives in a transaction the
+        # test rolls back, so another connection could not see it. The advisory lock is the
+        # cluster-wide fact, so that one is probed from its own connection.
+        probe_row = db_session.scalars(select(Run)).one()
+        seen["run_id"] = probe_row.id
+        seen["status"] = probe_row.status
+        seen["finished"] = probe_row.finished_at
+        seen["health"] = probe_row.health
+        with engine.connect() as conn:
+            held = conn.execute(
+                text("SELECT pg_try_advisory_lock(:k)"), {"k": INGEST_LOCK_KEY}
+            ).scalar()
+            if held:
+                conn.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": INGEST_LOCK_KEY})
+                conn.commit()
+        seen["lock_free"] = bool(held)
+        src.s2.refused, src.s2.degraded = set(), False
+
+    res = run(db_session, src, followup=True, sleep=sleep)
+    assert seen["lock_free"] is False
+    assert seen["status"] == "partial" and seen["finished"] is not None
+    assert seen["health"] == {
+        "healthy": False,
+        "problems": ["status=partial", "1 signal sources degraded"],
+        "warnings": [],
+        "followup": {
+            "pass": 0,
+            "of": 40,
+            "next_at": (NOW + timedelta(minutes=5)).isoformat(),
+            "pending": {"s2": 1},
+        },
+    }
+    assert res.run_id == seen["run_id"]
+
+
+def test_a_pass_that_admits_nothing_does_not_rebuild_the_models(db_session: Session) -> None:
+    import weakref
+
+    src = fake_sources([paper("2510.2", "Coding agent")])
+    src.hf.upvotes.return_value = {}
+    src.s2.lookup.return_value = {}  # S2 answers, but has no venue or citations yet
+    src.s2.refused, src.s2.degraded = {"2510.2"}, True
+    refs: list[weakref.ref[FakeEmbedder]] = []
+
+    def build() -> tuple[Classifier, Embedder]:
+        embedder = FakeEmbedder()
+        refs.append(weakref.ref(embedder))
+        return FakeClassifier(PROFILES), embedder
+
+    seen: list[int] = []
+
+    def sleep(seconds: float) -> None:
+        # Everything built so far is released before the wait: the factory's objects are dead.
+        assert all(ref() is None for ref in refs), [ref() for ref in refs]
+        seen.append(len(refs))
+        src.s2.refused, src.s2.degraded = set(), False
+
+    res = run_ingestion(
+        db_session,
+        src,
+        build,
+        Ledger(10**9),
+        ADM,
+        NOW,
+        clock=lambda: NOW,
+        followup=True,
+        sleep=sleep,
+    )
+    # Built once for the main pass; the pass answered with no signals, so nothing was embedded.
+    assert seen == [1] and len(refs) == 1
+    assert res.health is not None and res.health.healthy
+
+
+def test_a_pass_that_admits_something_rebuilds_the_models(db_session: Session) -> None:
+    import weakref
+
+    src = fake_sources([paper("2510.2", "Coding agent")])
+    src.hf.upvotes.return_value = {}
+    src.s2.lookup.return_value = S2_VENUE  # a venue: the pass admits a first time, so it embeds
+    src.s2.refused, src.s2.degraded = {"2510.2"}, True
+    refs: list[weakref.ref[FakeEmbedder]] = []
+
+    def build() -> tuple[Classifier, Embedder]:
+        embedder = FakeEmbedder()
+        refs.append(weakref.ref(embedder))
+        return FakeClassifier(PROFILES), embedder
+
+    def sleep(seconds: float) -> None:
+        assert all(ref() is None for ref in refs)
+        src.s2.refused, src.s2.degraded = set(), False
+
+    res = run_ingestion(
+        db_session,
+        src,
+        build,
+        Ledger(10**9),
+        ADM,
+        NOW,
+        clock=lambda: NOW,
+        followup=True,
+        sleep=sleep,
+    )
+    # The main pass's pair was released, then rebuilt for the pass's first admission.
+    assert len(refs) == 2
+    assert row(db_session, "2510.2").tier == "peer_reviewed"
+    assert res.health is not None and res.health.healthy
+
+
+def test_an_exception_inside_the_loop_still_fails_the_run(db_session: Session) -> None:
+    # The loop runs inside the run's try: a SystemExit or KeyboardInterrupt between passes must
+    # still close the row as failed, not leave it waiting forever.
+    src = fake_sources([paper("2510.2", "Coding agent")])
+    src.hf.upvotes.return_value = {}
+    src.s2.refused, src.s2.degraded = {"2510.2"}, True
+    api_call = src.s2.lookup.side_effect
+    calls = {"n": 0}
+
+    def die_after_the_main_pass(ids: list[str]) -> object:
+        calls["n"] += 1
+        if calls["n"] > 1:  # the main pass is call 1; anything after it is a follow-up pass
+            raise SystemExit("killed between passes")
+        return api_call(ids)
+
+    src.s2.lookup.side_effect = die_after_the_main_pass
+    _sleeps, wall, sleep = travelling_clock(NOW)
+    with pytest.raises(SystemExit, match="killed between passes"):
+        run(db_session, src, followup=True, sleep=sleep, clock=lambda: wall[0])
+    failed = db_session.scalars(select(Run).where(Run.status == "failed")).one()
+    assert failed.health is None and failed.finished_at is not None
+
+
+def test_a_pass_that_succeeds_late_in_the_window_still_rescues_the_day(db_session: Session) -> None:
+    # The field evidence (2026-10-23): S2 refused at 06:03 and again at 09:52, so a burst can last
+    # hours. A pass late in the window must still recover the day and leave it healthy.
+    src = fake_sources([paper("2510.2", "Coding agent")])
+    src.hf.upvotes.return_value = {}
+    src.s2.lookup.return_value = S2_VENUE
+    src.s2.refused, src.s2.degraded = {"2510.2"}, True
+    sleeps, wall, sleep = travelling_clock(NOW)
+    left = [12]
+
+    def recover_late(seconds: float) -> None:
+        sleep(seconds)
+        left[0] -= 1
+        if left[0] == 0:  # the 12th pass, about 13:30 in Rome
+            src.s2.refused, src.s2.degraded = set(), False
+
+    res = run(db_session, src, followup=True, sleep=recover_late, clock=lambda: wall[0])
+    assert sleeps == [300, 600, 1200, 2400] + [1800] * 8
+    assert res.health is not None and res.health.healthy
+    assert res.health.followup == {"passes": 12, "stopped": "resolved"}
+    assert res.health.warnings == ()
+    assert row(db_session, "2510.2").tier == "peer_reviewed"
+
+
+def test_a_run_started_after_the_deadline_takes_no_pass(db_session: Session) -> None:
+    # A Persistent=true catch-up can start the run at 23:00 Rome time. No pass fits before the
+    # window closes, so the run waits for nothing and says so; the refused papers stay due.
+    late = datetime(2026, 10, 12, 21, tzinfo=UTC)  # 23:00 in Rome, past the 22:00 deadline
+    src = fake_sources([paper("2510.2", "Coding agent")])
+    src.hf.upvotes.return_value = {}
+    src.s2.degraded, src.s2.failure = True, "HTTP 429 after 5 attempts"
+    sleeps: list[float] = []
+    res = run(db_session, src, now=late, followup=True, sleep=sleeps.append)
+    assert sleeps == []
+    assert res.counts["followup_passes"] == 0
+    assert res.health is not None and res.health.followup == {"passes": 0, "stopped": "time_of_day"}
+    assert res.health.warnings == ("s2 refused and no pass fit before 22:00: 1 ids",)
+    assert res.health.healthy  # the first day of an outage is still a warning
+
+
+def test_each_pass_logs_one_line_with_the_idle_footprint(db_session: Session) -> None:
+    # The journal is the captain's view of a long morning, and a refusal can last hours: one line
+    # per pass (never one per attempt from the pipeline's side), carrying the waiting process's RSS,
+    # plus one line when the loop ends.
+    src = fake_sources([paper("2510.2", "Coding agent")])
+    src.hf.upvotes.return_value = {}
+    src.s2.lookup.return_value = S2_VENUE
+    src.s2.refused, src.s2.degraded = {"2510.2"}, True
+    left = [3]
+
+    def sleep(seconds: float) -> None:
+        left[0] -= 1
+        if left[0] == 0:  # the third pass answers
+            src.s2.refused, src.s2.degraded = set(), False
+
+    with capture_logs() as logs:
+        run(db_session, src, followup=True, sleep=sleep)
+    passes = [event for event in logs if event["event"] == "followup_pass"]
+    finished = [event for event in logs if event["event"] == "followup_finished"]
+    assert [event["pass_"] for event in passes] == [1, 2, 3]
+    assert all("rss_mb" in event and event["pending"] == 1 for event in passes)
+    assert [(event["passes"], event["stopped"], event["pending"]) for event in finished] == [
+        (3, "resolved", 0)
+    ]
+
+
+def test_an_early_start_cannot_outlive_the_unit_timeout(db_session: Session) -> None:
+    # A Persistent catch-up can start the run at 00:30 Rome time. The clock face alone would let it
+    # sleep until 19:45, and systemd's 17 h timeout would kill it in the middle of a wait; the
+    # window is also capped at 16 h relative to the start, so it stops before that.
+    rome = ZoneInfo("Europe/Rome")
+    start = datetime(2026, 10, 13, 0, 30, tzinfo=rome).astimezone(UTC)
+    src = fake_sources([paper("2510.2", "Coding agent")])
+    src.hf.upvotes.return_value = {}
+    src.s2.degraded, src.s2.failure = True, "HTTP 429 after 5 attempts"
+    sleeps, wall, sleep = travelling_clock(start)
+    res = run(db_session, src, now=start, followup=True, sleep=sleep, clock=lambda: wall[0])
+    assert sum(sleeps) <= 16 * 3600
+    assert res.health is not None and res.health.followup == {
+        "passes": 33,
+        "stopped": "time_of_day",
+    }
+    # The last pass starts at 16:15 Rome, half an hour inside the 16 h window that closes at 16:30.
+    assert start + timedelta(seconds=sum(sleeps)) == datetime(
+        2026, 10, 13, 16, 15, tzinfo=rome
+    ).astimezone(UTC)
+
+
+def test_a_pass_starting_exactly_at_the_deadline_does_not_run(db_session: Session) -> None:
+    # The window closes at 22:00, not after it: a pass that would start at exactly 22:00 is too
+    # late. `now` 21:55 Rome plus the 5-minute first wait lands exactly on the deadline.
+    rome = ZoneInfo("Europe/Rome")
+    start = datetime(2026, 10, 12, 21, 55, tzinfo=rome).astimezone(UTC)
+    src = fake_sources([paper("2510.2", "Coding agent")])
+    src.hf.upvotes.return_value = {}
+    src.s2.degraded, src.s2.failure = True, "HTTP 429 after 5 attempts"
+    sleeps: list[float] = []
+    res = run(db_session, src, now=start, followup=True, sleep=sleeps.append)
+    assert sleeps == []
+    assert res.counts["followup_passes"] == 0
+    assert res.health is not None and res.health.followup == {"passes": 0, "stopped": "time_of_day"}
+
+
+def test_a_model_that_cannot_be_built_fails_the_run_not_the_items(db_session: Session) -> None:
+    # The first build happens before phase 2: a missing model file fails the run (exit 1, row
+    # failed) instead of being charged to every new item's attempt cap.
+    src = fake_sources([paper("2510.1", "Agent harness")])
+
+    def build() -> tuple[Classifier, Embedder]:
+        raise RuntimeError("model files missing")
+
+    with pytest.raises(ModelUnavailable, match="model files missing"):
+        run_ingestion(db_session, src, build, Ledger(10**9), ADM, NOW, clock=lambda: NOW)
+    failed = db_session.scalars(select(Run).where(Run.status == "failed")).one()
+    assert failed.health is None
+    # Nothing was classified, admitted or dead-lettered: the item was never touched.
+    assert db_session.scalars(select(Item)).all() == []
+    assert db_session.scalars(select(DeadLetter)).all() == []
+
+
+def test_a_rebuild_failure_in_a_pass_fails_the_run_not_the_item(db_session: Session) -> None:
+    # The pair released before the wait cannot be built again: that is the run's failure, not an
+    # admission failure charged to the paper the pass was about to admit.
+    src = fake_sources([paper("2510.2", "Coding agent")])
+    src.hf.upvotes.return_value = {}
+    src.s2.lookup.return_value = S2_VENUE
+    src.s2.refused, src.s2.degraded = {"2510.2"}, True
+    builds = {"n": 0}
+
+    def build() -> tuple[Classifier, Embedder]:
+        builds["n"] += 1
+        if builds["n"] > 1:
+            raise RuntimeError("model files vanished")
+        return FakeClassifier(PROFILES), FakeEmbedder()
+
+    _sleeps, wall, sleep = travelling_clock(NOW)
+
+    def recover(seconds: float) -> None:
+        sleep(seconds)
+        src.s2.refused, src.s2.degraded = set(), False
+
+    with pytest.raises(ModelUnavailable, match="model files vanished"):
+        run_ingestion(
+            db_session,
+            src,
+            build,
+            Ledger(10**9),
+            ADM,
+            NOW,
+            clock=lambda: wall[0],
+            followup=True,
+            sleep=recover,
+        )
+    failed = db_session.scalars(select(Run).where(Run.status == "failed")).one()
+    assert failed.health is None
+    item = row(db_session, "2510.2")
+    assert item.status == "candidate" and item.admit_attempts == 0
+    assert Repository(db_session).open_item_dead_letters() == []
+
+
+def test_an_anomaly_is_not_masked_by_a_recovered_refusal(db_session: Session) -> None:
+    # The morning S2 call both refused one chunk and answered another with a shape this client
+    # cannot read. The pass clears the refusal; the anomaly is not a throttle, so the run stays
+    # degraded instead of reading healthy (the reviewer's masking probe, inverted).
+    src = fake_sources([paper("2510.1", "Agent harness"), paper("2510.2", "Coding agent")])
+    src.hf.upvotes.return_value = {}
+    src.s2.lookup.return_value = {}
+    src.s2.refused = {"2510.2"}
+    src.s2.degraded = True
+    src.s2.failure = "s2 chunk at 0: 400 rows for 500 ids"
+    src.s2.anomaly = src.s2.failure
+    sleeps, wall, sleep = travelling_clock(NOW)
+
+    def recover(seconds: float) -> None:
+        sleep(seconds)
+        src.s2.refused, src.s2.degraded, src.s2.failure = set(), False, None
+
+    res = run(db_session, src, followup=True, sleep=recover, clock=lambda: wall[0])
+    assert sleeps == [300]
+    assert res.status == "partial" and res.health is not None and not res.health.healthy
+    assert "1 signal sources degraded" in res.health.problems
+    # The refusal itself is resolved, so there is no first-day warning to add.
+    assert res.health.warnings == ()
+    assert res.counts["s2_refused"] == 0
+
+
+def test_a_pass_asks_only_the_refused_ids(db_session: Session) -> None:
+    # The main pass asks for every target once; a pass asks for the refused ids alone, never for an
+    # id S2 already answered and never for one it simply does not know (a retry there would spend
+    # the window on papers no retry can help).
+    src = fake_sources(
+        [
+            paper("2510.1", "Agent harness"),
+            paper("2510.2", "Coding agent"),
+            paper("2510.3", "Tool use survey"),
+        ]
+    )
+    src.hf.upvotes.return_value = {}
+    src.s2.refused, src.s2.degraded = {"2510.2"}, True
+    # S2 knows 2510.1, refuses 2510.2 and has never heard of 2510.3 (it is omitted from the answer).
+    unknown = {"2510.3"}
+
+    def s2_lookup(ids: list[str]) -> dict[str, Signals]:
+        src.s2.checked_ids = set(ids) - src.s2.refused - unknown
+        src.s2.refused_ids = set(ids) & src.s2.refused
+        if not src.s2.degraded:
+            src.s2.anomaly = None
+        return {k: v for k, v in S2_VENUE.items() if k in src.s2.checked_ids}
+
+    src.s2.lookup.side_effect = s2_lookup
+    _sleeps, wall, sleep = travelling_clock(NOW)
+
+    def recover(seconds: float) -> None:
+        sleep(seconds)
+        src.s2.refused, src.s2.degraded = set(), False
+
+    res = run(db_session, src, followup=True, sleep=recover, clock=lambda: wall[0])
+    asked = [call.args[0] for call in src.s2.lookup.call_args_list]
+    assert asked == [["2510.1", "2510.2", "2510.3"], ["2510.2"]]
+    # The id S2 does not know is still counted as unchecked, and it is not a refusal.
+    assert res.counts["s2_unchecked"] == 1 and res.counts["s2_refused"] == 0
+
+
+def test_an_id_s2_does_not_know_never_starts_a_loop(db_session: Session) -> None:
+    # An id S2 leaves out of an otherwise fine answer is not a refusal: it stays unchecked and due,
+    # but it must never open a window of retries that could not possibly help.
+    src = fake_sources([paper("2510.2", "Coding agent")])
+    src.hf.upvotes.return_value = {}
+
+    def unknown(ids: list[str]) -> dict[str, Signals]:
+        src.s2.checked_ids = set()  # omitted from the answer
+        src.s2.refused_ids = set()  # and not refused either
+        return {}
+
+    src.s2.lookup.side_effect = unknown
+    sleeps: list[float] = []
+    res = run(db_session, src, followup=True, sleep=sleeps.append)
+    assert sleeps == []
+    assert res.counts["followup_passes"] == 0
+    assert res.counts["s2_unchecked"] == 1 and res.counts["s2_refused"] == 0
+    assert res.health is not None and res.health.followup is None
+
+
+def test_no_transaction_is_open_while_waiting(db_session: Session) -> None:
+    # The row is committed before the wait, not merely written: the morning check reads the
+    # database through its own psql session, and an open transaction would hide the row for hours.
+    src = fake_sources([paper("2510.2", "Coding agent")])
+    src.hf.upvotes.return_value = {}
+    src.s2.lookup.return_value = S2_VENUE
+    src.s2.refused, src.s2.degraded = {"2510.2"}, True
+
+    def sleep(seconds: float) -> None:
+        assert not db_session.in_transaction()
+        src.s2.refused, src.s2.degraded = set(), False
+
+    res = run(db_session, src, followup=True, sleep=sleep)
+    assert res.health is not None and res.health.healthy
+
+
+def test_an_exhausted_budget_takes_no_follow_up_pass(db_session: Session) -> None:
+    # A run that spent its token budget on the morning admission cannot admit anything later, so it
+    # does not wait: the refused papers stay due for the next run.
+    class Costly(FakeEmbedder):
+        def __init__(self, ledger: Ledger) -> None:
+            super().__init__()
+            self.ledger = ledger
+
+        def embed(self, texts: list[str]) -> list[list[float]]:
+            self.ledger.charge("fake", 1000)
+            return super().embed(texts)
+
+    ledger = Ledger(500)
+    src = fake_sources([paper("2510.2", "Coding agent")])  # 50 HF upvotes: a first admission
+    src.s2.refused, src.s2.degraded = {"2510.2"}, True
+    sleeps: list[float] = []
+    res = run(
+        db_session, src, embedder=Costly(ledger), ledger=ledger, followup=True, sleep=sleeps.append
+    )
+    assert sleeps == []
+    assert res.status == "budget_exhausted"
+    assert res.counts["followup_passes"] == 0
+    assert res.health is not None and res.health.followup is None
+    assert res.counts["s2_refused"] == 1
+
+
+def test_a_budget_stop_inside_a_pass_ends_the_loop(db_session: Session) -> None:
+    # The pass is the first thing that needs an embedding, and it cannot afford one: the run stops
+    # as a budget-exhausted run and the loop records that, rather than waiting for a pass that could
+    # never admit.
+    class Costly(FakeEmbedder):
+        def __init__(self, ledger: Ledger) -> None:
+            super().__init__()
+            self.ledger = ledger
+
+        def embed(self, texts: list[str]) -> list[list[float]]:
+            self.ledger.charge("fake", 1000)
+            return super().embed(texts)
+
+    ledger = Ledger(500)
+    src = fake_sources([paper("2510.1", "Agent harness"), paper("2510.2", "Coding agent")])
+    src.hf.upvotes.return_value = {}  # nothing is admitted in the morning, so the budget survives
+    src.s2.lookup.return_value = S2_VENUE
+    src.s2.refused, src.s2.degraded = {"2510.2"}, True
+    sleeps, wall, sleep = travelling_clock(NOW)
+
+    def recover(seconds: float) -> None:
+        sleep(seconds)
+        src.s2.refused, src.s2.degraded = set(), False
+
+    res = run(
+        db_session,
+        src,
+        embedder=Costly(ledger),
+        ledger=ledger,
+        followup=True,
+        sleep=recover,
+        clock=lambda: wall[0],
+    )
+    assert sleeps == [300]
+    assert res.status == "budget_exhausted"
+    assert res.counts["followup_passes"] == 1
+    assert res.health is not None
+    assert res.health.followup == {"passes": 1, "stopped": "budget_exhausted"}
+    assert row(db_session, "2510.2").status == "candidate"
+
+
+def test_an_anomaly_that_first_appears_in_a_pass_survives_a_later_clean_one(
+    db_session: Session,
+) -> None:
+    # A pass can be the first to see the bad shape (its answer is short or unpaired) while a later
+    # pass answers cleanly: the anomaly belongs to the run, so the day stays degraded.
+    src = fake_sources([paper("2510.1", "Agent harness"), paper("2510.2", "Coding agent")])
+    src.hf.upvotes.return_value = {}
+    src.s2.refused, src.s2.degraded, src.s2.failure = {"2510.2"}, True, "HTTP 429 after 5 attempts"
+    _sleeps, wall, sleep = travelling_clock(NOW)
+    calls = {"n": 0}
+
+    def hook(seconds: float) -> None:
+        sleep(seconds)
+        calls["n"] += 1
+        if calls["n"] == 1:  # pass 1: refused again, and an answer shape the client cannot read
+            src.s2.failure = "s2 chunk at 0: 3 rows for 10 ids"
+            src.s2.anomaly = src.s2.failure
+        else:  # pass 2: clean
+            src.s2.refused, src.s2.degraded, src.s2.failure, src.s2.anomaly = (
+                set(),
+                False,
+                None,
+                None,
+            )
+
+    res = run(db_session, src, followup=True, sleep=hook, clock=lambda: wall[0])
+    assert calls["n"] == 2
+    assert res.status == "partial" and res.health is not None and not res.health.healthy
+    assert "1 signal sources degraded" in res.health.problems
+
+
+def test_a_run_still_refused_at_the_deadline_keeps_an_anomaly_on_its_first_day(
+    db_session: Session,
+) -> None:
+    # The first day of a refusal is a warning, but an anomaly is not the refusal: it keeps the run
+    # degraded, so the warning cannot make a month of bad answers look like a healthy morning.
+    src = fake_sources([paper("2510.1", "Agent harness"), paper("2510.2", "Coding agent")])
+    src.hf.upvotes.return_value = {}
+    src.s2.refused, src.s2.degraded = {"2510.2"}, True
+    src.s2.failure = "s2 chunk at 0: 400 rows for 500 ids"
+    src.s2.anomaly = src.s2.failure
+    _sleeps, wall, sleep = travelling_clock(NOW)
+    res = run(db_session, src, followup=True, sleep=sleep, clock=lambda: wall[0])
+    assert res.health is not None and any("still refused" in w for w in res.health.warnings)
+    assert res.status == "partial" and not res.health.healthy
+    assert "1 signal sources degraded" in res.health.problems
+
+
+def test_a_recovered_pass_with_an_anomaly_closes_the_outage_letter(db_session: Session) -> None:
+    # The source is answering again, so its outage letter closes; tomorrow's first refusal is a
+    # first day, not a second one. The anomaly itself stays in this run's verdict.
+    src = fake_sources([paper("2510.1", "Agent harness"), paper("2510.2", "Coding agent")])
+    src.hf.upvotes.return_value = {}
+    src.s2.refused, src.s2.degraded = {"2510.2"}, True
+    src.s2.failure = "s2 chunk at 0: 400 rows for 500 ids"
+    src.s2.anomaly = src.s2.failure
+    _sleeps, wall, sleep = travelling_clock(NOW)
+
+    def recover(seconds: float) -> None:
+        sleep(seconds)
+        src.s2.refused, src.s2.degraded, src.s2.failure = set(), False, None
+
+    res = run(db_session, src, followup=True, sleep=recover, clock=lambda: wall[0])
+    assert not Repository(db_session).has_open_dead_letter("s2", "signals")
+    assert res.status == "partial" and res.health is not None and not res.health.healthy
+
+
+def test_the_window_cap_counts_from_the_start_not_from_the_end_of_the_main_pass(
+    db_session: Session,
+) -> None:
+    # The 16 h cap is measured from the run's `now`, so a main pass that took two hours shortens the
+    # window instead of pushing it two hours later, which would eat the margin below the unit's
+    # 17 h timeout.
+    rome = ZoneInfo("Europe/Rome")
+    start = datetime(2026, 10, 13, 0, 30, tzinfo=rome).astimezone(UTC)
+    src = fake_sources([paper("2510.2", "Coding agent")])
+    src.hf.upvotes.return_value = {}
+    src.s2.degraded, src.s2.failure = True, "HTTP 429 after 5 attempts"
+    # The main pass takes two hours: the clock is already two hours past the run's `now`.
+    sleeps, wall, sleep = travelling_clock(start + timedelta(hours=2))
+    run(db_session, src, now=start, followup=True, sleep=sleep, clock=lambda: wall[0])
+    assert wall[0] <= start + timedelta(hours=16)
+    assert sum(sleeps) <= 14 * 3600  # the two hours the main pass took are inside the cap

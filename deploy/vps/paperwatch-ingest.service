@@ -14,13 +14,20 @@ Type=oneshot
 # The checkout lives in the user's own home, which is the whole of this service's writable world.
 WorkingDirectory=/home/paperwatch/paper-watch
 # Absolute path, not PATH: a user unit's PATH is systemd's, not the one a login shell builds.
-ExecStart=/home/paperwatch/.local/bin/uv run --frozen --no-dev paperwatch ingest --live
+# --followup keeps the process alive to retry the papers Semantic Scholar refused, every 30
+# minutes until 22:00 Europe/Rome (ADR 0008). It is the unit's flag only: a manual run without it
+# never waits, and this one finishes its row after the main pass so the morning check can read it.
+ExecStart=/home/paperwatch/.local/bin/uv run --frozen --no-dev paperwatch ingest --live --followup
 # 0600 and outside the repo: PW_DATABASE_URL (peer auth over the local socket), PW_USER_AGENT
 # with the captain's contact, and PW_LOCAL_EMBEDDING_CACHE_DIR. Ingestion needs no chat key.
 EnvironmentFile=/home/paperwatch/.config/paperwatch/env
 # A first run classifies and embeds a wide window on a shared 1.9 GB machine; the cap is generous
-# in time so a slow model is never killed halfway.
-TimeoutStartSec=3h
+# in time so a slow model is never killed halfway. The follow-up loop may run from 06:00 to 22:00
+# Rome time and caps its own window at 16 h from the start, so 17 h leaves an hour of margin and
+# no wait can outlive this timeout whatever the start time. Keep the timeout above that 16 h cap.
+# The flip side: a hung main pass is no longer killed here at 3 h; the morning check names it and
+# the captain stops the unit (docs/deploy/vps.md, "A morning with follow-ups").
+TimeoutStartSec=17h
 # The local embedding model peaks near 520 MB, so the cap leaves room for Python, fastembed and the
 # source clients. 950M is the peak measured on the shared VPS on 2026-10-22 (706.8M, no swap) plus
 # about a third. MemorySwapMax=0 is the important half: without it the kernel keeps a capped run

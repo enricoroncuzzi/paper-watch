@@ -819,3 +819,54 @@ def test_s2_a_failure_that_is_not_a_refusal_ends_the_streak(monkeypatch, bug) ->
     assert route.call_count == 12
     assert src.refused_ids == set(ids[:500]) | set(ids[1000:1500])
     assert set(ids[1500:]) <= src.checked_ids
+
+
+@respx.mock
+def test_s2_anomaly_names_a_problem_that_is_not_a_refusal() -> None:
+    # A shape this client cannot read is not a throttle: it is reported apart, so a run's later
+    # clean retry of the refused ids cannot hide it (review S4).
+    ids = [f"2510.{i:05d}" for i in range(10)]
+    respx.post(S2_BATCH_URL).mock(
+        return_value=httpx.Response(200, json=[_s2_row(ids[0]), _s2_row(ids[1])])
+    )
+    src = SemanticScholarSource(httpx.Client(), None, pause_s=0)
+    src.lookup(ids)
+    assert src.degraded is True and src.refused_ids == set()
+    assert src.anomaly is not None and "2 rows for 10 ids" in src.anomaly
+
+
+@respx.mock
+def test_s2_anomaly_is_set_for_a_deterministic_4xx(monkeypatch) -> None:
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    respx.post(S2_BATCH_URL).mock(return_value=httpx.Response(400, json={"error": "nope"}))
+    src = SemanticScholarSource(httpx.Client(), None, pause_s=0)
+    src.lookup(["2510.00001"])
+    assert src.degraded is True and src.refused_ids == set()
+    assert src.anomaly is not None and "400" in src.anomaly
+
+
+@respx.mock
+def test_s2_anomaly_is_not_set_by_a_refusal(monkeypatch) -> None:
+    # The pool refusing us is a refusal, not an anomaly: a later pass may clear it.
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    respx.post(S2_BATCH_URL).mock(return_value=httpx.Response(429))
+    src = SemanticScholarSource(httpx.Client(), None, pause_s=0)
+    src.lookup(["2510.00001"])
+    assert src.refused_ids == {"2510.00001"}
+    assert src.anomaly is None
+
+
+@respx.mock
+def test_s2_anomaly_describes_one_call_only() -> None:
+    ids = [f"2510.{i:05d}" for i in range(10)]
+    respx.post(S2_BATCH_URL).mock(
+        side_effect=[
+            httpx.Response(200, json=[_s2_row(ids[0])]),
+            httpx.Response(200, json=[None] * 10),
+        ]
+    )
+    src = SemanticScholarSource(httpx.Client(), None, pause_s=0)
+    src.lookup(ids)
+    assert src.anomaly is not None
+    src.lookup(ids)
+    assert src.degraded is False and src.anomaly is None

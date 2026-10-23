@@ -96,3 +96,21 @@ def test_an_unknown_log_level_is_refused(build_settings: Callable[..., Settings]
     # A typo must fail at startup rather than at the first log call.
     with pytest.raises(ValidationError, match="unknown log level"):
         build_settings(log_level="LOUD")
+
+
+def test_follow_up_bounds_default_and_refuse_a_later_deadline(
+    monkeypatch: pytest.MonkeyPatch, build_settings: Callable[[], Settings]
+) -> None:
+    # The bounds are a drop-in knob, but the deadline may only be moved earlier: 22:00 is the
+    # captain's decision, and a later hour would keep the process up past it.
+    s = build_settings()
+    assert (s.followup_max_passes, s.followup_interval_s, s.followup_deadline_hour) == (
+        40,
+        1800,
+        22,
+    )
+    monkeypatch.setenv("PW_FOLLOWUP_DEADLINE_HOUR", "20")
+    assert build_settings().followup_deadline_hour == 20
+    monkeypatch.setenv("PW_FOLLOWUP_DEADLINE_HOUR", "23")
+    with pytest.raises(ValidationError, match="followup_deadline_hour"):
+        build_settings()

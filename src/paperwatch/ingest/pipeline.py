@@ -1,9 +1,12 @@
 import dataclasses
+import gc
+import time
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import structlog
 from sqlalchemy import text
@@ -14,6 +17,11 @@ from paperwatch.config import (
     ARXIV_OAI_OVERLAP,
     FEED_OVERLAP,
     FEED_STALE_AFTER,
+    FOLLOWUP_DEADLINE_HOUR,
+    FOLLOWUP_DELAYS_S,
+    FOLLOWUP_INTERVAL_S,
+    FOLLOWUP_MAX_PASSES,
+    FOLLOWUP_MAX_WINDOW,
     HF_RECHECK_HORIZON,
     INGEST_LOCK_KEY,
     MAX_ITEM_ATTEMPTS,
@@ -29,9 +37,240 @@ from paperwatch.sources.arxiv import ArxivOaiSource
 from paperwatch.sources.feeds import Feed, FeedSource
 from paperwatch.sources.hf_daily import HfDailySource
 from paperwatch.sources.semantic_scholar import SemanticScholarSource
-from paperwatch.store.repository import Repository
+from paperwatch.store.repository import Repository, StoredItem
 
 log = structlog.get_logger()
+# The follow-up loop's deadline is local time on the server, so it is named rather than inferred
+# from the machine's zone: a move or a DST change must not shift when the window closes.
+ROME = ZoneInfo("Europe/Rome")
+# Builds the classifier and embedder a run uses. It is called once at the start of the run, so a
+# model that cannot be built fails the run before any item is touched, and again after the
+# follow-up loop released them between passes (ADR 0008).
+ModelFactory = Callable[[], tuple[Classifier, Embedder]]
+
+
+class ModelUnavailable(RuntimeError):
+    """The run's classifier or embedder could not be built: a missing model or a wrong provider."""
+
+
+@dataclass(frozen=True)
+class Followup:
+    """Bounds of the in-run follow-up loop (ADR 0008): how long a run may keep retrying."""
+
+    max_passes: int = FOLLOWUP_MAX_PASSES
+    interval_s: int = FOLLOWUP_INTERVAL_S
+    deadline_hour: int = FOLLOWUP_DEADLINE_HOUR
+    # A second bound on the window, relative to the start, so a late catch-up (00:30 Rome) cannot
+    # sleep past the unit's TimeoutStartSec; the clock face alone would allow 19 hours.
+    max_window: timedelta = FOLLOWUP_MAX_WINDOW
+
+    def delay_s(self, pass_number: int) -> int:
+        # One-based: the wait before the pass about to run. The first waits come from the fixed
+        # ramp (a burst of minutes is common), every later one from the interval.
+        if pass_number <= len(FOLLOWUP_DELAYS_S):
+            return FOLLOWUP_DELAYS_S[pass_number - 1]
+        return self.interval_s
+
+
+class _Models:
+    """The classifier and embedder a run holds, and a way to let them go between passes.
+
+    The local model is about 520 MB resident on a 1.9 GB server shared with another service, so a
+    run that waits hours between passes must not keep it: `release` drops the only references (no
+    caller may hold its own) and the next use builds the pair again. Only a pass whose admission
+    needs a first embedding does that, so an idle day costs the interpreter alone (ADR 0008).
+    """
+
+    def __init__(self, build: ModelFactory) -> None:
+        self._build = build
+        self._classifier: Classifier | None = None
+        self._embedder: Embedder | None = None
+
+    def _ensure(self) -> tuple[Classifier, Embedder]:
+        if self._classifier is None or self._embedder is None:
+            try:
+                self._classifier, self._embedder = self._build()
+            except Exception as exc:
+                # A model that cannot be built is a run-level failure, never an item's problem: the
+                # per-item handlers would spend every new item's attempt cap on it, and a paper
+                # would be dead-lettered after three days of a broken model file (review S3).
+                raise ModelUnavailable(f"could not build the run's models: {exc}") from exc
+        return self._classifier, self._embedder
+
+    def classifier(self) -> Classifier:
+        return self._ensure()[0]
+
+    def embedder(self) -> Embedder:
+        return self._ensure()[1]
+
+    def release(self) -> None:
+        self._classifier = self._embedder = None
+        # fastembed frees its ONNX session in a finalizer; collecting now means the memory is back
+        # with the OS for the wait, not whenever CPython next decides to run one.
+        gc.collect()
+
+
+def _rss_mb() -> float | None:
+    # What the process really holds while it waits, for the journal: the server's memory is shared
+    # with another service, so the idle footprint is a number worth reading, not an assumption.
+    # /proc exists on the Linux server only; elsewhere the line simply carries no figure.
+    try:
+        with open("/proc/self/status", encoding="ascii") as status:
+            for line in status:
+                if line.startswith("VmRSS:"):
+                    return round(int(line.split()[1]) / 1024, 1)
+    except OSError:
+        return None
+    return None
+
+
+def _deadline(now: datetime, hour: int) -> datetime:
+    # The window closes at a fixed local hour on the run's own day: a late catch-up that starts at
+    # 23:00 must not be given a wait that only ends tomorrow evening.
+    return now.astimezone(ROME).replace(hour=hour, minute=0, second=0, microsecond=0)
+
+
+def _iso(at: datetime) -> str:
+    return at.astimezone(UTC).isoformat(timespec="seconds")
+
+
+def _effective_status(status: str, causes: set[str]) -> str:
+    # `partial` is a finished run that lost some work: a degraded cause makes a succeeded run
+    # partial, while a budget stop keeps the status that says why it stopped.
+    return "partial" if status == "succeeded" and causes else status
+
+
+def _record_signal_source(
+    repo: Repository,
+    run_id: uuid.UUID,
+    name: str,
+    source: HfDailySource | SemanticScholarSource,
+    *,
+    now: datetime,
+    causes: set[str],
+    degraded_signals: set[str],
+    counts: dict[str, int],
+    anomaly: str | None = None,
+) -> None:
+    """Apply one signal source's health to the run, in the main pass and in a follow-up pass.
+
+    One dead letter per continuing outage, and a source that answers again closes its own: a
+    follow-up pass that recovers S2 must leave nothing of the morning's refusal behind. A shape
+    anomaly the run saw earlier is not a throttle, though, so a later clean call must not erase
+    that finding (review S4).
+    """
+    if source.degraded:
+        causes.add(name)
+        degraded_signals.add(name)
+        if not repo.has_open_dead_letter(name, "signals"):
+            repo.add_dead_letter(run_id, name, "signals", source.failure or "degraded")
+    elif anomaly:
+        # The last call answered, but an earlier call in this run was not a refusal: the source is
+        # answering again, so its outage letter closes, and the run still carries the finding.
+        causes.add(name)
+        degraded_signals.add(name)
+        repo.resolve_open_dead_letters(name, "signals", at=now)
+    else:
+        causes.discard(name)
+        degraded_signals.discard(name)
+        repo.resolve_open_dead_letters(name, "signals", at=now)
+    counts["signal_failures"] = len(degraded_signals)
+
+
+def _admit_targets(
+    repo: Repository,
+    session: Session,
+    targets: list[StoredItem],
+    *,
+    run_id: uuid.UUID,
+    now: datetime,
+    admission: AdmissionConfig,
+    signals: dict[str, Signals],
+    upvotes: dict[str, int],
+    checked: set[str],
+    new_ids: set[uuid.UUID],
+    models: _Models,
+    counts: dict[str, int],
+    causes: set[str],
+    failed: set[uuid.UUID],
+) -> str:
+    """Re-check evidence and admit the given targets; returns the run status to carry on with.
+
+    Extracted so a follow-up pass can admit exactly the papers it just re-checked, without
+    re-running the fetch, the classification or the dead-letter retries (ADR 0008).
+    """
+    status = "succeeded"
+    for t in targets:
+        try:
+            evidence = t.signals
+            if t.item.source == "arxiv":
+                fresh = dataclasses.replace(
+                    signals.get(t.item.external_id, Signals()),
+                    hf_upvotes=upvotes.get(t.item.external_id),
+                )
+                evidence = repo.merge_signals(t.id, fresh)
+                if t.item.external_id in checked:
+                    # Committed with the admission below: a target that fails or hits
+                    # the budget is rolled back to its old check time and stays due.
+                    repo.mark_s2_checked([t.id], now)
+            proposed = admit(
+                t.item,
+                Classification(t.profile, t.relevance, "stored"),
+                evidence,
+                admission,
+            )
+            tier = promote(t.tier, proposed.tier if proposed else None)
+            if (
+                proposed is not None
+                and tier is not None
+                and tier == t.tier == proposed.tier
+                and basis_improves(t.basis, proposed.basis)
+            ):
+                # Same tier, but a lab's own report now also has community evidence.
+                repo.admit_item(t.id, tier, proposed.basis, None, evidence, now)
+                counts["basis_improved"] += 1
+            elif proposed is not None and tier is not None and tier != t.tier:
+                # promote only ever returns a changed tier when it is the proposed one.
+                # Only a first admission needs an embedding; a promotion keeps the
+                # vector.
+                vec = (
+                    models.embedder().embed([embedding_text(t.item)])[0] if t.tier is None else None
+                )
+                repo.admit_item(t.id, tier, proposed.basis, vec, evidence, now)
+                if t.tier is not None:
+                    counts["promoted"] += 1
+                else:
+                    counts["stored"] += 1
+                    if t.id not in new_ids:
+                        counts["admitted_late"] += 1
+            session.commit()
+        except BudgetExceeded:
+            # Remaining targets keep their state; the next run re-checks them anyway.
+            session.rollback()
+            return "budget_exhausted"
+        except ModelUnavailable:
+            # A model that cannot be rebuilt is the run's problem, not this item's: charging it to
+            # every item's attempt cap would dead-letter them (review S3).
+            raise
+        except Exception as exc:  # noqa: BLE001 - one item must not abort the run
+            session.rollback()
+            causes.add("admission")
+            counts["failed"] += 1
+            # A pass must not retry what the main pass already failed to admit; the item's own
+            # attempt count is the retry policy, and it is not fed more than once a run.
+            failed.add(t.id)
+            if repo.record_admit_failure(t.id, repr(exc)) >= MAX_ITEM_ATTEMPTS:
+                # A deterministic failure would otherwise be retried, and fail, every
+                # day.
+                repo.add_dead_letter(
+                    run_id,
+                    t.item.source,
+                    t.item.external_id,
+                    f"gave up after {MAX_ITEM_ATTEMPTS} admission attempts: {exc!r}",
+                )
+                counts["given_up"] += 1
+            session.commit()
+    return status
 
 
 @dataclass
@@ -156,16 +395,20 @@ def _single_run_lock(session: Session) -> Iterator[bool]:
 def run_ingestion(
     session: Session,
     sources: Sources,
-    classifier: Classifier,
-    embedder: Embedder,
+    build_models: ModelFactory,
     ledger: Ledger,
     admission: AdmissionConfig,
     now: datetime,
     default_lookback: timedelta = timedelta(days=7),
     since_override: datetime | None = None,
     clock: Callable[[], datetime] = _wall_clock,
+    *,
+    followup: bool = False,
+    bounds: Followup | None = None,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> RunResult:
     repo = Repository(session)
+    bounds = bounds or Followup()
     with _single_run_lock(session) as held:
         if not held:
             # One ingestion at a time: leave a trace for log-based alerts, then do nothing.
@@ -205,13 +448,40 @@ def run_ingestion(
                 "retried": 0,
                 "given_up": 0,
                 "duplicate_url": 0,
+                # Follow-up passes used, 0 unless the run was given --followup and S2 refused.
+                "followup_passes": 0,
             }
-            degraded = False
+            # Why this run is degraded, one cause per problem the sources caused ("arxiv",
+            # "feeds", "hf", "s2", "classification", "admission", "malformed", "payload").
+            # A set rather than a flag because one cause can be undone later in the same run: a
+            # follow-up pass that gets S2 answering again removes its own cause (ADR 0008).
+            causes: set[str] = set()
+            # The signal sources that were degraded at their last attempt, so signal_failures can
+            # be recomputed instead of accumulated.
+            degraded_signals: set[str] = set()
+            # Papers whose S2 chunk no pass answered; refused is the subset S2 turned away.
+            unchecked: set[str] = set()
+            # Ids S2 refused in the main pass, and the follow-up loop's own record, if it ran.
+            s2_pending: set[str] = set()
+            followed: dict[str, object] | None = None
+            s2_problems: list[str] = []
+            # A non-refusal S2 problem (a short or unpaired answer) seen in this run. Sticky on
+            # purpose: a later pass that answers cleanly must not hide it (review S4).
+            s2_anomaly: str | None = None
+            # Targets whose admission failed this run: a follow-up pass never retries them.
+            failed_admissions: set[uuid.UUID] = set()
             stuck: list[str] = []  # cursors that could not advance this run, for the health verdict
             warnings: list[str] = []  # findings that do not make the run bad, for the verdict
             fetched: list[SourceItem] = []
             # Keys phase 1 parked this run; resolving one is not a retry.
             parked: set[tuple[str, str]] = set()
+
+            # The run's models, releasable while a follow-up pass waits. The first build happens
+            # here, before any source is asked and outside the per-item handlers: a model that
+            # cannot load must fail the run (exit 1, row failed) instead of being charged to every
+            # new item's attempt cap (review S3).
+            models = _Models(build_models)
+            models.classifier()
 
             # Phase 1: fetch. Each source keeps its own cursor and fails alone.
             # Days to harvest, oldest first: a cursor re-reads one overlap day back, a first run
@@ -247,7 +517,7 @@ def run_ingestion(
                         if not repo.has_open_dead_letter(bad.source, bad.ref):
                             repo.add_dead_letter(run_id, bad.source, bad.ref, bad.error)
                             counts["malformed"] += 1
-                            degraded = True
+                            causes.add("malformed")
                     if day < now.date():
                         # A completed past day advances the cursor to the next day's midnight;
                         # today is never marked complete.
@@ -257,7 +527,7 @@ def run_ingestion(
                     repo.resolve_open_dead_letters("arxiv", "window", at=now)
                     session.commit()
             except Exception as exc:  # noqa: BLE001 - one source must not abort the run
-                degraded = True
+                causes.add("arxiv")
                 if repo.cursor("arxiv") != arxiv_cursor:
                     # A completed day moved the cursor, so the source stopped early with progress;
                     # a day that only rewrote the same cursor value is not progress.
@@ -305,9 +575,12 @@ def run_ingestion(
                 except Exception as exc:  # noqa: BLE001
                     # An outage that starts now is a warning: the cursor stays pinned and the
                     # next run retries the same window, so one missed day loses nothing. Only a
-                    # feed with a letter already open (a second run in a row, or longer) degrades
-                    # the run and is listed as a stuck cursor.
-                    continuing_outage = repo.has_open_dead_letter("feed", feed.url)
+                    # feed with a letter already open from an earlier run (a second run in a row,
+                    # or longer) degrades the run and is listed as a stuck cursor. A letter this
+                    # run opened (a follow-up pass failing again) is still the first day.
+                    continuing_outage = repo.has_open_outage_from_earlier_run(
+                        "feed", feed.url, run_id
+                    )
                     log.warning(
                         "feed_fetch_failed",
                         feed=feed.url,
@@ -315,7 +588,7 @@ def run_ingestion(
                         outage="continuing" if continuing_outage else "started",
                     )
                     if continuing_outage:
-                        degraded = True
+                        causes.add("feeds")
                         stuck.append(key)
                     else:
                         warnings.append(f"feed missed once, retried next run: {feed.url}")
@@ -332,9 +605,28 @@ def run_ingestion(
                 if not repo.has_open_dead_letter(bad.source, bad.ref):
                     repo.add_dead_letter(run_id, bad.source, bad.ref, bad.error)
                     counts["malformed"] += 1
-                    degraded = True
+                    causes.add("malformed")
             _park_items(repo, run_id, feed_fetched, parked)
             session.commit()
+
+            # The one place the verdict is built: the provisional verdicts the loop writes and the
+            # final one must judge the same facts the same way.
+            def _verdict(block: dict[str, object] | None, extra: tuple[str, ...] = ()) -> Health:
+                return assess_run(
+                    # The effective status, so a provisional verdict and the final one judge the
+                    # same field the row carries (`partial` while a cause remains).
+                    _effective_status(status, causes),
+                    counts,
+                    ledger.tokens_used,
+                    ledger.max_tokens,
+                    stuck,
+                    stale,
+                    warnings=warnings,
+                    arxiv_expected=arxiv_expected,
+                    arxiv_stopped_early=arxiv_stopped_early,
+                    followup=block,
+                    extra_problems=extra,
+                )
 
             # One entry per item: an item both re-fetched by the overlap and waiting in a dead
             # letter is processed once, as its newest version, and that attempt resolves or counts.
@@ -347,7 +639,7 @@ def run_ingestion(
                     # A corrupt payload must not kill every run at the same line: count it as a
                     # failure and, at the attempt cap, give the letter up like a classification
                     # retry.
-                    degraded = True
+                    causes.add("payload")
                     counts["failed"] += 1
                     if repo.record_retry_failure(open_id, repr(exc)) >= MAX_ITEM_ATTEMPTS:
                         counts["given_up"] += 1
@@ -392,7 +684,7 @@ def run_ingestion(
                             # intact. embedding_text is what the classifier scored, so vectors
                             # stay comparable.
                             vec = (
-                                embedder.embed([embedding_text(item)])[0]
+                                models.embedder().embed([embedding_text(item)])[0]
                                 if stored.status == "admitted"
                                 else None
                             )
@@ -404,7 +696,7 @@ def run_ingestion(
                                 counts["retried"] += 1
                         session.commit()
                         continue
-                    cls = classifier.classify(item)
+                    cls = models.classifier().classify(item)
                     relevant = cls.profile is not None and cls.relevance >= admission.min_relevance
                     item_id = repo.record_classified(
                         item, "candidate" if relevant else "irrelevant", cls.profile, cls.relevance
@@ -429,7 +721,7 @@ def run_ingestion(
                     break
                 except Exception as exc:  # noqa: BLE001 - one item must not abort the run
                     session.rollback()
-                    degraded = True
+                    causes.add("classification")
                     counts["failed"] += 1
                     if dl_id is None:
                         repo.add_dead_letter(
@@ -447,6 +739,7 @@ def run_ingestion(
             # stored item whose tier can still rise, each once (the repository deduplicates by id).
             # Keyless: stored papers come only when due under S2_CADENCE, at most
             # S2_MAX_PAPERS_PER_RUN of them, most overdue first; the rest wait for the next run.
+            targets: list[StoredItem] = []
             if status != "budget_exhausted":
                 targets = repo.recheck_targets(
                     now, S2_RECHECK_HORIZON, also=new_ids, paper_limit=S2_MAX_PAPERS_PER_RUN
@@ -466,99 +759,195 @@ def run_ingestion(
                     s2 = sources.s2.lookup(paper_ids)
                     # Only ids whose chunk Semantic Scholar answered count as checked; a refused
                     # chunk leaves its papers due, so a congested day delays evidence, never loses
-                    # it.
-                    checked = sources.s2.checked_ids
-                    counts["s2_unchecked"] = len(set(paper_ids) - checked)
-                    counts["s2_refused"] = len(sources.s2.refused_ids)
+                    # it. The refused ones are what a follow-up pass asks for again.
+                    checked = set(sources.s2.checked_ids)
+                    s2_pending = set(sources.s2.refused_ids)
+                    s2_anomaly = sources.s2.anomaly
+                    unchecked = set(paper_ids) - checked
+                    counts["s2_unchecked"] = len(unchecked)
+                    counts["s2_refused"] = len(s2_pending)
                     # Signal sources degrade instead of raising (Task 4). A degraded call is
                     # recorded so the run is partial and the outage is flagged every morning it
                     # lasts; stored evidence is untouched, and the papers it missed stay due.
-                    signal_sources: tuple[
-                        tuple[str, HfDailySource | SemanticScholarSource], ...
-                    ] = (
-                        ("hf", sources.hf),
-                        ("s2", sources.s2),
-                    )
-                    for name, signal_source in signal_sources:
-                        if signal_source.degraded:
-                            degraded = True
-                            counts["signal_failures"] += 1
-                            if not repo.has_open_dead_letter(name, "signals"):
-                                # One letter per continuing outage, not one per run.
-                                repo.add_dead_letter(
-                                    run_id, name, "signals", signal_source.failure or "degraded"
-                                )
-                        else:
-                            # The source answered this run: its earlier outage letter is over.
-                            repo.resolve_open_dead_letters(name, "signals", at=now)
-                    session.commit()
-                new_set = set(new_ids)
-                for t in targets:
-                    try:
-                        evidence = t.signals
-                        if t.item.source == "arxiv":
-                            fresh = dataclasses.replace(
-                                s2.get(t.item.external_id, Signals()),
-                                hf_upvotes=upvotes.get(t.item.external_id),
-                            )
-                            evidence = repo.merge_signals(t.id, fresh)
-                            if t.item.external_id in checked:
-                                # Committed with the admission below: a target that fails or hits
-                                # the budget is rolled back to its old check time and stays due.
-                                repo.mark_s2_checked([t.id], now)
-                        proposed = admit(
-                            t.item,
-                            Classification(t.profile, t.relevance, "stored"),
-                            evidence,
-                            admission,
+                    for name, signal_source in (("hf", sources.hf), ("s2", sources.s2)):
+                        _record_signal_source(
+                            repo,
+                            run_id,
+                            name,
+                            signal_source,
+                            now=now,
+                            causes=causes,
+                            degraded_signals=degraded_signals,
+                            counts=counts,
                         )
-                        tier = promote(t.tier, proposed.tier if proposed else None)
-                        if (
-                            proposed is not None
-                            and tier is not None
-                            and tier == t.tier == proposed.tier
-                            and basis_improves(t.basis, proposed.basis)
-                        ):
-                            # Same tier, but a lab's own report now also has community evidence.
-                            repo.admit_item(t.id, tier, proposed.basis, None, evidence, now)
-                            counts["basis_improved"] += 1
-                        elif proposed is not None and tier is not None and tier != t.tier:
-                            # promote only ever returns a changed tier when it is the proposed one.
-                            # Only a first admission needs an embedding; a promotion keeps the
-                            # vector.
-                            vec = (
-                                embedder.embed([embedding_text(t.item)])[0]
-                                if t.tier is None
-                                else None
-                            )
-                            repo.admit_item(t.id, tier, proposed.basis, vec, evidence, now)
-                            if t.tier is not None:
-                                counts["promoted"] += 1
-                            else:
-                                counts["stored"] += 1
-                                if t.id not in new_set:
-                                    counts["admitted_late"] += 1
-                        session.commit()
-                    except BudgetExceeded:
-                        # Remaining targets keep their state; the next run re-checks them anyway.
-                        session.rollback()
-                        status = "budget_exhausted"
+                    session.commit()
+                status = _admit_targets(
+                    repo,
+                    session,
+                    targets,
+                    run_id=run_id,
+                    now=now,
+                    admission=admission,
+                    signals=s2,
+                    upvotes=upvotes,
+                    checked=checked,
+                    new_ids=set(new_ids),
+                    models=models,
+                    counts=counts,
+                    causes=causes,
+                    failed=failed_admissions,
+                )
+
+            # Follow-up passes (ADR 0008). A keyless S2 burst can last hours (refused at 06:03 and
+            # again at 09:52 on 2026-10-23), and the papers it refused stay due: instead of losing
+            # a day of evidence, a scheduled run waits and asks again for exactly those ids until
+            # 22:00 Europe/Rome, at most `followup_max_passes` times. Nothing else is redone: no
+            # arXiv, feed or HF fetch, no classification, no dead-letter retry, and only the
+            # refused papers are re-checked and admitted. The flag is off by default so a manual
+            # run never sits in this wait, and the first day S2 stays refused is a warning, not a
+            # failure, like one missed lab-feed day. A run whose token budget is spent cannot admit
+            # anything, so it does not wait either.
+            if followup and status != "budget_exhausted" and s2_pending:
+                stopped: str | None = None
+                passes = 0
+                # A pass starting at the 22:00 deadline itself is too late, and the window is also
+                # capped relative to the start, so a catch-up that begins at 00:30 cannot sleep past
+                # the unit's timeout.
+                deadline = min(_deadline(now, bounds.deadline_hour), now + bounds.max_window)
+                # The main pass's pages, parked letters and evidence are not needed while waiting;
+                # dropping the references keeps a long window from holding a first-run window's
+                # worth of items, which the loop re-reads from the store anyway.
+                del fetched, items, pending, targets, s2, upvotes
+                while s2_pending and passes < bounds.max_passes:
+                    delay = bounds.delay_s(passes + 1)
+                    next_at = clock() + timedelta(seconds=delay)
+                    if next_at.astimezone(ROME) >= deadline:
+                        stopped = "time_of_day"
                         break
-                    except Exception as exc:  # noqa: BLE001 - one item must not abort the run
-                        session.rollback()
-                        degraded = True
-                        counts["failed"] += 1
-                        if repo.record_admit_failure(t.id, repr(exc)) >= MAX_ITEM_ATTEMPTS:
-                            # A deterministic failure would otherwise be retried, and fail, every
-                            # day.
-                            repo.add_dead_letter(
-                                run_id,
-                                t.item.source,
-                                t.item.external_id,
-                                f"gave up after {MAX_ITEM_ATTEMPTS} admission attempts: {exc!r}",
-                            )
-                            counts["given_up"] += 1
-                        session.commit()
+                    # The row is finished before the process sleeps, never left 'running': the
+                    # morning check must read a run that is waiting, not one that hung, and the
+                    # 25 h freshness test keeps working. Overwritten after every pass.
+                    followed = {
+                        "pass": passes,
+                        "of": bounds.max_passes,
+                        "next_at": _iso(next_at),
+                        "pending": {"s2": len(s2_pending)},
+                    }
+                    repo.finish_run(
+                        run_id,
+                        _effective_status(status, causes),
+                        counts,
+                        ledger.tokens_used,
+                        _verdict(followed).as_dict(),
+                        at=clock(),
+                    )
+                    session.commit()
+                    # Nothing of the main pass is held across the wait, least of all the ~520 MB
+                    # model: a pass rebuilds it only if it must embed a first admission.
+                    models.release()
+                    sleep(delay)
+                    passes += 1
+                    counts["followup_passes"] = passes
+                    log.info(
+                        "followup_pass",
+                        pass_=passes,
+                        of=bounds.max_passes,
+                        waited_s=delay,
+                        pending=len(s2_pending),
+                        rss_mb=_rss_mb(),
+                    )
+                    asked = set(s2_pending)
+                    answers = sources.s2.lookup(sorted(asked))
+                    # A shape anomaly in any call of this run is not a throttle; it stays with the
+                    # run even when this pass answered cleanly.
+                    s2_anomaly = s2_anomaly or sources.s2.anomaly
+                    # Same rule as the main pass: the source's own health, and its outage letter.
+                    _record_signal_source(
+                        repo,
+                        run_id,
+                        "s2",
+                        sources.s2,
+                        now=now,
+                        causes=causes,
+                        degraded_signals=degraded_signals,
+                        counts=counts,
+                        anomaly=s2_anomaly,
+                    )
+                    s2_pending = set(sources.s2.refused_ids)
+                    answered = set(sources.s2.checked_ids)
+                    unchecked -= answered
+                    counts["s2_unchecked"] = len(unchecked)
+                    counts["s2_refused"] = len(s2_pending)
+                    # Fresh rows: the main pass may have admitted a paper from other evidence, so
+                    # its snapshot's tier is stale. An item whose admission already failed stays
+                    # failed until the next run.
+                    status = _admit_targets(
+                        repo,
+                        session,
+                        [
+                            fresh
+                            for eid in sorted(asked)
+                            if (fresh := repo.stored("arxiv", eid)) is not None
+                            and fresh.id not in failed_admissions
+                        ],
+                        run_id=run_id,
+                        now=now,
+                        admission=admission,
+                        # HF listings are not re-read: this morning's upvotes are stored, and a
+                        # path keeps the stored value when the fresh one is None.
+                        upvotes={},
+                        signals=answers,
+                        checked=answered,
+                        new_ids=set(new_ids),
+                        models=models,
+                        counts=counts,
+                        causes=causes,
+                        failed=failed_admissions,
+                    )
+                    session.commit()
+                    if status != "succeeded":
+                        stopped = status  # the token budget ended the run, so it ends the loop
+                        break
+                if stopped is None:
+                    # The while ended on one of its own conditions: nothing left, or the cap.
+                    stopped = "attempts" if s2_pending else "resolved"
+                followed = {"passes": passes, "stopped": stopped}
+                if s2_pending:
+                    if passes:
+                        plural = "es" if passes != 1 else ""
+                        message = (
+                            f"s2 still refused after {passes} follow-up pass{plural}: "
+                            f"{len(s2_pending)} ids"
+                        )
+                    else:
+                        # A run that starts after the deadline (a late Persistent catch-up) gets no
+                        # pass at all, and must say that rather than claim zero passes failed.
+                        message = (
+                            f"s2 refused and no pass fit before {bounds.deadline_hour}:00: "
+                            f"{len(s2_pending)} ids"
+                        )
+                    if repo.has_open_outage_from_earlier_run("s2", "signals", run_id):
+                        # A second run in a row with S2 refusing: a real outage, not a burst.
+                        causes.add("s2")
+                        degraded_signals.add("s2")
+                        counts["signal_failures"] = len(degraded_signals)
+                        s2_problems.append(message)
+                    else:
+                        # First day of the outage, the same shape as one missed lab-feed day: a
+                        # warning, the letter stays open, and tomorrow counts as the second day.
+                        # A non-refusal anomaly is not a refusal, so it keeps its cause.
+                        warnings.append(message)
+                        if s2_anomaly is None:
+                            causes.discard("s2")
+                            degraded_signals.discard("s2")
+                            counts["signal_failures"] = len(degraded_signals)
+                log.info(
+                    "followup_finished",
+                    passes=passes,
+                    stopped=stopped,
+                    pending=len(s2_pending),
+                    rss_mb=_rss_mb(),
+                )
         except BaseException:
             # Anything that escapes the per-item handlers (SystemExit, KeyboardInterrupt) would
             # otherwise leave the run 'running' forever; finish it as failed, then re-raise.
@@ -567,19 +956,9 @@ def run_ingestion(
             session.commit()
             raise
 
-        if status == "succeeded" and degraded:
+        if status == "succeeded" and causes:
             status = "partial"
-        health = assess_run(
-            status,
-            counts,
-            ledger.tokens_used,
-            ledger.max_tokens,
-            stuck,
-            stale,
-            warnings=warnings,
-            arxiv_expected=arxiv_expected,
-            arxiv_stopped_early=arxiv_stopped_early,
-        )
+        health = _verdict(followed, tuple(s2_problems))
         repo.finish_run(run_id, status, counts, ledger.tokens_used, health.as_dict(), at=clock())
         session.commit()
         log.info(

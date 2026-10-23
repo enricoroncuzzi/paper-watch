@@ -76,9 +76,12 @@ def test_live_ingest_builds_models_through_models(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(
         cli,
         "run_ingestion",
-        lambda *args, **kwargs: SimpleNamespace(
-            status="succeeded", counts={}, tokens=0, health=Health(True, ())
-        ),
+        # The pipeline builds the models from the factory it is given (it may release and rebuild
+        # them between follow-up passes), so the stand-in calls it the way run_ingestion does.
+        lambda session, sources, build_models, *args, **kwargs: (
+            build_models(),
+            SimpleNamespace(status="succeeded", counts={}, tokens=0, health=Health(True, ())),
+        )[1],
     )
     result = CliRunner().invoke(cli.app, ["ingest", "--live"])
     assert result.exit_code == 0
@@ -1204,3 +1207,76 @@ def test_the_cli_never_claims_an_answer_was_verified() -> None:
     for command in (["--help"], ["ask", "--help"], ["serve", "--help"]):
         output = CliRunner().invoke(app, command).output.lower()
         assert "verified" not in output and "fact-check" not in output
+
+
+def test_ingest_followup_is_the_units_flag_and_carries_the_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # --followup is how the scheduled unit keeps retrying S2 refusals; a manual run does not pass
+    # it, so the default must stay off. The bounds come from Settings, so a drop-in can shorten the
+    # window without a release.
+    seen: dict[str, object] = {}
+    _stub_live_ingest(
+        monkeypatch,
+        SimpleNamespace(status="succeeded", counts={}, tokens=0, health=Health(True, ())),
+    )
+
+    def stub(*args: object, **kwargs: object) -> SimpleNamespace:
+        seen.update(kwargs)
+        return SimpleNamespace(status="succeeded", counts={}, tokens=0, health=Health(True, ()))
+
+    monkeypatch.setattr(cli, "run_ingestion", stub)
+    # An environment-free Settings: the command reads get_settings(), which reads PW_* variables.
+    monkeypatch.setenv("PW_FOLLOWUP_MAX_PASSES", "7")
+    monkeypatch.setenv("PW_FOLLOWUP_INTERVAL_S", "900")
+    monkeypatch.setenv("PW_FOLLOWUP_DEADLINE_HOUR", "20")
+    cli.get_settings.cache_clear()
+    try:
+        result = CliRunner().invoke(
+            cli.app, ["ingest", "--live", "--followup"], catch_exceptions=False
+        )
+    finally:
+        cli.get_settings.cache_clear()
+    assert result.exit_code == 0
+    assert seen["followup"] is True
+    bounds = seen["bounds"]
+    assert isinstance(bounds, cli.Followup)
+    assert (bounds.max_passes, bounds.interval_s, bounds.deadline_hour) == (7, 900, 20)
+
+    seen.clear()
+    cli.get_settings.cache_clear()
+    try:
+        CliRunner().invoke(cli.app, ["ingest", "--live"], catch_exceptions=False)
+    finally:
+        cli.get_settings.cache_clear()
+    # A manual run never waits: the default is off.
+    assert seen["followup"] is False
+
+
+def test_sigterm_ends_the_run_instead_of_exiting_silently() -> None:
+    # systemd stops a unit with SIGTERM: raising SystemExit is what lets the pipeline close the run
+    # row as failed before the process leaves (docs/deploy/vps.md).
+    with pytest.raises(SystemExit) as raised:
+        cli._exit_on_sigterm(signal.SIGTERM, None)
+    assert raised.value.code == 128 + signal.SIGTERM
+
+
+def test_ingest_takes_over_sigterm_only_for_the_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The handler is installed before the run and the previous one is restored after it, so a
+    # stopped ingestion closes its row while the rest of the process keeps the default behaviour.
+    seen: dict[str, object] = {}
+    _stub_live_ingest(
+        monkeypatch,
+        SimpleNamespace(status="succeeded", counts={}, tokens=0, health=Health(True, ())),
+    )
+
+    def stub(*args: object, **kwargs: object) -> SimpleNamespace:
+        seen["handler"] = signal.getsignal(signal.SIGTERM)
+        return SimpleNamespace(status="succeeded", counts={}, tokens=0, health=Health(True, ()))
+
+    monkeypatch.setattr(cli, "run_ingestion", stub)
+    before = signal.getsignal(signal.SIGTERM)
+    result = CliRunner().invoke(cli.app, ["ingest", "--live"])
+    assert result.exit_code == 0
+    assert seen["handler"] is cli._exit_on_sigterm
+    assert signal.getsignal(signal.SIGTERM) is before

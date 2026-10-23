@@ -87,3 +87,33 @@ def test_each_problem_is_named() -> None:
         "cursor not advanced: feed:https://x/feed",
         "feed stale or empty: https://y/feed",
     )
+
+
+def test_a_run_without_follow_ups_keeps_the_old_record() -> None:
+    # A manual run, or any run before follow-up passes existed, writes the same record as before:
+    # no `followup` key at all, so old readers never see an empty object.
+    h = assess_run("succeeded", GOOD, tokens=0, token_cap=0, stuck_cursors=[])
+    assert h.followup is None
+    assert "followup" not in h.as_dict()
+
+
+def test_a_provisional_follow_up_record_is_serialised() -> None:
+    # The morning check reads this to tell a waiting run from a hung one.
+    waiting = {"pass": 2, "of": 40, "next_at": "2026-10-12T06:45:00+00:00", "pending": {"s2": 7}}
+    h = assess_run("partial", GOOD, tokens=0, token_cap=0, stuck_cursors=[], followup=waiting)
+    assert h.as_dict()["followup"] == waiting
+    assert Health(False, ("status=partial",), followup=waiting).followup == waiting
+
+
+def test_extra_problems_make_the_run_unhealthy() -> None:
+    # A finding no count covers, such as S2 still refusing on the second day of an outage.
+    message = "s2 still refused after 29 follow-up passes: 152 ids"
+    h = assess_run(
+        "succeeded",
+        GOOD,
+        tokens=0,
+        token_cap=0,
+        stuck_cursors=[],
+        extra_problems=[message],
+    )
+    assert not h.healthy and h.problems == (message,)

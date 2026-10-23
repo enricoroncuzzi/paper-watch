@@ -6,12 +6,19 @@ the server but work on a laptop, which is the worst kind of documentation bug. T
 the guide itself, so a drift in the doc fails the suite.
 """
 
+import os
 import re
+import shlex
+from types import SimpleNamespace
 
+import pytest
 from sqlalchemy.dialects.postgresql.psycopg import PGDialect_psycopg
 from sqlalchemy.engine import make_url
+from typer.testing import CliRunner
 
-from paperwatch.config import REPO_ROOT
+from paperwatch import cli
+from paperwatch.config import REPO_ROOT, Settings
+from paperwatch.ingest.health import Health
 
 GUIDE = REPO_ROOT / "docs" / "deploy" / "vps.md"
 
@@ -42,3 +49,52 @@ def test_the_documented_database_url_is_a_passwordless_socket_url() -> None:
     assert options["host"] == "/var/run/postgresql"
     assert options["dbname"] == "paperwatch" and options["user"] == "paperwatch"
     assert "password" not in options
+
+
+# The unit is the deployment contract for the follow-up window: it must enable the loop, and its
+# timeout must stay above the loop's own window cap, or systemd would kill a healthy wait.
+UNIT = REPO_ROOT / "deploy" / "vps" / "paperwatch-ingest.service"
+
+
+def test_the_ingest_unit_enables_follow_ups(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Run the unit's own arguments through the real command: the flags must parse and the loop
+    # must reach the pipeline switched on.
+    [line] = [line for line in UNIT.read_text().splitlines() if line.startswith("ExecStart=")]
+    words = shlex.split(line.removeprefix("ExecStart="))
+    args = words[words.index("paperwatch") + 1 :]
+    assert args[0] == "ingest"
+
+    seen: dict[str, object] = {}
+
+    def stub(*_args: object, **kwargs: object) -> SimpleNamespace:
+        seen.update(kwargs)
+        return SimpleNamespace(status="succeeded", counts={}, tokens=0, health=Health(True, ()))
+
+    for name in [n for n in os.environ if n.startswith("PW_")]:
+        monkeypatch.delenv(name)
+    monkeypatch.setattr(cli, "get_settings", lambda: Settings(_env_file=None))
+    monkeypatch.setattr(cli, "configure_logging", lambda level: None)
+    monkeypatch.setattr(cli, "load_profiles", lambda path: [])
+    monkeypatch.setattr(cli, "load_feeds", lambda path: [])
+    monkeypatch.setattr(cli, "load_admission", lambda path: object())
+    monkeypatch.setattr(cli, "make_http_client", lambda settings: object())
+    monkeypatch.setattr(cli, "make_engine", lambda url: object())
+    monkeypatch.setattr(cli, "make_session_factory", lambda engine: lambda: object())
+    monkeypatch.setattr(cli, "run_ingestion", stub)
+    result = CliRunner().invoke(cli.app, args, catch_exceptions=False)
+    assert result.exit_code == 0
+    assert seen["followup"] is True
+
+
+def test_the_unit_timeout_stays_above_the_follow_up_window() -> None:
+    # FOLLOWUP_MAX_WINDOW is the second bound on the loop (16 h from the start); the unit's
+    # TimeoutStartSec is the last resort, so it must be strictly larger.
+    import re
+
+    from paperwatch.config import FOLLOWUP_MAX_WINDOW
+
+    [line] = [line for line in UNIT.read_text().splitlines() if line.startswith("TimeoutStartSec=")]
+    value = line.split("=", 1)[1].strip()
+    match = re.fullmatch(r"(\d+)h", value)
+    assert match, f"unexpected TimeoutStartSec format: {value}"
+    assert int(match.group(1)) * 3600 > FOLLOWUP_MAX_WINDOW.total_seconds()

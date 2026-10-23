@@ -131,11 +131,16 @@ class SemanticScholarSource:
         # so these stay due. A deterministic 4xx, an omitted id and the all-unknown 400 are not
         # refusals. Reset on every call.
         self.refused_ids: set[str] = set()
+        # A problem that is not a refusal (an answer whose shape this client does not understand,
+        # or a deterministic 4xx): retrying cannot fix it, so a run may not let a later clean
+        # retry of the refused ids erase it. Reset on every call.
+        self.anomaly: str | None = None
 
     def lookup(self, arxiv_ids: list[str]) -> dict[str, Signals]:
         # The health flags describe this call only.
         self.degraded = False
         self.failure = None
+        self.anomaly = None
         self.checked_ids = set()
         self.refused_ids = set()
         out: dict[str, Signals] = {}
@@ -219,6 +224,7 @@ class SemanticScholarSource:
                 if problems:
                     self.degraded = True
                     self.failure = f"s2 chunk at {i}: " + "; ".join(problems)
+                    self.anomaly = self.failure
                     log.warning(
                         "s2_answer_anomaly",
                         error=self.failure,
@@ -236,6 +242,7 @@ class SemanticScholarSource:
                 if not is_retryable(exc):
                     # A bug, not the pool refusing us, so it also ends the streak.
                     refused_in_a_row = 0
+                    self.anomaly = self.failure
                     log.warning("s2_lookup_failed", error=str(exc), count=len(chunk))
                 else:
                     # Every attempt was refused: the ids are still due, so the next pass asks
