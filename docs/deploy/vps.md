@@ -465,10 +465,10 @@ cluster's data directory:
    `paperwatch`:
 
    ```
-   # MAP         SYSTEM      DATABASE
-   paperwatch    paperwatch  paperwatch
-   paperwatch    paperwatch  paperwatch_ro
-   paperwatch    paperwatch  paperwatch_api
+   # MAPNAME     SYSTEM-USERNAME  PG-USERNAME
+   paperwatch    paperwatch       paperwatch
+   paperwatch    paperwatch       paperwatch_ro
+   paperwatch    paperwatch       paperwatch_api
    ```
 
    A password for each role is the alternative, and then the Beekeeper connection stops being
