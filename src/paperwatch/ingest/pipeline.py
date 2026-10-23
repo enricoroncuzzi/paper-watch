@@ -869,11 +869,19 @@ def run_ingestion(
                     stopped = "attempts" if s2_pending else "resolved"
                 followed = {"passes": passes, "stopped": stopped}
                 if s2_pending:
-                    plural = "es" if passes != 1 else ""
-                    message = (
-                        f"s2 still refused after {passes} follow-up pass{plural}: "
-                        f"{len(s2_pending)} ids"
-                    )
+                    if passes:
+                        plural = "es" if passes != 1 else ""
+                        message = (
+                            f"s2 still refused after {passes} follow-up pass{plural}: "
+                            f"{len(s2_pending)} ids"
+                        )
+                    else:
+                        # A run that starts after the deadline (a late Persistent catch-up) gets no
+                        # pass at all, and must say that rather than claim zero passes failed.
+                        message = (
+                            f"s2 refused and no pass fit before {bounds.deadline_hour}:00: "
+                            f"{len(s2_pending)} ids"
+                        )
                     if repo.has_open_outage_from_earlier_run("s2", "signals", run_id):
                         # A second run in a row with S2 refusing: a real outage, not a burst.
                         causes.add("s2")

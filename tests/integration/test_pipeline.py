@@ -1983,3 +1983,19 @@ def test_a_pass_that_succeeds_late_in_the_window_still_rescues_the_day(db_sessio
     assert res.health.followup == {"passes": 12, "stopped": "resolved"}
     assert res.health.warnings == ()
     assert row(db_session, "2510.2").tier == "peer_reviewed"
+
+
+def test_a_run_started_after_the_deadline_takes_no_pass(db_session: Session) -> None:
+    # A Persistent=true catch-up can start the run at 23:00 Rome time. No pass fits before the
+    # window closes, so the run waits for nothing and says so; the refused papers stay due.
+    late = datetime(2026, 10, 12, 21, tzinfo=UTC)  # 23:00 in Rome, past the 22:00 deadline
+    src = fake_sources([paper("2510.2", "Coding agent")])
+    src.hf.upvotes.return_value = {}
+    src.s2.degraded, src.s2.failure = True, "HTTP 429 after 5 attempts"
+    sleeps: list[float] = []
+    res = run(db_session, src, now=late, followup=True, sleep=sleeps.append)
+    assert sleeps == []
+    assert res.counts["followup_passes"] == 0
+    assert res.health is not None and res.health.followup == {"passes": 0, "stopped": "time_of_day"}
+    assert res.health.warnings == ("s2 refused and no pass fit before 22:00: 1 ids",)
+    assert res.health.healthy  # the first day of an outage is still a warning
