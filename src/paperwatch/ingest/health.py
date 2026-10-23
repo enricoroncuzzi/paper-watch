@@ -68,8 +68,9 @@ def assess_run(
     if stuck_cursors:
         problems.append("cursor not advanced: " + ", ".join(sorted(stuck_cursors)))
     if stale_feeds:
-        # A problem, unlike the one-missed-feed-day warning above: the feed answers but has not
-        # published in 90 days, so a source the config promises contributes nothing.
+        # A problem, unlike a first missed feed day, which the pipeline reports as a warning: the
+        # feed answers but has not published in 90 days, so a source the config promises
+        # contributes nothing.
         problems.append("feed stale or empty: " + ", ".join(sorted(stale_feeds)))
     # A finding the pipeline knows and no count covers, such as Semantic Scholar still refusing
     # after every follow-up pass on the second day of an outage.
