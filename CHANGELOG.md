@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.5.0](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.4.1...paperwatch-v0.5.0) (2026-10-23)
+
+
+### Features
+
+* **sources:** tell Semantic Scholar refusals apart, stop after two refused chunks, and slack the re-check due time ([#17](https://github.com/enricoroncuzzi/paper-watch/issues/17)) ([0927538](https://github.com/enricoroncuzzi/paper-watch/commit/0927538836e4e15e618db5d5564a833778cbc349))
+
+
+### Bug Fixes
+
+* **ingest:** treat a first missed lab-feed day as a warning ([#16](https://github.com/enricoroncuzzi/paper-watch/issues/16)) ([e789dfe](https://github.com/enricoroncuzzi/paper-watch/commit/e789dfefb1e83bdfcede2c1068f460f2458fdd5b))
+
 ## [0.4.1](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.4.0...paperwatch-v0.4.1) (2026-10-22)
 
 
