@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.3](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.6.2...paperwatch-v0.6.3) (2026-10-23)
+
+
+### Documentation
+
+* **deploy:** give the API its own role, not the read-only one ([#25](https://github.com/enricoroncuzzi/paper-watch/issues/25)) ([7d8fa52](https://github.com/enricoroncuzzi/paper-watch/commit/7d8fa52503f28fdd495c9ec1811f087fcd4de6a7))
+
 ## [0.6.2](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.6.1...paperwatch-v0.6.2) (2026-10-23)
 
 
