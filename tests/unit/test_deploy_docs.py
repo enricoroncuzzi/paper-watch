@@ -7,11 +7,17 @@ the guide itself, so a drift in the doc fails the suite.
 """
 
 import re
+import shlex
+from types import SimpleNamespace
 
+import pytest
 from sqlalchemy.dialects.postgresql.psycopg import PGDialect_psycopg
 from sqlalchemy.engine import make_url
+from typer.testing import CliRunner
 
+from paperwatch import cli
 from paperwatch.config import REPO_ROOT
+from paperwatch.ingest.health import Health
 
 GUIDE = REPO_ROOT / "docs" / "deploy" / "vps.md"
 
@@ -49,10 +55,27 @@ def test_the_documented_database_url_is_a_passwordless_socket_url() -> None:
 UNIT = REPO_ROOT / "deploy" / "vps" / "paperwatch-ingest.service"
 
 
-def test_the_ingest_unit_enables_follow_ups() -> None:
-    exec_start = [line for line in UNIT.read_text().splitlines() if line.startswith("ExecStart=")]
-    assert len(exec_start) == 1
-    assert exec_start[0].endswith("paperwatch ingest --live --followup")
+def test_the_ingest_unit_enables_follow_ups(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Run the unit's own arguments through the real command: the flags must parse and the loop
+    # must reach the pipeline switched on.
+    [line] = [line for line in UNIT.read_text().splitlines() if line.startswith("ExecStart=")]
+    words = shlex.split(line.removeprefix("ExecStart="))
+    args = words[words.index("paperwatch") + 1 :]
+    assert args[0] == "ingest"
+
+    seen: dict[str, object] = {}
+
+    def stub(*_args: object, **kwargs: object) -> SimpleNamespace:
+        seen.update(kwargs)
+        return SimpleNamespace(status="succeeded", counts={}, tokens=0, health=Health(True, ()))
+
+    monkeypatch.setattr(cli, "make_http_client", lambda settings: object())
+    monkeypatch.setattr(cli, "make_engine", lambda url: object())
+    monkeypatch.setattr(cli, "make_session_factory", lambda engine: lambda: object())
+    monkeypatch.setattr(cli, "run_ingestion", stub)
+    result = CliRunner().invoke(cli.app, args, catch_exceptions=False)
+    assert result.exit_code == 0
+    assert seen["followup"] is True
 
 
 def test_the_unit_timeout_stays_above_the_follow_up_window() -> None:
