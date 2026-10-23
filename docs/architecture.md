@@ -46,10 +46,10 @@ so one missed day loses nothing. A malformed entry is skipped and recorded once.
 A run started with `--followup` (the scheduled unit does; a manual run does not) then finishes the
 papers Semantic Scholar refused: it waits 5, 10, 20 and 40 minutes and then every 30, until nothing
 is refused, 40 passes have run, the next pass would start at or after 22:00 Europe/Rome, or 16 hours
-have passed since the start, whichever comes first. A pass asks S2 only for those ids and re-runs only their admission, with the run's `now`
-as their check time; it never re-fetches arXiv, the feeds or Hugging Face, and it records its state
-in `runs.health.followup` after every pass so the morning check can tell a run that is waiting from
-one that hung (ADR 0008).
+have passed since the start, whichever comes first. A pass asks S2 only for those ids and re-runs
+only their admission, with the run's `now` as their check time; it never re-fetches arXiv, the feeds
+or Hugging Face, and it records its state in `runs.health.followup` after every pass so the morning
+check can tell a run that is waiting from one that hung (ADR 0008).
 
 ## The retrieval path
 

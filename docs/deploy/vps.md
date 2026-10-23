@@ -256,17 +256,19 @@ bad lines start with `FAIL`:
 - the last run started more than 25 hours ago, so a missed 06:00 morning is caught by 07:00;
 - a run left `running` for more than three hours. A run waiting for a follow-up pass is finished,
   not `running`, so this limit does not need the 17 h timeout; a row older than three hours is a run
-  killed or hung before its main pass ended. When the unit is still active the check says
+  killed or hung before its main pass ended. When the unit is still alive the check says
   `hung (still running)` and names `systemctl --user stop paperwatch-ingest`, because with a 17 h
-  timeout systemd will no longer kill it; otherwise it says `killed or hung`;
+  timeout systemd will no longer kill it; otherwise it says `killed or hung`. "Alive" is the unit's
+  own `ActiveState`: a running oneshot shows as `activating`, not `active`;
 - a follow-up pass that never came: while a run waits, the check prints
-  `WAIT  follow-up N of 40 pending (s2: M ids), next pass HH:MM` and counts no failure (the run is
-  deliberately unhealthy until S2 answers). For the minutes a pass itself takes, its due moment has
-  just passed and the row is not rewritten yet, so up to 20 minutes past it prints
-  `WAIT  follow-up pass N of 40 running (s2: M ids)`. Past that, it prints
-  `FAIL  follow-up did not complete (killed?)`, one line for the one event: the process died inside
-  the window, and the next morning retries the same papers. A row whose follow-up time cannot be
-  read at all is one named `FAIL`, not a psql error that hides the rest of the morning;
+  `WAIT  next follow-up pass N of 40 at HH:MM (s2: M ids pending)` and counts no failure (the run
+  is deliberately unhealthy until S2 answers). For the minutes a pass itself takes, its due moment
+  has just passed and the row is not rewritten yet, so up to 20 minutes past it prints
+  `WAIT  follow-up pass N of 40 running (s2: M ids)`, as long as systemd still holds the unit. Past
+  that it prints one `FAIL` for the one event: `follow-up did not complete (hung: the unit is still
+  running)` with the stop command when the process is alive, or `(killed?)` when it is gone, and
+  the next morning retries the same papers. A row whose follow-up fields cannot be read at all is
+  one named `FAIL`, not a psql error that hides the rest of the morning;
 - `paperwatch-ingest.service` failed (a startup crash, an OOM kill, a timeout, exit 1 or 3), or
   `paperwatch-ingest.timer` not active, so no morning run is scheduled;
 - no `~/backups/` directory, no dump in it, or the newest older than 26 hours or empty;
@@ -279,9 +281,9 @@ fails, the cursor stays pinned to the missed window, so the next run retries the
 nothing is lost. Only the same feed failing again on the next run is a real outage, and that run is
 degraded and fails the check. Semantic Scholar's refusals work the same way: a day whose
 follow-up passes were all refused is one warning, and only a second day in a row is a failure.
-Thresholds can be overridden for one invocation:
-`PW_CHECK_MAX_RUN_AGE_S`, `PW_CHECK_MAX_RUNNING_S`, `PW_CHECK_FOLLOWUP_GRACE_S`,
-`PW_CHECK_MAX_BACKUP_AGE_S`, `PW_CHECK_MIN_FREE_GB`, `PW_CHECK_BACKUP_DIR`, `PW_CHECK_DB`. It needs only `psql` and coreutils,
+Thresholds can be overridden for one invocation: `PW_CHECK_MAX_RUN_AGE_S`,
+`PW_CHECK_MAX_RUNNING_S`, `PW_CHECK_FOLLOWUP_GRACE_S`, `PW_CHECK_MAX_BACKUP_AGE_S`,
+`PW_CHECK_MIN_FREE_GB`, `PW_CHECK_BACKUP_DIR`, `PW_CHECK_DB`. It needs only `psql` and coreutils,
 and reads only the `paperwatch` database, the backup directory and the account's own user manager.
 
 ### A morning with follow-ups
@@ -307,7 +309,9 @@ What the captain sees:
   lock for as long as it waits, by design;
 - a main pass that hangs is not killed by the timeout any more (it is 17 h, for the window). The
   check reports `hung (still running)` after three hours and the captain stops it with
-  `systemctl --user stop paperwatch-ingest`; the next run closes the row as failed;
+  `systemctl --user stop paperwatch-ingest`: the stop is SIGTERM, which the command turns into an
+  orderly exit, so the run closes its own row as failed (`exit 143`) instead of leaving it
+  `running` for the next morning;
 - the run row's `health.followup` has the same facts as the journal (`next_at` while waiting,
   `passes` and `stopped` after), and `counts.followup_passes` says how many passes it used.
 

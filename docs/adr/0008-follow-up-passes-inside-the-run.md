@@ -72,17 +72,18 @@ passes. A manual `paperwatch ingest --live` never waits.
   than any pass and shorter than the 30-minute interval), and `ok follow-ups: n used, <stopped>`
   after a finished loop. The unit's `TimeoutStartSec` rises to 17 h for the 06:00 to 22:00 window;
   the stuck-`running` limit stays at 3 h, because a waiting row is finished, not `running`, and it
-  now names a still-active unit as `hung (still running)` with the stop command, since systemd no
-  longer kills a hung main pass at 3 h.
+  now names a still-alive unit (a running oneshot shows as `activating`) as `hung (still running)`
+  with the stop command, since systemd no longer kills a hung main pass at 3 h; the stop is SIGTERM,
+  which the command turns into an orderly exit so the run closes its own row.
 
 ## Consequences
 
 - A burst of minutes to hours no longer costs a day of evidence, and the morning reads truthfully:
   recovered days are healthy and exit 0, while a whole-day refusal is one warning the first day.
 - A process may stay alive for up to 16 hours, from 06:00 to 22:00 Rome time (or 16 hours from a
-  later start). A fully refused day that starts at 06:00 costs 34 S2 requests, the main call plus
-  33 passes, one every 30 minutes, and no extra fetches, classification or embeddings, with no
-  model resident between passes.
+  later start). A fully refused day that starts at 06:00 costs 34 S2 lookups, the main call plus 33
+  passes, one every 30 minutes, each of up to 5 attempts per chunk, and no extra fetches,
+  classification or embeddings, with no model resident between passes.
 - A kill inside the window (`kill -9`, an OOM kill, a stop) loses the rest of that window and
   leaves a `next_at` in the past, which the check reports. The next morning's run is the backstop,
   because every refused paper is still due.
