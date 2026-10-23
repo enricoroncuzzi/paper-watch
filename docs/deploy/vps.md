@@ -133,14 +133,16 @@ dry run of the morning check, so an untuned cap never meets a 06:00 trigger.
 What the units do, and why:
 
 - `paperwatch-ingest.service` runs
-  `uv run --frozen --no-dev paperwatch ingest --live` from `/home/paperwatch/paper-watch` with
-  the environment file above. `MemoryMax=950M` with `MemorySwapMax=0` keeps a runaway run from
+  `uv run --frozen --no-dev paperwatch ingest --live --followup` from `/home/paperwatch/paper-watch`
+  with the environment file above. `MemoryMax=950M` with `MemorySwapMax=0` keeps a runaway run from
   touching the machine: with no swap the cgroup OOM killer stops it, systemd marks the unit failed,
   the run row stays `running` until the next run closes it as failed, and the morning check reports
   both. That is deliberate: a visible failed morning, never a slow one that starves the other
   project in the shared swap. The cap needs the memory controller delegated to the user manager,
   which Debian's `user@.service` does. The run also has low CPU and I/O priority (`Nice=10`,
-  best-effort priority 7) and a `TimeoutStartSec=3h` ceiling.
+  best-effort priority 7) and a `TimeoutStartSec=17h` ceiling: `--followup` may keep the process
+  alive from 06:00 until 22:00 Rome time retrying Semantic Scholar refusals, and the extra hour
+  means systemd never kills a healthy window (the loop stops itself on the 22:00 bound anyway).
 - `paperwatch-backup.service` runs `deploy/vps/backup.sh`: `pg_dump -Fc` into
   `~/backups/paperwatch-<UTC stamp>.dump`, keeping seven nights. The dump is written under a
   hidden fixed temporary name and renamed only once it is complete, so even a SIGKILL, which no
@@ -173,6 +175,9 @@ systemd-run --user --wait --unit=paperwatch-measure \
 SSH: the transient unit is independent of the client and keeps running. When it ends,
 `systemd-run` prints the numbers to copy, including `Service runtime:` and a `Memory peak:` line
 with the swap peak; the journal has the run's own output and a `Consumed ... memory peak` line.
+This measured run deliberately has no `--followup`: it must end with the main pass, so the peak
+and the duration are the main pass's. The scheduled unit adds the flag (and waits for follow-ups
+only when Semantic Scholar refused something).
 
 ```bash
 journalctl --user -u paperwatch-measure -n 40 --no-pager
@@ -243,8 +248,16 @@ bad lines start with `FAIL`:
   row looks like once the next run has closed it: one `FAIL` for the one event;
 - an unhealthy or missing health verdict, or a non-empty list of problems;
 - the last run started more than 25 hours ago, so a missed 06:00 morning is caught by 07:00;
-- a run left `running` for more than three hours, matching the unit's `TimeoutStartSec`, so a live
-  run is never called dead while systemd would still let it finish;
+- a run left `running` for more than three hours, matching the unit's `TimeoutStartSec` before the
+  follow-up window existed, so a live run is never called dead while systemd would still let it
+  finish. A run waiting for a follow-up pass is finished, not `running`, so this limit does not
+  need the new 17 h timeout; a row older than three hours is still a run killed before its main
+  pass ended;
+- a follow-up pass that never came: while a run waits, the check prints
+  `WAIT  follow-up N of 40 pending (s2: M ids), next pass HH:MM` and counts no failure (the run is
+  deliberately unhealthy until S2 answers). If that moment passes, it prints
+  `FAIL  follow-up did not complete (killed?)`, one line for the one event: the process died inside
+  the window, and the next morning retries the same papers;
 - `paperwatch-ingest.service` failed (a startup crash, an OOM kill, a timeout, exit 1 or 3), or
   `paperwatch-ingest.timer` not active, so no morning run is scheduled;
 - no `~/backups/` directory, no dump in it, or the newest older than 26 hours or empty;
@@ -255,16 +268,43 @@ script works from a cron job or a laptop without pretending it checked them. A w
 run's health verdict is also printed as a `WARN` and never as a `FAIL`: the first time a lab feed
 fails, the cursor stays pinned to the missed window, so the next run retries the same days and
 nothing is lost. Only the same feed failing again on the next run is a real outage, and that run is
-degraded and fails the check. Thresholds can be overridden for one invocation:
+degraded and fails the check. Semantic Scholar's refusals work the same way: a day whose
+follow-up passes were all refused is one warning, and only a second day in a row is a failure.
+Thresholds can be overridden for one invocation:
 `PW_CHECK_MAX_RUN_AGE_S`, `PW_CHECK_MAX_RUNNING_S`, `PW_CHECK_MAX_BACKUP_AGE_S`,
 `PW_CHECK_MIN_FREE_GB`, `PW_CHECK_BACKUP_DIR`, `PW_CHECK_DB`. It needs only `psql` and coreutils,
 and reads only the `paperwatch` database, the backup directory and the account's own user manager.
+
+### A morning with follow-ups
+
+The unit runs `paperwatch ingest --live --followup`, so when Semantic Scholar refuses papers the
+process stays alive instead of leaving them a day behind. The 06:00 run finishes its main pass and
+writes its row, then waits 5, 10, 20 and 40 minutes and every 30 minutes after that, retrying only
+the refused papers, until nothing is refused, 40 passes have run, or the next pass would start
+after 22:00 Rome time (ADR 0008). Nothing but Semantic Scholar is asked again: no arXiv harvest,
+no lab feeds, no Hugging Face, no classification.
+
+What the captain sees:
+
+- the journal gets one `followup_pass` line per pass (`pass_`, `pending`, `waited_s`, `rss_mb`) and
+  one `followup_finished` line (`passes`, `stopped`, `pending`) at the end, next to the S2 client's
+  own refusal lines. `rss_mb` is what the idle process really holds: the model is released before
+  each wait, so an idle window costs little memory on the shared machine;
+- `check.sh` prints the `WAIT` line above between passes, `ok    follow-ups: n used, resolved` (or
+  `attempts`, `time_of_day`, `budget_exhausted`) once the loop is over, and the verdict as usual.
+  A recovered morning exits 0 and leaves no failed unit;
+- a manual `paperwatch ingest --live` run in that window prints
+  `skipped: another ingestion run is active` and exits 0: the follow-up loop holds the single-run
+  lock for as long as it waits, by design;
+- the run row's `health.followup` has the same facts as the journal (`next_at` while waiting,
+  `passes` and `stopped` after), and `counts.followup_passes` says how many passes it used.
 
 A run's counts normally show `"s2_unchecked": 1`: one arXiv paper in the corpus is not in
 Semantic Scholar's index at all, so it is left unanswered and asked again next run. That is
 expected and does not make a run unhealthy; a much larger count comes with a degraded `s2` source
 and its own `FAIL`. `"s2_refused"` is normally 0: a non-zero count means Semantic Scholar refused
-(throttled) those papers, not that it does not know them.
+(throttled) those papers, not that it does not know them, and with `--followup` it reaches 0 as soon
+as a pass is answered.
 
 At this point the timer is not enabled yet, so this dry run reports one `FAIL` for the timer.
 If you skipped the backup in step 7 it also fails on the backup, and before the first backup that
@@ -297,6 +337,10 @@ it can, instead of being skipped for the day.
 | 0 | Another ingestion held the single-run lock, so this invocation did nothing (`skipped`). | Nothing. |
 | 2 | A usage error, for example a missing `--live`. | Fix the command. |
 
+The exit code is the final verdict's: a day that started unhealthy because Semantic Scholar refused
+and recovered in a follow-up pass exits 0, and the window itself is not a failure (a run killed
+inside it is caught by the next morning's check).
+
 systemd records 1 and 3 as a failed unit, which is deliberate: both deserve a look, and the morning
 check reports the failed unit too. The problems themselves are in
 `journalctl --user -u paperwatch-ingest`.
@@ -313,8 +357,12 @@ uv run --frozen --no-dev --env-file ~/.config/paperwatch/env alembic upgrade hea
 
 The timers keep pointing at the same path, so the next run uses the new code and nothing needs
 re-enabling. Run `systemctl --user daemon-reload` only when a unit file itself changed (copy the
-new `.service`/`.timer` first). Never edit files in the checkout: the next `git checkout` would
-refuse to overwrite them. Do not migrate while an ingestion or a dump is in progress.
+new `.service`/`.timer` first), and copy it when it changed: the release that added the follow-up
+passes changed `paperwatch-ingest.service` (`ExecStart` gained `--followup`, `TimeoutStartSec` rose
+from 3 h to 17 h), so updating to it means copying both files and running `daemon-reload` before
+the next 06:00. Never edit files in the checkout: the next `git checkout` would refuse to
+overwrite them. Do not migrate while an ingestion or a dump is in progress (a follow-up window
+counts: `check.sh` says `WAIT` while one is open).
 
 ## 12. Browsing the database from the Mac
 
