@@ -8,7 +8,9 @@ services:
       POSTGRES_USER: paperwatch
       POSTGRES_PASSWORD: paperwatch
       POSTGRES_DB: paperwatch
-    ports: ["5432:5432"]
+    # Loopback only, like the server: `5432:5432` would listen on every interface and put this
+    # password-protected dev database on whatever network the laptop is on.
+    ports: ["127.0.0.1:5432:5432"]
     # Lets `docker compose up --wait` and dependent services know when Postgres accepts connections.
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U paperwatch"]
