@@ -1375,6 +1375,34 @@ def test_arxiv_outage_letter_is_written_once_and_closed_on_recovery(db_session: 
     assert window[0].resolved_at == NOW + timedelta(days=2)
 
 
+def test_an_arxiv_page_cap_degrades_the_run_and_names_set_and_day(db_session: Session) -> None:
+    # Item 4's cap and repeat check raise out of the OAI loop; at run level that must degrade arXiv
+    # (partial, "stopped early", the day pinned as the next run's start), keep the day it finished
+    # and carry the message with the set and the day into the dead letter.
+    src = fake_sources([paper("2510.1", "Agent harness")])
+    broken_day = NOW.date() - timedelta(days=6)
+
+    def harvest(day: date) -> Iterator[list[SourceItem]]:
+        if day == broken_day:
+            raise ValueError(f"OAI-PMH page cap (200) reached for set cs on {day.isoformat()}")
+        return iter([src.arxiv.papers] if day < broken_day else [])
+
+    src.arxiv.harvest.side_effect = harvest
+    res = run(db_session, src)
+    assert res.status == "partial"
+    assert res.health is not None
+    assert "arxiv stopped early" in res.health.problems
+    # The day before the failure completed, so the next run starts at the broken day, not before it.
+    assert Repository(db_session).cursor("arxiv") == datetime(
+        broken_day.year, broken_day.month, broken_day.day, tzinfo=UTC
+    )
+    assert row(db_session, "2510.1").status == "admitted"  # the completed day is not thrown away
+    letter = db_session.scalars(
+        select(DeadLetter).where(DeadLetter.source == "arxiv", DeadLetter.ref == "window")
+    ).one()
+    assert f"page cap (200) reached for set cs on {broken_day.isoformat()}" in letter.error
+
+
 def test_feed_outage_letter_closes_but_a_malformed_entry_stays_open(db_session: Session) -> None:
     src = fake_sources([paper("2510.1", "Agent harness")])
     src.feeds.fetch_one.side_effect = RuntimeError("HTTP 503")

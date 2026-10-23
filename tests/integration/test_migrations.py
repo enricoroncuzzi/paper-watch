@@ -3,7 +3,10 @@
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import Engine, text
+from sqlalchemy import Engine, inspect, text
+
+from paperwatch.config import ITEM_VENUE_MAX_CHARS
+from paperwatch.store.models import Item
 
 pytestmark = pytest.mark.integration
 
@@ -35,3 +38,11 @@ def test_hnsw_index_definition_matches_the_search_predicate(engine: Engine) -> N
     # Postgres normalises the varchar comparison to text, so the stored predicate is
     # `WHERE ((status)::text = 'admitted'::text)`, not the source form `status = 'admitted'`.
     assert "WHERE ((status)::text = 'admitted'::text)" in indexdef
+
+
+def test_the_venue_column_holds_the_clipped_length(engine: Engine) -> None:
+    # One number is the model's width, the migration's column and the clip `merge_signals` applies;
+    # if any of the three drifted, a value clipped for the column could still fail the write.
+    assert Item.venue.type.length == ITEM_VENUE_MAX_CHARS
+    columns = {column["name"]: column for column in inspect(engine).get_columns("items")}
+    assert columns["venue"]["type"].length == ITEM_VENUE_MAX_CHARS
