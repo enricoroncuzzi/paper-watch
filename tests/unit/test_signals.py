@@ -904,6 +904,72 @@ def test_s2_does_not_follow_a_redirect(monkeypatch) -> None:
 
 
 @respx.mock
+def test_hf_stops_asking_after_two_failed_days_in_a_row(monkeypatch) -> None:
+    # A gateway that answers 504 after a minute turns 31 days x 3 attempts into hours of waiting,
+    # and the days it would have asked are re-read by every run anyway.
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    route = respx.get(HF_URL).mock(return_value=httpx.Response(504))
+    src = HfDailySource(httpx.Client())
+    assert src.upvotes(date(2026, 10, 8), date(2026, 10, 31)) == {}
+    assert route.call_count == 2 * 3  # two days, three attempts each, then it stopped
+    assert src.degraded is True
+    # The failure names the second failed day, so the morning check says which day broke the run.
+    assert src.failure is not None and "2026-10-09" in src.failure
+    assert "2 days in a row" in src.failure
+
+
+@respx.mock
+def test_hf_failed_day_streak_ignores_a_deterministic_failure(monkeypatch) -> None:
+    # A day that fails for its own reason (here a 400: a bug, never a retry) is not evidence that
+    # the endpoint is down, so it resets the streak instead of counting towards it.
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        if request.url.params["date"] == "2026-10-09":
+            return httpx.Response(400)
+        return httpx.Response(502)
+
+    route = respx.get(HF_URL).mock(side_effect=responder)
+    src = HfDailySource(httpx.Client())
+    src.upvotes(date(2026, 10, 8), date(2026, 10, 31))
+    # 10-08 failed, 10-09 reset the streak, 10-10 and 10-11 tripped the breaker.
+    asked = [call.request.url.params["date"] for call in route.calls]
+    assert sorted(set(asked)) == ["2026-10-08", "2026-10-09", "2026-10-10", "2026-10-11"]
+    assert src.failure is not None and "2026-10-11" in src.failure
+
+
+@respx.mock
+def test_hf_answers_after_a_failed_day_keep_the_source_healthy(monkeypatch) -> None:
+    # One failed day between answers is a slow day, not an outage: the breaker must not trip.
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        if request.url.params["date"] == "2026-10-09":
+            return httpx.Response(503)
+        return httpx.Response(200, json=[_hf_row("2510.00001", 7)])
+
+    respx.get(HF_URL).mock(side_effect=responder)
+    src = HfDailySource(httpx.Client())
+    up = src.upvotes(date(2026, 10, 8), date(2026, 10, 12))
+    assert up == {"2510.00001": 7}
+    assert src.degraded is True  # the failed day is still reported
+    assert src.failure is not None and "2026-10-09" in src.failure
+    assert "stopped" not in src.failure
+
+
+@respx.mock
+def test_hf_cap_reaches_the_source(monkeypatch) -> None:
+    # The per-source cap is wired to the client, so an over-long page fails the day instead of
+    # holding the body in memory.
+    monkeypatch.setattr("paperwatch.sources.hf_daily.MAX_HF_BODY_BYTES", 16)
+    respx.get(HF_URL).mock(return_value=httpx.Response(200, json=[_hf_row("2510.00001", 1)]))
+    src = HfDailySource(httpx.Client())
+    src.upvotes(date(2026, 10, 9), date(2026, 10, 9))
+    assert src.degraded is True
+    assert src.failure is not None and "more than 16 bytes" in src.failure
+
+
+@respx.mock
 def test_s2_cap_reaches_the_source(monkeypatch) -> None:
     # An over-long batch answer is an answer this client cannot read, so the chunk is an anomaly
     # (not a refusal) and the ids stay unasked.
