@@ -8,9 +8,14 @@ from pathlib import Path
 import httpx
 import pytest
 import respx
+from structlog.testing import capture_logs
 
 from paperwatch.sources.hf_daily import HF_URL, MAX_PAGES_PER_DAY, HfDailySource
-from paperwatch.sources.semantic_scholar import S2_BATCH_URL, SemanticScholarSource
+from paperwatch.sources.semantic_scholar import (
+    S2_BATCH_URL,
+    S2_REFUSED_CHUNKS,
+    SemanticScholarSource,
+)
 
 
 def _hf_row(pid: str, upvotes: int = 1) -> dict[str, object]:
@@ -448,6 +453,8 @@ def test_s2_does_not_retry_a_4xx(monkeypatch) -> None:
     assert src.lookup(["2510.00001"]) == {}
     assert route.call_count == 1  # A deterministic 4xx is a bug, not a blip.
     assert src.degraded is True
+    # A bug is not a refusal: nothing should ask for this id again as if the pool were busy.
+    assert src.refused_ids == set()
 
 
 @respx.mock
@@ -631,6 +638,7 @@ def test_s2_all_unknown_chunk_counts_as_checked_with_no_signals(monkeypatch) -> 
     assert src.degraded is False
     assert src.failure is None
     assert src.checked_ids == set(ids)
+    assert src.refused_ids == set()
 
 
 @respx.mock
@@ -644,3 +652,128 @@ def test_s2_other_400_still_degrades(monkeypatch) -> None:
     assert src.lookup(["2510.00001"]) == {}
     assert src.degraded is True
     assert src.checked_ids == set()
+
+
+@respx.mock
+def test_s2_refused_ids_are_the_chunk_that_ran_out_of_attempts(monkeypatch) -> None:
+    # S2 said "come back later" on every attempt: those ids are still due, and named as refused.
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    route = respx.post(S2_BATCH_URL).mock(return_value=httpx.Response(429))
+    src = SemanticScholarSource(httpx.Client(), None, pause_s=0)
+    assert src.lookup(["2510.00001", "2510.00002"]) == {}
+    assert route.call_count == 5
+    assert src.refused_ids == {"2510.00001", "2510.00002"}
+    assert src.checked_ids == set()
+
+
+@respx.mock
+def test_s2_transport_error_is_a_refusal(monkeypatch) -> None:
+    # A transport blip is the other retryable failure: the chunk is refused, not buggy.
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    respx.post(S2_BATCH_URL).mock(side_effect=httpx.ConnectError("boom"))
+    src = SemanticScholarSource(httpx.Client(), None, pause_s=0)
+    assert src.lookup(["2510.00001"]) == {}
+    assert src.refused_ids == {"2510.00001"}
+    assert src.degraded is True
+
+
+@respx.mock
+def test_s2_omitted_id_is_unchecked_but_not_refused() -> None:
+    # An id S2 leaves out is a paper it does not know, not a refusal: a retry pass must not spend
+    # its budget there as if the pool were congested.
+    respx.post(S2_BATCH_URL).mock(
+        return_value=httpx.Response(200, json=[_s2_row("2510.00001"), None])
+    )
+    src = SemanticScholarSource(httpx.Client(), None, pause_s=0)
+    src.lookup(["2510.00001", "2510.00002", "2510.00003"])
+    assert src.checked_ids == {"2510.00001"}
+    assert src.refused_ids == set()
+
+
+@respx.mock
+def test_s2_refused_ids_reset_each_call(monkeypatch) -> None:
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    responses = [httpx.Response(503), *[httpx.Response(429)] * 5, httpx.Response(200, json=[None])]
+    respx.post(S2_BATCH_URL).mock(side_effect=responses)
+    src = SemanticScholarSource(httpx.Client(), None, pause_s=0)
+    src.lookup(["2510.00001"])
+    assert src.refused_ids == {"2510.00001"}
+    src.lookup(["2510.00002"])
+    assert src.refused_ids == set()
+
+
+@respx.mock
+def test_s2_stops_asking_after_two_refused_chunks(monkeypatch) -> None:
+    # A keyless pool that refuses two whole chunks in a row is refusing the run, not the chunk:
+    # the third is never asked, and its ids count as refused so they stay due for the next pass.
+    sleeps: list[float] = []
+    monkeypatch.setattr(time, "sleep", lambda seconds: sleeps.append(seconds))
+    route = respx.post(S2_BATCH_URL).mock(return_value=httpx.Response(429))
+    ids = [f"2510.{i:05d}" for i in range(500 * 3)]
+    src = SemanticScholarSource(httpx.Client(), None, pause_s=1.5)
+    assert src.lookup(ids) == {}
+    assert route.call_count == 5 * S2_REFUSED_CHUNKS  # the third chunk is never sent
+    assert src.refused_ids == set(ids)
+    # One inter-chunk pause, and none after the second refusal: the run has stopped asking.
+    assert len([s for s in sleeps if 1.2 <= s <= 1.8]) == 1
+
+
+@respx.mock
+def test_s2_refusal_streak_resets_on_an_answered_chunk(monkeypatch) -> None:
+    # A chunk S2 answers ends the streak, so the refusals on either side of it do not add up; only
+    # two in a row do. Without the reset the breaker would fire on the third chunk.
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    asked = 0
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        nonlocal asked
+        asked += 1
+        count = len(json.loads(request.content)["ids"])
+        if asked == 1:  # chunk 1 refused
+            return httpx.Response(503)
+        if asked == 6:  # chunk 2 answered
+            return httpx.Response(200, json=[None] * count)
+        return httpx.Response(503)  # chunks 3 and 4 refused, then the breaker stops the run
+
+    route = respx.post(S2_BATCH_URL).mock(side_effect=responder)
+    ids = [f"2510.{i:05d}" for i in range(500 * 5)]
+    src = SemanticScholarSource(httpx.Client(), None, pause_s=0)
+    src.lookup(ids)
+    assert route.call_count == 5 + 1 + 5 + 5
+    assert src.checked_ids == set(ids[500:1000])
+    assert src.refused_ids == set(ids[:500]) | set(ids[1000:])
+
+
+@respx.mock
+def test_s2_logs_every_refusal_with_its_wait(monkeypatch) -> None:
+    # The morning check reads these lines to tell a congested hour from a blocked key.
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    respx.post(S2_BATCH_URL).mock(
+        side_effect=[
+            httpx.Response(429, headers={"Retry-After": "7"}),
+            httpx.Response(200, json=[_s2_row("2510.00001")]),
+        ]
+    )
+    with capture_logs() as logs:
+        SemanticScholarSource(httpx.Client(), None, pause_s=0).lookup(["2510.00001"])
+    [entry] = [entry for entry in logs if entry["event"] == "s2_attempt_refused"]
+    assert entry["status"] == 429 and entry["retry_after"] == "7"
+    assert entry["wait_s"] == 7.0  # the server's Retry-After, not the backoff
+    assert entry["at"].endswith("+00:00")  # its own UTC stamp, not only the log line's
+    assert entry["error"] == "HTTPStatusError"
+
+
+@respx.mock
+def test_s2_logs_a_refused_chunk_and_the_stop(monkeypatch) -> None:
+    # One line per refused chunk and one for the stop, so a congested run reads at a glance.
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    respx.post(S2_BATCH_URL).mock(return_value=httpx.Response(503))
+    src = SemanticScholarSource(httpx.Client(), None, pause_s=0)
+    ids = [f"2510.{i:05d}" for i in range(500 * 3)]
+    with capture_logs() as logs:
+        src.lookup(ids)
+    refused = [entry for entry in logs if entry["event"] == "s2_chunk_refused"]
+    assert [entry["refused_in_a_row"] for entry in refused] == [1, 2]
+    [stop] = [entry for entry in logs if entry["event"] == "s2_stopped_asking"]
+    assert stop["unasked"] == 500
+    assert stop["refused_in_a_row"] == S2_REFUSED_CHUNKS

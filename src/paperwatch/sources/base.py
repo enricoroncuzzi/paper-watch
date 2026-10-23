@@ -33,8 +33,13 @@ def make_http_client(settings: Settings) -> httpx.Client:
     )
 
 
-def _is_retryable(exc: BaseException) -> bool:
-    # Retry overload and transport blips; a deterministic 4xx is not retried.
+def is_retryable(exc: BaseException) -> bool:
+    """Whether a later attempt can clear this failure: overload, outage or transport blip.
+
+    Public because a caller that ran out of attempts must tell "the server refused us" (the
+    request is still due) from "this request is wrong" (a deterministic 4xx is a bug, never a
+    retry).
+    """
     if isinstance(exc, httpx.TransportError):
         return True
     return isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in (429, 503)
@@ -63,6 +68,7 @@ def send_with_retries(
     min_wait_s: float = 1.0,
     max_wait_s: float = 30.0,
     before_request: Callable[[], None] | None = None,
+    before_sleep: Callable[[RetryCallState], None] | None = None,
     **kwargs: Any,
 ) -> httpx.Response:
     """Send one request, retrying 429/503 and transport errors, and raise on failure.
@@ -71,12 +77,14 @@ def send_with_retries(
     exponential floor capped at 30 s) keep every source that does not override them;
     Semantic Scholar asks for five attempts from a 5 s floor capped at 60 s. Retry-After
     is honored when present. After the last attempt the last exception is re-raised so the
-    caller can degrade visibly.
+    caller can degrade visibly. `before_sleep` sees the tenacity state before every wait, so a
+    caller can log each refusal with the wait it is about to take.
     """
     for attempt in Retrying(
         stop=stop_after_attempt(attempts),
         wait=partial(_wait_for_retry, min_wait_s=min_wait_s, max_wait_s=max_wait_s),
-        retry=retry_if_exception(_is_retryable),
+        retry=retry_if_exception(is_retryable),
+        before_sleep=before_sleep,
         reraise=True,
     ):
         with attempt:
