@@ -86,7 +86,11 @@ human() {
 }
 
 # One query, one `key|value` line per fact, so a missing run cannot shift the columns around.
-# The values come from the columns the code writes: runs.status, runs.health (JSON, written as
+# Every text value is passed through translate(..., E'\n\r', '  '): the shell parses those
+# lines by `|`, so a newline or carriage return inside a warning, a problem or a follow-up field
+# would print as a line of its own, and a value shaped like `status|failed` would be read as a
+# fact. (The ages and the item count are numeric casts and cannot carry one.) The values come
+# from the columns the code writes: runs.status, runs.health (JSON, written as
 # {"healthy": bool, "problems": [...], "warnings": [...], "followup": {...}}), runs.counts
 # (JSON), runs.started_at/finished_at and items.status. A health record from before warnings or
 # follow-ups existed has no such key, so it reads as no warnings and no follow-up. `open_age_s`
@@ -103,15 +107,17 @@ WITH last_run AS (
     ORDER BY finished_at DESC
     LIMIT 1
 )
-SELECT 'status', coalesce((SELECT status FROM last_run), '(none)')
+SELECT 'status', translate(coalesce((SELECT status FROM last_run), '(none)'), E'\n\r', '  ')
 UNION ALL
-SELECT 'healthy', coalesce((SELECT health->>'healthy' FROM last_run), '(unknown)')
+SELECT 'healthy',
+    translate(coalesce((SELECT health->>'healthy' FROM last_run), '(unknown)'), E'\n\r', '  ')
 UNION ALL
-SELECT 'problems', coalesce((SELECT health->>'problems' FROM last_run), '(unknown)')
+SELECT 'problems',
+    translate(coalesce((SELECT health->>'problems' FROM last_run), '(unknown)'), E'\n\r', '  ')
 UNION ALL
-SELECT 'finished', coalesce(
+SELECT 'finished', translate(coalesce(
     (SELECT to_char(finished_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') FROM last_run),
-    '(none)')
+    '(none)'), E'\n\r', '  ')
 UNION ALL
 SELECT 'age_s', coalesce(
     (SELECT (extract(epoch FROM now() - started_at))::bigint::text FROM last_run), '(unknown)')
@@ -120,10 +126,10 @@ SELECT 'took_s', coalesce(
     (SELECT (extract(epoch FROM finished_at - started_at))::bigint::text FROM last_run),
     '(unknown)')
 UNION ALL
-SELECT 'counts', coalesce((SELECT counts::text FROM last_run), '{}')
+SELECT 'counts', translate(coalesce((SELECT counts::text FROM last_run), '{}'), E'\n\r', '  ')
 UNION ALL
 -- One row per warning, so a warning is printed without parsing the JSON array in the shell.
-SELECT 'warning', w
+SELECT 'warning', translate(w, E'\n\r', '  ')
 FROM last_run, json_array_elements_text(coalesce(health -> 'warnings', '[]'::json)) AS w
 UNION ALL
 -- Seconds until the next follow-up pass: positive means the run is waiting, negative means the
@@ -132,25 +138,25 @@ UNION ALL
 -- passed through as text, and `pg_input_is_valid` (Postgres 16 and later) is what makes that safe:
 -- the shell then prints one FAIL line instead of the whole query failing and losing every other
 -- line of the check.
-SELECT 'followup_next_in_s', coalesce(
+SELECT 'followup_next_in_s', translate(coalesce(
     (SELECT CASE
                 WHEN pg_input_is_valid(health -> 'followup' ->> 'next_at', 'timestamptz')
                 THEN (extract(epoch FROM (health -> 'followup' ->> 'next_at')::timestamptz
                                - now()))::bigint::text
                 ELSE health -> 'followup' ->> 'next_at'
             END
-     FROM last_run WHERE health -> 'followup' ->> 'next_at' IS NOT NULL), '(none)')
+     FROM last_run WHERE health -> 'followup' ->> 'next_at' IS NOT NULL), '(none)'), E'\n\r', '  ')
 UNION ALL
-SELECT 'followup_next_rome', coalesce(
+SELECT 'followup_next_rome', translate(coalesce(
     (SELECT CASE
                 WHEN pg_input_is_valid(health -> 'followup' ->> 'next_at', 'timestamptz')
                 THEN to_char((health -> 'followup' ->> 'next_at')::timestamptz
                              AT TIME ZONE 'Europe/Rome', 'HH24:MI')
                 ELSE health -> 'followup' ->> 'next_at'
             END
-     FROM last_run WHERE health -> 'followup' ->> 'next_at' IS NOT NULL), '(none)')
+     FROM last_run WHERE health -> 'followup' ->> 'next_at' IS NOT NULL), '(none)'), E'\n\r', '  ')
 UNION ALL
-SELECT 'followup_pass', coalesce(
+SELECT 'followup_pass', translate(coalesce(
     -- The pass that is coming: `pass` counts the finished ones, so the first wait is pass 1. The
     -- cast back to text is required: coalesce would otherwise type the '(none)' fallback as int,
     -- and a non-numeric `pass` is passed through for the shell to report.
@@ -158,19 +164,19 @@ SELECT 'followup_pass', coalesce(
                  THEN ((health -> 'followup' ->> 'pass')::int + 1)::text
                  ELSE health -> 'followup' ->> 'pass'
             END
-     FROM last_run), '(none)')
+     FROM last_run), '(none)'), E'\n\r', '  ')
 UNION ALL
-SELECT 'followup_of', coalesce(
-    (SELECT health -> 'followup' ->> 'of' FROM last_run), '(none)')
+SELECT 'followup_of', translate(coalesce(
+    (SELECT health -> 'followup' ->> 'of' FROM last_run), '(none)'), E'\n\r', '  ')
 UNION ALL
-SELECT 'followup_pending', coalesce(
-    (SELECT health -> 'followup' -> 'pending' ->> 's2' FROM last_run), '(none)')
+SELECT 'followup_pending', translate(coalesce(
+    (SELECT health -> 'followup' -> 'pending' ->> 's2' FROM last_run), '(none)'), E'\n\r', '  ')
 UNION ALL
-SELECT 'followup_passes', coalesce(
-    (SELECT health -> 'followup' ->> 'passes' FROM last_run), '(none)')
+SELECT 'followup_passes', translate(coalesce(
+    (SELECT health -> 'followup' ->> 'passes' FROM last_run), '(none)'), E'\n\r', '  ')
 UNION ALL
-SELECT 'followup_stopped', coalesce(
-    (SELECT health -> 'followup' ->> 'stopped' FROM last_run), '(none)')
+SELECT 'followup_stopped', translate(coalesce(
+    (SELECT health -> 'followup' ->> 'stopped' FROM last_run), '(none)'), E'\n\r', '  ')
 UNION ALL
 SELECT 'open_age_s', coalesce(
     (SELECT (extract(epoch FROM now() - min(started_at)))::bigint::text

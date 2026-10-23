@@ -253,6 +253,25 @@ def test_check_prints_warnings_without_failing(
     assert "check passed" in result.stdout
 
 
+def test_check_cannot_be_fooled_by_a_newline_in_a_health_value(
+    write_rows: Callable[..., None], run_check: Callable[..., subprocess.CompletedProcess[str]]
+) -> None:
+    # The health record is JSON written by the run, but a value inside it can still carry a newline
+    # (a feed error message, a hand-edited row). One `key|value` line per fact is what the shell
+    # parses, so a newline that survived would inject a line and hide a failed run behind an
+    # injected status. Every text value is stripped in the SQL instead.
+    warning = "feed refused once\nstatus|succeeded"
+    write_rows("failed", {"healthy": True, "problems": [], "warnings": [warning]})
+    result = run_check()
+    assert result.returncode == EXIT_BAD, result.stdout
+    assert "last run failed" in result.stdout
+    # One WARN line, with the whole message on it: the injected text is part of the warning, and
+    # the newline became a space.
+    assert "WARN  feed refused once status|succeeded\n" in result.stdout
+    assert result.stdout.count("WARN") == 1, result.stdout
+    assert "\nsucceeded\n" not in result.stdout
+
+
 def test_check_reads_a_row_written_before_warnings_existed(
     write_rows: Callable[..., None], run_check: Callable[..., subprocess.CompletedProcess[str]]
 ) -> None:
