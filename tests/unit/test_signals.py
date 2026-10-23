@@ -901,3 +901,16 @@ def test_s2_does_not_follow_a_redirect(monkeypatch) -> None:
     assert route.call_count == 1
     assert src.refused_ids == set()
     assert src.anomaly is not None
+
+
+@respx.mock
+def test_s2_cap_reaches_the_source(monkeypatch) -> None:
+    # An over-long batch answer is an answer this client cannot read, so the chunk is an anomaly
+    # (not a refusal) and the ids stay unasked.
+    monkeypatch.setattr("paperwatch.sources.semantic_scholar.MAX_S2_BODY_BYTES", 16)
+    respx.post(S2_BATCH_URL).mock(return_value=httpx.Response(200, json=[_s2_row("2510.00001")]))
+    src = SemanticScholarSource(httpx.Client(), None, pause_s=0)
+    assert src.lookup(["2510.00001"]) == {}
+    assert src.degraded is True
+    assert src.anomaly is not None and "more than 16 bytes" in src.anomaly
+    assert src.refused_ids == set()

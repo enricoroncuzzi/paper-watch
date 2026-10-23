@@ -11,7 +11,7 @@ import structlog
 from tenacity import RetryCallState
 
 from paperwatch.domain import Signals
-from paperwatch.sources.base import is_retryable, send_with_retries
+from paperwatch.sources.base import MAX_S2_BODY_BYTES, is_retryable, send_with_retries
 
 S2_BATCH_URL = "https://api.semanticscholar.org/graph/v1/paper/batch"
 # The batch endpoint rejects more than 500 ids in one request body.
@@ -163,6 +163,7 @@ class SemanticScholarSource:
                         attempts=S2_ATTEMPTS,
                         min_wait_s=S2_MIN_WAIT_S,
                         max_wait_s=S2_MAX_WAIT_S,
+                        max_bytes=MAX_S2_BODY_BYTES,
                         before_sleep=_log_refusal,
                         # The batch endpoint redirects only where this client will not go (a
                         # moved API), so a redirect is an answer we do not follow, not a detour.

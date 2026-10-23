@@ -12,6 +12,7 @@ import pytest
 from paperwatch.config import ARXIV_OAI_PREFIX
 from paperwatch.domain import Profile, RejectedEntry, load_profiles
 from paperwatch.sources.arxiv import ArxivOaiSource, _split_authors, arxiv_base_id, oai_sets
+from paperwatch.sources.base import BodyTooLarge
 
 FIXTURES = Path("tests/fixtures/oai")
 CS_PAGE1 = (FIXTURES / "cs_page1.xml").read_text()
@@ -514,3 +515,42 @@ def test_a_page_cap_degrades_arxiv_naming_set_and_day(monkeypatch) -> None:
             pages.append(page)
     assert len(pages) == 3
     assert len(calls) == 3
+
+
+def test_the_arxiv_cap_reaches_the_source(monkeypatch) -> None:
+    # The per-source cap is wired to the client, so an over-long page is a fetch failure for arXiv
+    # (the run degrades and dead-letters it) instead of a body held in memory.
+    monkeypatch.setattr("paperwatch.sources.arxiv.MAX_ARXIV_BODY_BYTES", 32)
+    src = ArxivOaiSource(
+        _client(lambda request: httpx.Response(200, text=_page())), AGENTIC, pause_s=0
+    )
+    with pytest.raises(BodyTooLarge):
+        list(src.harvest(DAY))
+
+
+def test_an_abab_a_resumption_token_sequence_is_a_loop() -> None:
+    # Tokens A, B, A loop the pager without ever repeating the previous token, so the check keeps
+    # every token this (set, day) consumed, not only the last one. Without it only the page cap
+    # would end about 10 minutes of pacing later.
+    tokens: list[str] = []
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.params.get("resumptionToken", "first"))
+        nxt = "A" if len(calls) == 1 else ("B" if len(calls) == 2 else "A")
+        tokens.append(nxt)
+        return httpx.Response(
+            200,
+            text=_page(
+                _record(f"oai:arXiv.org:{len(calls)}", raw_id=f"2510.{len(calls):05d}"),
+                resumption=nxt,
+            ),
+        )
+
+    src = ArxivOaiSource(_client(handler), AGENTIC, pause_s=0)
+    pages: list[list[object]] = []
+    with pytest.raises(ValueError, match=r"resumption token 'A' repeated for set cs on 2026-10-06"):
+        for page in src.harvest(DAY):
+            pages.append(page)
+    assert calls == ["first", "A", "B"]
+    assert len(pages) == 3

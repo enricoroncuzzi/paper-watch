@@ -19,7 +19,7 @@ import structlog
 
 from paperwatch.config import ARXIV_OAI_PREFIX, ARXIV_OAI_URL
 from paperwatch.domain import Profile, RejectedEntry, SourceItem
-from paperwatch.sources.base import send_with_retries
+from paperwatch.sources.base import MAX_ARXIV_BODY_BYTES, send_with_retries
 
 # The OAI-PMH envelope and the arXivRaw metadata body; element names carry both.
 _OAI = "{http://www.openarchives.org/OAI/2.0/}"
@@ -172,6 +172,7 @@ class ArxivOaiSource:
             min_wait_s=self._retry_wait_s,
             max_wait_s=self._retry_wait_s,
             before_request=self._pace,
+            max_bytes=MAX_ARXIV_BODY_BYTES,
         )
         return resp.text
 

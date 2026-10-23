@@ -1,6 +1,8 @@
 """Shared pieces for every source client: the HTTP client factory and retries."""
 
+import ipaddress
 import math
+import threading
 import time
 from collections.abc import Callable
 from contextlib import suppress
@@ -29,17 +31,25 @@ MAX_RETRY_AFTER_S = 60.0
 # as readily as a 503. Every other 4xx answers this exact request: a bug, never a retry.
 RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
 
-# A body is read into memory whole before it is parsed, so a broken or hostile server must not be
-# able to make a run allocate gigabytes: a real lab feed is under a megabyte even with full post
-# bodies, and a 500-record arXivRaw OAI page or a 500-id Semantic Scholar batch answer is a few
-# megabytes. Over the cap is a fetch failure for that source, dead-lettered like any other, and
-# never an OOM that kills a process sharing the machine.
+# A body is held in memory whole and then parsed whole, so these caps are a memory bound, not only a
+# transfer bound: measured on 2026-10-23, one 49 MiB arXivRaw page (21 360 records) grew RSS by
+# about 380 MiB, while an ingestion peaks near 707 MB against the unit's MemoryMax=950M, leaving
+# about 243 MB. Each cap is therefore about 5x to 10x the real page size (an arXiv day page of a few
+# MB, a 500-id Semantic Scholar answer or a 100-row Hugging Face page under 1 MB), which keeps the
+# parse growth under about 130 MiB. Over the cap is a fetch failure for that source, dead-lettered
+# like any other, and never an OOM that kills a process sharing the machine.
 MAX_FEED_BODY_BYTES = 10 * 1024 * 1024
-# The API cap covers arXiv, Hugging Face and Semantic Scholar, whose pages carry the most bytes.
-MAX_API_BODY_BYTES = 50 * 1024 * 1024
+MAX_ARXIV_BODY_BYTES = 16 * 1024 * 1024
+MAX_HF_BODY_BYTES = 8 * 1024 * 1024
+MAX_S2_BODY_BYTES = 8 * 1024 * 1024
+# A request that names no source gets the smallest cap: a cap is a bound, never a promise.
+MAX_BODY_BYTES = min(
+    MAX_FEED_BODY_BYTES, MAX_ARXIV_BODY_BYTES, MAX_HF_BODY_BYTES, MAX_S2_BODY_BYTES
+)
 # The 30 s read timeout bounds one read, not one request: a server that drips a byte every 20 s
-# never trips it and could hold a run open until the unit's 17 h timeout. This deadline covers a
-# whole request (connect plus every read), on top of the read timeout that catches a silent stall.
+# never trips it, and h11 allows a 16 KiB response header, so a drip at the header stage could hold
+# a run for days. This deadline covers the whole request (connect, headers and body) and is
+# enforced from outside the request: see `_send_once`.
 REQUEST_DEADLINE_S = 120.0
 
 # Redirects are followed by hand, never by httpx, so a target can be checked before the request
@@ -67,10 +77,21 @@ def registrable_domain(url: str) -> str:
 
     `blog.example.co.uk` and `www.example.co.uk` both give `example.co.uk`, while `evil.co.uk`
     gives `evil.co.uk` and `a.github.io` gives `a.github.io` (a shared public suffix is not a
-    site). A host the suffix list does not know is its own domain.
+    site). A host the suffix list does not know is its own domain, and an IP literal is returned
+    as it is: the suffix list would read `127.0.0.1` as the name `0.1`.
     """
     host = (urlparse(url).hostname or "").lower()
+    if not host or _is_ip_literal(host):
+        return host
     return _PUBLIC_SUFFIXES.privatesuffix(host) or host
+
+
+def _is_ip_literal(host: str) -> bool:
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return True
 
 
 def _redirect_target(current: httpx.URL, location: str, *, allowed: str | None) -> httpx.URL:
@@ -122,28 +143,21 @@ def is_retryable(exc: BaseException) -> bool:
     return isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in RETRYABLE_STATUSES
 
 
-def _read_body_capped(
-    resp: httpx.Response,
-    *,
-    max_bytes: int,
-    deadline: float,
-    deadline_s: float,
-    clock: Callable[[], float],
-) -> bytes:
-    """Read a streamed body, aborting as soon as it passes the cap or the deadline.
+def _read_body_capped(resp: httpx.Response, *, max_bytes: int) -> bytes:
+    """Read a streamed body, aborting as soon as it passes the cap.
 
     Bytes are counted as they arrive and the read is abandoned at the first byte over the cap, so
-    an endless body costs the cap and not the run's memory. The deadline is checked on every read
-    chunk, which the 30 s read timeout makes at least as often as it fires.
+    an endless body costs the cap and not the run's memory. The chunks are the ones the stream
+    handed over, joined once at the end, so the body is not copied twice over.
     """
-    body = bytearray()
+    chunks: list[bytes] = []
+    size = 0
     for chunk in resp.iter_bytes():
-        body += chunk
-        if len(body) > max_bytes:
+        size += len(chunk)
+        if size > max_bytes:
             raise BodyTooLarge(f"{resp.request.url} sent more than {max_bytes} bytes")
-        if clock() > deadline:
-            raise RequestDeadlineExceeded(f"{resp.request.url} took longer than {deadline_s:.0f} s")
-    return bytes(body)
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 _DECODED_HEADERS = frozenset({"content-encoding", "content-length"})
@@ -155,6 +169,83 @@ def _body_headers(resp: httpx.Response) -> httpx.Headers:
     return httpx.Headers(
         [(k, v) for k, v in resp.headers.multi_items() if k.lower() not in _DECODED_HEADERS]
     )
+
+
+class _InFlight:
+    """One request of one attempt, shared between the caller and the worker running it."""
+
+    def __init__(self) -> None:
+        # The response as it arrives (its body unread) and the one handed back to the caller.
+        self.streamed: httpx.Response | None = None
+        self.response: httpx.Response | None = None
+        self.error: BaseException | None = None
+        self.abandoned = threading.Event()
+
+    def abandon(self) -> None:
+        # Tell the worker to stop, and close the response it is reading: a body drip then fails its
+        # next read instead of holding a thread and a pooled connection nobody will use.
+        self.abandoned.set()
+        streamed = self.streamed
+        if streamed is not None:
+            with suppress(Exception):
+                streamed.close()
+
+
+def _send_once(
+    client: httpx.Client,
+    method: str,
+    target: httpx.URL,
+    *,
+    kwargs: dict[str, Any],
+    max_bytes: int,
+    join_s: float,
+    deadline_s: float,
+) -> httpx.Response:
+    """Send one request and read its body, giving up `join_s` seconds after starting it.
+
+    None of httpx's timeouts bounds a whole request: the read timeout restarts on every byte, so a
+    server dripping response headers (h11 allows 16 KiB of them) or body bytes outlasts all of them.
+    So the request runs in a worker thread while the caller waits `join_s`, and on that timeout the
+    caller closes the response the worker is reading and raises `RequestDeadlineExceeded`. `join_s`
+    is the wall-clock budget left to this request, so the hops of one redirect chain share it.
+    """
+    state = _InFlight()
+
+    def work() -> None:
+        try:
+            # Redirects are never followed here: the caller checks every target itself, so the
+            # policy cannot be skipped by a client built with follow_redirects=True.
+            with client.stream(method, target, follow_redirects=False, **kwargs) as resp:
+                state.streamed = resp
+                if state.abandoned.is_set():
+                    return
+                body = _read_body_capped(resp, max_bytes=max_bytes)
+                if state.abandoned.is_set():
+                    return
+                # Rebuilt as a plain response so callers keep using .text/.json()/.content on an
+                # already-read body, and raise_for_status still carries the server's headers.
+                state.response = httpx.Response(
+                    resp.status_code,
+                    headers=_body_headers(resp),
+                    content=body,
+                    request=resp.request,
+                )
+        except BaseException as exc:  # noqa: BLE001 - handed back for the caller to re-raise
+            state.error = exc
+
+    # A daemon thread, so a worker still waiting on a dead socket never holds the process open.
+    worker = threading.Thread(target=work, name="paperwatch-http", daemon=True)
+    worker.start()
+    worker.join(join_s)
+    if worker.is_alive():
+        state.abandon()
+        raise RequestDeadlineExceeded(f"{target} took longer than {deadline_s:.0f} s")
+    if state.error is not None:
+        raise state.error
+    if state.response is None:
+        # Only reachable if the worker saw the abandonment flag, which only the timeout sets.
+        raise RequestDeadlineExceeded(f"{target} took longer than {deadline_s:.0f} s")
+    return state.response
 
 
 def _wait_for_retry(state: RetryCallState, *, min_wait_s: float, max_wait_s: float) -> float:
@@ -179,9 +270,8 @@ def send_with_retries(
     attempts: int = 3,
     min_wait_s: float = 1.0,
     max_wait_s: float = 30.0,
-    max_bytes: int = MAX_API_BODY_BYTES,
+    max_bytes: int = MAX_BODY_BYTES,
     request_deadline_s: float = REQUEST_DEADLINE_S,
-    clock: Callable[[], float] = time.monotonic,
     follow_redirects: bool = True,
     stay_on_site: str | None = None,
     before_request: Callable[[], None] | None = None,
@@ -199,8 +289,13 @@ def send_with_retries(
     so a caller can log each refusal with the wait it is about to take.
 
     The body is streamed and read here, never by a bare `client.request`: a body over `max_bytes`
-    raises `BodyTooLarge` and one that outlives the deadline raises `RequestDeadlineExceeded`, so
-    the returned response is always complete in memory and bounded.
+    raises `BodyTooLarge`, and `request_deadline_s` bounds the whole request from connect to the
+    last body byte, headers included, raising `RequestDeadlineExceeded` (see `_send_once`). The
+    returned response is therefore always complete in memory and bounded.
+
+    Compressed bodies are asked for uncompressed (`Accept-Encoding: identity`), so the cap counts
+    the bytes that are actually held; a server that compresses anyway is still capped, on the
+    decoded size.
 
     A redirect is followed only under this client's own rules (see `_redirect_target`): never to
     plain http, and with `stay_on_site` (a URL) given, never off that URL's registrable domain.
@@ -214,6 +309,10 @@ def send_with_retries(
     if params is not None:
         first_target = first_target.copy_merge_params(params)
     allowed = registrable_domain(stay_on_site) if stay_on_site is not None else None
+    # Ask for the bytes as they are (see the docstring): a caller's own header wins.
+    headers = httpx.Headers(kwargs.pop("headers", None))
+    headers.setdefault("Accept-Encoding", "identity")
+    kwargs["headers"] = headers
     for attempt in Retrying(
         stop=stop_after_attempt(attempts),
         wait=partial(_wait_for_retry, min_wait_s=min_wait_s, max_wait_s=max_wait_s),
@@ -227,27 +326,25 @@ def send_with_retries(
                 # rule) hooks in here, so a retry is paced too, not only the first try.
                 before_request()
             # The deadline covers this request only: a pacing wait before it is not the server's,
-            # and a redirect chain is one request, so the hops share it too.
-            deadline = clock() + request_deadline_s
+            # and a redirect chain is one request, so the hops share the budget left by the others.
+            started = time.monotonic()
             target = first_target
             hops = 0
             while True:
-                with client.stream(method, target, **kwargs) as resp:
-                    body = _read_body_capped(
-                        resp,
-                        max_bytes=max_bytes,
-                        deadline=deadline,
-                        deadline_s=request_deadline_s,
-                        clock=clock,
+                remaining = request_deadline_s - (time.monotonic() - started)
+                if remaining <= 0:
+                    raise RequestDeadlineExceeded(
+                        f"{url} was still redirecting after {request_deadline_s:.0f} s"
                     )
-                    # Rebuilt as a plain response so callers keep using .text/.json()/.content on
-                    # an already-read body, and raise_for_status still carries the server's headers.
-                    result = httpx.Response(
-                        resp.status_code,
-                        headers=_body_headers(resp),
-                        content=body,
-                        request=resp.request,
-                    )
+                result = _send_once(
+                    client,
+                    method,
+                    target,
+                    kwargs=kwargs,
+                    max_bytes=max_bytes,
+                    join_s=remaining,
+                    deadline_s=request_deadline_s,
+                )
                 location = result.headers.get("location")
                 if not (follow_redirects and result.status_code in _REDIRECT_STATUSES and location):
                     result.raise_for_status()
@@ -258,9 +355,5 @@ def send_with_retries(
                 # The sources that follow redirects only ever GET, so the method is kept; a 303
                 # from a POST source (S2, which refuses redirects) never reaches this line.
                 target = _redirect_target(target, location, allowed=allowed)
-                if clock() > deadline:
-                    raise RequestDeadlineExceeded(
-                        f"{url} was still redirecting after {request_deadline_s:.0f} s"
-                    )
     # Unreachable: tenacity re-raises after the final attempt.
     raise RuntimeError("retry loop exhausted without a result or an exception")

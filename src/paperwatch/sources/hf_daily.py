@@ -5,7 +5,7 @@ from datetime import date, timedelta
 import httpx
 
 from paperwatch.sources.arxiv import arxiv_base_id
-from paperwatch.sources.base import send_with_retries
+from paperwatch.sources.base import MAX_HF_BODY_BYTES, send_with_retries
 
 HF_URL = "https://huggingface.co/api/daily_papers"
 # The endpoint caps one page at 100 rows, so a full page means there is a next one.
@@ -50,6 +50,7 @@ class HfDailySource:
                 "GET",
                 HF_URL,
                 params={"date": day.isoformat(), "limit": PAGE_SIZE, "p": page},
+                max_bytes=MAX_HF_BODY_BYTES,
             )
             rows = resp.json()
             new_ids = 0

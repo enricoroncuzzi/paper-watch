@@ -9,8 +9,13 @@ import respx
 
 from paperwatch.config import Settings
 from paperwatch.sources.base import (
+    MAX_ARXIV_BODY_BYTES,
+    MAX_BODY_BYTES,
+    MAX_FEED_BODY_BYTES,
+    MAX_HF_BODY_BYTES,
     MAX_REDIRECTS,
     MAX_RETRY_AFTER_S,
+    MAX_S2_BODY_BYTES,
     BodyTooLarge,
     RedirectRefused,
     RequestDeadlineExceeded,
@@ -121,7 +126,7 @@ def test_a_retryable_status_gets_every_attempt(monkeypatch, status: int) -> None
     assert route.call_count == 3
 
 
-@pytest.mark.parametrize("status", [400, 403, 404])
+@pytest.mark.parametrize("status", [400, 403, 404, 501, 505])
 @respx.mock
 def test_a_deterministic_4xx_is_a_bug_not_a_retry(monkeypatch, status: int) -> None:
     # The request itself is wrong: asking again would only spend the same refusal.
@@ -179,37 +184,148 @@ def test_a_body_over_the_cap_is_not_retried(monkeypatch) -> None:
 
 def test_a_slow_drip_body_trips_the_request_deadline() -> None:
     # The 30 s read timeout bounds one read, so a server dripping a chunk at a time never trips it.
-    # The clock is injected and advanced per read, so no test ever really waits.
-    client, _ = _streaming_client(lambda: iter([b"x"] * 10))
-    now = [0.0]
+    # The deadline is real, so the test keeps it tiny and the drip fast: it must end at the
+    # deadline, not after the 20 chunks the server had ready.
+    def chunks() -> Iterator[bytes]:
+        for _ in range(20):
+            time.sleep(0.02)
+            yield b"x"
 
-    def clock() -> float:
-        now[0] += 40.0
-        return now[0]
-
+    client, _ = _streaming_client(chunks)
+    started = time.monotonic()
     with pytest.raises(RequestDeadlineExceeded):
         send_with_retries(
-            client,
-            "GET",
-            "https://example.test/x",
-            request_deadline_s=120.0,
-            clock=clock,
-            attempts=1,
+            client, "GET", "https://example.test/x", request_deadline_s=0.05, attempts=1
         )
+    assert time.monotonic() - started < 1.0
     # A slow server is a transport failure like a read timeout, so a later attempt may still help.
     assert is_retryable(RequestDeadlineExceeded("slow"))
 
 
+def test_the_request_deadline_covers_the_response_headers() -> None:
+    # httpx's read timeout restarts on every byte, so a server dripping headers (h11 allows 16 KiB
+    # of them) outlasts it. The caller's own watchdog does not care what the request waits for, so
+    # the answer never arrives inside the deadline and the caller stops at the deadline.
+    def handler(request: httpx.Request) -> httpx.Response:
+        time.sleep(0.5)  # stands in for headers that keep trickling in
+        return httpx.Response(200, text="finally")
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    started = time.monotonic()
+    with pytest.raises(RequestDeadlineExceeded):
+        send_with_retries(
+            client, "GET", "https://example.test/x", request_deadline_s=0.05, attempts=1
+        )
+    assert time.monotonic() - started < 0.3  # the deadline, not the server, ended the request
+
+
 def test_a_request_within_the_deadline_is_returned() -> None:
     client, _ = _streaming_client(lambda: iter([b"ok"]))
-    now = [0.0]
-
-    def clock() -> float:
-        now[0] += 10.0
-        return now[0]
-
-    resp = send_with_retries(client, "GET", "https://example.test/x", clock=clock)
+    resp = send_with_retries(client, "GET", "https://example.test/x", request_deadline_s=5.0)
     assert resp.text == "ok"
+
+
+def test_the_request_deadline_bounds_the_whole_redirect_chain() -> None:
+    # Hops share one budget: a chain of slow redirects ends at the deadline, not after every hop
+    # was given the full one, and not at the hop cap.
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        time.sleep(0.04)
+        return httpx.Response(302, headers={"location": f"/hop{len(seen)}"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    with pytest.raises(RequestDeadlineExceeded):
+        send_with_retries(
+            client,
+            "GET",
+            "https://lab.example/x",
+            request_deadline_s=0.1,
+            attempts=1,
+        )
+    assert len(seen) < MAX_REDIRECTS + 1
+
+
+def test_the_second_hop_may_not_leave_the_site() -> None:
+    # The check runs on every hop, not only on the first: a same-site hop that redirects off the
+    # site is refused, and the off-site URL is never asked for.
+    client, seen = _redirecting_client(
+        {
+            "https://lab.example/feed.xml": httpx.Response(
+                302, headers={"location": "https://lab.example/next"}
+            ),
+            "https://lab.example/next": httpx.Response(
+                302, headers={"location": "https://evil.test/feed.xml"}
+            ),
+        }
+    )
+    with pytest.raises(RedirectRefused):
+        send_with_retries(
+            client,
+            "GET",
+            "https://lab.example/feed.xml",
+            stay_on_site="https://lab.example/feed.xml",
+        )
+    assert [str(url) for url in seen] == [
+        "https://lab.example/feed.xml",
+        "https://lab.example/next",
+    ]
+
+
+def test_the_second_hop_may_not_downgrade_to_plain_http() -> None:
+    client, seen = _redirecting_client(
+        {
+            "https://lab.example/x": httpx.Response(
+                302, headers={"location": "https://lab.example/y"}
+            ),
+            "https://lab.example/y": httpx.Response(
+                302, headers={"location": "http://lab.example/y"}
+            ),
+        }
+    )
+    with pytest.raises(RedirectRefused):
+        send_with_retries(client, "GET", "https://lab.example/x")
+    assert len(seen) == 2
+
+
+def test_make_http_client_never_follows_redirects_itself() -> None:
+    # The policy lives in send_with_retries; a client that followed hops itself would silently skip
+    # every check, whatever send_with_retries asks for.
+    client = make_http_client(Settings())
+    try:
+        assert client.follow_redirects is False
+    finally:
+        client.close()
+
+
+def test_capped_requests_ask_for_an_uncompressed_body() -> None:
+    # The cap counts the bytes held in memory, so a compressed body must not be expanded on the way
+    # in: one 64 KiB chunk can decode to far more than the cap. A caller's own header still wins.
+    seen: list[httpx.Headers] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers)
+        return httpx.Response(200, text="ok")
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    send_with_retries(client, "GET", "https://example.test/x")
+    send_with_retries(client, "GET", "https://example.test/x", headers={"accept-encoding": "gzip"})
+    assert [headers["accept-encoding"] for headers in seen] == ["identity", "gzip"]
+
+
+def test_each_source_has_its_own_body_cap() -> None:
+    # A body is parsed whole after the cap, and a 49 MiB page grew RSS by about 380 MiB against the
+    # unit's 950M limit: the owner set these from the measurement (S2 of the 2026-10-23 review).
+    assert MAX_FEED_BODY_BYTES == 10 * 1024 * 1024
+    assert MAX_ARXIV_BODY_BYTES == 16 * 1024 * 1024
+    assert MAX_HF_BODY_BYTES == 8 * 1024 * 1024
+    assert MAX_S2_BODY_BYTES == 8 * 1024 * 1024
+    # A request that names no source is still bounded by the smallest cap.
+    assert (
+        min(MAX_FEED_BODY_BYTES, MAX_ARXIV_BODY_BYTES, MAX_HF_BODY_BYTES, MAX_S2_BODY_BYTES)
+        == MAX_BODY_BYTES
+    )
 
 
 def _redirecting_client(
@@ -233,6 +349,9 @@ def test_registrable_domain_is_the_etld_plus_one() -> None:
     assert registrable_domain("https://evil.co.uk/feed.xml") == "evil.co.uk"
     assert registrable_domain("https://a.github.io/x") == "a.github.io"
     assert registrable_domain("https://lab.example/feed.xml") == "lab.example"
+    # An IP literal is its own host, not the suffix list's reading of it as a name ("0.1").
+    assert registrable_domain("https://127.0.0.1/feed.xml") == "127.0.0.1"
+    assert registrable_domain("https://[::1]/feed.xml") == "::1"
 
 
 def test_a_redirect_to_plain_http_is_refused() -> None:
