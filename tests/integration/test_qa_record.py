@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 from langchain_core.messages import AIMessage
+from sqlalchemy import Engine, text
 from sqlalchemy.orm import Session
 
 from evals.qa_eval import QA_SET_VERSION, record
@@ -14,6 +15,20 @@ pytestmark = pytest.mark.integration
 DATA = Path(__file__).resolve().parents[2] / "evals" / "data"
 USAGE = {"input_tokens": 50, "output_tokens": 10, "total_tokens": 60}
 ANSWER = "A coding harness edits files and runs tests [S1]."
+
+
+@pytest.fixture
+def clean_index(engine: Engine) -> None:
+    """Rewrite the partial HNSW index from live rows only, before retrieval is asserted.
+
+    The graph is approximate, and every test that inserts admitted items through `db_session`
+    rolls them back, which leaves dead index entries behind. Whether "coding harness" finds ag-01
+    first then depends on which files ran before: with test_pipeline first, this file failed five
+    runs out of six. VACUUM drops the dead entries, so one test cannot change another's answers.
+    It cannot run inside a transaction, hence the autocommit connection.
+    """
+    with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+        conn.execute(text("VACUUM items"))
 
 
 def question_ids() -> list[str]:
@@ -37,7 +52,9 @@ def search_then_answer() -> list[AIMessage]:
     ]
 
 
-def test_record_covers_every_question_with_its_sources(db_session: Session) -> None:
+def test_record_covers_every_question_with_its_sources(
+    db_session: Session, clean_index: None
+) -> None:
     model = ScriptedChatModel(script=search_then_answer() * len(question_ids()))
     rows = record(
         db_session,
@@ -79,7 +96,7 @@ def test_record_marks_a_provider_failure_instead_of_dropping_the_question(
     assert all(row.answer_text == "" and row.sources == () for row in rows)
 
 
-def test_each_question_starts_a_fresh_registry(db_session: Session) -> None:
+def test_each_question_starts_a_fresh_registry(db_session: Session, clean_index: None) -> None:
     def script(query: str) -> list[AIMessage]:
         call = {"name": "search_corpus", "args": {"query": query}, "id": "c1"}
         return [
