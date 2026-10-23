@@ -6,6 +6,7 @@ the server but work on a laptop, which is the worst kind of documentation bug. T
 the guide itself, so a drift in the doc fails the suite.
 """
 
+import os
 import re
 import shlex
 from types import SimpleNamespace
@@ -16,7 +17,7 @@ from sqlalchemy.engine import make_url
 from typer.testing import CliRunner
 
 from paperwatch import cli
-from paperwatch.config import REPO_ROOT
+from paperwatch.config import REPO_ROOT, Settings
 from paperwatch.ingest.health import Health
 
 GUIDE = REPO_ROOT / "docs" / "deploy" / "vps.md"
@@ -69,6 +70,13 @@ def test_the_ingest_unit_enables_follow_ups(monkeypatch: pytest.MonkeyPatch) -> 
         seen.update(kwargs)
         return SimpleNamespace(status="succeeded", counts={}, tokens=0, health=Health(True, ()))
 
+    for name in [n for n in os.environ if n.startswith("PW_")]:
+        monkeypatch.delenv(name)
+    monkeypatch.setattr(cli, "get_settings", lambda: Settings(_env_file=None))
+    monkeypatch.setattr(cli, "configure_logging", lambda level: None)
+    monkeypatch.setattr(cli, "load_profiles", lambda path: [])
+    monkeypatch.setattr(cli, "load_feeds", lambda path: [])
+    monkeypatch.setattr(cli, "load_admission", lambda path: object())
     monkeypatch.setattr(cli, "make_http_client", lambda settings: object())
     monkeypatch.setattr(cli, "make_engine", lambda url: object())
     monkeypatch.setattr(cli, "make_session_factory", lambda engine: lambda: object())
