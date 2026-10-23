@@ -1,6 +1,7 @@
 """unit tests for the shared source HTTP client factory and retry waits."""
 
 import http.server
+import itertools
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -347,6 +348,132 @@ def _redirecting_client(
         return hops.get(str(request.url), httpx.Response(404))
 
     return httpx.Client(transport=httpx.MockTransport(handler)), seen
+
+
+# Mixed case on purpose: the strip must match these names case-insensitively.
+_CALLER_HEADERS = {
+    "Authorization": "Bearer secret",
+    "COOKIE": "session=1",
+    "x-api-key": "key",
+    "X-Trace": "1",
+}
+_CREDENTIAL_NAMES = ("authorization", "cookie", "x-api-key")
+
+
+def _credentials_in(headers: httpx.Headers) -> dict[str, str]:
+    # What this request would disclose: the credential headers it actually carries.
+    return {name: headers[name] for name in _CREDENTIAL_NAMES if name in headers}
+
+
+def _redirect_chain(start: str, chain: list[str]) -> dict[str, httpx.Response]:
+    # Every URL but the last answers with a redirect to the next one; the last is left out, so the
+    # client below answers it with a plain 200.
+    urls = [start, *chain]
+    return {
+        url: httpx.Response(302, headers={"location": next_url})
+        for url, next_url in itertools.pairwise(urls)
+    }
+
+
+def _chain_client(
+    responses: dict[str, httpx.Response],
+) -> tuple[httpx.Client, list[tuple[str, httpx.Headers]]]:
+    # Records every request's URL and headers in order, so a test can assert what the last one
+    # carried; a URL the map does not know answers 200.
+    seen: list[tuple[str, httpx.Headers]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((str(request.url), request.headers))
+        return responses.get(str(request.url), httpx.Response(200, text="ok"))
+
+    return httpx.Client(transport=httpx.MockTransport(handler)), seen
+
+
+@pytest.mark.parametrize(
+    ("start", "chain", "kept"),
+    [
+        ("https://lab.example/x", ["https://lab.example/y"], True),
+        ("https://lab.example/x", ["https://other.example/y"], False),
+        ("https://lab.example/x", ["https://lab.example:8443/y"], False),
+        ("http://lab.example/x", ["https://lab.example/y"], False),
+        (
+            "https://lab.example/x",
+            ["https://other.example/y", "https://lab.example/z"],
+            False,
+        ),
+    ],
+    ids=["same-origin", "other-host", "other-port", "other-scheme", "back-to-the-first-origin"],
+)
+def test_only_a_same_origin_chain_keeps_the_credentials(
+    start: str, chain: list[str], kept: bool
+) -> None:
+    # One chain per way an origin can change, each asserting what the LAST request carries: a rule
+    # that ignored the port, ignored the scheme or restored the credentials on the way back could
+    # hide behind a hop that had already stripped them. A credential belongs to the origin the
+    # caller named, and leaving it is final.
+    client, seen = _chain_client(_redirect_chain(start, chain))
+    resp = send_with_retries(client, "GET", start, headers=dict(_CALLER_HEADERS))
+    assert resp.text == "ok"
+    assert [url for url, _ in seen] == [start, *chain]
+    named = {"authorization": "Bearer secret", "cookie": "session=1", "x-api-key": "key"}
+    assert _credentials_in(seen[-1][1]) == (named if kept else {})
+    # The body cap counts the bytes held in memory, so every request asks for the body as it is:
+    # the strip must not take Accept-Encoding with it.
+    assert [headers["accept-encoding"] for _, headers in seen] == ["identity"] * len(seen)
+
+
+def test_a_retry_after_a_cross_origin_hop_starts_over_with_the_credentials() -> None:
+    # The strip is per attempt, not per call: a retry re-asks the caller's URL, which is its own
+    # origin again, so it must carry what the previous attempt dropped on the way off the origin.
+    client, seen = _chain_client(
+        {
+            "https://lab.example/x": httpx.Response(
+                302, headers={"location": "https://other.example/y"}
+            ),
+            # The off-origin hop refuses with a retryable status, ending this attempt there.
+            "https://other.example/y": httpx.Response(503),
+        }
+    )
+    with pytest.raises(httpx.HTTPStatusError):
+        send_with_retries(
+            client,
+            "GET",
+            "https://lab.example/x",
+            headers=dict(_CALLER_HEADERS),
+            attempts=2,
+            min_wait_s=0.0,
+            max_wait_s=0.0,
+        )
+    named = {"authorization": "Bearer secret", "cookie": "session=1", "x-api-key": "key"}
+    assert [(url, _credentials_in(headers)) for url, headers in seen] == [
+        ("https://lab.example/x", named),
+        ("https://other.example/y", {}),
+        ("https://lab.example/x", named),
+        ("https://other.example/y", {}),
+    ]
+
+
+def test_a_stripped_hop_keeps_the_other_headers_exactly_as_the_caller_wrote_them() -> None:
+    # The strip copies the caller's header set and pops the credentials, and must not relabel or
+    # merge what it keeps: the caller's own casing and a repeated header go out as they would with
+    # no redirect.
+    client, seen = _chain_client(
+        _redirect_chain("https://lab.example/x", ["https://other.example/y"])
+    )
+    send_with_retries(
+        client,
+        "GET",
+        "https://lab.example/x",
+        headers=[
+            ("Authorization", "Bearer secret"),
+            ("cookie", "session=1"),
+            ("x-api-key", "key"),
+            ("X-Trace", "1"),
+            ("X-Trace", "2"),
+        ],
+    )
+    names = [name for name, _ in seen[-1][1].raw if name.lower() == b"x-trace"]
+    assert names == [b"X-Trace", b"X-Trace"]
 
 
 def test_registrable_domain_is_the_etld_plus_one() -> None:

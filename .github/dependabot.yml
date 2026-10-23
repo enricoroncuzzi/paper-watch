@@ -10,11 +10,17 @@ updates:
     # broken releases are yanked within days.
     cooldown:
       default-days: 7
-    # One pull request for all minor and patch bumps; majors stay separate
-    # because they are the ones likely to need code changes.
+    # One pull request for all minor and patch bumps; majors stay separate because they are the
+    # ones likely to need code changes. publicsuffixlist is carved out into a group of its own: it
+    # ships a new public-suffix snapshot almost daily, and as its own group on a weekly schedule it
+    # opens at most one pull request a week, with the cooldown above keeping a fresh release out.
+    # It is excluded from the wide group rather than left to group order.
     groups:
+      publicsuffixlist:
+        patterns: ["publicsuffixlist"]
       minor-and-patch:
         update-types: ["minor", "patch"]
+        exclude-patterns: ["publicsuffixlist"]
   # Keep the SHA-pinned actions in .github/workflows current; each update
   # rewrites the SHA and its version comment together.
   - package-ecosystem: "github-actions"

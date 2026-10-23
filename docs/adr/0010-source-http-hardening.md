@@ -47,7 +47,8 @@ Scholar's batch endpoint wants redirects refused outright.
 - **A redirect policy**: redirects are followed by hand, never by the client, and every hop is
   checked before the request goes out. https to http is always refused; a feed must stay on the
   registrable domain of the URL configured in `config/feeds.yaml`; more than five hops is refused;
-  a non-http(s) target is refused. A feed's registrable domain is its eTLD+1 from the public suffix
+  a non-http(s) target is refused. A hop to another origin (scheme, host or port) drops the
+  caller's `Authorization`, `Cookie` and `x-api-key` headers first (`send_with_retries`). A feed's registrable domain is its eTLD+1 from the public suffix
   list (`publicsuffixlist`, a small pure-Python package with the list bundled, so no run does a DNS
   lookup or a download to make this decision). eTLD+1 is what makes "same site" mean anything:
   comparing the last two labels would let `evil.co.uk` pass for `lab.co.uk`, and comparing hosts
@@ -70,7 +71,14 @@ away with a retryable status stays due, so a follow-up pass asks again (ADR 0008
   decoded chunk past the cap before the read stops. Both need a hostile or badly broken official
   host, which the deadline does not help with; they are recorded here rather than fixed.
 - The deadline is real time, so the tests that exercise it use sub-second budgets and loopback
-  sockets, not a mocked clock: the point is that a blocked socket read wakes.
+  sockets, not a mocked clock: the point is that a blocked socket read wakes. The loopback drip
+  test (`test_an_abandoned_request_frees_the_shared_connection`: a header drip and a body drip, each
+  on a fresh and on a reused pooled connection) is the guard for the httpcore internals this relies
+  on, which no httpx API promises: the `connection.connect_tcp.complete` trace event that hands over
+  a plain connection, and `get_extra_info("socket")` returning the socket to shut down. The https
+  handover, `connection.start_tls.complete`, is not exercised by it, every drip request being plain
+  http to the loopback address. The `test` CI job fails if any of its four cases is skipped or not
+  collected, and a failure to start its loopback server fails the test rather than skipping it.
 - A feed that legitimately moves to a different registrable domain now fails until
   `config/feeds.yaml` names the new address, which is a visible morning FAIL rather than a silent
   change of subject.

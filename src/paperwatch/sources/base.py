@@ -186,6 +186,23 @@ def _origin(url: httpx.URL) -> str:
     return f"{url.scheme}://{url.host}:{url.port}"
 
 
+# The credentials a hop to another origin must not carry: Authorization, which httpx also drops
+# across origins, plus Cookie and x-api-key. httpx never drops x-api-key, and it drops Cookie on
+# every hop, same-origin included, so it is the origin check here that keeps a caller's Cookie on a
+# same-origin hop. `send_with_retries` follows hops by hand, so it does this itself, and only when
+# the origin changes.
+_CROSS_ORIGIN_CREDENTIALS = ("authorization", "cookie", "x-api-key")
+
+
+def _without_credentials(headers: httpx.Headers) -> httpx.Headers:
+    """The same headers minus the credentials, whatever case the caller wrote them in."""
+    # Copied, not rebuilt, so the headers that stay keep their own casing and any repetition.
+    kept = httpx.Headers(headers)
+    for name in _CROSS_ORIGIN_CREDENTIALS:
+        kept.pop(name, None)
+    return kept
+
+
 def _remember_connection(client: httpx.Client, origin: str, network: Any) -> None:
     with _CONNECTIONS_LOCK:
         _CONNECTIONS.setdefault(client, {})[origin] = network
@@ -354,7 +371,9 @@ def send_with_retries(
     A redirect is followed only under this client's own rules (see `_redirect_target`): never to
     plain http, and with `stay_on_site` (a URL) given, never off that URL's registrable domain.
     `follow_redirects=False` refuses every redirect, which raises like any other answer this client
-    will not accept, so a caller never parses a page from a hop it did not agree to take.
+    will not accept, so a caller never parses a page from a hop it did not agree to take. A hop to
+    another origin (scheme, host or port) drops the caller's credentials first. Credentials must
+    therefore travel in `headers`: an `auth=` or `cookies=` kwarg rides every hop untouched.
     """
     # The caller's params ride on the first hop only: a later hop's own Location carries them, so
     # they are folded into the URL once, and a retry asks for exactly the same URL as the first try.
@@ -366,7 +385,6 @@ def send_with_retries(
     # Ask for the bytes as they are (see the docstring): a caller's own header wins.
     headers = httpx.Headers(kwargs.pop("headers", None))
     headers.setdefault("Accept-Encoding", "identity")
-    kwargs["headers"] = headers
     for attempt in Retrying(
         stop=stop_after_attempt(attempts),
         wait=partial(_wait_for_retry, min_wait_s=min_wait_s, max_wait_s=max_wait_s),
@@ -383,6 +401,7 @@ def send_with_retries(
             # and a redirect chain is one request, so the hops share the budget left by the others.
             started = time.monotonic()
             target = first_target
+            hop_headers = headers
             hops = 0
             while True:
                 # Each hop gets what is left of one attempt's budget, so a chain cannot multiply
@@ -391,7 +410,7 @@ def send_with_retries(
                     client,
                     method,
                     target,
-                    kwargs=kwargs,
+                    kwargs={**kwargs, "headers": hop_headers},
                     max_bytes=max_bytes,
                     join_s=request_deadline_s - (time.monotonic() - started),
                     deadline_s=request_deadline_s,
@@ -405,6 +424,12 @@ def send_with_retries(
                     raise RedirectRefused(f"{url} redirected more than {MAX_REDIRECTS} times")
                 # The sources that follow redirects only ever GET, so the method is kept; a 303
                 # from a POST source (S2, which refuses redirects) never reaches this line.
-                target = _redirect_target(target, location, allowed=allowed)
+                next_target = _redirect_target(target, location, allowed=allowed)
+                # Credentials belong to the origin the caller named, so another origin (a new
+                # scheme, host or port) gets the headers without them, and a later hop back does
+                # not get them again.
+                if _origin(next_target) != _origin(target):
+                    hop_headers = _without_credentials(hop_headers)
+                target = next_target
     # Unreachable: tenacity re-raises after the final attempt.
     raise RuntimeError("retry loop exhausted without a result or an exception")
