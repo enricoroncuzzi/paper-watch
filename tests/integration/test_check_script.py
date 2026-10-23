@@ -15,6 +15,7 @@ import uuid
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 from sqlalchemy import delete, make_url
@@ -44,6 +45,7 @@ SYSTEMCTL_STUB = """#!/bin/sh
 case "$*" in
     "--user show-environment") exit "${STUB_SHOW_ENVIRONMENT:-0}" ;;
     "--user is-failed --quiet paperwatch-ingest.service") exit "${STUB_IS_FAILED:-1}" ;;
+    "--user is-active --quiet paperwatch-ingest.service") exit "${STUB_UNIT_ACTIVE:-1}" ;;
     "--user is-active --quiet paperwatch-ingest.timer") exit "${STUB_IS_ACTIVE:-0}" ;;
 esac
 echo "unexpected systemctl call: $*" >&2
@@ -388,12 +390,13 @@ def test_check_waits_on_a_run_between_follow_up_passes(
     # A scheduled run that S2 refused waits for its next pass, and its provisional verdict is
     # unhealthy by design. That is neither a bad morning nor a pass: one WAIT line, no FAIL.
     next_at = datetime.now(UTC) + timedelta(minutes=10)
+    # `pass` counts the finished passes, so this record means "0 done, pass 1 is coming".
     health = {
         "healthy": False,
         "problems": ["status=partial", "1 signal sources degraded"],
         "warnings": [],
         "followup": {
-            "pass": 1,
+            "pass": 0,
             "of": 40,
             "next_at": next_at.isoformat(),
             "pending": {"s2": 152},
@@ -402,7 +405,11 @@ def test_check_waits_on_a_run_between_follow_up_passes(
     write_rows("partial", health)
     result = run_check()
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "WAIT  follow-up 1 of 40 pending (s2: 152 ids), next pass " in result.stdout
+    # The pass number is the one coming, and the time is the next pass on the server's own clock.
+    next_rome = next_at.astimezone(ZoneInfo("Europe/Rome")).strftime("%H:%M")
+    assert (
+        f"WAIT  follow-up 1 of 40 pending (s2: 152 ids), next pass {next_rome}\n" in result.stdout
+    )
     assert "FAIL" not in result.stdout
     # The freshness line still runs, so a run that stops heartbeating is still caught later.
     assert "fresh: last run started" in result.stdout
@@ -412,9 +419,10 @@ def test_check_waits_on_a_run_between_follow_up_passes(
 def test_check_fails_when_a_follow_up_never_came(
     write_rows: Callable[..., None], run_check: Callable[..., subprocess.CompletedProcess[str]]
 ) -> None:
-    # The row still says a pass was coming and that moment has passed: the process was killed
-    # inside the window. One FAIL for the one event, like a killed run, and nothing else.
-    past_at = datetime.now(UTC) - timedelta(minutes=10)
+    # The row still says a pass was coming and that moment is long past (older than the 20-minute
+    # grace): the process was killed inside the window. One FAIL for the one event, like a killed
+    # run, and nothing else.
+    past_at = datetime.now(UTC) - timedelta(minutes=30)
     health = {
         "healthy": False,
         "problems": ["status=partial", "1 signal sources degraded"],
@@ -523,3 +531,88 @@ def test_check_rejects_a_non_numeric_threshold(
     result = run_check(extra_env={"PW_CHECK_MIN_FREE_GB": "2 GB"})
     assert result.returncode == EXIT_BAD
     assert "PW_CHECK_MIN_FREE_GB" in result.stdout
+
+
+def test_check_waits_while_the_pass_it_announced_is_running(
+    write_rows: Callable[..., None], run_check: Callable[..., subprocess.CompletedProcess[str]]
+) -> None:
+    # The row is only rewritten when the next wait starts, so for the minutes a pass takes its
+    # `next_at` is just past. That is the pass working, not a dead process: one WAIT line, no FAIL.
+    due_at = datetime.now(UTC) - timedelta(seconds=90)
+    health = {
+        "healthy": False,
+        "problems": ["status=partial", "1 signal sources degraded"],
+        "warnings": [],
+        "followup": {
+            "pass": 3,
+            "of": 40,
+            "next_at": due_at.isoformat(),
+            "pending": {"s2": 12},
+        },
+    }
+    write_rows("partial", health)
+    result = run_check()
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "WAIT  follow-up pass 4 of 40 running (s2: 12 ids)" in result.stdout
+    assert "FAIL" not in result.stdout
+    assert "did not complete" not in result.stdout
+
+
+def test_check_pins_the_follow_up_grace_from_both_sides(
+    write_rows: Callable[..., None], run_check: Callable[..., subprocess.CompletedProcess[str]]
+) -> None:
+    # 20 minutes is longer than any pass and shorter than the 30-minute interval: one second under
+    # it is still the running pass, one second over it is the killed process.
+    for seconds, expected in ((1199, 0), (1201, EXIT_BAD)):
+        due_at = datetime.now(UTC) - timedelta(seconds=seconds)
+        health = {
+            "healthy": False,
+            "problems": [],
+            "warnings": [],
+            "followup": {"pass": 1, "of": 40, "next_at": due_at.isoformat(), "pending": {"s2": 3}},
+        }
+        write_rows("partial", health)
+        result = run_check()
+        assert result.returncode == expected, (seconds, result.stdout)
+
+
+def test_check_fails_on_a_follow_up_time_it_cannot_read(
+    write_rows: Callable[..., None], run_check: Callable[..., subprocess.CompletedProcess[str]]
+) -> None:
+    # A corrupt record must be one named FAIL, not a psql error that hides the rest of the check.
+    health = {
+        "healthy": False,
+        "problems": [],
+        "warnings": [],
+        "followup": {"pass": 1, "of": 40, "next_at": "soon", "pending": {"s2": 3}},
+    }
+    write_rows("partial", health)
+    result = run_check()
+    assert result.returncode == EXIT_BAD
+    assert "FAIL  cannot read the next follow-up pass from the health record: soon" in result.stdout
+    # The rest of the morning still prints: the counts and the backup were read.
+    assert "items:" in result.stdout and "backup:" in result.stdout
+
+
+def test_check_calls_a_long_running_unit_hung_and_names_the_stop_command(
+    write_rows: Callable[..., None], run_check: Callable[..., subprocess.CompletedProcess[str]]
+) -> None:
+    # With TimeoutStartSec=17h nothing kills a hung main pass any more, so the check must say the
+    # process is still alive and how to stop it, not that systemd killed it.
+    write_rows(None, running_for=timedelta(hours=4))
+    result = run_check(extra_env={"STUB_UNIT_ACTIVE": "0"})  # 0 = active
+    assert result.returncode == EXIT_BAD
+    assert "hung (still running)" in result.stdout
+    assert "systemctl --user stop paperwatch-ingest" in result.stdout
+    assert "killed or hung" not in result.stdout
+
+
+def test_check_calls_a_long_dead_run_killed(
+    write_rows: Callable[..., None], run_check: Callable[..., subprocess.CompletedProcess[str]]
+) -> None:
+    # The unit is not alive, so the row is a leftover of a killed process, not a hung one.
+    write_rows(None, running_for=timedelta(hours=4))
+    result = run_check()  # the stub's default: the unit is not active
+    assert result.returncode == EXIT_BAD
+    assert "killed or hung" in result.stdout
+    assert "hung (still running)" not in result.stdout
