@@ -186,8 +186,10 @@ def _origin(url: httpx.URL) -> str:
     return f"{url.scheme}://{url.host}:{url.port}"
 
 
-# The caller's credentials a hop to another origin must not carry. httpx drops these when it follows
-# a redirect itself; `send_with_retries` follows hops by hand now, so it does the dropping itself.
+# The credentials a hop to another origin must not carry: Authorization, which httpx also drops
+# across origins, plus Cookie and x-api-key, which it does not (it drops Cookie on every hop,
+# same-origin included). `send_with_retries` follows hops by hand, so it does this itself, and only
+# when the origin changes.
 _CROSS_ORIGIN_CREDENTIALS = ("authorization", "cookie", "x-api-key")
 
 
@@ -369,7 +371,8 @@ def send_with_retries(
     plain http, and with `stay_on_site` (a URL) given, never off that URL's registrable domain.
     `follow_redirects=False` refuses every redirect, which raises like any other answer this client
     will not accept, so a caller never parses a page from a hop it did not agree to take. A hop to
-    another origin (scheme, host or port) drops the caller's credentials first, as httpx would.
+    another origin (scheme, host or port) drops the caller's credentials first. Credentials must
+    therefore travel in `headers`: an `auth=` or `cookies=` kwarg rides every hop untouched.
     """
     # The caller's params ride on the first hop only: a later hop's own Location carries them, so
     # they are folded into the URL once, and a retry asks for exactly the same URL as the first try.
@@ -423,7 +426,7 @@ def send_with_retries(
                 next_target = _redirect_target(target, location, allowed=allowed)
                 # Credentials belong to the origin the caller named, so another origin (a new
                 # scheme, host or port) gets the headers without them, and a later hop back does
-                # not get them again: httpx's own redirect follow behaves the same way.
+                # not get them again.
                 if _origin(next_target) != _origin(target):
                     hop_headers = _without_credentials(hop_headers)
                 target = next_target
