@@ -1521,7 +1521,8 @@ def test_no_transaction_is_open_during_a_source_fetch(db_session: Session) -> No
     # connection 'idle in transaction' and blocks vacuum for that whole time. Every network block
     # therefore starts after a commit, like the follow-up loop's wait already did.
     # The fake sources record the flag instead of asserting it: the feed loop catches everything,
-    # so an assertion raised in there is logged as a missed feed and the run carries on (review S1).
+    # so an assertion raised in there is logged as a missed feed and the run carries on, which
+    # would make this test pass with its fix removed.
     src = fake_sources([paper("2510.1", "Agent harness")])
     checked: list[str] = []
     in_transaction: list[tuple[str, bool]] = []
@@ -1536,7 +1537,7 @@ def test_no_transaction_is_open_during_a_source_fetch(db_session: Session) -> No
         in_transaction.append(("feed", db_session.in_transaction()))
         src.feeds.newest[feed.url] = until
         # Items on the first feed, so its cursor write is pending when the second fetch starts.
-        return [blog(f"p{len(checked)}")] if len(checked) == 1 else []
+        return [blog("p1")] if feed.url == FEED.url else []
 
     def upvotes(since: date, until: date) -> dict[str, int]:
         checked.append("hf")
@@ -1561,6 +1562,39 @@ def test_no_transaction_is_open_during_a_source_fetch(db_session: Session) -> No
     assert checked.count("feed") == len(src.feed_list) == 2
     assert checked.count("hf") == checked.count("s2") == 1
     assert not any(open_txn for _source, open_txn in in_transaction)
+
+
+def test_a_kill_while_parking_leaves_the_cursor_and_the_letters_together(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The ordering inside one feed (park every item, then move the cursor) is what makes a kill
+    # safe: a kill in the middle of parking must leave the cursor where it was, with whatever
+    # letters that transaction wrote rolled back together. Killing during the *next* fetch cannot
+    # tell the two orders apart, because both are committed by then.
+    src = fake_sources([])
+    src.feed_list = [FEED, OTHER_FEED]
+
+    def fetch_one(feed: Feed, since: datetime, until: datetime) -> list[SourceItem]:
+        src.feeds.newest[feed.url] = until
+        return [blog("p1"), blog("p2")]
+
+    src.feeds.fetch_one.side_effect = fetch_one
+    real, calls = Repository.add_dead_letter, []
+
+    def boom(self: Repository, run_id: object, source: str, ref: str, error: str, **kw: object):
+        calls.append(ref)
+        if source == "feed" and len(calls) == 2:
+            raise SystemExit("killed while parking the second item")
+        return real(self, run_id, source, ref, error, **kw)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Repository, "add_dead_letter", boom)
+    with pytest.raises(SystemExit):
+        run(db_session, src)
+    cursor = Repository(db_session).cursor(f"feed:{FEED.url}")
+    parked = db_session.scalars(
+        select(DeadLetter).where(DeadLetter.source == "feed", DeadLetter.resolved_at.is_(None))
+    ).all()
+    assert (cursor is not None) == (len(parked) == 2)  # neither, or both
 
 
 def test_a_feed_crash_cannot_advance_a_cursor_past_its_unparked_items(
