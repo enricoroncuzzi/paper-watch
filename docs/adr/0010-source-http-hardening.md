@@ -47,7 +47,8 @@ Scholar's batch endpoint wants redirects refused outright.
 - **A redirect policy**: redirects are followed by hand, never by the client, and every hop is
   checked before the request goes out. https to http is always refused; a feed must stay on the
   registrable domain of the URL configured in `config/feeds.yaml`; more than five hops is refused;
-  a non-http(s) target is refused. A feed's registrable domain is its eTLD+1 from the public suffix
+  a non-http(s) target is refused. A hop to another origin (scheme, host or port) drops the
+  caller's `Authorization`, `Cookie` and `x-api-key` headers first (`send_with_retries`). A feed's registrable domain is its eTLD+1 from the public suffix
   list (`publicsuffixlist`, a small pure-Python package with the list bundled, so no run does a DNS
   lookup or a download to make this decision). eTLD+1 is what makes "same site" mean anything:
   comparing the last two labels would let `evil.co.uk` pass for `lab.co.uk`, and comparing hosts
