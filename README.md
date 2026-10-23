@@ -66,7 +66,8 @@ workflow.
 The live commands need no API key: embeddings and the relevance classifier run locally with the
 pinned `ibm-granite/granite-embedding-small-english-r2` model (384 dimensions, about 180 MB
 downloaded once on first use). Set `PW_LOCAL_EMBEDDING_CACHE_DIR` to a persistent directory to
-keep that download, for example one baked into a deployed image.
+keep that download, for example `~/.cache/paperwatch-models` on the server that runs the daily
+ingestion.
 
 **CV line (true as of M1):** Built a tiered AI-research corpus with hybrid (pgvector + full-text)
 retrieval and retrieval evals.
@@ -78,13 +79,14 @@ citation points at an item retrieved for this answer; claims without a valid cit
 flagged, not silently dropped ([lesson 11](docs/learn/11-citations-and-grounding.md)).
 
 ```bash
+uv run paperwatch qa-eval   # replay recorded answers through the checker; no key, model or network
+
 # Put PW_OPENROUTER_API_KEY in .env first (a free key from openrouter.ai; never commit it).
 uv run paperwatch ask "what is new on agent memory?" --live   # stream one answer in the terminal
 uv run paperwatch serve --live                                # POST /ask, server-sent events
 curl -N -X POST localhost:8000/ask \
   -H 'content-type: application/json' \
   -d '{"question": "which papers evaluate coding agents?"}'
-uv run paperwatch qa-eval                                     # replay the recorded answers through the checker; no model or network
 ```
 
 The chat model is an OpenRouter free model by default, with Groq as an optional fallback
