@@ -140,13 +140,21 @@ def test_the_guide_binds_its_tunnel_to_loopback() -> None:
     assert "Close it when you are done" in GUIDE.read_text()
 
 
-def test_the_guide_recommends_the_read_only_role() -> None:
-    # Beekeeper and the M3 API and agent only read: the owning role would let a stray query write.
+def test_the_guide_gives_each_of_the_two_roles_its_grants() -> None:
+    # Beekeeper only reads, but the API and agent are not read-only: the daily chat cap records one
+    # row per call in `chat_calls`, so a SELECT-only role fails the first answer. The owning role
+    # would let a stray query write the corpus. Both roles and every grant they need are named, so
+    # an admin can paste them.
     guide = GUIDE.read_text()
     # The sentence itself, so an unrelated mention of a read-only mode cannot satisfy the test.
     assert "the read-only role `paperwatch_ro` (SELECT only)" in guide
-    assert "recommended connection for Beekeeper and for the M3 API and agent" in guide
-    # Peer authentication sees the ssh account, so the role needs an ident map (or a password),
-    # and default privileges keep it reading tables that later migrations create.
+    assert "recommended connection for Beekeeper" in guide
+    assert "The M3 API and agent are not read-only" in guide
+    # The write the API needs is the cap's own row, and `id` comes from the sequence the migration
+    # that creates `chat_calls` adds, so USAGE on that exact name is part of the grant.
+    assert "GRANT INSERT ON chat_calls TO paperwatch_api;" in guide
+    assert "GRANT USAGE ON SEQUENCE chat_calls_id_seq TO paperwatch_api;" in guide
+    # Peer authentication sees the ssh account, so each role needs an ident map (or a password),
+    # and default privileges keep the roles reading tables that later migrations create.
     assert "`pg_ident.conf` map" in guide
     assert "ALTER DEFAULT PRIVILEGES FOR ROLE paperwatch" in guide

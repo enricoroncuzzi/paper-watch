@@ -415,14 +415,33 @@ chosen client):
    a refusal.
 
 Once the server admin has created the read-only role `paperwatch_ro` (SELECT only), use it as the
-user in step 2: it is the recommended connection for Beekeeper and for the M3 API and agent,
-because neither should be able to write, and then the safe mode above is a second guard rather
-than the only one. The admin also has to let that connection in: peer authentication sees the
-accessing Unix account (`paperwatch`), not the role the client asks for, so the role needs a
-`pg_ident.conf` map from `paperwatch` to `paperwatch_ro` (or a password, and then step 2 is no
-longer passwordless), and `SELECT` granted through `ALTER DEFAULT PRIVILEGES FOR ROLE paperwatch IN
-SCHEMA public GRANT SELECT ON TABLES TO paperwatch_ro` so tables added by later migrations stay
-readable too.
+user in step 2: it is the recommended connection for Beekeeper, and the safe mode above becomes a
+second guard rather than the only one. The M3 API and agent are not read-only: the daily chat cap
+records one row per call in `chat_calls`, so a SELECT-only role fails the first answer. Give them
+their own role instead - `paperwatch_api` in the grants below, name it as you like - which reads
+every table and writes only those rows. The admin also has to let both connections in: peer
+authentication sees the accessing Unix account (`paperwatch`), not the role the client asks for, so
+each role needs a `pg_ident.conf` map from `paperwatch` to it (or a password, and then step 2 is no
+longer passwordless). `paperwatch` owns the tables and runs the migrations, so the default
+privileges granted `FOR ROLE paperwatch` are what keeps tables added by later migrations readable:
+
+```sql
+-- as the admin, in database paperwatch
+GRANT USAGE ON SCHEMA public TO paperwatch_ro, paperwatch_api;
+
+-- Beekeeper: every table, no writes.
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO paperwatch_ro;
+
+-- The API and agent: every table, plus the one row per chat call the daily cap counts. The id
+-- comes from the table's own sequence, created by the migration that adds `chat_calls`.
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO paperwatch_api;
+GRANT INSERT ON chat_calls TO paperwatch_api;
+GRANT USAGE ON SEQUENCE chat_calls_id_seq TO paperwatch_api;
+
+-- Tables later migrations create. A later table the API must write needs its own INSERT grant.
+ALTER DEFAULT PRIVILEGES FOR ROLE paperwatch IN SCHEMA public
+  GRANT SELECT ON TABLES TO paperwatch_ro, paperwatch_api;
+```
 
 Useful starting points: `select status, health, counts, started_at from runs order by started_at
 desc limit 5;` for recent runs, and `select tier, count(*) from items where status = 'admitted'
