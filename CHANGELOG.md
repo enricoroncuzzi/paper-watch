@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.6](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.6.5...paperwatch-v0.6.6) (2026-10-23)
+
+
+### Bug Fixes
+
+* **sources:** drop credentials on cross-origin redirects, pin publicsuffixlist a week back, guard the drip test in CI ([#31](https://github.com/enricoroncuzzi/paper-watch/issues/31)) ([4c65cc6](https://github.com/enricoroncuzzi/paper-watch/commit/4c65cc62da54e80c5be0d6e91f7b9b26ef8dfa40))
+
 ## [0.6.5](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.6.4...paperwatch-v0.6.5) (2026-10-23)
 
 
