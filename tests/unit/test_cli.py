@@ -1251,3 +1251,32 @@ def test_ingest_followup_is_the_units_flag_and_carries_the_settings(
         cli.get_settings.cache_clear()
     # A manual run never waits: the default is off.
     assert seen["followup"] is False
+
+
+def test_sigterm_ends_the_run_instead_of_exiting_silently() -> None:
+    # systemd stops a unit with SIGTERM: raising SystemExit is what lets the pipeline close the run
+    # row as failed before the process leaves (docs/deploy/vps.md).
+    with pytest.raises(SystemExit) as raised:
+        cli._exit_on_sigterm(signal.SIGTERM, None)
+    assert raised.value.code == 128 + signal.SIGTERM
+
+
+def test_ingest_takes_over_sigterm_only_for_the_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The handler is installed before the run and the previous one is restored after it, so a
+    # stopped ingestion closes its row while the rest of the process keeps the default behaviour.
+    seen: dict[str, object] = {}
+    _stub_live_ingest(
+        monkeypatch,
+        SimpleNamespace(status="succeeded", counts={}, tokens=0, health=Health(True, ())),
+    )
+
+    def stub(*args: object, **kwargs: object) -> SimpleNamespace:
+        seen["handler"] = signal.getsignal(signal.SIGTERM)
+        return SimpleNamespace(status="succeeded", counts={}, tokens=0, health=Health(True, ()))
+
+    monkeypatch.setattr(cli, "run_ingestion", stub)
+    before = signal.getsignal(signal.SIGTERM)
+    result = CliRunner().invoke(cli.app, ["ingest", "--live"])
+    assert result.exit_code == 0
+    assert seen["handler"] is cli._exit_on_sigterm
+    assert signal.getsignal(signal.SIGTERM) is before

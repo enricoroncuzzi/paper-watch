@@ -257,6 +257,17 @@ def terminal_safe(value: str) -> str:
     )
 
 
+def _exit_on_sigterm(signum: int, frame: object) -> None:
+    """Turn `systemctl --user stop` into an orderly end of an ingestion run.
+
+    systemd stops a unit with SIGTERM, which Python's default handler turns into a silent exit: the
+    run row would stay `running` (or a follow-up window would look hung) until the next run closed
+    it. Raising SystemExit reaches the pipeline's `except BaseException`, which closes the row as
+    failed first, so a stopped morning reads as one failed run, not as a hang.
+    """
+    raise SystemExit(128 + signum)
+
+
 def _models(ledger: Ledger) -> tuple[Classifier, Embedder]:
     # Providers come from settings (Task 7b): local by default, so a live run needs no API key.
     # The classifier shares the embedder, so the local model is loaded once per run.
@@ -289,24 +300,34 @@ def ingest(live: bool = LIVE, since: str | None = SINCE, followup: bool = FOLLOW
     )
     ledger = Ledger(s.max_tokens_per_run)
     session = make_session_factory(make_engine(s.database_url))()
-    # The pipeline builds the models itself and may release them between follow-up passes, so this
-    # frame must never hold them: a local reference here would keep the ~520 MB model alive all
-    # day. `_models` is only ever called through the factory below.
-    res = run_ingestion(
-        session,
-        sources,
-        lambda: _models(ledger),
-        ledger,
-        load_admission(Path("config/admission.yaml")),
-        datetime.now(UTC),
-        since_override=since_override,
-        followup=followup,
-        bounds=Followup(
-            max_passes=s.followup_max_passes,
-            interval_s=s.followup_interval_s,
-            deadline_hour=s.followup_deadline_hour,
-        ),
-    )
+    # A stopped unit must leave a finished row, not a `running` one (see _exit_on_sigterm). Only for
+    # as long as the run lasts; a caller that is not the main thread keeps its own handlers.
+    try:
+        previous_term = signal.signal(signal.SIGTERM, _exit_on_sigterm)
+    except ValueError:
+        previous_term = None
+    try:
+        # The pipeline builds the models itself and may release them between follow-up passes, so
+        # this frame must never hold them: a local reference here would keep the ~520 MB model
+        # alive all day. `_models` is only ever called through the factory below.
+        res = run_ingestion(
+            session,
+            sources,
+            lambda: _models(ledger),
+            ledger,
+            load_admission(Path("config/admission.yaml")),
+            datetime.now(UTC),
+            since_override=since_override,
+            followup=followup,
+            bounds=Followup(
+                max_passes=s.followup_max_passes,
+                interval_s=s.followup_interval_s,
+                deadline_hour=s.followup_deadline_hour,
+            ),
+        )
+    finally:
+        if previous_term is not None:
+            signal.signal(signal.SIGTERM, previous_term)
     if res.status == "skipped":
         # Another run holds the lock: this invocation did nothing and exits cleanly.
         typer.echo("skipped: another ingestion run is active")
