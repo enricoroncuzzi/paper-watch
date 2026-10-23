@@ -11,9 +11,15 @@ TOKEN_WARN_RATIO = 0.8
 class Health:
     healthy: bool
     problems: tuple[str, ...]
+    # Findings worth seeing that do not make the run bad, such as one missed lab-feed day.
+    warnings: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, object]:
-        return {"healthy": self.healthy, "problems": list(self.problems)}
+        return {
+            "healthy": self.healthy,
+            "problems": list(self.problems),
+            "warnings": list(self.warnings),
+        }
 
 
 def assess_run(
@@ -24,6 +30,7 @@ def assess_run(
     stuck_cursors: list[str],
     stale_feeds: Sequence[str] = (),
     *,
+    warnings: Sequence[str] = (),
     arxiv_expected: bool = True,
     arxiv_stopped_early: bool = False,
 ) -> Health:
@@ -52,4 +59,4 @@ def assess_run(
     if stale_feeds:
         # A warning for a human: the feed answers but has not published in 90 days.
         problems.append("feed stale or empty: " + ", ".join(sorted(stale_feeds)))
-    return Health(not problems, tuple(problems))
+    return Health(not problems, tuple(problems), tuple(warnings))

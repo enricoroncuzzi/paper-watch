@@ -232,8 +232,8 @@ size.
 ~/paper-watch/deploy/vps/check.sh
 ```
 
-It prints the last finished run's status, health verdict and problems, the run's counts and
-duration, whether a run is still in progress or left `running` (a kill or a hang), the unit and
+It prints the last finished run's status, health verdict, problems and warnings, the run's counts
+and duration, whether a run is still in progress or left `running` (a kill or a hang), the unit and
 timer state of the account's own user manager, the total admitted items, the newest backup's age
 and size, and free disk. Exit code 0 means every check passed, 1 means at least one is bad, and the
 bad lines start with `FAIL`:
@@ -251,8 +251,11 @@ bad lines start with `FAIL`:
 - less than 2 GB free in the home.
 
 The unit and timer lines are skipped with a `WARN` where no user manager answers, so the same
-script works from a cron job or a laptop without pretending it checked them. Thresholds can be
-overridden for one invocation:
+script works from a cron job or a laptop without pretending it checked them. A warning from the
+run's health verdict is also printed as a `WARN` and never as a `FAIL`: the first time a lab feed
+fails, the cursor stays pinned to the missed window, so the next run retries the same days and
+nothing is lost. Only the same feed failing again on the next run is a real outage, and that run is
+degraded and fails the check. Thresholds can be overridden for one invocation:
 `PW_CHECK_MAX_RUN_AGE_S`, `PW_CHECK_MAX_RUNNING_S`, `PW_CHECK_MAX_BACKUP_AGE_S`,
 `PW_CHECK_MIN_FREE_GB`, `PW_CHECK_BACKUP_DIR`, `PW_CHECK_DB`. It needs only `psql` and coreutils,
 and reads only the `paperwatch` database, the backup directory and the account's own user manager.
@@ -287,7 +290,7 @@ it can, instead of being skipped for the day.
 
 | Exit | Meaning | What to do |
 | --- | --- | --- |
-| 0 | The run finished and its health verdict is healthy. | Nothing. |
+| 0 | The run finished and its health verdict is healthy (a warning is printed and does not change the exit code). | Nothing. |
 | 3 | The run finished (`succeeded` or `partial`) but judged itself unhealthy: a source returned nothing, a cursor did not advance, a signal source was degraded, an item failed. The problems are printed to stderr. | Read the problems; the corpus is intact but a source needs a look. |
 | 1 | The run did not finish its work (a failure, or the token budget was exhausted). | Read the journal; the next run resumes from the stored cursors. |
 | 0 | Another ingestion held the single-run lock, so this invocation did nothing (`skipped`). | Nothing. |

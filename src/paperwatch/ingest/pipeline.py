@@ -205,6 +205,7 @@ def run_ingestion(
             }
             degraded = False
             stuck: list[str] = []  # cursors that could not advance this run, for the health verdict
+            warnings: list[str] = []  # findings that do not make the run bad, for the verdict
             fetched: list[SourceItem] = []
             # Keys phase 1 parked this run; resolving one is not a retry.
             parked: set[tuple[str, str]] = set()
@@ -299,9 +300,22 @@ def run_ingestion(
                         # Answers, but publishes nothing: looks like a quiet day unless flagged.
                         stale.append(feed.url)
                 except Exception as exc:  # noqa: BLE001
-                    degraded = True
-                    stuck.append(key)
-                    if not repo.has_open_dead_letter("feed", feed.url):
+                    # An outage that starts now is a warning: the cursor stays pinned and the
+                    # next run retries the same window, so one missed day loses nothing. Only a
+                    # feed with a letter already open (a second run in a row, or longer) degrades
+                    # the run and is listed as a stuck cursor.
+                    continuing_outage = repo.has_open_dead_letter("feed", feed.url)
+                    log.warning(
+                        "feed_fetch_failed",
+                        feed=feed.url,
+                        error=repr(exc),
+                        outage="continuing" if continuing_outage else "started",
+                    )
+                    if continuing_outage:
+                        degraded = True
+                        stuck.append(key)
+                    else:
+                        warnings.append(f"feed missed once, retried next run: {feed.url}")
                         # One letter per outage, however many runs it lasts.
                         repo.add_dead_letter(
                             run_id, "feed", feed.url, repr(exc), window=(since, now)
@@ -558,6 +572,7 @@ def run_ingestion(
             ledger.max_tokens,
             stuck,
             stale,
+            warnings=warnings,
             arxiv_expected=arxiv_expected,
             arxiv_stopped_early=arxiv_stopped_early,
         )
@@ -569,6 +584,7 @@ def run_ingestion(
             status=status,
             healthy=health.healthy,
             problems=list(health.problems),
+            warnings=list(health.warnings),
             **counts,
         )
         return RunResult(run_id, status, counts, ledger.tokens_used, health)
