@@ -44,3 +44,7 @@ MemorySwapMax=0
 Nice=10
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7
+# Neither the ingestion nor anything it runs needs to gain privilege: no setuid or setgid binary,
+# no file capability. A source client that could raise its own privileges would be a way out of
+# the account's home, and none of the four sources needs one.
+NoNewPrivileges=yes

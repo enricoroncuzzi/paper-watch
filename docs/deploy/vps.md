@@ -160,6 +160,12 @@ What the units do, and why:
 - The backup starts 45 minutes before the ingestion, so it usually finishes first; that is the
   clock, not a guarantee, and an overlap is harmless because `pg_dump` reads an MVCC snapshot.
 
+Both units also set `NoNewPrivileges=yes`, so nothing they run can gain privilege through a setuid
+or setgid binary: the ingestion and `pg_dump` both work as the account and never need one. To see
+where a unit stands, run `systemd-analyze --user security paperwatch-ingest` and read its
+`Overall exposure level` line: lower is better, and the points left on it are the knobs this
+deployment leaves at their defaults.
+
 ## 7. The first run, measured
 
 Start it outside the other project's busy hours, roughly 07:00 to 15:00 Rome time: before 06:30,
