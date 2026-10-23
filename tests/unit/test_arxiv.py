@@ -460,3 +460,57 @@ def test_requests_and_retries_are_paced_by_a_monotonic_clock(
     assert len(starts) == 3
     # Every consecutive request starts at least pause_s after the previous one, retry included.
     assert all(b - a >= 3.0 for a, b in pairwise(starts))
+
+
+def test_a_repeated_resumption_token_degrades_arxiv_naming_set_and_day() -> None:
+    # A pager that hands the same token back would refetch one page forever: the harvest stops with
+    # a problem that names the set and the day, so the morning check says which harvest broke.
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        # A distinct record per page, so each page carries something new.
+        calls.append(request.url.params.get("resumptionToken", "first"))
+        return httpx.Response(
+            200,
+            text=_page(
+                _record(f"oai:arXiv.org:{len(calls)}", raw_id=f"2510.{len(calls):05d}"),
+                resumption="loop",
+            ),
+        )
+
+    src = ArxivOaiSource(_client(handler), AGENTIC, pause_s=0)
+    pages: list[list[object]] = []
+    with pytest.raises(
+        ValueError, match=r"resumption token 'loop' repeated for set cs on 2026-10-06"
+    ):
+        for page in src.harvest(DAY):
+            pages.append(page)
+    # The page that carried the repeated token was already delivered, and no third request went out.
+    assert len(pages) == 2
+    assert calls == ["first", "loop"]
+
+
+def test_a_page_cap_degrades_arxiv_naming_set_and_day(monkeypatch) -> None:
+    # The token keeps changing, so only the cap stops the pager; the server is asked page_cap times
+    # and never once more.
+    monkeypatch.setattr("paperwatch.sources.arxiv.MAX_PAGES_PER_DAY", 3)
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        # A distinct record per page, so each page carries something new.
+        calls.append(request.url.params.get("resumptionToken", "first"))
+        return httpx.Response(
+            200,
+            text=_page(
+                _record(f"oai:arXiv.org:{len(calls)}", raw_id=f"2510.{len(calls):05d}"),
+                resumption=f"tok{len(calls)}",
+            ),
+        )
+
+    src = ArxivOaiSource(_client(handler), AGENTIC, pause_s=0)
+    pages: list[list[object]] = []
+    with pytest.raises(ValueError, match=r"page cap \(3\) reached for set cs on 2026-10-06"):
+        for page in src.harvest(DAY):
+            pages.append(page)
+    assert len(pages) == 3
+    assert len(calls) == 3
