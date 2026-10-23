@@ -173,14 +173,28 @@ def test_hf_clips_an_over_long_organisation() -> None:
 
 
 @respx.mock
-def test_hf_first_non_null_extras_survive_a_later_null() -> None:
-    # The window walks newest first, and the newest listing can be missing an extra an older day
-    # carried; the first non-null wins for the identifying extras and the counts take the max.
+def test_hf_the_newest_days_extras_win_and_the_counts_take_the_max() -> None:
+    # Days are walked newest first, so the first non-null extra is the newest one: an older page
+    # with a different value must not replace it, while the counts take the maximum across the
+    # window and the listing time is the earliest.
     def responder(request: httpx.Request) -> httpx.Response:
         if request.url.params["date"] == "2026-10-09":
             return httpx.Response(
                 200,
-                json=[{"paper": {"id": "2510.00001", "upvotes": 10}, "numComments": 2}],
+                json=[
+                    {
+                        "paper": {
+                            "id": "2510.00001",
+                            "upvotes": 10,
+                            "githubStars": 12,
+                            "githubRepo": "https://github.com/new/repo",
+                            "projectPage": "https://example.com/new",
+                            "organization": {"fullname": "NewOrg"},
+                            "submittedOnDailyAt": "2026-10-09T00:00:00.000Z",
+                        },
+                        "numComments": 5,
+                    }
+                ],
             )
         return httpx.Response(
             200,
@@ -189,12 +203,13 @@ def test_hf_first_non_null_extras_survive_a_later_null() -> None:
                     "paper": {
                         "id": "2510.00001",
                         "upvotes": 5,
-                        "githubRepo": "https://github.com/a/b",
-                        "projectPage": "https://example.com/p",
-                        "organization": {"fullname": "OlderOrg"},
+                        "githubStars": 10,
+                        "githubRepo": "https://github.com/old/repo",
+                        "projectPage": "https://example.com/old",
+                        "organization": {"fullname": "OldOrg"},
+                        "submittedOnDailyAt": "2026-10-08T00:00:00.000Z",
                     },
-                    # numComments sits on the entry, not the paper, in the real listing.
-                    "numComments": 5,
+                    "numComments": 2,
                 }
             ],
         )
@@ -205,9 +220,11 @@ def test_hf_first_non_null_extras_survive_a_later_null() -> None:
         "2510.00001": HfPaper(
             upvotes=10,
             comments=5,
-            github_repo="https://github.com/a/b",
-            project_page="https://example.com/p",
-            organization="OlderOrg",
+            github_repo="https://github.com/new/repo",
+            github_stars=12,
+            project_page="https://example.com/new",
+            organization="NewOrg",
+            listed_at=datetime(2026, 10, 8, tzinfo=UTC),
         )
     }
 
