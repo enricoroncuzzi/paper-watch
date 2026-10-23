@@ -37,7 +37,8 @@ S2_CADENCE = (
 )
 # A daily timer that starts a few seconds earlier than yesterday's must not skip a day: a paper
 # checked at 06:00:20 yesterday is due at 06:00:00 today, 23 h 59 min 40 s later. So a paper has to
-# clear its interval minus this slack. Two hours is far too short to pull a weekly one in early.
+# clear its interval minus this slack. Two hours is far shorter than a day, so a weekly paper is
+# pulled in by at most two hours.
 S2_RECHECK_SLACK = timedelta(hours=2)
 # arXiv's bulk-harvest interface (OAI-PMH) lists records by last-modification datestamp, one
 # day at a time, so a paper is seen the day it is announced and again when it is revised.
