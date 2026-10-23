@@ -948,7 +948,7 @@ requires-dist = [
     { name = "openai", specifier = ">=1.60" },
     { name = "pgvector", specifier = ">=0.3.6" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
-    { name = "publicsuffixlist", specifier = ">=1.1.2.20261023" },
+    { name = "publicsuffixlist", specifier = ">=1.1.0.20261010" },
     { name = "pydantic", specifier = ">=2.9" },
     { name = "pydantic-settings", specifier = ">=2.6" },
     { name = "pyyaml", specifier = ">=6.0.2" },
