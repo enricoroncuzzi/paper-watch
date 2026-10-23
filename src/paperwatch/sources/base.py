@@ -1,6 +1,7 @@
 """Shared pieces for every source client: the HTTP client factory and retries."""
 
 import math
+import time
 from collections.abc import Callable
 from contextlib import suppress
 from functools import partial
@@ -25,6 +26,31 @@ MAX_RETRY_AFTER_S = 60.0
 # out waiting, a worker that dropped the connection), which source sites send during congestion
 # as readily as a 503. Every other 4xx answers this exact request: a bug, never a retry.
 RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
+
+# A body is read into memory whole before it is parsed, so a broken or hostile server must not be
+# able to make a run allocate gigabytes: a real lab feed is under a megabyte even with full post
+# bodies, and a 500-record arXivRaw OAI page or a 500-id Semantic Scholar batch answer is a few
+# megabytes. Over the cap is a fetch failure for that source, dead-lettered like any other, and
+# never an OOM that kills a process sharing the machine.
+MAX_FEED_BODY_BYTES = 10 * 1024 * 1024
+# The API cap covers arXiv, Hugging Face and Semantic Scholar, whose pages carry the most bytes.
+MAX_API_BODY_BYTES = 50 * 1024 * 1024
+# The 30 s read timeout bounds one read, not one request: a server that drips a byte every 20 s
+# never trips it and could hold a run open until the unit's 17 h timeout. This deadline covers a
+# whole request (connect plus every read), on top of the read timeout that catches a silent stall.
+REQUEST_DEADLINE_S = 120.0
+
+
+class BodyTooLarge(httpx.HTTPError):
+    """A response body above the per-source cap: a fetch failure for that source, never an OOM.
+
+    Deliberately not an `httpx.TransportError`, so the retry policy does not spend attempts on a
+    body that will be exactly as large next time.
+    """
+
+
+class RequestDeadlineExceeded(httpx.TimeoutException):
+    """One request outlived `REQUEST_DEADLINE_S`: a slow server, retried like a read timeout."""
 
 
 def make_http_client(settings: Settings) -> httpx.Client:
@@ -51,6 +77,38 @@ def is_retryable(exc: BaseException) -> bool:
     return isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in RETRYABLE_STATUSES
 
 
+def _read_body_capped(
+    resp: httpx.Response, *, max_bytes: int, deadline: float, clock: Callable[[], float]
+) -> bytes:
+    """Read a streamed body, aborting as soon as it passes the cap or the deadline.
+
+    Bytes are counted as they arrive and the read is abandoned at the first byte over the cap, so
+    an endless body costs the cap and not the run's memory. The deadline is checked on every read
+    chunk, which the 30 s read timeout makes at least as often as it fires.
+    """
+    body = bytearray()
+    for chunk in resp.iter_bytes():
+        body += chunk
+        if len(body) > max_bytes:
+            raise BodyTooLarge(f"{resp.request.url} sent more than {max_bytes} bytes")
+        if clock() > deadline:
+            raise RequestDeadlineExceeded(
+                f"{resp.request.url} took longer than {REQUEST_DEADLINE_S:.0f} s"
+            )
+    return bytes(body)
+
+
+_DECODED_HEADERS = frozenset({"content-encoding", "content-length"})
+
+
+def _body_headers(resp: httpx.Response) -> httpx.Headers:
+    # The body was already decoded by the stream, so the encoding and length the server sent no
+    # longer describe it; everything else (Retry-After, content-type) the callers read is kept.
+    return httpx.Headers(
+        [(k, v) for k, v in resp.headers.multi_items() if k.lower() not in _DECODED_HEADERS]
+    )
+
+
 def _wait_for_retry(state: RetryCallState, *, min_wait_s: float, max_wait_s: float) -> float:
     # Honor a sane Retry-After, otherwise back off exponentially between the given bounds.
     exc = state.outcome.exception() if state.outcome is not None else None
@@ -73,6 +131,9 @@ def send_with_retries(
     attempts: int = 3,
     min_wait_s: float = 1.0,
     max_wait_s: float = 30.0,
+    max_bytes: int = MAX_API_BODY_BYTES,
+    request_deadline_s: float = REQUEST_DEADLINE_S,
+    clock: Callable[[], float] = time.monotonic,
     before_request: Callable[[], None] | None = None,
     before_sleep: Callable[[RetryCallState], None] | None = None,
     **kwargs: Any,
@@ -86,6 +147,10 @@ def send_with_retries(
     Retry-After is honored when present. After the last attempt the last exception is re-raised
     so the caller can degrade visibly. `before_sleep` sees the tenacity state before every wait,
     so a caller can log each refusal with the wait it is about to take.
+
+    The body is streamed and read here, never by a bare `client.request`: a body over `max_bytes`
+    raises `BodyTooLarge` and one that outlives the deadline raises `RequestDeadlineExceeded`, so
+    the returned response is always complete in memory and bounded.
     """
     for attempt in Retrying(
         stop=stop_after_attempt(attempts),
@@ -99,8 +164,19 @@ def send_with_retries(
                 # A caller that must pace every attempt (arXiv's one-request-per-3 s
                 # rule) hooks in here, so a retry is paced too, not only the first try.
                 before_request()
-            resp = client.request(method, url, **kwargs)
-            resp.raise_for_status()
-            return resp
+            # The deadline covers this request only: a pacing wait before it is not the server's.
+            deadline = clock() + request_deadline_s
+            with client.stream(method, url, **kwargs) as resp:
+                body = _read_body_capped(resp, max_bytes=max_bytes, deadline=deadline, clock=clock)
+                # Rebuilt as a plain response so callers keep using .text/.json().content on an
+                # already-read body, and raise_for_status still carries the server's headers.
+                result = httpx.Response(
+                    resp.status_code,
+                    headers=_body_headers(resp),
+                    content=body,
+                    request=resp.request,
+                )
+            result.raise_for_status()
+            return result
     # Unreachable: tenacity re-raises after the final attempt.
     raise RuntimeError("retry loop exhausted without a result or an exception")

@@ -21,7 +21,7 @@ from pydantic import (
 )
 
 from paperwatch.domain import RejectedEntry, SourceItem
-from paperwatch.sources.base import send_with_retries
+from paperwatch.sources.base import MAX_FEED_BODY_BYTES, send_with_retries
 
 # Feed bodies arrive as HTML fragments; strip tags so only readable text is stored.
 _TAGS = re.compile(r"<[^>]+>")
@@ -130,7 +130,7 @@ class FeedSource:
         """Fetch one feed; raise on a whole-feed failure, append bad entries to rejected."""
         if since.tzinfo is None or until.tzinfo is None:
             raise ValueError("since and until must be timezone-aware")
-        resp = send_with_retries(self._client, "GET", feed.url)
+        resp = send_with_retries(self._client, "GET", feed.url, max_bytes=MAX_FEED_BODY_BYTES)
         if not _looks_like_feed(resp.content):
             # A maintenance page or error document is a failure, not a quiet day.
             content_type = resp.headers.get("content-type", "unknown")

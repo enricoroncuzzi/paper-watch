@@ -320,3 +320,16 @@ def test_load_feeds_reads_the_configured_list() -> None:
     assert all(f.url.startswith("https://") for f in feeds)
     assert len({f.url for f in feeds}) == len(feeds)
     assert all(f.region in {"us-eu", "cn"} for f in feeds)
+
+
+@respx.mock
+def test_a_body_over_the_feed_cap_fails_that_feed(monkeypatch) -> None:
+    # A feed body is held in memory whole, so its cap is the tightest of the sources: a feed that
+    # streams past it is a failed feed (dead-lettered, cursor pinned), never a run out of memory.
+    monkeypatch.setattr("paperwatch.sources.feeds.MAX_FEED_BODY_BYTES", 64 * 1024)
+    huge = FIX + "<!--" + "x" * (64 * 1024) + "-->"
+    respx.get(FEED.url).mock(return_value=httpx.Response(200, text=huge))
+    items, failures = FeedSource(httpx.Client(), [FEED]).fetch(SINCE, UNTIL)
+    assert items == []
+    assert [url for url, _ in failures] == [FEED.url]
+    assert "more than" in failures[0][1]
