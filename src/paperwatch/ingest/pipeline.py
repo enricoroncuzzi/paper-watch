@@ -571,7 +571,13 @@ def run_ingestion(
                 # so no connection sits in a transaction for the length of a feed's HTTP call.
                 session.commit()
                 try:
-                    feed_fetched += sources.feeds.fetch_one(feed, since, now)
+                    items = sources.feeds.fetch_one(feed, since, now)
+                    feed_fetched += items
+                    # Park this feed's items in the same transaction as its cursor (the next
+                    # iteration's commit, or the one after the loop, ends it), so a crash between
+                    # the two can never leave a cursor ahead of items nothing holds. The arXiv
+                    # path parks each page before its commit for the same reason.
+                    _park_items(repo, run_id, items, parked)
                     repo.advance_cursor(key, now)
                     # The feed answered: any earlier outage letter for it is over.
                     repo.resolve_open_dead_letters("feed", feed.url, at=now)
@@ -613,7 +619,6 @@ def run_ingestion(
                     repo.add_dead_letter(run_id, bad.source, bad.ref, bad.error)
                     counts["malformed"] += 1
                     causes.add("malformed")
-            _park_items(repo, run_id, feed_fetched, parked)
             session.commit()
 
             # The one place the verdict is built: the provisional verdicts the loop writes and the

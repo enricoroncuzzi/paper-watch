@@ -1492,39 +1492,73 @@ def test_no_transaction_is_open_during_a_source_fetch(db_session: Session) -> No
     # A fetch can take a minute, and a transaction held across it pins a snapshot, holds a
     # connection 'idle in transaction' and blocks vacuum for that whole time. Every network block
     # therefore starts after a commit, like the follow-up loop's wait already did.
+    # The fake sources record the flag instead of asserting it: the feed loop catches everything,
+    # so an assertion raised in there is logged as a missed feed and the run carries on (review S1).
     src = fake_sources([paper("2510.1", "Agent harness")])
     checked: list[str] = []
+    in_transaction: list[tuple[str, bool]] = []
 
     def harvest(day: date) -> Iterator[list[SourceItem]]:
         checked.append("arxiv")
-        assert not db_session.in_transaction()
+        in_transaction.append(("arxiv", db_session.in_transaction()))
         return iter([[paper("2510.1", "Agent harness")]])
 
     def feed(feed: Feed, since: datetime, until: datetime) -> list[SourceItem]:
         checked.append("feed")
-        assert not db_session.in_transaction()
+        in_transaction.append(("feed", db_session.in_transaction()))
         src.feeds.newest[feed.url] = until
-        return []
+        # Items on the first feed, so its cursor write is pending when the second fetch starts.
+        return [blog(f"p{len(checked)}")] if len(checked) == 1 else []
 
     def upvotes(since: date, until: date) -> dict[str, int]:
         checked.append("hf")
-        assert not db_session.in_transaction()
+        in_transaction.append(("hf", db_session.in_transaction()))
         return {"2510.1": 50}
 
     def lookup(ids: list[str]) -> dict[str, Signals]:
         checked.append("s2")
-        assert not db_session.in_transaction()
+        in_transaction.append(("s2", db_session.in_transaction()))
         src.s2.checked_ids, src.s2.refused_ids = set(ids), set()
         return {}
 
+    src.feed_list = [FEED, OTHER_FEED]
     src.arxiv.harvest.side_effect = harvest
     src.feeds.fetch_one.side_effect = feed
     src.hf.upvotes.side_effect = upvotes
     src.s2.lookup.side_effect = lookup
-    assert run(db_session, src).status == "succeeded"
-    # The harvest runs once per (set, day) of the window; the other three sources once each.
+    res = run(db_session, src)
+    assert res.status == "succeeded" and res.health is not None and res.health.healthy
+    # The harvest runs once per (set, day) of the window, the feeds once each, the signals once.
     assert set(checked) == {"arxiv", "feed", "hf", "s2"}
-    assert checked.count("feed") == len(src.feed_list) == checked.count("hf") == checked.count("s2")
+    assert checked.count("feed") == len(src.feed_list) == 2
+    assert checked.count("hf") == checked.count("s2") == 1
+    assert not any(open_txn for _source, open_txn in in_transaction)
+
+
+def test_a_feed_crash_cannot_advance_a_cursor_past_its_unparked_items(
+    db_session: Session,
+) -> None:
+    # A feed's items are parked in the same transaction as its cursor, so a kill during the next
+    # feed leaves either both or neither: never a cursor ahead of items that nothing holds (S6).
+    src = fake_sources([])
+    src.feed_list = [FEED, OTHER_FEED]
+
+    def fetch_one(feed: Feed, since: datetime, until: datetime) -> list[SourceItem]:
+        if feed.url == OTHER_FEED.url:
+            raise SystemExit("killed mid-run")
+        src.feeds.newest[feed.url] = until
+        return [blog("p1")]
+
+    src.feeds.fetch_one.side_effect = fetch_one
+    with pytest.raises(SystemExit):
+        run(db_session, src)
+    parked = db_session.scalars(
+        select(DeadLetter).where(DeadLetter.ref == "p1", DeadLetter.resolved_at.is_(None))
+    ).all()
+    cursor = Repository(db_session).cursor(f"feed:{FEED.url}")
+    # Whatever the kill caught, the two agree: a committed cursor has parked items behind it.
+    assert (cursor is not None) == (len(parked) == 1)
+    assert db_session.get_one(Run, db_session.scalars(select(Run.id)).one()).status == "failed"
 
 
 def test_lock_is_held_for_the_whole_run(db_session: Session, engine: Engine) -> None:
