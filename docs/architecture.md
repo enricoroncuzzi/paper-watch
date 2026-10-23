@@ -39,8 +39,9 @@ them due and promotes them if it improved, then writes a run row with counts, to
 verdict, advances each feed's cursor only when it fully succeeded and the arXiv cursor after each
 completed day, and releases the lock.
 A source outage stops that source for the run, is recorded as a dead letter over the whole missed
-window, and makes the run `partial` without stopping the others; a malformed entry is skipped and
-recorded once.
+window, and makes the run `partial` without stopping the others; for a lab feed only a second miss
+in a row does, because the first miss is a health warning and the next run retries the same window,
+so one missed day loses nothing. A malformed entry is skipped and recorded once.
 
 ## The retrieval path
 
