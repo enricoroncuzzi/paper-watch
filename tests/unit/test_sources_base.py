@@ -453,6 +453,28 @@ def test_a_retry_after_a_cross_origin_hop_starts_over_with_the_credentials() -> 
     ]
 
 
+def test_a_stripped_hop_keeps_the_other_headers_exactly_as_the_caller_wrote_them() -> None:
+    # The strip rebuilds the caller's header set, and a rebuild must not relabel or merge what it
+    # keeps: the caller's own casing and a repeated header go out as they would with no redirect.
+    client, seen = _chain_client(
+        _redirect_chain("https://lab.example/x", ["https://other.example/y"])
+    )
+    send_with_retries(
+        client,
+        "GET",
+        "https://lab.example/x",
+        headers=[
+            ("Authorization", "Bearer secret"),
+            ("cookie", "session=1"),
+            ("x-api-key", "key"),
+            ("X-Trace", "1"),
+            ("X-Trace", "2"),
+        ],
+    )
+    names = [name for name, _ in seen[-1][1].raw if name.lower() == b"x-trace"]
+    assert names == [b"X-Trace", b"X-Trace"]
+
+
 def test_registrable_domain_is_the_etld_plus_one() -> None:
     # One site's hosts compare equal; a shared public suffix is not a site.
     assert registrable_domain("https://blog.example.co.uk/feed.xml") == "example.co.uk"

@@ -188,14 +188,16 @@ def _origin(url: httpx.URL) -> str:
 
 # The caller's credentials a hop to another origin must not carry. httpx drops these when it follows
 # a redirect itself; `send_with_retries` follows hops by hand now, so it does the dropping itself.
-_CROSS_ORIGIN_CREDENTIALS = frozenset({"authorization", "cookie", "x-api-key"})
+_CROSS_ORIGIN_CREDENTIALS = ("authorization", "cookie", "x-api-key")
 
 
 def _without_credentials(headers: httpx.Headers) -> httpx.Headers:
-    """The same headers minus the credentials, matched case-insensitively."""
-    return httpx.Headers(
-        [(k, v) for k, v in headers.multi_items() if k.lower() not in _CROSS_ORIGIN_CREDENTIALS]
-    )
+    """The same headers minus the credentials, whatever case the caller wrote them in."""
+    # Copied, not rebuilt, so the headers that stay keep their own casing and any repetition.
+    kept = httpx.Headers(headers)
+    for name in _CROSS_ORIGIN_CREDENTIALS:
+        kept.pop(name, None)
+    return kept
 
 
 def _remember_connection(client: httpx.Client, origin: str, network: Any) -> None:
