@@ -1,8 +1,9 @@
 # Running Paper Watch's ingestion on the shared VPS
 
 The corpus has to accumulate every day, whatever the captain is building, so ingestion runs on
-the shared VPS ahead of M3. Two systemd user units, both as the `paperwatch` account: the daily
-ingestion at 06:00 Europe/Rome, and a nightly `pg_dump` backup at 05:15. The API, the weekly
+the shared VPS ahead of M3 ([ADR 0009](../adr/0009-ingestion-runs-on-the-shared-vps.md)). Two
+systemd user services with their timers, both as the `paperwatch` account: the daily ingestion at
+06:00 Europe/Rome, and a nightly `pg_dump` backup at 05:15. The API, the weekly
 shortlist, email alerts and the restore drill are not part of this deployment (M3 and M4).
 
 Everything here is a step for the `paperwatch` user. There is no root step: the database, the
@@ -12,7 +13,8 @@ role, pgvector, the swap file and linger were set up by the captain before this 
 
 - Debian 13, 2 CPU, 1.9 GB RAM (about 1.3 GB available), 2 GB swap (swappiness 10), 48 GB disk
   free, clock in Europe/Berlin (the same UTC offset as Rome all year), NTP on.
-- Shared with another production project using about 650 MB, with its own services and Postgres.
+- Shared with another production project using about 650 MB, with its own services and its own
+  database on the same Postgres server.
 - Postgres 17.11. Database `paperwatch`, owned by role `paperwatch`, with `vector` 0.8.0 enabled.
   Peer authentication over the local Unix socket: no password, no TCP.
 - Linger is on for `paperwatch`, so the user's systemd manager keeps running while nobody is
@@ -43,12 +45,12 @@ The installer puts `uv` in `~/.local/bin`, which a login shell adds to `PATH` fr
 Open a new session, or `. ~/.local/bin/env`, before step 3 relies on the bare `uv` name; the
 units always use the absolute path.
 
-## 2. Clone the repository at the release that contains `deploy/`
+## 2. Clone the repository at a release tag
 
 ```bash
 git clone https://github.com/enricoroncuzzi/paper-watch ~/paper-watch
 cd ~/paper-watch
-git checkout paperwatch-v0.4.0        # the first release with deploy/vps; tags are paperwatch-vX.Y.Z
+git checkout paperwatch-v0.6.0        # a release tag; use the latest, tags are paperwatch-vX.Y.Z
 ```
 
 Pin a tag, not `main`: a checkout that changes under a running ingestion is a different program
@@ -72,7 +74,7 @@ mkdir -p ~/.config/paperwatch
 umask 077
 cat > ~/.config/paperwatch/env <<'EOF'
 PW_DATABASE_URL=postgresql+psycopg://paperwatch@/paperwatch?host=/var/run/postgresql
-PW_USER_AGENT="paper-watch/0.4 (+https://github.com/enricoroncuzzi/paper-watch; you@example.com)"
+PW_USER_AGENT="paper-watch (+https://github.com/enricoroncuzzi/paper-watch; you@example.com)"
 PW_LOCAL_EMBEDDING_CACHE_DIR=/home/paperwatch/.cache/paperwatch-models
 EOF
 chmod 600 ~/.config/paperwatch/env
@@ -147,7 +149,7 @@ What the units do, and why:
   alive from 06:00 until 22:00 Rome time retrying Semantic Scholar refusals, and the loop also
   caps its own window at 16 h from the start, so no wait can outlive the timeout whatever the start
   time. The timeout must stay above that 16 h cap: it is the last resort, never the normal end.
-  Because it is now 17 h, a hung main pass is no longer killed at 3 h: the morning check names it
+  Because it is 17 h, a hung main pass is no longer killed at 3 h: the morning check names it
   `hung (still running)` and the action is `systemctl --user stop paperwatch-ingest`.
 - `paperwatch-backup.service` runs `deploy/vps/backup.sh`: `pg_dump -Fc` into
   `~/backups/paperwatch-<UTC stamp>.dump`, keeping seven nights. The dump is written under a
@@ -223,7 +225,8 @@ day unhealthy, 1 means it did not finish its work. Once you have judged the resu
 run `systemctl --user reset-failed paperwatch-ingest.service`, because a failed unit is reported
 by the morning check until the next run starts. A row left `running` by a kill is closed as
 failed by the next run, and the check reports it once as such; until then the check reports it
-as stuck after three hours, the unit's own start timeout.
+as stuck after three hours (its own limit, `PW_CHECK_MAX_RUNNING_S`; the unit's start timeout is
+17 h).
 
 Take one backup by hand now, so `pg_dump` is proven on this database before a timer relies on it
 and the morning check has a dump to read. It needs no environment file: the defaults are this
@@ -315,12 +318,12 @@ What the captain sees:
 - the run row's `health.followup` has the same facts as the journal (`next_at` while waiting,
   `passes` and `stopped` after), and `counts.followup_passes` says how many passes it used.
 
-A run's counts normally show `"s2_unchecked": 1`: one arXiv paper in the corpus is not in
-Semantic Scholar's index at all, so it is left unanswered and asked again next run. That is
-expected and does not make a run unhealthy; a much larger count comes with a degraded `s2` source
-and its own `FAIL`. `"s2_refused"` is normally 0: a non-zero count means Semantic Scholar refused
-(throttled) those papers, not that it does not know them, and with `--followup` it reaches 0 as soon
-as a pass is answered.
+A run's counts normally show `"s2_unchecked": 1` (observed 2026-10-23): one arXiv paper in the
+corpus is not in Semantic Scholar's index at all, so it is left unanswered and asked again next
+run. That is expected and does not make a run unhealthy; a much larger count comes with a
+degraded `s2` source and its own `FAIL`. `"s2_refused"` is normally 0: a non-zero count means
+Semantic Scholar refused (throttled) those papers, not that it does not know them, and with
+`--followup` it reaches 0 as soon as a pass is answered.
 
 At this point the timer is not enabled yet, so this dry run reports one `FAIL` for the timer.
 If you skipped the backup in step 7 it also fails on the backup, and before the first backup that

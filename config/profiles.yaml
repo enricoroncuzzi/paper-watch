@@ -14,9 +14,8 @@
 # model, a fingerprint of the descriptions and the data, and the held-out scores (see
 # evals/data/relevance/README.md, "Reading the scores", for the caveats behind them). After
 # changing a description or the model, rerun it: the unit tests fail until the two agree again.
-# The committed baseline was computed on arm64 (Apple M2); Linux x86-64 numerics are confirmed by
-# one manual `model-evals` run before the gate is relied on. The 0.03 tolerance absorbs a flipped
-# abstract or two.
+# The committed baseline was computed on arm64 (Apple M2); the `model-evals` workflow reproduces it
+# on ubuntu-latest (x86-64) within the 0.03 tolerance.
 profiles:
   - name: agentic-engineering
     weight: 1.0

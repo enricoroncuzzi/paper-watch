@@ -15,6 +15,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # `config/profiles.yaml` from the cwd died with a FileNotFoundError everywhere else.
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PROFILES_PATH = REPO_ROOT / "config" / "profiles.yaml"
+FEEDS_PATH = REPO_ROOT / "config" / "feeds.yaml"
+ADMISSION_PATH = REPO_ROOT / "config" / "admission.yaml"
 
 # Vector size of the embedding model; the DB column and the model must agree on it. 384 is the
 # local production model below and both of its same-size fallbacks (bge-small-en-v1.5,

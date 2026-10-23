@@ -5,12 +5,16 @@ Paper Watch builds a growing, queryable corpus of AI research focused on agentic
 fallback topic. Items come only from reliable sources, in three tiers: peer-reviewed venues,
 arXiv preprints with a quality signal, and official AI-lab engineering blogs.
 
-The corpus answers questions on demand through retrieval-augmented generation, and produces one
-weekly LinkedIn draft grounded in stored sources, which the author posts, edits, skips, or defers
-by hand. Paper Watch never posts to LinkedIn itself.
+The corpus answers questions on demand through retrieval-augmented generation, and will produce one
+weekly LinkedIn draft grounded in stored sources (milestone M3, not built yet), which the author
+posts, edits, skips, or defers by hand. Paper Watch never posts to LinkedIn itself.
 
 It is also a deliberate learning project: every technology it uses has a load-bearing job in the
 code and a short lesson in [`docs/learn/`](docs/learn/).
+
+Status: M0 to M2 are done, the daily ingestion has run on a shared VPS since 2026-10-22
+([`docs/deploy/vps.md`](docs/deploy/vps.md)), and M3 (the weekly draft and the control page) is
+next.
 
 ## Quickstart
 
@@ -25,10 +29,10 @@ uv run pytest                 # run the test suite
 
 Configuration comes from `PW_*` environment variables; see [`.env.example`](.env.example). One
 matters for production: `PW_USER_AGENT` should identify the deployment with an address arXiv can
-contact (for example `paper-watch/0.1 (+https://github.com/enricoroncuzzi/paper-watch; you@example.com)`),
+contact (for example `paper-watch (+https://github.com/enricoroncuzzi/paper-watch; you@example.com)`),
 because arXiv asks bulk harvesters to leave a contact and the committed default carries none.
 
-## M1: what you can do now
+## Corpus and search (M1)
 
 With the database running and migrated (above):
 
@@ -37,7 +41,6 @@ uv run paperwatch ingest --live              # fetch, classify, admit and embed 
 uv run paperwatch search "agent memory" --live  # hybrid retrieval over the corpus
 uv run paperwatch eval                       # retrieval metrics against the committed baseline
 uv run paperwatch eval --live                # same set with the real local embedder; report only, never gates
-uv run paperwatch qa-eval                    # replay the recorded answers through the checker; no model or network
 ```
 
 The eval runs in a uniquely named throwaway database on the configured server: it creates it,
@@ -63,7 +66,8 @@ workflow.
 The live commands need no API key: embeddings and the relevance classifier run locally with the
 pinned `ibm-granite/granite-embedding-small-english-r2` model (384 dimensions, about 180 MB
 downloaded once on first use). Set `PW_LOCAL_EMBEDDING_CACHE_DIR` to a persistent directory to
-keep that download, for example one baked into a deployed image.
+keep that download, for example `~/.cache/paperwatch-models` on the server that runs the daily
+ingestion.
 
 **CV line (true as of M1):** Built a tiered AI-research corpus with hybrid (pgvector + full-text)
 retrieval and retrieval evals.
@@ -75,6 +79,8 @@ citation points at an item retrieved for this answer; claims without a valid cit
 flagged, not silently dropped ([lesson 11](docs/learn/11-citations-and-grounding.md)).
 
 ```bash
+uv run paperwatch qa-eval   # replay recorded answers through the checker; no key, model or network
+
 # Put PW_OPENROUTER_API_KEY in .env first (a free key from openrouter.ai; never commit it).
 uv run paperwatch ask "what is new on agent memory?" --live   # stream one answer in the terminal
 uv run paperwatch serve --live                                # POST /ask, server-sent events

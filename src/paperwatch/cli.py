@@ -33,7 +33,15 @@ from paperwatch.api.app import (
     live_deps,
     run_question,
 )
-from paperwatch.config import CHAT_MODEL, PROFILES_PATH, REPO_ROOT, Settings, get_settings
+from paperwatch.config import (
+    ADMISSION_PATH,
+    CHAT_MODEL,
+    FEEDS_PATH,
+    PROFILES_PATH,
+    REPO_ROOT,
+    Settings,
+    get_settings,
+)
 from paperwatch.domain import Tier, load_profiles
 from paperwatch.ingest.pipeline import Followup, Sources, run_ingestion
 from paperwatch.llm.chat import (
@@ -90,6 +98,11 @@ _SAFE_FORMAT = frozenset({"\n", "\t", "\u200c", "\u200d"})
 _REPO_ROOT = REPO_ROOT
 # The hand-edited profile file, read from the repository for the same reason.
 _PROFILES_PATH = PROFILES_PATH
+# The feed list and the admission thresholds the ingestion run reads, also from the repository:
+# both used to resolve against the working directory, so `paperwatch ingest --live` only worked
+# from the checkout.
+_FEEDS_PATH = FEEDS_PATH
+_ADMISSION_PATH = ADMISSION_PATH
 _EVAL_DATA = _REPO_ROOT / "evals" / "data"
 _BASELINE_PATH = _REPO_ROOT / "evals" / "baseline.json"
 _QA_BASELINE_PATH = _REPO_ROOT / "evals" / "qa_baseline.json"
@@ -286,7 +299,7 @@ def ingest(live: bool = LIVE, since: str | None = SINCE, followup: bool = FOLLOW
     configure_logging(s.log_level)
     http = make_http_client(s)
     profiles = load_profiles(_PROFILES_PATH)
-    feeds = load_feeds(Path("config/feeds.yaml"))
+    feeds = load_feeds(_FEEDS_PATH)
     sources = Sources(
         ArxivOaiSource(http, profiles),
         HfDailySource(http),
@@ -315,7 +328,7 @@ def ingest(live: bool = LIVE, since: str | None = SINCE, followup: bool = FOLLOW
             sources,
             lambda: _models(ledger),
             ledger,
-            load_admission(Path("config/admission.yaml")),
+            load_admission(_ADMISSION_PATH),
             datetime.now(UTC),
             since_override=since_override,
             followup=followup,
