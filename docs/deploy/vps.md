@@ -260,7 +260,8 @@ and reads only the `paperwatch` database, the backup directory and the account's
 A run's counts normally show `"s2_unchecked": 1`: one arXiv paper in the corpus is not in
 Semantic Scholar's index at all, so it is left unanswered and asked again next run. That is
 expected and does not make a run unhealthy; a much larger count comes with a degraded `s2` source
-and its own `FAIL`.
+and its own `FAIL`. `"s2_refused"` is normally 0: a non-zero count means Semantic Scholar refused
+(throttled) those papers, not that it does not know them.
 
 At this point the timer is not enabled yet, so this dry run reports one `FAIL` for the timer.
 If you skipped the backup in step 7 it also fails on the backup, and before the first backup that
