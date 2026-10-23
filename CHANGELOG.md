@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.6.0...paperwatch-v0.6.1) (2026-10-23)
+
+
+### Bug Fixes
+
+* **cli:** resolve ingest config from the repo root and refresh pre-M3 docs ([#21](https://github.com/enricoroncuzzi/paper-watch/issues/21)) ([73dce1b](https://github.com/enricoroncuzzi/paper-watch/commit/73dce1b5b5b397b962ce306ceac74bf4a2d46944))
+
 ## [0.6.0](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.5.0...paperwatch-v0.6.0) (2026-10-23)
 
 
