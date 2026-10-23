@@ -305,6 +305,12 @@ def run_ingestion(
                     # feed with a letter already open (a second run in a row, or longer) degrades
                     # the run and is listed as a stuck cursor.
                     continuing_outage = repo.has_open_dead_letter("feed", feed.url)
+                    log.warning(
+                        "feed_fetch_failed",
+                        feed=feed.url,
+                        error=repr(exc),
+                        outage="continuing" if continuing_outage else "started",
+                    )
                     if continuing_outage:
                         degraded = True
                         stuck.append(key)

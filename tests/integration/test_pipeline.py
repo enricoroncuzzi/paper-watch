@@ -47,6 +47,7 @@ NOW = datetime(2026, 10, 12, 6, tzinfo=UTC)
 PROFILES = load_profiles(Path("config/profiles.yaml"))
 ADM = load_admission(Path("config/admission.yaml"))
 FEED = Feed(lab="TestLab", url="https://lab.example/feed.xml", region="us-eu")
+OTHER_FEED = Feed(lab="OtherLab", url="https://other.example/feed.xml", region="us-eu")
 
 
 def paper(eid: str, title: str, version: int = 1) -> SourceItem:
@@ -511,6 +512,92 @@ def test_a_feed_that_recovers_resolves_its_warning(db_session: Session) -> None:
     dl = db_session.scalars(select(DeadLetter).where(DeadLetter.ref == FEED.url)).one()
     assert dl.resolved_at == NOW + timedelta(days=1)
     assert Repository(db_session).cursor(f"feed:{FEED.url}") == NOW + timedelta(days=1)
+
+
+def test_a_feed_that_misses_alternate_days_is_warned_each_time(db_session: Session) -> None:
+    # Failing, answering, then failing again is two separate one-day misses, not one continuing
+    # outage: each miss is a warning with its own letter, and the recovery closes the first.
+    src = fake_sources([paper("2510.1", "Agent harness")])
+
+    def good_feed(feed: Feed, since: datetime, until: datetime) -> list[SourceItem]:
+        src.feeds.newest[feed.url] = until
+        return []
+
+    src.feeds.fetch_one.side_effect = RuntimeError("HTTP 502")
+    first = run(db_session, src)
+    src.feeds.fetch_one.side_effect = good_feed
+    second = run(db_session, src, now=NOW + timedelta(days=1))
+    src.feeds.fetch_one.side_effect = RuntimeError("HTTP 502")
+    third = run(db_session, src, now=NOW + timedelta(days=2))
+    warning = f"feed missed once, retried next run: {FEED.url}"
+    assert first.health.warnings == (warning,) and second.health.warnings == ()
+    assert third.status == "succeeded" and third.health == Health(True, (), (warning,))
+    letters = db_session.scalars(
+        select(DeadLetter).where(DeadLetter.ref == FEED.url).order_by(DeadLetter.id)
+    ).all()
+    assert len(letters) == 2
+    assert letters[0].resolved_at == NOW + timedelta(days=1)
+    assert letters[1].resolved_at is None and letters[1].window_end == NOW + timedelta(days=2)
+
+
+def test_two_feeds_fail_on_different_days_without_hiding_each_other(
+    db_session: Session,
+) -> None:
+    # One feed answering while another misses is still a first miss for the other. Each run's
+    # warning and stuck-cursor lists must name the right feed, so a recovering feed never covers
+    # for a single miss of its sibling.
+    src = fake_sources([paper("2510.1", "Agent harness")])
+    src.feed_list = [FEED, OTHER_FEED]
+    failing = {FEED.url: {0, 2}, OTHER_FEED.url: {1, 2}}
+    day = {"index": 0}
+
+    def fetch_one(feed: Feed, since: datetime, until: datetime) -> list[SourceItem]:
+        if day["index"] in failing[feed.url]:
+            raise RuntimeError(f"HTTP 502 for {feed.url}")
+        src.feeds.newest[feed.url] = until  # answered, and its newest post is recent
+        return []
+
+    src.feeds.fetch_one.side_effect = fetch_one
+
+    def warning(url: str) -> str:
+        return f"feed missed once, retried next run: {url}"
+
+    # Day 0: A misses; B answers.
+    day["index"] = 0
+    first = run(db_session, src, now=NOW)
+    assert first.health == Health(True, (), (warning(FEED.url),))
+    # Day 1: A answers, which closes A's letter; B misses, and it is B's first miss.
+    day["index"] = 1
+    second = run(db_session, src, now=NOW + timedelta(days=1))
+    assert second.health == Health(True, (), (warning(OTHER_FEED.url),))
+    a_letter = db_session.scalars(select(DeadLetter).where(DeadLetter.ref == FEED.url)).one()
+    assert a_letter.resolved_at == NOW + timedelta(days=1)
+    # Day 2: A misses again, a fresh one-day warning; B is on its second miss in a row, a failure.
+    day["index"] = 2
+    third = run(db_session, src, now=NOW + timedelta(days=2))
+    assert third.status == "partial"
+    assert third.health == Health(
+        False,
+        ("status=partial", f"cursor not advanced: feed:{OTHER_FEED.url}"),
+        (warning(FEED.url),),
+    )
+
+
+def test_a_feed_failure_is_logged_with_whether_the_outage_is_new(db_session: Session) -> None:
+    # The health verdict is for the morning check; the journal line is for log-based alerts, and it
+    # must say whether this miss started an outage or continued one.
+    src = fake_sources([paper("2510.1", "Agent harness")])
+    src.feeds.fetch_one.side_effect = RuntimeError("HTTP 502")
+    with capture_logs() as logs:
+        run(db_session, src)
+    started = [event for event in logs if event["event"] == "feed_fetch_failed"]
+    assert [(event["feed"], event["outage"], event["error"]) for event in started] == [
+        (FEED.url, "started", "RuntimeError('HTTP 502')")
+    ]
+    with capture_logs() as logs:
+        run(db_session, src, now=NOW + timedelta(days=1))
+    continuing = [event for event in logs if event["event"] == "feed_fetch_failed"]
+    assert [(event["feed"], event["outage"]) for event in continuing] == [(FEED.url, "continuing")]
 
 
 def test_failed_source_window_is_replayed_next_run(db_session: Session) -> None:
