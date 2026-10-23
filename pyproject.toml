@@ -1,7 +1,7 @@
 [project]
 name = "paperwatch"
 version = "0.6.0"
-description = "Add your description here"
+description = "A growing, queryable corpus of AI research, answered with hybrid retrieval and citation-checked agents"
 readme = "README.md"
 authors = [
     { name = "enricoroncuzzi", email = "enrico.roncuzzi98@gmail.com" }
