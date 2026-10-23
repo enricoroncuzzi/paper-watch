@@ -359,3 +359,25 @@ def test_dead_letter_retries_stop_at_the_attempt_cap(db_session: Session) -> Non
     # Given up: still open and visible, but no longer handed back for retry.
     assert repo.open_item_dead_letters() == []
     assert repo.has_open_dead_letter("arxiv", "2510.8")
+
+
+def test_recheck_slack_absorbs_an_earlier_timer_start(db_session: Session) -> None:
+    # The timer fires a few seconds earlier some mornings. A paper checked 24 h ago then must be
+    # due again, or a whole day is skipped: the 2 h slack is what makes a daily paper due after
+    # 22 h, and it is far too short to pull a weekly paper in early.
+    repo = Repository(db_session)
+
+    def add(eid: str, age_days: int, checked_ago: timedelta) -> uuid.UUID:
+        item = dataclasses.replace(
+            ITEM, external_id=eid, published_at=NOW - timedelta(days=age_days)
+        )
+        item_id = repo.record_classified(item, "candidate", "agentic-engineering", 0.9)
+        repo.mark_s2_checked([item_id], NOW - checked_ago)
+        return item_id
+
+    earlier_start = add("daily-earlier", 10, timedelta(days=1) - timedelta(minutes=30))
+    still_recent = add("daily-recent", 10, timedelta(hours=21))
+    weekly_recent = add("weekly-recent", 45, timedelta(days=6))
+    due = {t.id for t in repo.recheck_targets(NOW, timedelta(days=365))}
+    assert earlier_start in due  # 23.5 h ago: due thanks to the slack
+    assert still_recent not in due and weekly_recent not in due  # the slack is not a day

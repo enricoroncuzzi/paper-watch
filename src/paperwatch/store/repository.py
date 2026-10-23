@@ -14,7 +14,7 @@ from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session, sessionmaker
 
-from paperwatch.config import MAX_ITEM_ATTEMPTS, S2_CADENCE
+from paperwatch.config import MAX_ITEM_ATTEMPTS, S2_CADENCE, S2_RECHECK_SLACK
 from paperwatch.domain import AdmissionBasis, Signals, SourceItem, Tier
 from paperwatch.store.models import ChatCall, DeadLetter, Item, Run, SourceCursor, TierHistory
 
@@ -299,9 +299,14 @@ class Repository:
         )
         # An age that matches no band has no interval, so the paper is never due, even when it
         # was never checked. A checked paper could not satisfy the comparison against NULL anyway.
+        # The slack is applied on the `now` side, so a NULL interval still needs no special case:
+        # `s2_checked_at + interval - slack <= now` and `... + interval <= now + slack` agree.
         due = and_(
             interval.is_not(None),
-            or_(Item.s2_checked_at.is_(None), Item.s2_checked_at + interval <= now),
+            or_(
+                Item.s2_checked_at.is_(None),
+                Item.s2_checked_at + interval <= now + S2_RECHECK_SLACK,
+            ),
         )
         # Most overdue first, so a capped run reaches them and carries the rest to the next run.
         stmt = (
