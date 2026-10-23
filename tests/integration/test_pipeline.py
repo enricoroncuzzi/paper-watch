@@ -1488,6 +1488,45 @@ def test_lock_holder_is_not_idle_in_transaction(db_session: Session) -> None:
     assert "idle in transaction" not in states
 
 
+def test_no_transaction_is_open_during_a_source_fetch(db_session: Session) -> None:
+    # A fetch can take a minute, and a transaction held across it pins a snapshot, holds a
+    # connection 'idle in transaction' and blocks vacuum for that whole time. Every network block
+    # therefore starts after a commit, like the follow-up loop's wait already did.
+    src = fake_sources([paper("2510.1", "Agent harness")])
+    checked: list[str] = []
+
+    def harvest(day: date) -> Iterator[list[SourceItem]]:
+        checked.append("arxiv")
+        assert not db_session.in_transaction()
+        return iter([[paper("2510.1", "Agent harness")]])
+
+    def feed(feed: Feed, since: datetime, until: datetime) -> list[SourceItem]:
+        checked.append("feed")
+        assert not db_session.in_transaction()
+        src.feeds.newest[feed.url] = until
+        return []
+
+    def upvotes(since: date, until: date) -> dict[str, int]:
+        checked.append("hf")
+        assert not db_session.in_transaction()
+        return {"2510.1": 50}
+
+    def lookup(ids: list[str]) -> dict[str, Signals]:
+        checked.append("s2")
+        assert not db_session.in_transaction()
+        src.s2.checked_ids, src.s2.refused_ids = set(ids), set()
+        return {}
+
+    src.arxiv.harvest.side_effect = harvest
+    src.feeds.fetch_one.side_effect = feed
+    src.hf.upvotes.side_effect = upvotes
+    src.s2.lookup.side_effect = lookup
+    assert run(db_session, src).status == "succeeded"
+    # The harvest runs once per (set, day) of the window; the other three sources once each.
+    assert set(checked) == {"arxiv", "feed", "hf", "s2"}
+    assert checked.count("feed") == len(src.feed_list) == checked.count("hf") == checked.count("s2")
+
+
 def test_lock_is_held_for_the_whole_run(db_session: Session, engine: Engine) -> None:
     outer = fake_sources([paper("2510.1", "Agent harness")])
     seen: dict[str, object] = {}
