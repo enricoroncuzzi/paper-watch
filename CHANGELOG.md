@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.2](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.6.1...paperwatch-v0.6.2) (2026-10-23)
+
+
+### Bug Fixes
+
+* **deploy:** harden the morning check, the backup lock and retention, and loopback-only access ([#23](https://github.com/enricoroncuzzi/paper-watch/issues/23)) ([1708880](https://github.com/enricoroncuzzi/paper-watch/commit/1708880d4e096547675fbc731d2a63190705c465))
+
 ## [0.6.1](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.6.0...paperwatch-v0.6.1) (2026-10-23)
 
 
