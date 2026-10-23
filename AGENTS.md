@@ -10,8 +10,9 @@ the standing rules.
 
 - `src/paperwatch/sources/` has one client per source: arXiv OAI-PMH (`arxiv.py`), Hugging Face
   daily papers (`hf_daily.py`), Semantic Scholar (`semantic_scholar.py`) and the official lab
-  feeds in `config/feeds.yaml` (`feeds.py`). Each returns a normalised `SourceItem` from
-  `domain.py`; the shared HTTP client and retries are in `sources/base.py`.
+  feeds in `config/feeds.yaml` (`feeds.py`). arXiv and the feeds return a normalised `SourceItem`
+  from `domain.py`; Hugging Face and Semantic Scholar return quality signals for arXiv ids. The
+  shared HTTP client and retries are in `sources/base.py`.
 - `src/paperwatch/ingest/` is the run: window, dedupe, classify, admit, embed, upsert, re-check
   late evidence, then write counts, tokens and a health verdict (`health.py`). One Postgres
   advisory lock (`INGEST_LOCK_KEY` in `config.py`) allows one run at a time.
@@ -57,7 +58,7 @@ the standing rules.
   `paperwatch search`, `paperwatch ask` and `paperwatch serve` refuse to run without `--live`
   (`cli.py`), and real-model tests are opt-in with `-m model`.
 - Tests must build settings from the test's own environment: pass `_env_file=None` and clear
-  `PW_*` (the `build_settings` fixture in `tests/unit/test_config.py`), so a developer's `.env`
+  `PW_*` (the `build_settings` fixture in `tests/conftest.py`), so a developer's `.env`
   never changes a result.
 - The retrieval baseline changes only through `uv run paperwatch eval --write-baseline`, and the
   gate fails if any gated metric, including exact-name text-only recall and MRR, drops by more
