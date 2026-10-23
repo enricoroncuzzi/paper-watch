@@ -2,8 +2,8 @@
 
 The corpus has to accumulate every day, whatever the captain is building, so ingestion runs on
 the shared VPS ahead of M3 ([ADR 0009](../adr/0009-ingestion-runs-on-the-shared-vps.md)). Two
-systemd user units, both as the `paperwatch` account: the daily
-ingestion at 06:00 Europe/Rome, and a nightly `pg_dump` backup at 05:15. The API, the weekly
+systemd user services with their timers, both as the `paperwatch` account: the daily ingestion at
+06:00 Europe/Rome, and a nightly `pg_dump` backup at 05:15. The API, the weekly
 shortlist, email alerts and the restore drill are not part of this deployment (M3 and M4).
 
 Everything here is a step for the `paperwatch` user. There is no root step: the database, the
@@ -13,7 +13,8 @@ role, pgvector, the swap file and linger were set up by the captain before this 
 
 - Debian 13, 2 CPU, 1.9 GB RAM (about 1.3 GB available), 2 GB swap (swappiness 10), 48 GB disk
   free, clock in Europe/Berlin (the same UTC offset as Rome all year), NTP on.
-- Shared with another production project using about 650 MB, with its own services and Postgres.
+- Shared with another production project using about 650 MB, with its own services and its own
+  database on the same Postgres server.
 - Postgres 17.11. Database `paperwatch`, owned by role `paperwatch`, with `vector` 0.8.0 enabled.
   Peer authentication over the local Unix socket: no password, no TCP.
 - Linger is on for `paperwatch`, so the user's systemd manager keeps running while nobody is
