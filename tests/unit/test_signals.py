@@ -870,3 +870,18 @@ def test_s2_anomaly_describes_one_call_only() -> None:
     assert src.anomaly is not None
     src.lookup(ids)
     assert src.degraded is False and src.anomaly is None
+
+
+@respx.mock
+def test_s2_5xx_after_every_attempt_is_refused_not_an_anomaly(monkeypatch) -> None:
+    # A gateway error is the pool being unavailable, not a request bug: the ids stay due for a
+    # follow-up pass, and the chunk is never reported as an answer this client cannot read.
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    route = respx.post(S2_BATCH_URL).mock(return_value=httpx.Response(502))
+    src = SemanticScholarSource(httpx.Client(), None, pause_s=0)
+    assert src.lookup(["2510.00001", "2510.00002"]) == {}
+    assert route.call_count == 5
+    assert src.refused_ids == {"2510.00001", "2510.00002"}
+    assert src.checked_ids == set()
+    assert src.anomaly is None
+    assert src.degraded is True

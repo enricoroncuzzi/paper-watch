@@ -20,6 +20,12 @@ from paperwatch.config import Settings
 # A server's Retry-After cannot be allowed to stall a run for hours.
 MAX_RETRY_AFTER_S = 60.0
 
+# Statuses a later attempt can clear. 429 and 503 are the server itself saying "not now"; 500,
+# 502 and 504 are the same outage seen through a proxy or a dying backend (a gateway that timed
+# out waiting, a worker that dropped the connection), which source sites send during congestion
+# as readily as a 503. Every other 4xx answers this exact request: a bug, never a retry.
+RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
+
 
 def make_http_client(settings: Settings) -> httpx.Client:
     # One client reused across sources; the User-Agent identifies us to source sites
@@ -42,7 +48,7 @@ def is_retryable(exc: BaseException) -> bool:
     """
     if isinstance(exc, httpx.TransportError):
         return True
-    return isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in (429, 503)
+    return isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in RETRYABLE_STATUSES
 
 
 def _wait_for_retry(state: RetryCallState, *, min_wait_s: float, max_wait_s: float) -> float:
@@ -71,14 +77,15 @@ def send_with_retries(
     before_sleep: Callable[[RetryCallState], None] | None = None,
     **kwargs: Any,
 ) -> httpx.Response:
-    """Send one request, retrying 429/503 and transport errors, and raise on failure.
+    """Send one request, retrying a retryable status or a transport error, and raise on failure.
 
-    Other 4xx responses fail on the first attempt. The defaults (three attempts, a 1 s
-    exponential floor capped at 30 s) keep every source that does not override them;
-    Semantic Scholar asks for five attempts from a 5 s floor capped at 60 s. Retry-After
-    is honored when present. After the last attempt the last exception is re-raised so the
-    caller can degrade visibly. `before_sleep` sees the tenacity state before every wait, so a
-    caller can log each refusal with the wait it is about to take.
+    `RETRYABLE_STATUSES` (429, 500, 502, 503, 504) and transport errors are retried under the
+    same bounded policy; any other status, a 4xx in particular, fails on the first attempt. The
+    defaults (three attempts, a 1 s exponential floor capped at 30 s) keep every source that does
+    not override them; Semantic Scholar asks for five attempts from a 5 s floor capped at 60 s.
+    Retry-After is honored when present. After the last attempt the last exception is re-raised
+    so the caller can degrade visibly. `before_sleep` sees the tenacity state before every wait,
+    so a caller can log each refusal with the wait it is about to take.
     """
     for attempt in Retrying(
         stop=stop_after_attempt(attempts),

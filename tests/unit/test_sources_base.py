@@ -96,3 +96,26 @@ def test_send_with_retries_honors_a_higher_attempt_floor(monkeypatch) -> None:
         )
     assert route.call_count == 5
     assert sleeps == [5.0, 10.0, 20.0, 40.0]
+
+
+@pytest.mark.parametrize("status", [429, 500, 502, 503, 504])
+@respx.mock
+def test_a_retryable_status_gets_every_attempt(monkeypatch, status: int) -> None:
+    # A throttle (429/503) and a fronted outage (500/502/504) are the same "come back later" to
+    # us, so they share the one bounded policy.
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    route = respx.get("https://example.test/x").mock(return_value=httpx.Response(status))
+    with pytest.raises(httpx.HTTPStatusError):
+        send_with_retries(httpx.Client(), "GET", "https://example.test/x")
+    assert route.call_count == 3
+
+
+@pytest.mark.parametrize("status", [400, 403, 404])
+@respx.mock
+def test_a_deterministic_4xx_is_a_bug_not_a_retry(monkeypatch, status: int) -> None:
+    # The request itself is wrong: asking again would only spend the same refusal.
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    route = respx.get("https://example.test/x").mock(return_value=httpx.Response(status))
+    with pytest.raises(httpx.HTTPStatusError):
+        send_with_retries(httpx.Client(), "GET", "https://example.test/x")
+    assert route.call_count == 1
