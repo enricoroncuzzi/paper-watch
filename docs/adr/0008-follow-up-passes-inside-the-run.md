@@ -8,7 +8,7 @@ Accepted
 
 ## Context
 
-The daily run on the shared VPS (ADR 0002's deployment, `deploy/vps/`) gets its venue and citation
+The daily run on the shared VPS (`deploy/vps/`, `docs/deploy/vps.md`) gets its venue and citation
 evidence from Semantic Scholar's keyless batch endpoint. That endpoint refuses a whole chunk with
 429 or 503 under congestion, in bursts of unknown length: on 2026-10-23 it refused every attempt at
 06:03 and again at 09:52, 145 to 152 ids each time, and no API key can be obtained. The papers S2
@@ -68,10 +68,9 @@ passes. A manual `paperwatch ingest --live` never waits.
 
 - A burst of minutes to hours no longer costs a day of evidence, and the morning reads truthfully:
   recovered days are healthy and exit 0, while a whole-day refusal is one warning the first day.
-- A process may stay alive for up to 16 hours, from 06:00 to 22:00 Rome time, and the refusals
-  still cost one S2 request every 30 minutes with no model resident. With two passes a day at most
-  (a refusal that clears and a later one) the shared machine sees one extra request per half hour
-  and no extra fetches.
+- A process may stay alive for up to 16 hours, from 06:00 to 22:00 Rome time. A fully refused day
+  costs about 33 S2 requests, one every 30 minutes, and no extra fetches, classification or
+  embeddings, with no model resident between passes.
 - A kill inside the window (`kill -9`, an OOM kill, a stop) loses the rest of that window and
   leaves a `next_at` in the past, which the check reports. The next morning's run is the backstop,
   because every refused paper is still due.
