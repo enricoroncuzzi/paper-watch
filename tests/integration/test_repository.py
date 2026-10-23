@@ -540,7 +540,8 @@ def test_a_bad_extra_costs_only_its_own_extras(db_session: Session) -> None:
     written = repo.apply_hf_listing(
         {
             "2510.00001": HfPaper(
-                upvotes=10,
+                # Upvotes, comments and stars all get the same int4 guard in the store.
+                upvotes=INT4_MAX + 1,
                 comments=-1,
                 github_stars=INT4_MAX + 1,
                 organization="O" * (HF_ORG_MAX_CHARS + 44),
@@ -558,7 +559,7 @@ def test_a_bad_extra_costs_only_its_own_extras(db_session: Session) -> None:
         bad.hf_comments,
         bad.github_stars,
         bad.hf_org,
-    ) == (10, None, None, "O" * HF_ORG_MAX_CHARS)
+    ) == (None, None, None, "O" * HF_ORG_MAX_CHARS)
     good = db_session.get_one(Item, good_id)
     assert (good.hf_upvotes, good.github_repo, good.github_stars) == (
         20,

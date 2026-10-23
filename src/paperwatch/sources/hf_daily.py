@@ -29,6 +29,13 @@ HF_FAILED_DAYS = 2
 GITHUB_REPO = re.compile(r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/?")
 # Bounds a project-page link the way the daily page itself does; anything longer is a payload.
 PROJECT_PAGE_MAX_CHARS = 2048
+# GitHub allows a 39-character owner and a 100-character repo; the extra room covers the prefix
+# and the slash, and a value past this width is not a repository link.
+GITHUB_REPO_MAX_CHARS = 200
+# Only a real arXiv id may key the listing. It has to match a stored external_id exactly, and a
+# hostile or enormous value would cost the whole write for every paper: new style 2510.12345, old
+# style hep-th/9901001 (arxiv_base_id has already stripped the version).
+ARXIV_ID = re.compile(r"\d{4}\.\d{4,5}|[a-z][a-z-]*/\d{7}")
 log = structlog.get_logger()
 
 
@@ -46,7 +53,11 @@ def _as_int(value: object) -> int | None:
 
 
 def _github_repo(value: object) -> str | None:
-    if isinstance(value, str) and GITHUB_REPO.fullmatch(value):
+    if (
+        isinstance(value, str)
+        and len(value) <= GITHUB_REPO_MAX_CHARS
+        and GITHUB_REPO.fullmatch(value)
+    ):
         return value
     return None
 
@@ -99,17 +110,27 @@ def _listed_at(value: object) -> datetime | None:
         stamp = datetime.fromisoformat(value)
     except ValueError:
         return None
-    # A timestamp without a zone would be stored as a different instant depending on the server's
-    # time zone; the listing only ever sends UTC, so that is the honest reading.
-    return stamp if stamp.tzinfo is not None else stamp.replace(tzinfo=UTC)
+    if stamp.tzinfo is None:
+        # The listing only ever sends UTC, so that is the honest reading of a naive stamp.
+        return stamp.replace(tzinfo=UTC)
+    try:
+        # An offset can push the instant outside years 1..9999, which the driver cannot read back.
+        return stamp.astimezone(UTC)
+    except OverflowError:
+        return None
 
 
-def _paper(entry: dict[str, object]) -> tuple[str, HfPaper] | None:
-    # A non-dict paper stays a day-level failure, like any other shape this client cannot read;
-    # the cast only tells mypy what the listing promises.
-    paper = cast("dict[str, object]", entry.get("paper") or {})
+def _paper(entry: object) -> tuple[str, HfPaper] | None:
+    # A row (or a paper) of the wrong shape is a bad row to skip, not a failed page. Only a real
+    # arXiv id becomes a key: it is matched against a stored external_id, and a hostile or
+    # enormous one would cost the whole write for every paper.
+    if not isinstance(entry, dict):
+        return None
+    paper = entry.get("paper")
+    if not isinstance(paper, dict):
+        return None
     base = arxiv_base_id(str(paper.get("id") or ""))
-    if not base:
+    if not ARXIV_ID.fullmatch(base):
         return None
     upvotes = _as_int(paper.get("upvotes") or 0)
     if upvotes is None:

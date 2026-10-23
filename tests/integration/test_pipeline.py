@@ -5,7 +5,9 @@ from pathlib import Path
 from unittest.mock import DEFAULT, MagicMock
 from zoneinfo import ZoneInfo
 
+import httpx
 import pytest
+import respx
 from sqlalchemy import Engine, select, text
 from sqlalchemy.engine import Connection
 from sqlalchemy.orm import Session
@@ -19,6 +21,7 @@ from paperwatch.config import (
     INGEST_LOCK_KEY,
     INT4_MAX,
     MAX_ITEM_ATTEMPTS,
+    S2_RECHECK_HORIZON,
 )
 from paperwatch.domain import (
     Classification,
@@ -42,8 +45,9 @@ from paperwatch.ingest.pipeline import (
 from paperwatch.llm.classifier import Classifier, FakeClassifier
 from paperwatch.llm.embedder import Embedder, FakeEmbedder
 from paperwatch.llm.ledger import Ledger
+from paperwatch.retrieval.hybrid import hybrid_search
 from paperwatch.sources.feeds import Feed
-from paperwatch.sources.hf_daily import HfPaper
+from paperwatch.sources.hf_daily import HF_URL, HfDailySource, HfPaper
 from paperwatch.store.db import make_session_factory
 from paperwatch.store.models import DeadLetter, Item, Run, SignalSnapshot, TierHistory
 from paperwatch.store.repository import Repository
@@ -356,6 +360,41 @@ def test_a_bad_extra_row_does_not_sink_the_listing_step(db_session: Session) -> 
         select(SignalSnapshot).where(SignalSnapshot.item_id == good.id)
     ).all()
     assert len(snapshots) == 1 and snapshots[0].github_stars == 42
+
+
+@respx.mock
+def test_a_hostile_listing_time_leaves_the_row_readable(db_session: Session) -> None:
+    # A timestamp whose offset pushes the instant outside years 1..9999 cannot be read back from
+    # Postgres; the client drops it, so the row, the next re-check and a search all stay usable.
+    rows = [
+        {
+            "paper": {
+                "id": "2510.00001",
+                "upvotes": 50,
+                "submittedOnDailyAt": "0001-01-01T00:00:00+05:00",
+            }
+        },
+        {
+            "paper": {
+                "id": "2510.00002",
+                "upvotes": 50,
+                "submittedOnDailyAt": "9999-12-31T23:59:59-05:00",
+            }
+        },
+    ]
+    respx.get(HF_URL).mock(return_value=httpx.Response(200, json=rows))
+    src = fake_sources([paper("2510.00001", "Agent harness"), paper("2510.00002", "Coding agent")])
+    src.hf.papers.side_effect = lambda since, until: HfDailySource(httpx.Client()).papers(
+        since, until
+    )
+    res = run(db_session, src)
+    assert res.status == "succeeded" and res.health is not None and res.health.healthy
+    assert row(db_session, "2510.00001").hf_listed_at is None
+    assert row(db_session, "2510.00002").hf_listed_at is None
+    targets = Repository(db_session).recheck_targets(NOW + timedelta(days=1), S2_RECHECK_HORIZON)
+    assert {"2510.00001", "2510.00002"} <= {target.item.external_id for target in targets}
+    hits = hybrid_search(db_session, FakeEmbedder(), "Agent harness", k=5)
+    assert "Agent harness" in {hit.title for hit in hits}
 
 
 def test_a_surrogate_in_the_listing_is_a_warning_not_a_failed_run(db_session: Session) -> None:

@@ -12,6 +12,7 @@ from structlog.testing import capture_logs
 
 from paperwatch.config import HF_ORG_MAX_CHARS, INT4_MAX
 from paperwatch.sources.hf_daily import (
+    GITHUB_REPO_MAX_CHARS,
     HF_URL,
     MAX_PAGES_PER_DAY,
     PROJECT_PAGE_MAX_CHARS,
@@ -134,6 +135,8 @@ def test_hf_out_of_range_numbers_become_none() -> None:
         {"paper": {"id": "2510.00003", "upvotes": 7, "githubStars": INT4_MAX}},
         # _as_int must also refuse a value int() cannot take at all.
         {"paper": {"id": "2510.00004", "upvotes": 4, "githubStars": []}},
+        # A negative count is malformed, and keeping it would store 0 through merge_signals.
+        {"paper": {"id": "2510.00005", "upvotes": -1}},
     ]
     respx.get(HF_URL).mock(return_value=httpx.Response(200, json=rows))
     out = HfDailySource(httpx.Client()).papers(date(2026, 10, 9), date(2026, 10, 9))
@@ -144,6 +147,7 @@ def test_hf_out_of_range_numbers_become_none() -> None:
     assert out["2510.00003"].github_stars == INT4_MAX
     assert out["2510.00004"].github_stars is None
     assert out["2510.00004"].upvotes == 4
+    assert "2510.00005" not in out
 
 
 @respx.mock
@@ -248,6 +252,100 @@ def test_hf_repo_link_rejects_a_look_alike_host_and_an_extra_path() -> None:
 
 
 @respx.mock
+def test_hf_a_hostile_listing_time_is_none() -> None:
+    # An offset can push the instant outside years 1..9999, which the driver cannot read back; the
+    # value is dropped and the neighbouring rows keep their extras.
+    rows = [
+        {
+            "paper": {
+                "id": "2510.00001",
+                "upvotes": 1,
+                "submittedOnDailyAt": "0001-01-01T00:00:00+05:00",
+            }
+        },
+        {
+            "paper": {
+                "id": "2510.00002",
+                "upvotes": 2,
+                "submittedOnDailyAt": "9999-12-31T23:59:59-05:00",
+            }
+        },
+        {
+            "paper": {
+                "id": "2510.00003",
+                "upvotes": 3,
+                "submittedOnDailyAt": "2026-10-09T00:00:00+00:00",
+            }
+        },
+    ]
+    respx.get(HF_URL).mock(return_value=httpx.Response(200, json=rows))
+    src = HfDailySource(httpx.Client())
+    out = src.papers(date(2026, 10, 9), date(2026, 10, 9))
+    assert out["2510.00001"].listed_at is None
+    assert out["2510.00002"].listed_at is None
+    assert out["2510.00003"].listed_at == datetime(2026, 10, 9, tzinfo=UTC)
+    assert src.degraded is False
+
+
+@respx.mock
+def test_hf_hostile_and_huge_ids_skip_only_their_row() -> None:
+    # Only a real arXiv id becomes a key: a stored external_id is matched by it, and a hostile or
+    # enormous one would cost the whole listing write for every paper.
+    good = "2510.00005"
+    rows = [
+        {"paper": {"id": "2510.1\x00", "upvotes": 1}},
+        {"paper": {"id": "2510.1\ud800", "upvotes": 1}},
+        {"paper": {"id": "2510." + "9" * 200_000, "upvotes": 1}},
+        {"paper": {"id": good, "upvotes": 7, "githubStars": 3}},
+    ]
+    body = json.dumps(rows).encode()
+    respx.get(HF_URL).mock(return_value=httpx.Response(200, content=body))
+    src = HfDailySource(httpx.Client())
+    out = src.papers(date(2026, 10, 9), date(2026, 10, 9))
+    assert list(out) == [good]
+    assert out[good].github_stars == 3
+    assert src.degraded is False
+
+
+@respx.mock
+def test_hf_a_row_that_is_not_an_object_skips_only_itself() -> None:
+    # A row (or a paper) of the wrong shape is a bad row; the neighbouring good rows still count.
+    rows = [
+        {"paper": {"id": "2510.00001", "upvotes": 1, "githubStars": 1}},
+        None,
+        "not an object",
+        42,
+        {"paper": ["not", "an", "object"]},
+        {"paper": "not an object"},
+        {"paper": {"id": "2510.00002", "upvotes": 2, "githubStars": 2}},
+    ]
+    respx.get(HF_URL).mock(return_value=httpx.Response(200, json=rows))
+    src = HfDailySource(httpx.Client())
+    out = src.papers(date(2026, 10, 9), date(2026, 10, 9))
+    assert set(out) == {"2510.00001", "2510.00002"}
+    assert out["2510.00002"].github_stars == 2
+    assert src.degraded is False
+
+
+@respx.mock
+def test_hf_repo_link_is_bounded_to_the_github_widths() -> None:
+    # GitHub allows a 39-character owner and a 100-character repo; the bound is the cheap guard,
+    # and a value past it is not a repository link.
+    owner = "a" * 39
+    repo = "b" * (GITHUB_REPO_MAX_CHARS - len("https://github.com/") - len(owner) - 1)
+    at_limit = f"https://github.com/{owner}/{repo}"
+    over_limit = at_limit + "c"
+    rows = [
+        {"paper": {"id": "2510.00001", "upvotes": 1, "githubRepo": at_limit}},
+        {"paper": {"id": "2510.00002", "upvotes": 1, "githubRepo": over_limit}},
+    ]
+    respx.get(HF_URL).mock(return_value=httpx.Response(200, json=rows))
+    out = HfDailySource(httpx.Client()).papers(date(2026, 10, 9), date(2026, 10, 9))
+    assert out["2510.00001"].github_repo == at_limit
+    assert out["2510.00002"].github_repo is None
+
+
+@respx.mock
 def test_hf_rejects_control_and_surrogate_characters() -> None:
     # Postgres text cannot hold NUL and a lone surrogate cannot be encoded at all; both are bad
     # extras, so the row survives with the value dropped instead of failing the listing write.
@@ -292,6 +390,7 @@ def test_hf_project_page_length_boundary_and_hostile_shapes() -> None:
         # The scheme stays strictly the lowercase https the plan names.
         "2510.00011": "HTTPS://example.com",
         "2510.00012": "//]",
+        "2510.00015": "httpS://example.com",
         # DEL is a control character too, and a password-only URL still carries credentials.
         "2510.00013": "https://example.com/\x7f",
         "2510.00014": "https://:pw@example.com/c",
@@ -538,7 +637,7 @@ def test_hf_page_cap_bounds_a_day() -> None:
     # Distinct full pages never end on their own; the named cap bounds the day.
     def responder(request: httpx.Request) -> httpx.Response:
         page = int(request.url.params["p"])
-        return httpx.Response(200, json=[_hf_row(f"2510.{page:02d}{i:04d}") for i in range(100)])
+        return httpx.Response(200, json=[_hf_row(f"2510.{page:02d}{i:03d}") for i in range(100)])
 
     route = respx.get(HF_URL).mock(side_effect=responder)
     src = HfDailySource(httpx.Client())

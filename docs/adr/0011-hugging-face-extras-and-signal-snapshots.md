@@ -47,10 +47,14 @@ which is a warning, so one hostile value cannot fail the run.
   savepoint; a failure rolls back only the snapshot writes, logs the error type, and appends
   "hugging face extras not stored this run" to the health warnings. Extras are presentation data,
   so they must never cost an item an admission attempt or make the run unhealthy.
-- **Links and names are filtered at the source.** Only an https GitHub repository URL and an
-  https project page of at most 2,048 characters are kept; the page must name an https host with
-  no whitespace, control character, surrogate or credentials, so a `javascript:` scheme, a
-  look-alike host, a malformed URL or a name the database cannot store becomes no value at all.
+- **Links, names, ids and listing times are filtered at the source.** Only an https GitHub
+  repository URL of at most 200 characters and an https project page of at most 2,048 characters
+  are kept; the page must name an https host with no whitespace, control character, surrogate or
+  credentials, so a `javascript:` scheme, a look-alike host, a malformed URL or a name the
+  database cannot store becomes no value at all. A listing key must be a real arXiv id (new style
+  `2510.12345`, old style `hep-th/9901001`), and a listing time is normalised to UTC, with an
+  offset that pushes the instant outside years 1..9999 dropped because the driver could not read
+  the row back.
 - **Every listed stored arXiv item gets a snapshot when it first appears and whenever a number
   changes, not only re-check targets.** The step covers every stored arXiv item whose id is in the
   listing window, including peer-reviewed ones that `recheck_targets` never revisits, so the
