@@ -464,6 +464,25 @@ class Repository:
             is not None
         )
 
+    def has_open_outage_from_earlier_run(self, source: str, ref: str, run_id: uuid.UUID) -> bool:
+        # Whether this (source, ref) outage was already open before this run: the first day of an
+        # outage is a warning and the second is a failure, and a letter this run opened minutes
+        # ago must not be mistaken for yesterday's. Keyed on the letter's run_id, not on its
+        # existence, so a follow-up pass that fails again stays the first day (Task 22 review S3).
+        return (
+            self._s.scalar(
+                select(DeadLetter.id)
+                .where(
+                    DeadLetter.source == source,
+                    DeadLetter.ref == ref,
+                    DeadLetter.resolved_at.is_(None),
+                    DeadLetter.run_id != run_id,
+                )
+                .limit(1)
+            )
+            is not None
+        )
+
     def resolve_dead_letter(self, dead_letter_id: int, *, at: datetime) -> None:
         dl = self._s.get_one(DeadLetter, dead_letter_id)
         dl.resolved_at = at

@@ -62,6 +62,21 @@ HF_RECHECK_HORIZON = timedelta(days=30)
 # Keyless Semantic Scholar: at most this many due papers are looked up per run (25 batches of
 # 500, at least 10 s apart); the most overdue go first and the rest stay due for the next run.
 S2_MAX_PAPERS_PER_RUN = 12_500
+# Follow-up passes (ADR 0008): the keyless pool sometimes refuses every attempt for hours
+# (measured 06:03 and 09:52 on 2026-10-23), and a refused paper stays due, so a scheduled run may
+# wait and ask again for exactly those papers instead of losing a day of evidence. The first
+# retries come soon, because a burst of minutes is common; the waits then grow one step at a
+# time, one scale up from the client's own 5/10/20/40 s backoff.
+FOLLOWUP_DELAYS_S = (300, 600, 1200, 2400)  # waits before passes 1 to 4: 5, 10, 20, 40 minutes
+FOLLOWUP_INTERVAL_S = 1800  # every later pass waits 30 minutes
+# 40 passes is a bound, not a plan: 06:00 to 22:00 is 16 hours, which the time-of-day limit ends
+# first (the ramp takes 1 h 15 min, then 29 more passes fill the rest), so a fully refused day
+# is bounded by the clock the captain set and this cap only guards a misconfigured deadline.
+FOLLOWUP_MAX_PASSES = 40
+# No pass starts at or after this hour in Europe/Rome (the server's own zone, named because a
+# 22:00 local limit must not move with a DST change). A late Persistent catch-up must not retry
+# into the night on a machine another service shares during the day.
+FOLLOWUP_DEADLINE_HOUR = 22
 # Single-key Postgres advisory lock (`pg_try_advisory_lock`) that lets one ingestion run at a
 # time: a session-level lock on a dedicated connection survives the run's many commits, so a
 # second overlapping run sees it held and skips instead of closing the first run's row or
@@ -172,6 +187,13 @@ class Settings(BaseSettings):
 
     # Optional key for Semantic Scholar (works without it, with lower rate limits).
     semantic_scholar_api_key: SecretStr | None = None
+
+    # Follow-up pass bounds (ADR 0008), so a drop-in on the server can shorten or lengthen the
+    # window without a release. The ramp of the first four waits is a constant: it is the shape
+    # of a burst, not a knob.
+    followup_max_passes: int = Field(default=FOLLOWUP_MAX_PASSES, ge=1)
+    followup_interval_s: int = Field(default=FOLLOWUP_INTERVAL_S, ge=60)
+    followup_deadline_hour: int = Field(default=FOLLOWUP_DEADLINE_HOUR, ge=1, le=23)
 
     log_level: str = "INFO"
     # Sent with every HTTP request so source sites can identify us.

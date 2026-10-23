@@ -384,3 +384,22 @@ def test_recheck_slack_absorbs_an_earlier_timer_start(db_session: Session) -> No
     assert earlier_start in due  # exactly a day minus the slack: the boundary is due
     assert one_second_short not in due  # one second less and it waits for tomorrow
     assert still_recent not in due and weekly_recent not in due  # the slack is not a day
+
+
+def test_an_outage_counts_as_older_only_when_an_earlier_run_opened_it(
+    db_session: Session,
+) -> None:
+    # The first day of an outage is a warning and the second a failure, so a letter this run
+    # opened itself must read as the first day: keyed on the letter's run_id, never on existence.
+    repo = Repository(db_session)
+    yesterday = repo.start_run(NOW - timedelta(days=1), NOW, at=NOW - timedelta(days=1))
+    repo.add_dead_letter(yesterday, "s2", "signals", "HTTP 429")
+    today = repo.start_run(NOW, NOW + timedelta(days=1), at=NOW)
+    assert repo.has_open_outage_from_earlier_run("s2", "signals", today)
+    # A letter this run opened is not an earlier one, and a different ref or source is not either.
+    repo.add_dead_letter(today, "feed", "https://lab.example/feed.xml", "HTTP 502")
+    assert not repo.has_open_outage_from_earlier_run("feed", "https://lab.example/feed.xml", today)
+    assert not repo.has_open_outage_from_earlier_run("s2", "window", today)
+    # A closed letter from an earlier run is no longer an outage.
+    repo.resolve_open_dead_letters("s2", "signals", at=NOW)
+    assert not repo.has_open_outage_from_earlier_run("s2", "signals", today)

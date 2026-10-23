@@ -13,13 +13,22 @@ class Health:
     problems: tuple[str, ...]
     # Findings worth seeing that do not make the run bad, such as one missed lab-feed day.
     warnings: tuple[str, ...] = ()
+    # The follow-up loop's own state, so the morning check can tell a run that is waiting from one
+    # that hung: `{"pass": n, "of": N, "next_at": ISO, "pending": {"s2": n}}` while it waits,
+    # `{"passes": n, "stopped": why}` once it ended. None when the run ran no follow-up pass.
+    followup: dict[str, object] | None = None
 
     def as_dict(self) -> dict[str, object]:
-        return {
+        out: dict[str, object] = {
             "healthy": self.healthy,
             "problems": list(self.problems),
             "warnings": list(self.warnings),
         }
+        # A run without follow-ups writes the same record as before, so old readers and old rows
+        # stay compatible in both directions.
+        if self.followup is not None:
+            out["followup"] = self.followup
+        return out
 
 
 def assess_run(
@@ -33,6 +42,8 @@ def assess_run(
     warnings: Sequence[str] = (),
     arxiv_expected: bool = True,
     arxiv_stopped_early: bool = False,
+    followup: dict[str, object] | None = None,
+    extra_problems: Sequence[str] = (),
 ) -> Health:
     problems: list[str] = []
     if status != "succeeded":
@@ -59,4 +70,7 @@ def assess_run(
     if stale_feeds:
         # A warning for a human: the feed answers but has not published in 90 days.
         problems.append("feed stale or empty: " + ", ".join(sorted(stale_feeds)))
-    return Health(not problems, tuple(problems), tuple(warnings))
+    # A finding the pipeline knows and no count covers, such as Semantic Scholar still refusing
+    # after every follow-up pass on the second day of an outage.
+    problems.extend(extra_problems)
+    return Health(not problems, tuple(problems), tuple(warnings), followup)

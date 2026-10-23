@@ -35,7 +35,7 @@ from paperwatch.api.app import (
 )
 from paperwatch.config import CHAT_MODEL, PROFILES_PATH, REPO_ROOT, Settings, get_settings
 from paperwatch.domain import Tier, load_profiles
-from paperwatch.ingest.pipeline import Sources, run_ingestion
+from paperwatch.ingest.pipeline import Followup, Sources, run_ingestion
 from paperwatch.llm.chat import (
     ChatModel,
     ChatNotConfigured,
@@ -58,6 +58,12 @@ log = structlog.get_logger()
 app = typer.Typer(no_args_is_help=True)
 LIVE = typer.Option(False, "--live", help="Use real sources and the configured models")
 SINCE = typer.Option(None, "--since", help="ISO datetime; overrides every source cursor")
+# Only the scheduled unit passes this: a manual run must never sit in a wait of hours.
+FOLLOWUP = typer.Option(
+    False,
+    "--followup",
+    help="Retry the papers Semantic Scholar refused until 22:00 Europe/Rome",
+)
 TIERS = typer.Option(None, "--tier")
 PROFILES_OPT = typer.Option(None, "--profile")
 # `search` runs no sources, so its `--live` help names only the model and the database.
@@ -261,7 +267,7 @@ def _models(ledger: Ledger) -> tuple[Classifier, Embedder]:
 
 
 @app.command()
-def ingest(live: bool = LIVE, since: str | None = SINCE) -> None:
+def ingest(live: bool = LIVE, since: str | None = SINCE, followup: bool = FOLLOWUP) -> None:
     _require_live(live)
     # Parse before any model, client or engine is built, so a typo fails fast and cheap.
     since_override = _parse_since(since)
@@ -282,17 +288,24 @@ def ingest(live: bool = LIVE, since: str | None = SINCE) -> None:
         feeds,
     )
     ledger = Ledger(s.max_tokens_per_run)
-    classifier, embedder = _models(ledger)
     session = make_session_factory(make_engine(s.database_url))()
+    # The pipeline builds the models itself and may release them between follow-up passes, so this
+    # frame must never hold them: a local reference here would keep the ~520 MB model alive all
+    # day. `_models` is only ever called through the factory below.
     res = run_ingestion(
         session,
         sources,
-        classifier,
-        embedder,
+        lambda: _models(ledger),
         ledger,
         load_admission(Path("config/admission.yaml")),
         datetime.now(UTC),
         since_override=since_override,
+        followup=followup,
+        bounds=Followup(
+            max_passes=s.followup_max_passes,
+            interval_s=s.followup_interval_s,
+            deadline_hour=s.followup_deadline_hour,
+        ),
     )
     if res.status == "skipped":
         # Another run holds the lock: this invocation did nothing and exits cleanly.
