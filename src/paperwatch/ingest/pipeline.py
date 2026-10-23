@@ -29,14 +29,14 @@ from paperwatch.config import (
     S2_MAX_PAPERS_PER_RUN,
     S2_RECHECK_HORIZON,
 )
-from paperwatch.domain import Classification, Signals, SourceItem
+from paperwatch.domain import Classification, HfPaper, Signals, SourceItem
 from paperwatch.ingest.health import Health, assess_run
 from paperwatch.llm.classifier import Classifier
 from paperwatch.llm.embedder import Embedder, embedding_text
 from paperwatch.llm.ledger import BudgetExceeded, Ledger
 from paperwatch.sources.arxiv import ArxivOaiSource
 from paperwatch.sources.feeds import Feed, FeedSource
-from paperwatch.sources.hf_daily import HfDailySource, HfPaper
+from paperwatch.sources.hf_daily import HfDailySource
 from paperwatch.sources.semantic_scholar import SemanticScholarSource
 from paperwatch.store.repository import Repository, StoredItem
 

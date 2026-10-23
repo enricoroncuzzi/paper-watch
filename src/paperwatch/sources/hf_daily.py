@@ -1,13 +1,15 @@
 """Hugging Face daily papers: community attention and the extras the listing carries."""
 
 import re
-from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import cast
+from urllib.parse import urlsplit
 
 import httpx
 import structlog
 
+from paperwatch.config import HF_ORG_MAX_CHARS, INT4_MAX
+from paperwatch.domain import HfPaper as HfPaper
 from paperwatch.sources.arxiv import arxiv_base_id
 from paperwatch.sources.base import MAX_HF_BODY_BYTES, is_retryable, send_with_retries
 
@@ -29,26 +31,17 @@ PROJECT_PAGE_MAX_CHARS = 2048
 log = structlog.get_logger()
 
 
-@dataclass(frozen=True)
-class HfPaper:
-    """One paper as the daily listing describes it, merged across a whole window."""
-
-    upvotes: int
-    comments: int | None = None
-    github_repo: str | None = None
-    github_stars: int | None = None
-    project_page: str | None = None
-    organization: str | None = None
-    listed_at: datetime | None = None
-
-
 def _as_int(value: object) -> int | None:
     if value is None:
         return None
     try:
-        return int(cast("str | int | float", value))
-    except (TypeError, ValueError):
+        number = int(cast("str | int | float", value))
+    except (TypeError, ValueError, OverflowError):
+        # Infinity (JSON's "1e999") overflows int; it is a bad extra, not a failed day.
         return None
+    # The columns are int4: a number they cannot hold would fail the whole listing write, so it
+    # is dropped like any other malformed extra.
+    return number if 0 <= number <= INT4_MAX else None
 
 
 def _github_repo(value: object) -> str | None:
@@ -58,13 +51,21 @@ def _github_repo(value: object) -> str | None:
 
 
 def _project_page(value: object) -> str | None:
-    if (
-        isinstance(value, str)
-        and value.startswith("https://")
-        and len(value) <= PROJECT_PAGE_MAX_CHARS
+    if not isinstance(value, str) or len(value) > PROJECT_PAGE_MAX_CHARS:
+        return None
+    if not value.startswith("https://"):
+        return None
+    # A stored link is only ever as safe as its shape: no whitespace and no control character
+    # (a page cannot contain them), and urlsplit must name an https host with no credentials.
+    if any(
+        character.isspace() or ord(character) < 0x20 or ord(character) == 0x7F
+        for character in value
     ):
-        return value
-    return None
+        return None
+    parts = urlsplit(value)
+    if parts.scheme != "https" or not parts.hostname or parts.username or parts.password:
+        return None
+    return value
 
 
 def _organization(paper: dict[str, object], entry: dict[str, object]) -> str | None:
@@ -76,7 +77,9 @@ def _organization(paper: dict[str, object], entry: dict[str, object]) -> str | N
             for key in ("fullname", "name"):
                 value = org.get(key)
                 if isinstance(value, str) and value:
-                    return value
+                    # The column holds HF_ORG_MAX_CHARS; clipping here keeps a long name from
+                    # failing the write, and the store clips again for a caller that skips us.
+                    return value[:HF_ORG_MAX_CHARS]
     return None
 
 

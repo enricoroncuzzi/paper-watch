@@ -10,7 +10,14 @@ import pytest
 import respx
 from structlog.testing import capture_logs
 
-from paperwatch.sources.hf_daily import HF_URL, MAX_PAGES_PER_DAY, HfDailySource, HfPaper
+from paperwatch.config import HF_ORG_MAX_CHARS, INT4_MAX
+from paperwatch.sources.hf_daily import (
+    HF_URL,
+    MAX_PAGES_PER_DAY,
+    PROJECT_PAGE_MAX_CHARS,
+    HfDailySource,
+    HfPaper,
+)
 from paperwatch.sources.semantic_scholar import (
     S2_BATCH_URL,
     S2_REFUSED_CHUNKS,
@@ -107,6 +114,209 @@ def test_hf_extras_drop_non_github_repo_links() -> None:
         assert out[dropped].project_page is None
     assert out["2510.00004"].github_repo == "https://github.com/MirroS-Lab/AgentGarten/"
     assert out["2510.00004"].project_page == "https://example.com/page"
+
+
+@respx.mock
+def test_hf_out_of_range_numbers_become_none() -> None:
+    # The columns are int4: a number they cannot hold is dropped like any other malformed extra,
+    # so one hostile row cannot fail the whole listing write for every paper.
+    rows = [
+        {
+            "paper": {
+                "id": "2510.00001",
+                "upvotes": 42,
+                "githubStars": INT4_MAX + 1,
+                "numComments": -1,
+            }
+        },
+        # An upvote count the column cannot hold skips the row, as a malformed one does.
+        {"paper": {"id": "2510.00002", "upvotes": INT4_MAX + 1}},
+        {"paper": {"id": "2510.00003", "upvotes": 7, "githubStars": INT4_MAX}},
+    ]
+    respx.get(HF_URL).mock(return_value=httpx.Response(200, json=rows))
+    out = HfDailySource(httpx.Client()).papers(date(2026, 10, 9), date(2026, 10, 9))
+    assert out["2510.00001"].upvotes == 42
+    assert out["2510.00001"].github_stars is None
+    assert out["2510.00001"].comments is None
+    assert "2510.00002" not in out
+    assert out["2510.00003"].github_stars == INT4_MAX
+
+
+@respx.mock
+def test_hf_an_infinite_number_is_dropped() -> None:
+    # JSON's "1e999" parses to infinity; int(inf) raises OverflowError, which is a bad extra, not
+    # a failed day.
+    content = b'[{"paper": {"id": "2510.00001", "upvotes": 3, "githubStars": 1e999}}]'
+    respx.get(HF_URL).mock(return_value=httpx.Response(200, content=content))
+    src = HfDailySource(httpx.Client())
+    out = src.papers(date(2026, 10, 9), date(2026, 10, 9))
+    assert out["2510.00001"].upvotes == 3
+    assert out["2510.00001"].github_stars is None
+    assert src.degraded is False
+
+
+@respx.mock
+def test_hf_clips_an_over_long_organisation() -> None:
+    # The column holds HF_ORG_MAX_CHARS; clipping here is what keeps a 300-character name from
+    # failing the write (the store clips too, for a caller that does not come through the client).
+    long_org = "O" * (HF_ORG_MAX_CHARS + 44)
+    respx.get(HF_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {"paper": {"id": "2510.00001", "upvotes": 1, "organization": {"name": long_org}}}
+            ],
+        )
+    )
+    out = HfDailySource(httpx.Client()).papers(date(2026, 10, 9), date(2026, 10, 9))
+    assert out["2510.00001"].organization == long_org[:HF_ORG_MAX_CHARS]
+
+
+@respx.mock
+def test_hf_first_non_null_extras_survive_a_later_null() -> None:
+    # The window walks newest first, and the newest listing can be missing an extra an older day
+    # carried; the first non-null wins for the identifying extras and the counts take the max.
+    def responder(request: httpx.Request) -> httpx.Response:
+        if request.url.params["date"] == "2026-10-09":
+            return httpx.Response(
+                200,
+                json=[{"paper": {"id": "2510.00001", "upvotes": 10}, "numComments": 2}],
+            )
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "paper": {
+                        "id": "2510.00001",
+                        "upvotes": 5,
+                        "githubRepo": "https://github.com/a/b",
+                        "projectPage": "https://example.com/p",
+                        "organization": {"fullname": "OlderOrg"},
+                    },
+                    # numComments sits on the entry, not the paper, in the real listing.
+                    "numComments": 5,
+                }
+            ],
+        )
+
+    respx.get(HF_URL).mock(side_effect=responder)
+    out = HfDailySource(httpx.Client()).papers(date(2026, 10, 8), date(2026, 10, 9))
+    assert out == {
+        "2510.00001": HfPaper(
+            upvotes=10,
+            comments=5,
+            github_repo="https://github.com/a/b",
+            project_page="https://example.com/p",
+            organization="OlderOrg",
+        )
+    }
+
+
+@respx.mock
+def test_hf_repo_link_rejects_a_look_alike_host_and_an_extra_path() -> None:
+    # The host dot is escaped and the whole value must match: githubXcom is another host, and a
+    # path below owner/repo is not a repository URL.
+    rows = [
+        {"paper": {"id": "2510.00001", "upvotes": 1, "githubRepo": "https://githubXcom/a/b"}},
+        {"paper": {"id": "2510.00002", "upvotes": 1, "githubRepo": "https://github.com/a/b/c"}},
+        {"paper": {"id": "2510.00003", "upvotes": 1, "githubRepo": "https://github.com/a/b\n"}},
+    ]
+    respx.get(HF_URL).mock(return_value=httpx.Response(200, json=rows))
+    out = HfDailySource(httpx.Client()).papers(date(2026, 10, 9), date(2026, 10, 9))
+    assert all(paper.github_repo is None for paper in out.values())
+
+
+@respx.mock
+def test_hf_project_page_length_boundary_and_hostile_shapes() -> None:
+    # Both ends of the length bound are pinned, and a page must have a real https host: no
+    # credentials, no whitespace and no control characters.
+    base = "https://example.com/"
+    at_limit = base + "a" * (PROJECT_PAGE_MAX_CHARS - len(base))
+    over_limit = at_limit + "a"
+    pages = {
+        "2510.00001": at_limit,
+        "2510.00002": over_limit,
+        "2510.00003": "https://",
+        "2510.00004": "https://a b.example/c",
+        "2510.00005": "https://a\nb.example/c",
+        "2510.00006": "https://user@example.com/c",
+        "2510.00007": "https://example.com/\x00",
+    }
+    rows = [
+        {"paper": {"id": pid, "upvotes": 1, "projectPage": page}} for pid, page in pages.items()
+    ]
+    respx.get(HF_URL).mock(return_value=httpx.Response(200, json=rows))
+    out = HfDailySource(httpx.Client()).papers(date(2026, 10, 9), date(2026, 10, 9))
+    assert out["2510.00001"].project_page == at_limit
+    for dropped in ("2510.00002", "2510.00003", "2510.00004", "2510.00005", "2510.00006"):
+        assert out[dropped].project_page is None
+    assert out["2510.00007"].project_page is None
+
+
+@respx.mock
+def test_hf_organisation_prefers_the_paper_and_falls_back_to_the_entry() -> None:
+    # paper fullname, paper name, then the entry's; the paper's own organisation is the one the
+    # listing attaches, so a different entry organisation never wins.
+    rows = [
+        {
+            "paper": {"id": "2510.00001", "upvotes": 1},
+            "organization": {"name": "EntrySlug", "fullname": "Entry Org"},
+        },
+        {
+            "paper": {"id": "2510.00002", "upvotes": 1, "organization": {"name": "PaperSlug"}},
+            "organization": {"name": "EntrySlug"},
+        },
+        {
+            "paper": {
+                "id": "2510.00003",
+                "upvotes": 1,
+                "organization": {"name": "PaperSlug", "fullname": "Paper Full"},
+            }
+        },
+    ]
+    respx.get(HF_URL).mock(return_value=httpx.Response(200, json=rows))
+    out = HfDailySource(httpx.Client()).papers(date(2026, 10, 9), date(2026, 10, 9))
+    assert out["2510.00001"].organization == "Entry Org"
+    assert out["2510.00002"].organization == "PaperSlug"
+    assert out["2510.00003"].organization == "Paper Full"
+
+
+@respx.mock
+def test_hf_listing_time_is_utc_and_a_malformed_one_is_none() -> None:
+    # A naive stamp is read as UTC (the listing only sends UTC) and a malformed one is a bad extra
+    # that keeps the row.
+    rows = [
+        {
+            "paper": {
+                "id": "2510.00001",
+                "upvotes": 1,
+                "submittedOnDailyAt": "2026-10-09T00:00:00",
+            }
+        },
+        {
+            "paper": {
+                "id": "2510.00002",
+                "upvotes": 1,
+                "submittedOnDailyAt": "not-a-date",
+            }
+        },
+    ]
+    respx.get(HF_URL).mock(return_value=httpx.Response(200, json=rows))
+    out = HfDailySource(httpx.Client()).papers(date(2026, 10, 9), date(2026, 10, 9))
+    assert out["2510.00001"].listed_at == datetime(2026, 10, 9, tzinfo=UTC)
+    assert out["2510.00002"].listed_at is None
+    assert out["2510.00002"].upvotes == 1
+
+
+@respx.mock
+def test_hf_an_absent_star_count_stays_none() -> None:
+    # A missing count is "not observed", never zero: zero would read as a real star count.
+    respx.get(HF_URL).mock(
+        return_value=httpx.Response(200, json=[{"paper": {"id": "2510.00001", "upvotes": 1}}])
+    )
+    out = HfDailySource(httpx.Client()).papers(date(2026, 10, 9), date(2026, 10, 9))
+    assert out["2510.00001"].github_stars is None
+    assert out["2510.00001"].comments is None
 
 
 @respx.mock

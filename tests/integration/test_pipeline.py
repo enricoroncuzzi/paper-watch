@@ -8,15 +8,16 @@ from zoneinfo import ZoneInfo
 import pytest
 from sqlalchemy import Engine, select, text
 from sqlalchemy.engine import Connection
-from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from structlog.testing import capture_logs
 
 from paperwatch.admission import load_admission
 from paperwatch.config import (
     FEED_OVERLAP,
+    HF_ORG_MAX_CHARS,
     HF_RECHECK_HORIZON,
     INGEST_LOCK_KEY,
+    INT4_MAX,
     MAX_ITEM_ATTEMPTS,
 )
 from paperwatch.domain import (
@@ -329,23 +330,48 @@ def test_a_run_stores_hf_extras_for_listed_papers(db_session: Session) -> None:
     assert (snapshot.observed_at, snapshot.hf_upvotes, snapshot.github_stars) == (NOW, 50, 120)
 
 
-def test_a_failing_listing_step_is_a_warning_not_a_failure(
-    db_session: Session, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # Extras are presentation data: a write that fails must not cost an item an admission attempt
-    # or make the morning check say the run is unhealthy.
-    src = fake_sources([paper("2510.1", "Agent harness")])
-    src.hf.papers.return_value = {"2510.1": HfPaper(upvotes=50)}
-
-    def broken(self: Repository, papers: object, *, at: datetime) -> int:
-        raise SQLAlchemyError("listing store is down")
-
-    monkeypatch.setattr(Repository, "apply_hf_listing", broken)
+def test_a_bad_extra_row_does_not_sink_the_listing_step(db_session: Session) -> None:
+    # The real store, not a stub: a number and a name the columns cannot hold are sanitised, and
+    # the other paper's extras and snapshot still land.
+    src = fake_sources([paper("2510.1", "Agent harness"), paper("2510.2", "Coding agent")])
+    src.hf.papers.return_value = {
+        "2510.1": HfPaper(
+            upvotes=10,
+            github_stars=INT4_MAX + 1,
+            organization="O" * (HF_ORG_MAX_CHARS + 44),
+        ),
+        "2510.2": HfPaper(upvotes=20, github_repo="https://github.com/a/b", github_stars=42),
+    }
     res = run(db_session, src)
+    assert res.counts["snapshots"] == 2
+    bad = row(db_session, "2510.1")
+    assert (bad.github_stars, bad.hf_org) == (None, "O" * HF_ORG_MAX_CHARS)
+    good = row(db_session, "2510.2")
+    assert (good.hf_upvotes, good.github_repo, good.github_stars) == (
+        20,
+        "https://github.com/a/b",
+        42,
+    )
+    snapshots = db_session.scalars(
+        select(SignalSnapshot).where(SignalSnapshot.item_id == good.id)
+    ).all()
+    assert len(snapshots) == 1 and snapshots[0].github_stars == 42
+
+
+def test_a_real_database_error_in_the_listing_step_is_a_warning(db_session: Session) -> None:
+    # Extras are presentation data: a write the database really refuses (Postgres text cannot hold
+    # a NUL byte) must not cost an item an admission attempt or make the run unhealthy, and the
+    # failure must be logged.
+    src = fake_sources([paper("2510.1", "Agent harness")])
+    src.hf.papers.return_value = {"2510.1": HfPaper(upvotes=50, organization="bad\x00org")}
+    with capture_logs() as logs:
+        res = run(db_session, src)
     assert res.status == "succeeded"
     assert res.health is not None and res.health.healthy
     assert "hugging face extras not stored this run" in res.health.warnings
     assert [item.admit_attempts for item in db_session.scalars(select(Item)).all()] == [0]
+    [failed] = [entry for entry in logs if entry.get("event") == "hf_listing_not_stored"]
+    assert failed["error_type"] == "DataError"
 
 
 def test_lab_report_admitted_same_day_then_basis_improves(db_session: Session) -> None:
@@ -817,6 +843,8 @@ def test_budget_stop_during_classification_skips_recheck(db_session: Session) ->
     assert CheapEmbedder.calls == 0  # phase 3 must not run after a phase-2 budget stop
     assert ledger.tokens_used == 1000  # the charge that was refused added nothing
     assert res.counts["new"] == 1  # only the item actually written counts as new
+    # Phase 3 never ran, so no listing was read and the snapshot count stays at its initial 0.
+    assert res.counts["snapshots"] == 0
     assert sorted(db_session.scalars(select(Item.status))) == ["candidate"]
     letters = Repository(db_session).open_item_dead_letters()
     assert len(letters) == 1 and letters[0][1] is not None
@@ -2075,6 +2103,33 @@ def test_the_lock_is_held_and_the_row_is_finished_while_waiting(
         },
     }
     assert res.run_id == seen["run_id"]
+
+
+def test_the_listing_is_released_before_the_follow_up_wait(db_session: Session) -> None:
+    # A window can carry thousands of records; like the models, the listing is dropped before a
+    # wait that can last hours, so the idle process does not hold it.
+    import weakref
+
+    src = fake_sources([paper("2510.2", "Coding agent")])
+    src.s2.lookup.return_value = {}
+    src.s2.refused, src.s2.degraded = {"2510.2"}, True
+    refs: list[weakref.ref[HfPaper]] = []
+
+    def listing(since: date, until: date) -> dict[str, HfPaper]:
+        record = HfPaper(upvotes=50)
+        refs.append(weakref.ref(record))
+        return {"2510.2": record}
+
+    src.hf.papers.side_effect = listing
+    seen: list[bool] = []
+
+    def sleep(seconds: float) -> None:
+        seen.append(refs[0]() is None)
+        src.s2.refused, src.s2.degraded = set(), False
+
+    res = run(db_session, src, followup=True, sleep=sleep)
+    assert seen == [True]
+    assert res.health is not None and res.health.healthy
 
 
 def test_a_pass_that_admits_nothing_does_not_rebuild_the_models(db_session: Session) -> None:

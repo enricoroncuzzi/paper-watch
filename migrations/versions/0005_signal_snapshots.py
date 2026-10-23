@@ -21,8 +21,8 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     """Upgrade schema."""
     op.add_column("items", sa.Column("hf_comments", sa.Integer(), nullable=True))
-    # A stored link is only ever kept after the client's https GitHub check, so no scheme check
-    # belongs in the column.
+    # Only an https GitHub repository URL reaches this column (the client checks its strict
+    # shape), so the column needs no check of its own. This is not the free-form project page.
     op.add_column("items", sa.Column("github_repo", sa.Text(), nullable=True))
     op.add_column("items", sa.Column("github_stars", sa.Integer(), nullable=True))
     op.add_column("items", sa.Column("project_page", sa.Text(), nullable=True))

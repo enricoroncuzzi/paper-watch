@@ -12,16 +12,17 @@ from datetime import datetime, timedelta
 
 from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.dialects.postgresql import distinct_on, insert
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session, load_only, sessionmaker
 
 from paperwatch.config import (
+    HF_ORG_MAX_CHARS,
+    INT4_MAX,
     ITEM_VENUE_MAX_CHARS,
     MAX_ITEM_ATTEMPTS,
     S2_CADENCE,
     S2_RECHECK_SLACK,
 )
-from paperwatch.domain import AdmissionBasis, Signals, SourceItem, Tier
-from paperwatch.sources.hf_daily import HfPaper
+from paperwatch.domain import AdmissionBasis, HfPaper, Signals, SourceItem, Tier
 from paperwatch.store.models import (
     ChatCall,
     DeadLetter,
@@ -67,6 +68,14 @@ class ItemDetail:
     citation_count: int
     hf_upvotes: int | None
     profile: str | None
+
+
+def _int4(value: int | None) -> int | None:
+    # The columns are int4, so a number outside that range is a bad extra that would fail the
+    # whole listing write; drop it instead of costing every paper its extras.
+    if value is None or not 0 <= value <= INT4_MAX:
+        return None
+    return value
 
 
 def _is_preprint(venue: str | None) -> bool:
@@ -229,12 +238,31 @@ class Repository:
         """
         if not papers:
             return 0
+        # An irrelevant item was classified off-topic on purpose, so it is filtered in SQL: it
+        # must not be loaded at all, and the rest loads only the columns this step writes, while
+        # the model and the run's fetched pages are still in memory.
         rows = self._s.scalars(
-            select(Item).where(Item.source == "arxiv", Item.external_id.in_(list(papers)))
+            select(Item)
+            .where(
+                Item.source == "arxiv",
+                Item.status != "irrelevant",
+                Item.external_id.in_(list(papers)),
+            )
+            .options(
+                load_only(
+                    Item.id,
+                    Item.external_id,
+                    Item.hf_upvotes,
+                    Item.hf_comments,
+                    Item.github_repo,
+                    Item.github_stars,
+                    Item.project_page,
+                    Item.hf_org,
+                    Item.hf_listed_at,
+                    Item.citation_count,
+                )
+            )
         ).all()
-        # An irrelevant item was classified off-topic on purpose; giving it presentation data
-        # would only make it look like a corpus candidate.
-        rows = [row for row in rows if row.status != "irrelevant"]
         if not rows:
             return 0
         latest: dict[uuid.UUID, SignalSnapshot] = {}
@@ -252,18 +280,24 @@ class Repository:
         for row in rows:
             paper = papers[row.external_id]
             # Upvotes are evidence, so a lower reading is a lag; the extras describe the paper
-            # right now, so the newest non-null reading wins. A missing extra keeps the stored one.
-            row.hf_upvotes = max(row.hf_upvotes or 0, paper.upvotes)
-            if paper.comments is not None:
-                row.hf_comments = paper.comments
+            # right now, so the newest non-null reading wins and a missing one keeps the stored
+            # value. The names and numbers are clipped to the columns so one hostile value cannot
+            # fail the write for every paper.
+            upvotes = _int4(paper.upvotes)
+            if upvotes is not None:
+                row.hf_upvotes = max(row.hf_upvotes or 0, upvotes)
+            comments = _int4(paper.comments)
+            if comments is not None:
+                row.hf_comments = comments
             if paper.github_repo is not None:
                 row.github_repo = paper.github_repo
-            if paper.github_stars is not None:
-                row.github_stars = paper.github_stars
+            stars = _int4(paper.github_stars)
+            if stars is not None:
+                row.github_stars = stars
             if paper.project_page is not None:
                 row.project_page = paper.project_page
             if paper.organization is not None:
-                row.hf_org = paper.organization
+                row.hf_org = paper.organization[:HF_ORG_MAX_CHARS]
             if paper.listed_at is not None and (
                 row.hf_listed_at is None or paper.listed_at < row.hf_listed_at
             ):
