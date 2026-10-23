@@ -231,6 +231,30 @@ def test_check_names_the_health_problems(
     assert "check failed (2 problem(s))" in result.stdout
 
 
+def test_check_prints_warnings_without_failing(
+    write_rows: Callable[..., None], run_check: Callable[..., subprocess.CompletedProcess[str]]
+) -> None:
+    # One missed lab-feed day is a warning, not a bad morning: the check says so and still passes.
+    warning = "feed missed once, retried next run: https://lab.example/feed.xml"
+    write_rows("succeeded", {"healthy": True, "problems": [], "warnings": [warning]})
+    result = run_check()
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "WARN" in result.stdout and warning in result.stdout
+    assert "FAIL" not in result.stdout
+    assert "check passed" in result.stdout
+
+
+def test_check_reads_a_row_written_before_warnings_existed(
+    write_rows: Callable[..., None], run_check: Callable[..., subprocess.CompletedProcess[str]]
+) -> None:
+    # A health verdict from before the warnings key existed must read as no warnings, not crash
+    # the query or print an empty warning.
+    write_rows("succeeded", {"healthy": True, "problems": []})
+    result = run_check()
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "WARN" not in result.stdout
+
+
 def test_check_fails_on_the_verdict_alone(
     write_rows: Callable[..., None], run_check: Callable[..., subprocess.CompletedProcess[str]]
 ) -> None:

@@ -302,6 +302,12 @@ def ingest(live: bool = LIVE, since: str | None = SINCE) -> None:
     if res.status not in {"succeeded", "partial"}:
         # The run itself did not finish its work (failed, over budget): exit 1.
         raise typer.Exit(1)
+    # A warning is a finding worth seeing that never makes the day bad, so it goes to stderr (where
+    # the journal already carries the diagnostics) and the exit code stays 0 unless a problem says
+    # otherwise.
+    warnings = res.health.warnings if res.health is not None else ()
+    for warning in warnings:
+        typer.echo(f"warning: {warning}", err=True)
     if res.health is None or not res.health.healthy:
         # A finished run whose health verdict is bad is not a crash and not a success: 3 tells the
         # morning check and a timer apart from exit 1, and the problems go to stderr where a

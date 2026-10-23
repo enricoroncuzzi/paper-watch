@@ -47,6 +47,7 @@ NOW = datetime(2026, 10, 12, 6, tzinfo=UTC)
 PROFILES = load_profiles(Path("config/profiles.yaml"))
 ADM = load_admission(Path("config/admission.yaml"))
 FEED = Feed(lab="TestLab", url="https://lab.example/feed.xml", region="us-eu")
+OTHER_FEED = Feed(lab="OtherLab", url="https://other.example/feed.xml", region="us-eu")
 
 
 def paper(eid: str, title: str, version: int = 1) -> SourceItem:
@@ -462,14 +463,145 @@ def test_failed_reembedding_keeps_the_old_version(db_session: Session) -> None:
     assert row(db_session, "2510.1").version == 2
 
 
-def test_source_failure_records_dead_letter_and_partial_run(db_session: Session) -> None:
+def test_one_missed_feed_day_is_a_warning(db_session: Session) -> None:
+    # A 502 once is not a bad morning (2026-10-23: Microsoft Research answered 502 at 06:00).
+    # The dead letter and the pinned cursor stay, so the next run retries the same window and
+    # nothing is lost; the day it missed is a warning, not a degraded run.
     src = fake_sources([paper("2510.1", "Agent harness")])
-    src.feeds.fetch_one.side_effect = RuntimeError("HTTP 500")
+    src.feeds.fetch_one.side_effect = RuntimeError("HTTP 502")
     res = run(db_session, src)
-    assert res.status == "partial" and res.counts["stored"] == 1
+    assert res.status == "succeeded" and res.counts["stored"] == 1
+    warning = f"feed missed once, retried next run: {FEED.url}"
+    assert res.health == Health(True, (), (warning,))
+    assert db_session.get_one(Run, res.run_id).health == {
+        "healthy": True,
+        "problems": [],
+        "warnings": [warning],
+    }
     # The parked-letter row for the fetched paper is resolved; the feed failure is the open one.
     dl = db_session.scalars(select(DeadLetter).where(DeadLetter.ref == FEED.url)).one()
-    assert dl.window_end == NOW
+    assert dl.window_end == NOW and dl.resolved_at is None
+    # The failed feed's cursor is pinned to the window it missed, not listed as stuck.
+    assert Repository(db_session).cursor(f"feed:{FEED.url}") == NOW - timedelta(days=7)
+
+
+def test_a_second_missed_feed_day_is_a_failure(db_session: Session) -> None:
+    # The same feed failing on the next run is a continuing outage, not a blip: now the run is
+    # degraded, the cursor did not advance, and the morning check should say so.
+    src = fake_sources([paper("2510.1", "Agent harness")])
+    src.feeds.fetch_one.side_effect = RuntimeError("HTTP 502")
+    assert run(db_session, src).status == "succeeded"
+    res = run(db_session, src, now=NOW + timedelta(days=1))
+    assert res.status == "partial" and not res.health.healthy
+    health = db_session.get_one(Run, res.run_id).health
+    assert health["warnings"] == []
+    assert f"cursor not advanced: feed:{FEED.url}" in health["problems"]
+    # One letter per outage, however many runs it lasts.
+    letters = db_session.scalars(select(DeadLetter).where(DeadLetter.ref == FEED.url)).all()
+    assert len(letters) == 1
+
+
+def test_a_feed_that_recovers_resolves_its_warning(db_session: Session) -> None:
+    src = fake_sources([paper("2510.1", "Agent harness")])
+    src.feeds.fetch_one.side_effect = RuntimeError("HTTP 502")
+    assert run(db_session, src).status == "succeeded"
+
+    def good_feed(feed: Feed, since: datetime, until: datetime) -> list[SourceItem]:
+        src.feeds.newest[feed.url] = until  # answered, and its newest post is recent
+        return []
+
+    src.feeds.fetch_one.side_effect = good_feed
+    res = run(db_session, src, now=NOW + timedelta(days=1))
+    assert res.status == "succeeded" and res.health == Health(True, ())
+    dl = db_session.scalars(select(DeadLetter).where(DeadLetter.ref == FEED.url)).one()
+    assert dl.resolved_at == NOW + timedelta(days=1)
+    assert Repository(db_session).cursor(f"feed:{FEED.url}") == NOW + timedelta(days=1)
+
+
+def test_a_feed_that_misses_alternate_days_is_warned_each_time(db_session: Session) -> None:
+    # Failing, answering, then failing again is two separate one-day misses, not one continuing
+    # outage: each miss is a warning with its own letter, and the recovery closes the first.
+    src = fake_sources([paper("2510.1", "Agent harness")])
+
+    def good_feed(feed: Feed, since: datetime, until: datetime) -> list[SourceItem]:
+        src.feeds.newest[feed.url] = until
+        return []
+
+    src.feeds.fetch_one.side_effect = RuntimeError("HTTP 502")
+    first = run(db_session, src)
+    src.feeds.fetch_one.side_effect = good_feed
+    second = run(db_session, src, now=NOW + timedelta(days=1))
+    src.feeds.fetch_one.side_effect = RuntimeError("HTTP 502")
+    third = run(db_session, src, now=NOW + timedelta(days=2))
+    warning = f"feed missed once, retried next run: {FEED.url}"
+    assert first.health.warnings == (warning,) and second.health.warnings == ()
+    assert third.status == "succeeded" and third.health == Health(True, (), (warning,))
+    letters = db_session.scalars(
+        select(DeadLetter).where(DeadLetter.ref == FEED.url).order_by(DeadLetter.id)
+    ).all()
+    assert len(letters) == 2
+    assert letters[0].resolved_at == NOW + timedelta(days=1)
+    assert letters[1].resolved_at is None and letters[1].window_end == NOW + timedelta(days=2)
+
+
+def test_two_feeds_fail_on_different_days_without_hiding_each_other(
+    db_session: Session,
+) -> None:
+    # One feed answering while another misses is still a first miss for the other. Each run's
+    # warning and stuck-cursor lists must name the right feed, so a recovering feed never covers
+    # for a single miss of its sibling.
+    src = fake_sources([paper("2510.1", "Agent harness")])
+    src.feed_list = [FEED, OTHER_FEED]
+    failing = {FEED.url: {0, 2}, OTHER_FEED.url: {1, 2}}
+    day = {"index": 0}
+
+    def fetch_one(feed: Feed, since: datetime, until: datetime) -> list[SourceItem]:
+        if day["index"] in failing[feed.url]:
+            raise RuntimeError(f"HTTP 502 for {feed.url}")
+        src.feeds.newest[feed.url] = until  # answered, and its newest post is recent
+        return []
+
+    src.feeds.fetch_one.side_effect = fetch_one
+
+    def warning(url: str) -> str:
+        return f"feed missed once, retried next run: {url}"
+
+    # Day 0: A misses; B answers.
+    day["index"] = 0
+    first = run(db_session, src, now=NOW)
+    assert first.health == Health(True, (), (warning(FEED.url),))
+    # Day 1: A answers, which closes A's letter; B misses, and it is B's first miss.
+    day["index"] = 1
+    second = run(db_session, src, now=NOW + timedelta(days=1))
+    assert second.health == Health(True, (), (warning(OTHER_FEED.url),))
+    a_letter = db_session.scalars(select(DeadLetter).where(DeadLetter.ref == FEED.url)).one()
+    assert a_letter.resolved_at == NOW + timedelta(days=1)
+    # Day 2: A misses again, a fresh one-day warning; B is on its second miss in a row, a failure.
+    day["index"] = 2
+    third = run(db_session, src, now=NOW + timedelta(days=2))
+    assert third.status == "partial"
+    assert third.health == Health(
+        False,
+        ("status=partial", f"cursor not advanced: feed:{OTHER_FEED.url}"),
+        (warning(FEED.url),),
+    )
+
+
+def test_a_feed_failure_is_logged_with_whether_the_outage_is_new(db_session: Session) -> None:
+    # The health verdict is for the morning check; the journal line is for log-based alerts, and it
+    # must say whether this miss started an outage or continued one.
+    src = fake_sources([paper("2510.1", "Agent harness")])
+    src.feeds.fetch_one.side_effect = RuntimeError("HTTP 502")
+    with capture_logs() as logs:
+        run(db_session, src)
+    started = [event for event in logs if event["event"] == "feed_fetch_failed"]
+    assert [(event["feed"], event["outage"], event["error"]) for event in started] == [
+        (FEED.url, "started", "RuntimeError('HTTP 502')")
+    ]
+    with capture_logs() as logs:
+        run(db_session, src, now=NOW + timedelta(days=1))
+    continuing = [event for event in logs if event["event"] == "feed_fetch_failed"]
+    assert [(event["feed"], event["outage"]) for event in continuing] == [(FEED.url, "continuing")]
 
 
 def test_failed_source_window_is_replayed_next_run(db_session: Session) -> None:
@@ -1079,7 +1211,7 @@ def test_stale_feed_is_flagged_in_health(db_session: Session) -> None:
 def test_run_records_health_verdict(db_session: Session) -> None:
     healthy = run(db_session, fake_sources([paper("2510.1", "Agent harness")]))
     row_ = db_session.get_one(Run, healthy.run_id)
-    assert row_.health == {"healthy": True, "problems": []}
+    assert row_.health == {"healthy": True, "problems": [], "warnings": []}
     # The verdict also travels on the result: `paperwatch ingest` turns it into exit code 3, so a
     # row alone would never reach the process that systemd and the morning check look at.
     assert healthy.health == Health(True, ())
@@ -1134,7 +1266,7 @@ def test_daily_runs_over_a_week_lose_nothing(db_session: Session) -> None:
         now = day0 + timedelta(days=day)
         src.feeds.fetch_one.side_effect = RuntimeError("HTTP 503") if day == 3 else None
         statuses.append(run(db_session, src, now=now).status)
-    assert statuses[3] == "partial" and statuses.count("succeeded") == 6
+    assert statuses[3] == "succeeded" and statuses.count("succeeded") == 7
     admitted = sorted(
         db_session.scalars(
             select(Item.external_id).where(Item.source == "arxiv", Item.status == "admitted")
@@ -1230,7 +1362,8 @@ def test_arxiv_outage_letter_is_written_once_and_closed_on_recovery(db_session: 
 def test_feed_outage_letter_closes_but_a_malformed_entry_stays_open(db_session: Session) -> None:
     src = fake_sources([paper("2510.1", "Agent harness")])
     src.feeds.fetch_one.side_effect = RuntimeError("HTTP 503")
-    assert run(db_session, src).status == "partial"
+    # The first miss is a warning; only a second run in a row with the same feed failing degrades.
+    assert run(db_session, src).status == "succeeded"
     assert run(db_session, src, now=NOW + timedelta(days=1)).status == "partial"
     outage = db_session.scalars(
         select(DeadLetter).where(DeadLetter.source == "feed", DeadLetter.ref == FEED.url)

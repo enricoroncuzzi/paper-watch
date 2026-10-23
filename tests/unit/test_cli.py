@@ -139,6 +139,34 @@ def test_ingest_exits_zero_when_a_finished_run_is_healthy(
     assert result.exit_code == 0 and result.stderr == ""
 
 
+def test_ingest_prints_a_warning_and_still_exits_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+    # One missed lab-feed day is a finding worth printing, not a bad morning: the next run retries
+    # the same window, so the command says so and exits 0.
+    warning = "feed missed once, retried next run: https://lab.example/feed.xml"
+    _stub_live_ingest(
+        monkeypatch,
+        SimpleNamespace(
+            status="succeeded", counts={}, tokens=0, health=Health(True, (), (warning,))
+        ),
+    )
+    result = CliRunner().invoke(cli.app, ["ingest", "--live"])
+    assert result.exit_code == 0
+    assert f"warning: {warning}" in result.stderr
+    assert "unhealthy:" not in result.stderr
+
+
+def test_ingest_prints_warnings_and_problems_together(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A continuing outage has both: the problems decide the exit code, the warning still shows.
+    warning = "feed missed once, retried next run: https://lab.example/feed.xml"
+    health = Health(False, ("status=partial",), (warning,))
+    _stub_live_ingest(
+        monkeypatch, SimpleNamespace(status="partial", counts={}, tokens=0, health=health)
+    )
+    result = CliRunner().invoke(cli.app, ["ingest", "--live"])
+    assert result.exit_code == 3
+    assert f"warning: {warning}" in result.stderr and "unhealthy: status=partial" in result.stderr
+
+
 def test_ingest_exits_three_when_a_finished_run_carries_no_verdict(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
