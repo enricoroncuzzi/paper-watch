@@ -147,12 +147,14 @@ def fake_sources(papers: list[SourceItem], feed_items: list[SourceItem] | None =
     s.hf.upvotes.return_value = {p.external_id: 50 for p in papers}
     s.s2.lookup.return_value = {}
     s.s2.refused = set()  # ids whose Semantic Scholar chunk the stub refuses
+    s.s2.refused_ids = set()  # like the real client, reset on every lookup
 
     def s2_lookup(ids: list[str]) -> object:
         # Like the real client: ids in an answered chunk are checked. A test refuses chunks
         # through `refused`, or every chunk by setting `degraded` alone (a whole outage).
         outage = s.s2.degraded and not s.s2.refused
         s.s2.checked_ids = set() if outage else set(ids) - s.s2.refused
+        s.s2.refused_ids = set(ids) if outage else set(s.s2.refused) & set(ids)
         return DEFAULT  # then the mock returns lookup.return_value as usual
 
     s.s2.lookup.side_effect = s2_lookup
@@ -386,6 +388,8 @@ def test_s2_refused_chunk_stays_due(db_session: Session, monkeypatch: pytest.Mon
     src.s2.degraded, src.s2.failure = True, "s2 chunk at 500: HTTP 429"
     res = run(db_session, src, now=day1)
     assert res.status == "partial" and res.counts["s2_unchecked"] == 1
+    # Refused is counted apart from unchecked: the ids S2 refused, not the ones it never knew.
+    assert res.counts["s2_refused"] == 1
     assert (row(db_session, "2510.1").s2_checked_at, row(db_session, "2510.2").s2_checked_at) == (
         day1,
         NOW,
@@ -1092,6 +1096,7 @@ def test_signal_source_outage_is_visible_and_cursor_advances(db_session: Session
     res = run(db_session, src)
     assert res.status == "partial" and res.counts["signal_failures"] == 1
     assert res.counts["s2_unchecked"] == 1  # still due: the next run asks again
+    assert res.counts["s2_refused"] == 1  # a refused chunk is a refusal, not an unknown paper
     dl = db_session.scalars(select(DeadLetter).where(DeadLetter.source == "s2")).one()
     assert "429" in dl.error
     # arXiv was fetched fine, so its cursor moves; the next run's re-check repeats the lookup.
