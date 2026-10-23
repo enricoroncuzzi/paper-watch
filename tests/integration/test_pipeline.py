@@ -1699,7 +1699,7 @@ def test_a_refusal_that_never_clears_ends_at_the_end_of_the_day(db_session: Sess
     # This run starts at 06:00 UTC, which is 08:00 in Rome (CEST), so its window closes at 20:00
     # UTC. The ramp ends at 07:15 UTC and a 30-minute pass only fits while it starts by 20:00:
     # 07:15 + 30 min x 25 = 19:45, and the 26th would start at 20:15. So 4 ramp passes plus 25 = 29,
-    # and 29 waits. (A 06:00 Rome start gets 33 passes, ADR 0008's 34 S2 requests.)
+    # and 29 waits. (A 06:00 Rome start gets 33 passes, ADR 0008's 34 S2 lookups.)
     assert sleeps == [300, 600, 1200, 2400] + [1800] * 25
     assert res.counts["followup_passes"] == 29
     assert res.health is not None
@@ -2298,3 +2298,88 @@ def test_a_budget_stop_inside_a_pass_ends_the_loop(db_session: Session) -> None:
     assert res.health is not None
     assert res.health.followup == {"passes": 1, "stopped": "budget_exhausted"}
     assert row(db_session, "2510.2").status == "candidate"
+
+
+def test_an_anomaly_that_first_appears_in_a_pass_survives_a_later_clean_one(
+    db_session: Session,
+) -> None:
+    # A pass can be the first to see the bad shape (its answer is short or unpaired) while a later
+    # pass answers cleanly: the anomaly belongs to the run, so the day stays degraded.
+    src = fake_sources([paper("2510.1", "Agent harness"), paper("2510.2", "Coding agent")])
+    src.hf.upvotes.return_value = {}
+    src.s2.refused, src.s2.degraded, src.s2.failure = {"2510.2"}, True, "HTTP 429 after 5 attempts"
+    _sleeps, wall, sleep = travelling_clock(NOW)
+    calls = {"n": 0}
+
+    def hook(seconds: float) -> None:
+        sleep(seconds)
+        calls["n"] += 1
+        if calls["n"] == 1:  # pass 1: refused again, and an answer shape the client cannot read
+            src.s2.failure = "s2 chunk at 0: 3 rows for 10 ids"
+            src.s2.anomaly = src.s2.failure
+        else:  # pass 2: clean
+            src.s2.refused, src.s2.degraded, src.s2.failure, src.s2.anomaly = (
+                set(),
+                False,
+                None,
+                None,
+            )
+
+    res = run(db_session, src, followup=True, sleep=hook, clock=lambda: wall[0])
+    assert calls["n"] == 2
+    assert res.status == "partial" and res.health is not None and not res.health.healthy
+    assert "1 signal sources degraded" in res.health.problems
+
+
+def test_a_run_still_refused_at_the_deadline_keeps_an_anomaly_on_its_first_day(
+    db_session: Session,
+) -> None:
+    # The first day of a refusal is a warning, but an anomaly is not the refusal: it keeps the run
+    # degraded, so the warning cannot make a month of bad answers look like a healthy morning.
+    src = fake_sources([paper("2510.1", "Agent harness"), paper("2510.2", "Coding agent")])
+    src.hf.upvotes.return_value = {}
+    src.s2.refused, src.s2.degraded = {"2510.2"}, True
+    src.s2.failure = "s2 chunk at 0: 400 rows for 500 ids"
+    src.s2.anomaly = src.s2.failure
+    _sleeps, wall, sleep = travelling_clock(NOW)
+    res = run(db_session, src, followup=True, sleep=sleep, clock=lambda: wall[0])
+    assert res.health is not None and any("still refused" in w for w in res.health.warnings)
+    assert res.status == "partial" and not res.health.healthy
+    assert "1 signal sources degraded" in res.health.problems
+
+
+def test_a_recovered_pass_with_an_anomaly_closes_the_outage_letter(db_session: Session) -> None:
+    # The source is answering again, so its outage letter closes; tomorrow's first refusal is a
+    # first day, not a second one. The anomaly itself stays in this run's verdict.
+    src = fake_sources([paper("2510.1", "Agent harness"), paper("2510.2", "Coding agent")])
+    src.hf.upvotes.return_value = {}
+    src.s2.refused, src.s2.degraded = {"2510.2"}, True
+    src.s2.failure = "s2 chunk at 0: 400 rows for 500 ids"
+    src.s2.anomaly = src.s2.failure
+    _sleeps, wall, sleep = travelling_clock(NOW)
+
+    def recover(seconds: float) -> None:
+        sleep(seconds)
+        src.s2.refused, src.s2.degraded, src.s2.failure = set(), False, None
+
+    res = run(db_session, src, followup=True, sleep=recover, clock=lambda: wall[0])
+    assert not Repository(db_session).has_open_dead_letter("s2", "signals")
+    assert res.status == "partial" and res.health is not None and not res.health.healthy
+
+
+def test_the_window_cap_counts_from_the_start_not_from_the_end_of_the_main_pass(
+    db_session: Session,
+) -> None:
+    # The 16 h cap is measured from the run's `now`, so a main pass that took two hours shortens the
+    # window instead of pushing it two hours later, which would eat the margin below the unit's
+    # 17 h timeout.
+    rome = ZoneInfo("Europe/Rome")
+    start = datetime(2026, 10, 13, 0, 30, tzinfo=rome).astimezone(UTC)
+    src = fake_sources([paper("2510.2", "Coding agent")])
+    src.hf.upvotes.return_value = {}
+    src.s2.degraded, src.s2.failure = True, "HTTP 429 after 5 attempts"
+    # The main pass takes two hours: the clock is already two hours past the run's `now`.
+    sleeps, wall, sleep = travelling_clock(start + timedelta(hours=2))
+    run(db_session, src, now=start, followup=True, sleep=sleep, clock=lambda: wall[0])
+    assert wall[0] <= start + timedelta(hours=16)
+    assert sum(sleeps) <= 14 * 3600  # the two hours the main pass took are inside the cap
