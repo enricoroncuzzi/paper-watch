@@ -35,7 +35,7 @@ def test_a_warning_is_serialised_and_does_not_hide_a_problem() -> None:
         "problems": ["status=partial", "arxiv stopped early"],
         "warnings": [WARNING],
     }
-    # A row written before warnings existed still reads as a health verdict, without them.
+    # A Health built without warnings serialises an empty list.
     assert Health(True, ()).as_dict() == {"healthy": True, "problems": [], "warnings": []}
 
 
