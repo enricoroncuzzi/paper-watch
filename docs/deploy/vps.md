@@ -1,7 +1,8 @@
 # Running Paper Watch's ingestion on the shared VPS
 
 The corpus has to accumulate every day, whatever the captain is building, so ingestion runs on
-the shared VPS ahead of M3. Two systemd user units, both as the `paperwatch` account: the daily
+the shared VPS ahead of M3 ([ADR 0009](../adr/0009-ingestion-runs-on-the-shared-vps.md)). Two
+systemd user units, both as the `paperwatch` account: the daily
 ingestion at 06:00 Europe/Rome, and a nightly `pg_dump` backup at 05:15. The API, the weekly
 shortlist, email alerts and the restore drill are not part of this deployment (M3 and M4).
 
