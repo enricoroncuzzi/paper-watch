@@ -382,6 +382,87 @@ def test_check_accepts_a_run_that_is_still_working(
     assert "in progress" in result.stdout
 
 
+def test_check_waits_on_a_run_between_follow_up_passes(
+    write_rows: Callable[..., None], run_check: Callable[..., subprocess.CompletedProcess[str]]
+) -> None:
+    # A scheduled run that S2 refused waits for its next pass, and its provisional verdict is
+    # unhealthy by design. That is neither a bad morning nor a pass: one WAIT line, no FAIL.
+    next_at = datetime.now(UTC) + timedelta(minutes=10)
+    health = {
+        "healthy": False,
+        "problems": ["status=partial", "1 signal sources degraded"],
+        "warnings": [],
+        "followup": {
+            "pass": 1,
+            "of": 40,
+            "next_at": next_at.isoformat(),
+            "pending": {"s2": 152},
+        },
+    }
+    write_rows("partial", health)
+    result = run_check()
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "WAIT  follow-up 1 of 40 pending (s2: 152 ids), next pass " in result.stdout
+    assert "FAIL" not in result.stdout
+    # The freshness line still runs, so a run that stops heartbeating is still caught later.
+    assert "fresh: last run started" in result.stdout
+    assert "check passed" in result.stdout
+
+
+def test_check_fails_when_a_follow_up_never_came(
+    write_rows: Callable[..., None], run_check: Callable[..., subprocess.CompletedProcess[str]]
+) -> None:
+    # The row still says a pass was coming and that moment has passed: the process was killed
+    # inside the window. One FAIL for the one event, like a killed run, and nothing else.
+    past_at = datetime.now(UTC) - timedelta(minutes=10)
+    health = {
+        "healthy": False,
+        "problems": ["status=partial", "1 signal sources degraded"],
+        "warnings": [],
+        "followup": {
+            "pass": 2,
+            "of": 40,
+            "next_at": past_at.isoformat(),
+            "pending": {"s2": 152},
+        },
+    }
+    write_rows("partial", health)
+    result = run_check()
+    assert result.returncode == EXIT_BAD
+    assert result.stdout.count("FAIL") == 1, result.stdout
+    assert "follow-up did not complete (killed?)" in result.stdout
+    assert "health:" not in result.stdout and "health problems" not in result.stdout
+
+
+def test_check_reports_a_finished_follow_up_loop(
+    write_rows: Callable[..., None], run_check: Callable[..., subprocess.CompletedProcess[str]]
+) -> None:
+    # A loop that ended on its own is not a failure: the verdict decides, and one line says how
+    # many passes it used and why it stopped.
+    health = {
+        "healthy": True,
+        "problems": [],
+        "warnings": [],
+        "followup": {"passes": 3, "stopped": "resolved"},
+    }
+    write_rows("succeeded", health)
+    result = run_check()
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "ok    follow-ups: 3 used, resolved" in result.stdout
+    assert "FAIL" not in result.stdout
+
+
+def test_check_reads_a_row_without_a_follow_up(
+    write_rows: Callable[..., None], run_check: Callable[..., subprocess.CompletedProcess[str]]
+) -> None:
+    # A row written before follow-ups existed (or by a run without --followup) has no followup key:
+    # no WAIT, no FAIL, no follow-up line.
+    write_rows("succeeded", {"healthy": True, "problems": [], "warnings": []})
+    result = run_check()
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "follow-up" not in result.stdout
+
+
 def test_check_fails_without_a_recent_backup(
     write_rows: Callable[..., None], run_check: Callable[..., subprocess.CompletedProcess[str]]
 ) -> None:
