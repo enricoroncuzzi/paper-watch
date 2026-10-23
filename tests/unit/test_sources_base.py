@@ -454,8 +454,9 @@ def test_a_retry_after_a_cross_origin_hop_starts_over_with_the_credentials() -> 
 
 
 def test_a_stripped_hop_keeps_the_other_headers_exactly_as_the_caller_wrote_them() -> None:
-    # The strip rebuilds the caller's header set, and a rebuild must not relabel or merge what it
-    # keeps: the caller's own casing and a repeated header go out as they would with no redirect.
+    # The strip copies the caller's header set and pops the credentials, and must not relabel or
+    # merge what it keeps: the caller's own casing and a repeated header go out as they would with
+    # no redirect.
     client, seen = _chain_client(
         _redirect_chain("https://lab.example/x", ["https://other.example/y"])
     )

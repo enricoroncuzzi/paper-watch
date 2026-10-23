@@ -187,9 +187,10 @@ def _origin(url: httpx.URL) -> str:
 
 
 # The credentials a hop to another origin must not carry: Authorization, which httpx also drops
-# across origins, plus Cookie and x-api-key, which it does not (it drops Cookie on every hop,
-# same-origin included). `send_with_retries` follows hops by hand, so it does this itself, and only
-# when the origin changes.
+# across origins, plus Cookie and x-api-key. httpx never drops x-api-key, and it drops Cookie on
+# every hop, same-origin included, so it is the origin check here that keeps a caller's Cookie on a
+# same-origin hop. `send_with_retries` follows hops by hand, so it does this itself, and only when
+# the origin changes.
 _CROSS_ORIGIN_CREDENTIALS = ("authorization", "cookie", "x-api-key")
 
 
