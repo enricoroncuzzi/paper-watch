@@ -419,11 +419,9 @@ user in step 2: it is the recommended connection for Beekeeper, and the safe mod
 second guard rather than the only one. The M3 API and agent are not read-only: the daily chat cap
 records one row per call in `chat_calls`, so a SELECT-only role fails the first answer. Give them
 their own role instead - `paperwatch_api` in the grants below, name it as you like - which reads
-every table and writes only those rows. The admin also has to let both connections in: peer
-authentication sees the accessing Unix account (`paperwatch`), not the role the client asks for, so
-each role needs a `pg_ident.conf` map from `paperwatch` to it (or a password, and then step 2 is no
-longer passwordless). `paperwatch` owns the tables and runs the migrations, so the default
-privileges granted `FOR ROLE paperwatch` are what keeps tables added by later migrations readable:
+every table and writes only those rows. `paperwatch` owns the tables and runs the migrations, so
+the default privileges granted `FOR ROLE paperwatch` are what keeps tables added by later
+migrations readable:
 
 ```sql
 -- as the admin, in database paperwatch
@@ -442,6 +440,52 @@ GRANT USAGE ON SEQUENCE chat_calls_id_seq TO paperwatch_api;
 ALTER DEFAULT PRIVILEGES FOR ROLE paperwatch IN SCHEMA public
   GRANT SELECT ON TABLES TO paperwatch_ro, paperwatch_api;
 ```
+
+The admin also has to let the three roles in without a password, and without loosening anything for
+the other project's database. All three steps are the admin's, and both files live in the
+cluster's data directory:
+
+1. One dedicated `pg_hba.conf` line, for the `paperwatch` database only, placed above the generic
+   `local all all peer` line: `pg_hba.conf` uses the first line that matches, so the order is what
+   makes it apply. The role field lists all three roles because the second field is the database
+   and the third is the role the client asks for, so a line naming only `paperwatch` would match
+   the owner alone and send `paperwatch_ro` and `paperwatch_api` to the generic line, where they
+   fail. Never put `map=` on `local all all peer`: that line also covers the other project's
+   database.
+
+   ```
+   # TYPE   DATABASE    USER                                     METHOD
+   local    paperwatch  paperwatch,paperwatch_ro,paperwatch_api  peer  map=paperwatch
+   ```
+
+2. The identity map in `pg_ident.conf`, three lines under the same name. `peer` compares the
+   accessing Unix account with the requested role unless a map is given, and a map accepts only the
+   system-user/role pairs it lists, so these lines are what restrict access to the Unix account
+   `paperwatch`. Leaving out the first line locks out the ingestion itself, which connects as
+   `paperwatch`:
+
+   ```
+   # MAPNAME     SYSTEM-USERNAME  PG-USERNAME
+   paperwatch    paperwatch       paperwatch
+   paperwatch    paperwatch       paperwatch_ro
+   paperwatch    paperwatch       paperwatch_api
+   ```
+
+   A password for each role is the alternative, and then the Beekeeper connection stops being
+   passwordless.
+
+3. Reload Postgres so it re-reads both files (no restart needed), then check that the owner still
+   gets in before you test the two new roles: a mistake in either file would otherwise lock the
+   ingestion out of the database it owns.
+
+   ```bash
+   # as the admin
+   psql -c 'select pg_reload_conf()'   # or: pg_ctl reload
+   # as paperwatch, which must still see the database
+   psql -d paperwatch -c 'select 1'
+   ```
+
+   Only once that prints `1`, try the two roles through the tunnel.
 
 Useful starting points: `select status, health, counts, started_at from runs order by started_at
 desc limit 5;` for recent runs, and `select tier, count(*) from items where status = 'admitted'

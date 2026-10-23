@@ -156,5 +156,41 @@ def test_the_guide_gives_each_of_the_two_roles_its_grants() -> None:
     assert "GRANT USAGE ON SEQUENCE chat_calls_id_seq TO paperwatch_api;" in guide
     # Peer authentication sees the ssh account, so each role needs an ident map (or a password),
     # and default privileges keep the roles reading tables that later migrations create.
-    assert "`pg_ident.conf` map" in guide
+    assert "`pg_ident.conf`" in guide
     assert "ALTER DEFAULT PRIVILEGES FOR ROLE paperwatch" in guide
+
+    # Letting those roles in takes a dedicated pg_hba.conf line, and the role field must list all
+    # three: the second field is the database and the third the requested role, so a line naming
+    # only `paperwatch` would send the other two to the generic local line without a map.
+    assert [
+        line.split() for line in guide.splitlines() if line.split()[:2] == ["local", "paperwatch"]
+    ] == [
+        [
+            "local",
+            "paperwatch",
+            "paperwatch,paperwatch_ro,paperwatch_api",
+            "peer",
+            "map=paperwatch",
+        ]
+    ]
+    # That line must come first, and never carry the map itself: `local all all peer` also covers
+    # the other project's database, and a map there would gate that project's connections too.
+    assert "placed above the generic" in guide
+    assert "Never put `map=` on `local all all peer`" in guide
+
+    # The map's first line keeps the owner, hence the ingestion, in; all three lines are the only
+    # system-user/role pairs peer accepts, which is what still restricts access to Unix paperwatch.
+    assert [
+        line.split()
+        for line in guide.splitlines()
+        if line.split()[:2] == ["paperwatch", "paperwatch"]
+    ] == [
+        ["paperwatch", "paperwatch", "paperwatch"],
+        ["paperwatch", "paperwatch", "paperwatch_ro"],
+        ["paperwatch", "paperwatch", "paperwatch_api"],
+    ]
+
+    # The admin reloads the config and proves the owner still connects before trying the two
+    # roles, because a bad line in either file would lock out the ingestion.
+    assert "pg_reload_conf()" in guide and "pg_ctl reload" in guide
+    assert "psql -d paperwatch -c 'select 1'" in guide
