@@ -9,6 +9,7 @@ the guide itself, so a drift in the doc fails the suite.
 import os
 import re
 import shlex
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -98,3 +99,18 @@ def test_the_unit_timeout_stays_above_the_follow_up_window() -> None:
     match = re.fullmatch(r"(\d+)h", value)
     assert match, f"unexpected TimeoutStartSec format: {value}"
     assert int(match.group(1)) * 3600 > FOLLOWUP_MAX_WINDOW.total_seconds()
+
+
+def test_the_guide_binds_its_tunnel_to_loopback() -> None:
+    # `-L 5433:...` listens on every interface, so on a shared wifi the database would be reachable
+    # through the Mac; the guide's forward must name 127.0.0.1 and say when to close it.
+    forwards = re.findall(r"^ssh -N -L (\S+) shared-vps$", GUIDE.read_text(), re.MULTILINE)
+    assert forwards == ["127.0.0.1:5433:/var/run/postgresql/.s.PGSQL.5432"]
+    assert "Close it when you are done" in GUIDE.read_text()
+
+
+def test_the_guide_recommends_the_read_only_role() -> None:
+    # Beekeeper and the M3 API and agent only read: the owning role would let a stray query write.
+    guide = GUIDE.read_text()
+    assert "paperwatch_ro" in guide
+    assert "read-only" in guide and "SELECT only" in guide
