@@ -29,6 +29,10 @@ LOCAL_EMBEDDING_MODEL = "ibm-granite/granite-embedding-small-english-r2"
 # A deterministic failure (for example a text the embedding model refuses) must not be retried
 # by every daily run forever: after this many failed attempts the item is dead-lettered.
 MAX_ITEM_ATTEMPTS = 3
+# The width of `items.venue`. Real venue names are short, but a malformed signal can carry a whole
+# paragraph, and a write the column cannot hold fails the admission and dead-letters the item, so
+# the merge clips to this width. The model and the clipping share the one number.
+ITEM_VENUE_MAX_CHARS = 256
 # Keyless Semantic Scholar (captain decision 2026-10-13): a paper's evidence is re-checked less
 # often as it ages. Each pair is (maximum paper age, re-check interval): daily for the first 30
 # days, weekly up to 90 days, monthly up to a year. About 0.131 x N checks a day for N papers.

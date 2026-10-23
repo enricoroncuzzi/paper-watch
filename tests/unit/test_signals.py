@@ -64,12 +64,13 @@ def test_hf_pages_until_a_short_page() -> None:
 
 @respx.mock
 def test_hf_queries_each_date() -> None:
-    # One request per calendar day, paged from 0 with the API's 100-row cap.
+    # One request per calendar day, newest first (the freshest listings carry the upvotes a run
+    # needs) and paged from 0 with the API's 100-row cap.
     route = respx.get(HF_URL).mock(return_value=httpx.Response(200, json=[]))
     HfDailySource(httpx.Client()).upvotes(date(2026, 10, 8), date(2026, 10, 9))
     assert [c.request.url.params["date"] for c in route.calls] == [
-        "2026-10-08",
         "2026-10-09",
+        "2026-10-08",
     ]
     assert all(c.request.url.params["limit"] == "100" for c in route.calls)
     assert all(c.request.url.params["p"] == "0" for c in route.calls)
@@ -870,3 +871,154 @@ def test_s2_anomaly_describes_one_call_only() -> None:
     assert src.anomaly is not None
     src.lookup(ids)
     assert src.degraded is False and src.anomaly is None
+
+
+@respx.mock
+def test_s2_5xx_after_every_attempt_is_refused_not_an_anomaly(monkeypatch) -> None:
+    # A gateway error is the pool being unavailable, not a request bug: the ids stay due for a
+    # follow-up pass, and the chunk is never reported as an answer this client cannot read.
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    route = respx.post(S2_BATCH_URL).mock(return_value=httpx.Response(502))
+    src = SemanticScholarSource(httpx.Client(), None, pause_s=0)
+    assert src.lookup(["2510.00001", "2510.00002"]) == {}
+    assert route.call_count == 5
+    assert src.refused_ids == {"2510.00001", "2510.00002"}
+    assert src.checked_ids == set()
+    assert src.anomaly is None
+    assert src.degraded is True
+
+
+@respx.mock
+def test_s2_does_not_follow_a_redirect(monkeypatch) -> None:
+    # The batch endpoint is named in code; a 3xx means it moved, which a follow-up pass cannot fix,
+    # so it is an anomaly and the ids stay unasked rather than refused.
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    route = respx.post(S2_BATCH_URL).mock(
+        return_value=httpx.Response(302, headers={"location": "https://elsewhere.test/batch"})
+    )
+    respx.post("https://elsewhere.test/batch").mock(return_value=httpx.Response(200, json=[None]))
+    src = SemanticScholarSource(httpx.Client(), None, pause_s=0)
+    assert src.lookup(["2510.00001"]) == {}
+    assert route.call_count == 1
+    assert src.refused_ids == set()
+    assert src.anomaly is not None
+
+
+@respx.mock
+def test_hf_stops_asking_after_two_failed_days_in_a_row(monkeypatch) -> None:
+    # A gateway that answers 504 after a minute turns 31 days x 3 attempts into hours of waiting,
+    # and the days it would have asked are re-read by every run anyway.
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    route = respx.get(HF_URL).mock(return_value=httpx.Response(504))
+    src = HfDailySource(httpx.Client())
+    assert src.upvotes(date(2026, 10, 8), date(2026, 10, 31)) == {}
+    assert route.call_count == 2 * 3  # two days, three attempts each, then it stopped
+    assert src.degraded is True
+    # The window is walked newest first, so the two days it gave up on are the newest ones; the
+    # failure names the second of them, so the morning check says which day broke the run.
+    assert src.failure is not None and "2026-10-30" in src.failure
+    assert "2 days in a row" in src.failure
+
+
+@respx.mock
+def test_hf_failed_day_streak_ignores_a_deterministic_failure(monkeypatch) -> None:
+    # A day that fails for its own reason (here a 400: a bug, never a retry) is not evidence that
+    # the endpoint is down, so it resets the streak instead of counting towards it.
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        if request.url.params["date"] == "2026-10-30":
+            return httpx.Response(400)
+        return httpx.Response(502)
+
+    route = respx.get(HF_URL).mock(side_effect=responder)
+    src = HfDailySource(httpx.Client())
+    src.upvotes(date(2026, 10, 8), date(2026, 10, 31))
+    # Newest first: 10-31 failed, 10-30 reset the streak, 10-29 and 10-28 tripped the breaker.
+    asked = [call.request.url.params["date"] for call in route.calls]
+    assert sorted(set(asked)) == ["2026-10-28", "2026-10-29", "2026-10-30", "2026-10-31"]
+    assert src.failure is not None and "2026-10-28" in src.failure
+
+
+@respx.mock
+def test_hf_answers_after_a_failed_day_keep_the_source_healthy(monkeypatch) -> None:
+    # One failed day between answers is a slow day, not an outage: the breaker must not trip.
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        if request.url.params["date"] == "2026-10-09":
+            return httpx.Response(503)
+        return httpx.Response(200, json=[_hf_row("2510.00001", 7)])
+
+    respx.get(HF_URL).mock(side_effect=responder)
+    src = HfDailySource(httpx.Client())
+    up = src.upvotes(date(2026, 10, 8), date(2026, 10, 12))
+    assert up == {"2510.00001": 7}
+    assert src.degraded is True  # the failed day is still reported
+    assert src.failure is not None and "2026-10-09" in src.failure
+    assert "stopped" not in src.failure
+
+
+@respx.mock
+def test_hf_cap_reaches_the_source(monkeypatch) -> None:
+    # The per-source cap is wired to the client, so an over-long page fails the day instead of
+    # holding the body in memory.
+    monkeypatch.setattr("paperwatch.sources.hf_daily.MAX_HF_BODY_BYTES", 16)
+    respx.get(HF_URL).mock(return_value=httpx.Response(200, json=[_hf_row("2510.00001", 1)]))
+    src = HfDailySource(httpx.Client())
+    src.upvotes(date(2026, 10, 9), date(2026, 10, 9))
+    assert src.degraded is True
+    assert src.failure is not None and "more than 16 bytes" in src.failure
+
+
+@respx.mock
+def test_s2_cap_reaches_the_source(monkeypatch) -> None:
+    # An over-long batch answer is an answer this client cannot read, so the chunk is an anomaly
+    # (not a refusal) and the ids stay unasked.
+    monkeypatch.setattr("paperwatch.sources.semantic_scholar.MAX_S2_BODY_BYTES", 16)
+    respx.post(S2_BATCH_URL).mock(return_value=httpx.Response(200, json=[_s2_row("2510.00001")]))
+    src = SemanticScholarSource(httpx.Client(), None, pause_s=0)
+    assert src.lookup(["2510.00001"]) == {}
+    assert src.degraded is True
+    assert src.anomaly is not None and "more than 16 bytes" in src.anomaly
+    assert src.refused_ids == set()
+
+
+@respx.mock
+def test_hf_bad_old_days_do_not_stop_the_newest_ones(monkeypatch) -> None:
+    # The listings a run needs are the newest ones, so the window is walked newest first: two bad
+    # days at the far end of it must not cost the fresh upvotes, which is what oldest-first did.
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        if request.url.params["date"] in ("2026-09-23", "2026-09-24"):
+            return httpx.Response(500)
+        return httpx.Response(200, json=[_hf_row("2510.00001", 9)])
+
+    respx.get(HF_URL).mock(side_effect=responder)
+    src = HfDailySource(httpx.Client())
+    up = src.upvotes(date(2026, 9, 23), date(2026, 10, 23))
+    assert up == {"2510.00001": 9}
+    assert src.degraded is True  # the two bad days are still reported
+    assert src.failure is not None and "2026-09-23" in src.failure
+
+
+@respx.mock
+def test_hf_breaker_counts_consecutive_days_only(monkeypatch) -> None:
+    # fail, ok, fail is not an outage: the streak resets on every answered day, so the breaker
+    # never trips and the whole window is asked.
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        if request.url.params["date"] in ("2026-10-31", "2026-10-29"):
+            return httpx.Response(503)
+        return httpx.Response(200, json=[_hf_row("2510.00001", 5)])
+
+    route = respx.get(HF_URL).mock(side_effect=responder)
+    src = HfDailySource(httpx.Client())
+    up = src.upvotes(date(2026, 10, 1), date(2026, 10, 31))
+    assert up == {"2510.00001": 5}
+    asked = {call.request.url.params["date"] for call in route.calls}
+    assert len(asked) == 31  # every day, none skipped
+    assert src.failure is not None and "2026-10-29" in src.failure
+    assert "stopped" not in src.failure

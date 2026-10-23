@@ -8,7 +8,7 @@ fake, so the whole test and eval suite runs offline against a real Postgres + pg
 
 | Unit | Purpose | Depends on |
 |---|---|---|
-| `sources/*` | One client per source, owning pacing and retries (arXiv harvests OAI-PMH datestamp days); arXiv and the feeds return normalised `SourceItem`s, Hugging Face and Semantic Scholar return quality signals for arXiv ids | HTTP only |
+| `sources/*` | One client per source, owning pacing and retries (arXiv harvests OAI-PMH datestamp days); every request goes through one shared client that caps each body, bounds each request by a wall-clock deadline and follows a redirect only under its own policy (ADR 0010); arXiv and the feeds return normalised `SourceItem`s, Hugging Face and Semantic Scholar return quality signals for arXiv ids | HTTP only |
 | `ingest` | Window, dedupe, classify, admit, embed, upsert; writes run records and a health verdict | sources, store, llm |
 | `store` | Schema, Alembic migrations, repository; the only module that writes SQL | Postgres |
 | `retrieval` | Hybrid search (pgvector + Postgres full-text, fused with reciprocal rank fusion), filters | store |

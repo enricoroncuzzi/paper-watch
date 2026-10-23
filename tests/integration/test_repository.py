@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from paperwatch.config import MAX_ITEM_ATTEMPTS, S2_RECHECK_SLACK
+from paperwatch.config import ITEM_VENUE_MAX_CHARS, MAX_ITEM_ATTEMPTS, S2_RECHECK_SLACK
 from paperwatch.domain import AdmissionBasis, Signals, SourceItem, Tier
 from paperwatch.llm.embedder import FakeEmbedder
 from paperwatch.store.models import DeadLetter, Item, Run, TierHistory
@@ -403,3 +403,16 @@ def test_an_outage_counts_as_older_only_when_an_earlier_run_opened_it(
     # A closed letter from an earlier run is no longer an outage.
     repo.resolve_open_dead_letters("s2", "signals", at=NOW)
     assert not repo.has_open_outage_from_earlier_run("s2", "signals", today)
+
+
+def test_an_over_long_venue_is_clipped_to_the_column(db_session: Session) -> None:
+    # S2 occasionally answers a venue that is a whole paragraph. The column holds 256 characters,
+    # and a write it cannot hold would fail the admission and dead-letter the paper, so the merge
+    # clips instead: the name is unreadable either way, the paper still gets admitted.
+    repo = Repository(db_session)
+    item_id = repo.record_classified(ITEM, "candidate", "agentic-engineering", 0.9)
+    long_venue = "Proceedings of the " + "x" * 400
+    merged = repo.merge_signals(item_id, Signals(venue=long_venue, citation_count=3))
+    assert merged.venue == long_venue[:ITEM_VENUE_MAX_CHARS]
+    db_session.expire_all()
+    assert db_session.get_one(Item, item_id).venue == long_venue[:ITEM_VENUE_MAX_CHARS]

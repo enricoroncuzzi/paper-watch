@@ -320,3 +320,44 @@ def test_load_feeds_reads_the_configured_list() -> None:
     assert all(f.url.startswith("https://") for f in feeds)
     assert len({f.url for f in feeds}) == len(feeds)
     assert all(f.region in {"us-eu", "cn"} for f in feeds)
+
+
+@respx.mock
+def test_a_body_over_the_feed_cap_fails_that_feed(monkeypatch) -> None:
+    # A feed body is held in memory whole, so its cap is the tightest of the sources: a feed that
+    # streams past it is a failed feed (dead-lettered, cursor pinned), never a run out of memory.
+    monkeypatch.setattr("paperwatch.sources.feeds.MAX_FEED_BODY_BYTES", 64 * 1024)
+    huge = FIX + "<!--" + "x" * (64 * 1024) + "-->"
+    respx.get(FEED.url).mock(return_value=httpx.Response(200, text=huge))
+    items, failures = FeedSource(httpx.Client(), [FEED]).fetch(SINCE, UNTIL)
+    assert items == []
+    assert [url for url, _ in failures] == [FEED.url]
+    assert "more than" in failures[0][1]
+
+
+@respx.mock
+def test_a_feed_may_redirect_between_its_own_hosts() -> None:
+    # blog.example.co.uk and www.example.co.uk are the same registrable domain (co.uk is a public
+    # suffix), so a feed that moves between them still fetches.
+    respx.get(FEED.url).mock(
+        return_value=httpx.Response(301, headers={"location": "https://www.lab.example/feed.xml"})
+    )
+    respx.get("https://www.lab.example/feed.xml").mock(return_value=httpx.Response(200, text=FIX))
+    items, failures = FeedSource(httpx.Client(), [FEED]).fetch(SINCE, UNTIL)
+    assert failures == []
+    assert items and all(item.source == "feed" for item in items)
+
+
+@respx.mock
+def test_a_feed_redirect_off_its_site_fails_that_feed() -> None:
+    # The configured feed is an official lab site; a redirect anywhere else is someone else's page,
+    # so the feed fails (letter, pinned cursor) instead of importing a stranger's posts.
+    respx.get(FEED.url).mock(
+        return_value=httpx.Response(302, headers={"location": "https://evil.example/feed.xml"})
+    )
+    evil = respx.get("https://evil.example/feed.xml")
+    items, failures = FeedSource(httpx.Client(), [FEED]).fetch(SINCE, UNTIL)
+    assert items == []
+    assert [url for url, _ in failures] == [FEED.url]
+    assert "redirected off its site" in failures[0][1]
+    assert not evil.called

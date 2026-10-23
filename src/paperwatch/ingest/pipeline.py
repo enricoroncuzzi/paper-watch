@@ -502,6 +502,10 @@ def run_ingestion(
             # normally empty; a quiet Saturday or Sunday is not a broken source.
             arxiv_expected = any(day.weekday() in (1, 2, 3, 4) for day in days)
             arxiv_stopped_early = False
+            # The cursor reads above opened a transaction; a network block must never run inside
+            # one, so it is ended before the first page is asked for (each later page commits its
+            # own parked rows first, for the same reason).
+            session.commit()
             try:
                 for day in days:
                     for page in sources.arxiv.harvest(day):
@@ -563,8 +567,17 @@ def run_ingestion(
                 feed_from = window(key)
                 # Same reason as arXiv: a post can appear after its date. The unique key absorbs it.
                 since = feed_from if since_override else feed_from - FEED_OVERLAP
+                # `window` reads the cursor, which opened a transaction: end it before the fetch,
+                # so no connection sits in a transaction for the length of a feed's HTTP call.
+                session.commit()
                 try:
-                    feed_fetched += sources.feeds.fetch_one(feed, since, now)
+                    items = sources.feeds.fetch_one(feed, since, now)
+                    feed_fetched += items
+                    # Park this feed's items in the same transaction as its cursor (the next
+                    # iteration's commit, or the one after the loop, ends it), so a crash between
+                    # the two can never leave a cursor ahead of items nothing holds. The arXiv
+                    # path parks each page before its commit for the same reason.
+                    _park_items(repo, run_id, items, parked)
                     repo.advance_cursor(key, now)
                     # The feed answered: any earlier outage letter for it is over.
                     repo.resolve_open_dead_letters("feed", feed.url, at=now)
@@ -606,7 +619,6 @@ def run_ingestion(
                     repo.add_dead_letter(run_id, bad.source, bad.ref, bad.error)
                     counts["malformed"] += 1
                     causes.add("malformed")
-            _park_items(repo, run_id, feed_fetched, parked)
             session.commit()
 
             # The one place the verdict is built: the provisional verdicts the loop writes and the
@@ -751,6 +763,9 @@ def run_ingestion(
                 upvotes: dict[str, int] = {}
                 s2: dict[str, Signals] = {}
                 checked: set[str] = set()
+                # `recheck_targets` opened a transaction; the two signal sources are asked over the
+                # network next, so the read is committed before either call goes out.
+                session.commit()
                 if paper_ids:
                     # Re-read the last 30 days of Hugging Face listings: about 31-62 requests
                     # whatever the corpus size; max() in the store keeps a paper's upvotes current

@@ -19,13 +19,17 @@ import structlog
 
 from paperwatch.config import ARXIV_OAI_PREFIX, ARXIV_OAI_URL
 from paperwatch.domain import Profile, RejectedEntry, SourceItem
-from paperwatch.sources.base import send_with_retries
+from paperwatch.sources.base import MAX_ARXIV_BODY_BYTES, send_with_retries
 
 # The OAI-PMH envelope and the arXivRaw metadata body; element names carry both.
 _OAI = "{http://www.openarchives.org/OAI/2.0/}"
 _RAW = "{http://arxiv.org/OAI/arXivRaw/}"
 # arXiv appends a version to every id (v1, v2, ...); identity is the base id.
 _VERSION = re.compile(r"v(\d+)$")
+# Bound one (set, day) like hf_daily's MAX_PAGES_PER_DAY: a server that keeps handing out a
+# resumption token, or repeats one, must not make a day's harvest run all night. A real day of one
+# set is a couple of pages at the server's page size, so 200 is far above any honest answer.
+MAX_PAGES_PER_DAY = 200
 log = structlog.get_logger()
 
 
@@ -168,6 +172,7 @@ class ArxivOaiSource:
             min_wait_s=self._retry_wait_s,
             max_wait_s=self._retry_wait_s,
             before_request=self._pace,
+            max_bytes=MAX_ARXIV_BODY_BYTES,
         )
         return resp.text
 
@@ -256,7 +261,9 @@ class ArxivOaiSource:
         """Yield one filtered page per OAI response for `day`, sets in sorted order.
 
         The caller receives each page before the next request goes out, so it can park
-        the page durably and only then ask for the resumption token.
+        the page durably and only then ask for the resumption token. A (set, day) is bounded by
+        `MAX_PAGES_PER_DAY`, and a token the server already handed out for it ends the harvest
+        with an error naming both, so a broken pager degrades arXiv instead of running forever.
         """
         # rejected describes one harvest; clear it so callers never read stale rows.
         self.rejected = []
@@ -266,7 +273,15 @@ class ArxivOaiSource:
         for set_spec in self._sets:
             token = ""
             first = True
+            pages = 0
+            # Tokens this (set, day) already consumed: a repeat means the pager is looping.
+            used: set[str] = set()
             while True:
+                if pages >= MAX_PAGES_PER_DAY:
+                    raise ValueError(
+                        f"OAI-PMH page cap ({MAX_PAGES_PER_DAY}) reached for set {set_spec} "
+                        f"on {day.isoformat()}"
+                    )
                 params = (
                     {
                         "verb": "ListRecords",
@@ -279,6 +294,7 @@ class ArxivOaiSource:
                     else {"verb": "ListRecords", "resumptionToken": token}
                 )
                 items, token = self._parse_page(self._get(params))
+                pages += 1
                 page: list[SourceItem] = []
                 for item in items:
                     if item.external_id in seen:
@@ -290,3 +306,9 @@ class ArxivOaiSource:
                 first = False
                 if not token:
                     break
+                if token in used:
+                    raise ValueError(
+                        f"OAI-PMH resumption token {token!r} repeated for set {set_spec} "
+                        f"on {day.isoformat()} at page {pages}"
+                    )
+                used.add(token)

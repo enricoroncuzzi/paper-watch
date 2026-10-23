@@ -14,7 +14,12 @@ from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session, sessionmaker
 
-from paperwatch.config import MAX_ITEM_ATTEMPTS, S2_CADENCE, S2_RECHECK_SLACK
+from paperwatch.config import (
+    ITEM_VENUE_MAX_CHARS,
+    MAX_ITEM_ATTEMPTS,
+    S2_CADENCE,
+    S2_RECHECK_SLACK,
+)
 from paperwatch.domain import AdmissionBasis, Signals, SourceItem, Tier
 from paperwatch.store.models import ChatCall, DeadLetter, Item, Run, SourceCursor, TierHistory
 
@@ -194,7 +199,12 @@ class Repository:
         if fresh.venue and (
             not _is_preprint(fresh.venue) or not row.venue or _is_preprint(row.venue)
         ):
-            row.venue, row.venue_aliases = fresh.venue, list(fresh.venue_aliases)
+            # Clipped to the column's width: an over-long venue is a malformed answer, and failing
+            # the write would cost the paper its admission over a name no one reads.
+            row.venue, row.venue_aliases = (
+                fresh.venue[:ITEM_VENUE_MAX_CHARS],
+                list(fresh.venue_aliases),
+            )
         # Counts only grow: a lower or missing answer is an outage or a lag, not lost evidence.
         row.citation_count = max(row.citation_count, fresh.citation_count)
         if fresh.hf_upvotes is not None:
