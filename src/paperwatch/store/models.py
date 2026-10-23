@@ -22,7 +22,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import TSVECTOR, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-from paperwatch.config import CHAT_CALL_MODEL_MAX_CHARS, EMBEDDING_DIM
+from paperwatch.config import CHAT_CALL_MODEL_MAX_CHARS, EMBEDDING_DIM, ITEM_VENUE_MAX_CHARS
 
 # The only rows search may return. The HNSW index is partial on exactly this predicate, and
 # Task 10 repeats it as literal SQL so the planner can match the query to the index.
@@ -81,7 +81,7 @@ class Item(Base):
     published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     # arXiv version of the stored text (1 for feed items); a higher fetched version replaces it.
     version: Mapped[int] = mapped_column(Integer, default=1)
-    venue: Mapped[str | None] = mapped_column(String(256))
+    venue: Mapped[str | None] = mapped_column(String(ITEM_VENUE_MAX_CHARS))
     # Semantic Scholar's venue name plus alternate names, so admission can run on stored evidence.
     venue_aliases: Mapped[list[str]] = mapped_column(JSON, default=list)
     citation_count: Mapped[int] = mapped_column(Integer, default=0)
