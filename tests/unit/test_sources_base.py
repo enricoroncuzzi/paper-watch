@@ -349,6 +349,52 @@ def _redirecting_client(
     return httpx.Client(transport=httpx.MockTransport(handler)), seen
 
 
+def test_a_hop_to_another_origin_drops_the_credentials() -> None:
+    # httpx strips these when it follows a redirect itself; send_with_retries follows hops by hand,
+    # so it must strip them too: a credential is for the origin the caller named, never for
+    # whatever host or port a redirect points at. An ordinary header is never touched.
+    hops = {
+        "https://lab.example/x": "https://lab.example/y",  # same origin: keep them
+        "https://lab.example/y": "https://other.example/z",  # another host: drop them
+        "https://other.example/z": "https://other.example:8443/w",  # another port: still gone
+    }
+    seen: list[httpx.Headers] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers)
+        location = hops.get(str(request.url))
+        if location is None:
+            return httpx.Response(200, text="ok")
+        return httpx.Response(302, headers={"location": location})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    resp = send_with_retries(
+        client,
+        "GET",
+        "https://lab.example/x",
+        headers={
+            "Authorization": "Bearer secret",
+            "Cookie": "session=1",
+            "x-api-key": "key",
+            "X-Trace": "1",
+        },
+    )
+    assert resp.text == "ok"
+
+    def credentials(headers: httpx.Headers) -> dict[str, str]:
+        names = ("authorization", "cookie", "x-api-key")
+        return {name: headers[name] for name in names if name in headers}
+
+    assert len(seen) == 4
+    named = {"authorization": "Bearer secret", "cookie": "session=1", "x-api-key": "key"}
+    assert credentials(seen[0]) == named  # the caller's own origin
+    assert credentials(seen[1]) == named  # a hop that stays on it
+    assert credentials(seen[2]) == {}  # another host
+    assert credentials(seen[3]) == {}  # another port, and they do not come back
+    # Dropping credentials drops nothing else: the same unrelated header rides every hop.
+    assert [headers["x-trace"] for headers in seen] == ["1"] * len(seen)
+
+
 def test_registrable_domain_is_the_etld_plus_one() -> None:
     # One site's hosts compare equal; a shared public suffix is not a site.
     assert registrable_domain("https://blog.example.co.uk/feed.xml") == "example.co.uk"
