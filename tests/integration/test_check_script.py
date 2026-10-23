@@ -42,10 +42,17 @@ NOW = datetime(2026, 10, 22, 4, 30, tzinfo=UTC)
 EXIT_BAD = 1
 # The systemctl stub's answers to `--user show-environment`, `is-failed` and `is-active`.
 SYSTEMCTL_STUB = """#!/bin/sh
+# The answers a real systemd 257 gives, so the tests cannot prove a branch the server never takes:
+# `is-active` is exit 3 for an `activating` unit (which is what a running oneshot is), and the
+# state itself comes from `show --property=ActiveState --value`.
 case "$*" in
     "--user show-environment") exit "${STUB_SHOW_ENVIRONMENT:-0}" ;;
     "--user is-failed --quiet paperwatch-ingest.service") exit "${STUB_IS_FAILED:-1}" ;;
-    "--user is-active --quiet paperwatch-ingest.service") exit "${STUB_UNIT_ACTIVE:-1}" ;;
+    "--user is-active --quiet paperwatch-ingest.service") exit "${STUB_UNIT_IS_ACTIVE:-3}" ;;
+    "--user show --property=ActiveState --value paperwatch-ingest.service")
+        echo "${STUB_UNIT_STATE:-inactive}"
+        exit 0
+        ;;
     "--user is-active --quiet paperwatch-ingest.timer") exit "${STUB_IS_ACTIVE:-0}" ;;
 esac
 echo "unexpected systemctl call: $*" >&2
@@ -408,7 +415,7 @@ def test_check_waits_on_a_run_between_follow_up_passes(
     # The pass number is the one coming, and the time is the next pass on the server's own clock.
     next_rome = next_at.astimezone(ZoneInfo("Europe/Rome")).strftime("%H:%M")
     assert (
-        f"WAIT  follow-up 1 of 40 pending (s2: 152 ids), next pass {next_rome}\n" in result.stdout
+        f"WAIT  next follow-up pass 1 of 40 at {next_rome} (s2: 152 ids pending)\n" in result.stdout
     )
     assert "FAIL" not in result.stdout
     # The freshness line still runs, so a run that stops heartbeating is still caught later.
@@ -551,7 +558,9 @@ def test_check_waits_while_the_pass_it_announced_is_running(
         },
     }
     write_rows("partial", health)
-    result = run_check()
+    # A pass is running only while systemd still holds the unit: a real running oneshot is
+    # `activating`, which is what the stub now reports.
+    result = run_check(extra_env={"STUB_UNIT_STATE": "activating"})
     assert result.returncode == 0, result.stdout + result.stderr
     assert "WAIT  follow-up pass 4 of 40 running (s2: 12 ids)" in result.stdout
     assert "FAIL" not in result.stdout
@@ -572,7 +581,7 @@ def test_check_pins_the_follow_up_grace_from_both_sides(
             "followup": {"pass": 1, "of": 40, "next_at": due_at.isoformat(), "pending": {"s2": 3}},
         }
         write_rows("partial", health)
-        result = run_check()
+        result = run_check(extra_env={"STUB_UNIT_STATE": "activating"})
         assert result.returncode == expected, (seconds, result.stdout)
 
 
@@ -589,7 +598,8 @@ def test_check_fails_on_a_follow_up_time_it_cannot_read(
     write_rows("partial", health)
     result = run_check()
     assert result.returncode == EXIT_BAD
-    assert "FAIL  cannot read the next follow-up pass from the health record: soon" in result.stdout
+    assert "cannot read the next follow-up pass from the health record" in result.stdout
+    assert "next_in_s=soon" in result.stdout
     # The rest of the morning still prints: the counts and the backup were read.
     assert "items:" in result.stdout and "backup:" in result.stdout
 
@@ -600,7 +610,7 @@ def test_check_calls_a_long_running_unit_hung_and_names_the_stop_command(
     # With TimeoutStartSec=17h nothing kills a hung main pass any more, so the check must say the
     # process is still alive and how to stop it, not that systemd killed it.
     write_rows(None, running_for=timedelta(hours=4))
-    result = run_check(extra_env={"STUB_UNIT_ACTIVE": "0"})  # 0 = active
+    result = run_check(extra_env={"STUB_UNIT_STATE": "activating"})  # a running oneshot
     assert result.returncode == EXIT_BAD
     assert "hung (still running)" in result.stdout
     assert "systemctl --user stop paperwatch-ingest" in result.stdout
@@ -616,3 +626,100 @@ def test_check_calls_a_long_dead_run_killed(
     assert result.returncode == EXIT_BAD
     assert "killed or hung" in result.stdout
     assert "hung (still running)" not in result.stdout
+
+
+def test_check_names_a_hung_follow_up_pass_and_the_stop_command(
+    write_rows: Callable[..., None], run_check: Callable[..., subprocess.CompletedProcess[str]]
+) -> None:
+    # A pass that hangs past the grace leaves its row overdue; with the unit still alive nothing
+    # will rewrite or kill it (the timeout is 17 h), so the action is the stop command, not
+    # "killed?".
+    past_at = datetime.now(UTC) - timedelta(hours=2)
+    health = {
+        "healthy": False,
+        "problems": ["status=partial", "1 signal sources degraded"],
+        "warnings": [],
+        "followup": {"pass": 1, "of": 40, "next_at": past_at.isoformat(), "pending": {"s2": 9}},
+    }
+    write_rows("partial", health)
+    result = run_check(extra_env={"STUB_UNIT_STATE": "activating"})
+    assert result.returncode == EXIT_BAD
+    assert "follow-up did not complete (hung: the unit is still running)" in result.stdout
+    assert "systemctl --user stop paperwatch-ingest" in result.stdout
+
+
+def test_check_fails_at_once_when_the_process_behind_a_due_pass_is_gone(
+    write_rows: Callable[..., None], run_check: Callable[..., subprocess.CompletedProcess[str]]
+) -> None:
+    # The due moment is only 90 s past, inside the grace, but no process is left to rewrite the row:
+    # waiting out the grace would hide a killed run for twenty minutes.
+    due_at = datetime.now(UTC) - timedelta(seconds=90)
+    health = {
+        "healthy": False,
+        "problems": [],
+        "warnings": [],
+        "followup": {"pass": 1, "of": 40, "next_at": due_at.isoformat(), "pending": {"s2": 9}},
+    }
+    write_rows("partial", health)
+    result = run_check(extra_env={"STUB_UNIT_STATE": "inactive"})
+    assert result.returncode == EXIT_BAD
+    assert "follow-up did not complete (killed?)" in result.stdout
+    assert "WAIT" not in result.stdout
+
+
+def test_check_keeps_the_grace_without_a_user_manager(
+    write_rows: Callable[..., None], run_check: Callable[..., subprocess.CompletedProcess[str]]
+) -> None:
+    # With no user manager the unit state is unknown, so a just-due pass must not be called dead.
+    due_at = datetime.now(UTC) - timedelta(seconds=90)
+    health = {
+        "healthy": False,
+        "problems": [],
+        "warnings": [],
+        "followup": {"pass": 1, "of": 40, "next_at": due_at.isoformat(), "pending": {"s2": 9}},
+    }
+    write_rows("partial", health)
+    result = run_check(user_manager=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "WAIT  follow-up pass 2 of 40 running" in result.stdout
+
+
+def test_check_fails_on_a_corrupt_follow_up_pass_number(
+    write_rows: Callable[..., None], run_check: Callable[..., subprocess.CompletedProcess[str]]
+) -> None:
+    # A hand-edited `pass` must not make the whole query fail: one named FAIL, the rest still
+    # prints.
+    next_at = datetime.now(UTC) + timedelta(minutes=5)
+    health = {
+        "healthy": False,
+        "problems": [],
+        "warnings": [],
+        "followup": {"pass": "x", "of": 40, "next_at": next_at.isoformat(), "pending": {"s2": 3}},
+    }
+    write_rows("partial", health)
+    result = run_check()
+    assert result.returncode == EXIT_BAD
+    assert "cannot read the next follow-up pass from the health record" in result.stdout
+    assert "items:" in result.stdout and "backup:" in result.stdout
+
+
+def test_check_fails_on_a_follow_up_time_that_is_not_a_date(
+    write_rows: Callable[..., None], run_check: Callable[..., subprocess.CompletedProcess[str]]
+) -> None:
+    # ISO-shaped but impossible: the server's own parser is what says so, not a shape regex.
+    health = {
+        "healthy": False,
+        "problems": [],
+        "warnings": [],
+        "followup": {
+            "pass": 1,
+            "of": 40,
+            "next_at": "2026-99-99T00:00:00+00:00",
+            "pending": {"s2": 3},
+        },
+    }
+    write_rows("partial", health)
+    result = run_check()
+    assert result.returncode == EXIT_BAD
+    assert "cannot read the next follow-up pass from the health record" in result.stdout
+    assert "items:" in result.stdout and "backup:" in result.stdout

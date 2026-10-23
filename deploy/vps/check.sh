@@ -126,12 +126,13 @@ FROM last_run, json_array_elements_text(coalesce(health -> 'warnings', '[]'::jso
 UNION ALL
 -- Seconds until the next follow-up pass: positive means the run is waiting, negative means the
 -- wait ran out (the pass is running, or the process died inside the window). Only a waiting record
--- has a `next_at`. A value that is not an ISO timestamp (a corrupt or hand-edited row) is passed
--- through as text, so the shell prints one FAIL line instead of the whole query failing and losing
--- every other line of the check.
+-- has a `next_at`. A value the server cannot parse as a timestamp (a corrupt or hand-edited row) is
+-- passed through as text, and `pg_input_is_valid` (Postgres 16 and later) is what makes that safe:
+-- the shell then prints one FAIL line instead of the whole query failing and losing every other
+-- line of the check.
 SELECT 'followup_next_in_s', coalesce(
     (SELECT CASE
-                WHEN health -> 'followup' ->> 'next_at' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T'
+                WHEN pg_input_is_valid(health -> 'followup' ->> 'next_at', 'timestamptz')
                 THEN (extract(epoch FROM (health -> 'followup' ->> 'next_at')::timestamptz
                                - now()))::bigint::text
                 ELSE health -> 'followup' ->> 'next_at'
@@ -140,7 +141,7 @@ SELECT 'followup_next_in_s', coalesce(
 UNION ALL
 SELECT 'followup_next_rome', coalesce(
     (SELECT CASE
-                WHEN health -> 'followup' ->> 'next_at' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T'
+                WHEN pg_input_is_valid(health -> 'followup' ->> 'next_at', 'timestamptz')
                 THEN to_char((health -> 'followup' ->> 'next_at')::timestamptz
                              AT TIME ZONE 'Europe/Rome', 'HH24:MI')
                 ELSE health -> 'followup' ->> 'next_at'
@@ -149,8 +150,13 @@ SELECT 'followup_next_rome', coalesce(
 UNION ALL
 SELECT 'followup_pass', coalesce(
     -- The pass that is coming: `pass` counts the finished ones, so the first wait is pass 1. The
-    -- cast back to text is required: coalesce would otherwise type the '(none)' fallback as int.
-    (SELECT ((health -> 'followup' ->> 'pass')::int + 1)::text FROM last_run), '(none)')
+    -- cast back to text is required: coalesce would otherwise type the '(none)' fallback as int,
+    -- and a non-numeric `pass` is passed through for the shell to report.
+    (SELECT CASE WHEN health -> 'followup' ->> 'pass' ~ '^[0-9]+$'
+                 THEN ((health -> 'followup' ->> 'pass')::int + 1)::text
+                 ELSE health -> 'followup' ->> 'pass'
+            END
+     FROM last_run), '(none)')
 UNION ALL
 SELECT 'followup_of', coalesce(
     (SELECT health -> 'followup' ->> 'of' FROM last_run), '(none)')
@@ -220,6 +226,31 @@ done <<EOF
 $rows
 EOF
 
+# The account's own user manager knows what the database cannot: whether the unit for the last run
+# is failed (a startup crash, an OOM kill, a timeout, exit 1 or 3), whether its process is still
+# alive, and whether the timer that starts the next run is still active. Where no user manager
+# answers (a bare cron job, a laptop) the state is reported as not checked rather than guessed. It
+# is probed here, before the follow-up and open-run checks, which need to know if systemd still
+# holds the process.
+unit_checked=0
+unit_failed=0
+unit_active=0
+timer_active=0
+if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
+    unit_checked=1
+    if systemctl --user is-failed --quiet paperwatch-ingest.service; then
+        unit_failed=1
+    fi
+    # A running oneshot unit is `activating`, never `active`: `is-active` would answer "no" for the
+    # whole run, so the state itself is read.
+    case "$(systemctl --user show --property=ActiveState --value paperwatch-ingest.service)" in
+        active | activating | reloading) unit_active=1 ;;
+    esac
+    if systemctl --user is-active --quiet paperwatch-ingest.timer; then
+        timer_active=1
+    fi
+fi
+
 # Which follow-up state this row is in. A waiting run is provisional by design (its verdict is
 # unhealthy while Semantic Scholar refuses) and must count no failure; a due moment just past is
 # the pass that is running; an older one is a process killed inside the window; a finished loop
@@ -235,6 +266,15 @@ case $followup_next_in_s in
     *[!0-9]*) followup_state=unknown ;;
     *) followup_state=waiting ;;
 esac
+case $followup_state in
+    waiting)
+        # The pass number is printed on the waiting line, so a value that is not a number makes the
+        # record unreadable rather than printing nonsense.
+        case $followup_pass in
+            '' | *[!0-9]*) followup_state=unknown ;;
+        esac
+        ;;
+esac
 if [ "$followup_state" = overdue ]; then
     case $followup_overdue_s in
         '' | *[!0-9]*)
@@ -242,7 +282,10 @@ if [ "$followup_state" = overdue ]; then
             ;;
         *)
             # Within the grace the pass is simply still running; the row is rewritten when it ends.
-            if [ "$followup_overdue_s" -le "$followup_grace_s" ]; then
+            # With no live process behind it the row cannot be rewritten, so it fails at once; with
+            # no user manager at all the state is unknown and the grace still applies.
+            if [ "$followup_overdue_s" -le "$followup_grace_s" ] &&
+                { [ "$unit_checked" = 0 ] || [ "$unit_active" = 1 ]; }; then
                 followup_state=running
             fi
             ;;
@@ -256,7 +299,7 @@ freshness=0
 if [ "$status" = '(none)' ]; then
     fail 'no finished ingestion run in the database'
 elif [ "$followup_state" = 'unknown' ]; then
-    fail "cannot read the next follow-up pass from the health record: $followup_next_in_s"
+    fail "cannot read the next follow-up pass from the health record: pass=$followup_pass next_in_s=$followup_next_in_s"
 elif [ "$status" = 'failed' ] && [ "$healthy" = '(unknown)' ]; then
     # Killed (SIGKILL, the memory cap) and closed by the next run, or crashed out of the
     # pipeline: both leave `failed` with no health verdict, and the health and freshness lines
@@ -264,8 +307,8 @@ elif [ "$status" = 'failed' ] && [ "$healthy" = '(unknown)' ]; then
     fail 'last run was killed or crashed and left no health verdict (journalctl --user -u paperwatch-ingest)'
 elif [ "$followup_state" = 'waiting' ]; then
     # Not a failure and not a pass either: the loop is between passes and nothing is wrong yet.
-    printf 'WAIT  follow-up %s of %s pending (s2: %s ids), next pass %s\n' \
-        "$followup_pass" "$followup_of" "$followup_pending" "$followup_next_rome"
+    printf 'WAIT  next follow-up pass %s of %s at %s (s2: %s ids pending)\n' \
+        "$followup_pass" "$followup_of" "$followup_next_rome" "$followup_pending"
     freshness=1
 elif [ "$followup_state" = 'running' ]; then
     # The due moment has just passed: the pass itself is running, and the row is rewritten when it
@@ -274,9 +317,15 @@ elif [ "$followup_state" = 'running' ]; then
         "$followup_pass" "$followup_of" "$followup_pending"
     freshness=1
 elif [ "$followup_state" = 'overdue' ]; then
-    # The row still says a pass was coming, and that moment has passed: the process was killed
-    # (an OOM kill, a stop, `kill -9`) inside the window. The next run resumes the refused papers.
-    fail 'follow-up did not complete (killed?)'
+    # The row still says a pass was coming and that moment has passed. With the unit alive the pass
+    # is hung, and nothing will kill it now that the timeout covers the whole window, so the stop
+    # command is the action; without a live process it was killed (an OOM kill, `kill -9`) and the
+    # next run resumes the refused papers.
+    if [ "$unit_active" = 1 ]; then
+        fail 'follow-up did not complete (hung: the unit is still running); stop it with systemctl --user stop paperwatch-ingest'
+    else
+        fail 'follow-up did not complete (killed?)'
+    fi
     freshness=1
 else
     freshness=1
@@ -328,28 +377,6 @@ fi
 printf '%s' "$warnings" | while IFS= read -r warning; do
     [ -z "$warning" ] || warn "$warning"
 done
-
-# The account's own user manager knows what the database cannot: whether the unit for the last run
-# is failed (a startup crash, an OOM kill, a timeout, exit 1 or 3), whether its process is still
-# alive, and whether the timer that starts the next run is still active. Where no user manager
-# answers (a bare cron job, a laptop) the state is reported as not checked rather than guessed. It
-# is probed here, before the open-run check, which needs to know if systemd still holds the process.
-unit_checked=0
-unit_failed=0
-unit_active=0
-timer_active=0
-if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
-    unit_checked=1
-    if systemctl --user is-failed --quiet paperwatch-ingest.service; then
-        unit_failed=1
-    fi
-    if systemctl --user is-active --quiet paperwatch-ingest.service; then
-        unit_active=1
-    fi
-    if systemctl --user is-active --quiet paperwatch-ingest.timer; then
-        timer_active=1
-    fi
-fi
 
 case $open_age_s in
     '(none)')
