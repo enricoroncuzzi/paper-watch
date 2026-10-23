@@ -26,12 +26,14 @@ backup_dir=${PW_CHECK_BACKUP_DIR:-$HOME/backups}
 # what makes a missed 06:00 run visible by 07:00. It is measured from the run's start, so a long
 # run does not delay the alarm, and an hour of duration still fits.
 max_run_age_s=${PW_CHECK_MAX_RUN_AGE_S:-90000}
-# This is the ingest unit's own TimeoutStartSec: a run still working at two hours is alive, one
-# past three hours has been killed by systemd (and the failed-unit line below says so). The row
-# stays 'running' until the next run closes it, so without this a dead morning would read as the
-# previous green run. The follow-up window (06:00 to 22:00) does not raise this limit: the run
-# finishes its row before it waits and rewrites it after every pass, so a waiting run is never
-# 'running', and a row older than three hours is still a run killed before its main pass ended.
+# Three hours is the expected ceiling for the main pass, not a kill switch: the unit's
+# TimeoutStartSec is 17 h now, so this limit is what names a run as stuck long before systemd
+# would act. Past it the row is reported as hung when the unit is still alive (the captain stops
+# it) or as killed when it is not. The row stays 'running' until the next run closes it, so
+# without this a dead morning would read as the previous green run. The follow-up window (06:00 to
+# 22:00) does not raise this limit: the run finishes its row before it waits and rewrites it after
+# every pass, so a waiting run is never 'running', and a row older than three hours is still a run
+# hung or dead before its main pass ended.
 max_running_s=${PW_CHECK_MAX_RUNNING_S:-10800}
 # A follow-up pass writes the row only when it starts waiting again, so between the moment its
 # `next_at` passes and that write the row still looks overdue. A pass is minutes (an S2 call with
@@ -100,81 +102,88 @@ WITH last_run AS (
     WHERE finished_at IS NOT NULL
     ORDER BY finished_at DESC
     LIMIT 1
+),
+-- One row per `key|value` fact, all of them text. translate() is applied once, outside the
+-- union, so no value can end a line early: the shell parses exactly one line per fact, and a
+-- newline or carriage return inside a warning, a problem or a follow-up field would print as
+-- a line of its own, and a value shaped like `status|failed` would be read as a fact.
+facts(k, v) AS (
+    SELECT 'status', coalesce((SELECT status FROM last_run), '(none)')
+    UNION ALL
+    SELECT 'healthy', coalesce((SELECT health->>'healthy' FROM last_run), '(unknown)')
+    UNION ALL
+    SELECT 'problems', coalesce((SELECT health->>'problems' FROM last_run), '(unknown)')
+    UNION ALL
+    SELECT 'finished', coalesce(
+        (SELECT to_char(finished_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') FROM last_run),
+        '(none)')
+    UNION ALL
+    SELECT 'age_s', coalesce(
+        (SELECT (extract(epoch FROM now() - started_at))::bigint::text FROM last_run), '(unknown)')
+    UNION ALL
+    SELECT 'took_s', coalesce(
+        (SELECT (extract(epoch FROM finished_at - started_at))::bigint::text FROM last_run),
+        '(unknown)')
+    UNION ALL
+    SELECT 'counts', coalesce((SELECT counts::text FROM last_run), '{}')
+    UNION ALL
+    -- One row per warning, so a warning is printed without parsing the JSON array in the shell.
+    SELECT 'warning', w
+    FROM last_run, json_array_elements_text(coalesce(health -> 'warnings', '[]'::json)) AS w
+    UNION ALL
+    -- Seconds until the next follow-up pass: positive means the run is waiting, negative means the
+    -- wait ran out (the pass is running, or the process died inside the window). Only a waiting record
+    -- has a `next_at`. A value the server cannot parse as a timestamp (a corrupt or hand-edited row) is
+    -- passed through as text, and `pg_input_is_valid` (Postgres 16 and later) is what makes that safe:
+    -- the shell then prints one FAIL line instead of the whole query failing and losing every other
+    -- line of the check.
+    SELECT 'followup_next_in_s', coalesce(
+        (SELECT CASE
+                    WHEN pg_input_is_valid(health -> 'followup' ->> 'next_at', 'timestamptz')
+                    THEN (extract(epoch FROM (health -> 'followup' ->> 'next_at')::timestamptz
+                                   - now()))::bigint::text
+                    ELSE health -> 'followup' ->> 'next_at'
+                END
+         FROM last_run WHERE health -> 'followup' ->> 'next_at' IS NOT NULL), '(none)')
+    UNION ALL
+    SELECT 'followup_next_rome', coalesce(
+        (SELECT CASE
+                    WHEN pg_input_is_valid(health -> 'followup' ->> 'next_at', 'timestamptz')
+                    THEN to_char((health -> 'followup' ->> 'next_at')::timestamptz
+                                 AT TIME ZONE 'Europe/Rome', 'HH24:MI')
+                    ELSE health -> 'followup' ->> 'next_at'
+                END
+         FROM last_run WHERE health -> 'followup' ->> 'next_at' IS NOT NULL), '(none)')
+    UNION ALL
+    SELECT 'followup_pass', coalesce(
+        -- The pass that is coming: `pass` counts the finished ones, so the first wait is pass 1. The
+        -- cast back to text is required: coalesce would otherwise type the '(none)' fallback as int,
+        -- and a non-numeric `pass` is passed through for the shell to report.
+        (SELECT CASE WHEN health -> 'followup' ->> 'pass' ~ '^[0-9]+$'
+                     THEN ((health -> 'followup' ->> 'pass')::int + 1)::text
+                     ELSE health -> 'followup' ->> 'pass'
+                END
+         FROM last_run), '(none)')
+    UNION ALL
+    SELECT 'followup_of', coalesce(
+        (SELECT health -> 'followup' ->> 'of' FROM last_run), '(none)')
+    UNION ALL
+    SELECT 'followup_pending', coalesce(
+        (SELECT health -> 'followup' -> 'pending' ->> 's2' FROM last_run), '(none)')
+    UNION ALL
+    SELECT 'followup_passes', coalesce(
+        (SELECT health -> 'followup' ->> 'passes' FROM last_run), '(none)')
+    UNION ALL
+    SELECT 'followup_stopped', coalesce(
+        (SELECT health -> 'followup' ->> 'stopped' FROM last_run), '(none)')
+    UNION ALL
+    SELECT 'open_age_s', coalesce(
+        (SELECT (extract(epoch FROM now() - min(started_at)))::bigint::text
+         FROM runs WHERE status = 'running' AND finished_at IS NULL), '(none)')
+    UNION ALL
+    SELECT 'admitted', (SELECT count(*)::text FROM items WHERE status = 'admitted')
 )
-SELECT 'status', coalesce((SELECT status FROM last_run), '(none)')
-UNION ALL
-SELECT 'healthy', coalesce((SELECT health->>'healthy' FROM last_run), '(unknown)')
-UNION ALL
-SELECT 'problems', coalesce((SELECT health->>'problems' FROM last_run), '(unknown)')
-UNION ALL
-SELECT 'finished', coalesce(
-    (SELECT to_char(finished_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') FROM last_run),
-    '(none)')
-UNION ALL
-SELECT 'age_s', coalesce(
-    (SELECT (extract(epoch FROM now() - started_at))::bigint::text FROM last_run), '(unknown)')
-UNION ALL
-SELECT 'took_s', coalesce(
-    (SELECT (extract(epoch FROM finished_at - started_at))::bigint::text FROM last_run),
-    '(unknown)')
-UNION ALL
-SELECT 'counts', coalesce((SELECT counts::text FROM last_run), '{}')
-UNION ALL
--- One row per warning, so a warning is printed without parsing the JSON array in the shell.
-SELECT 'warning', w
-FROM last_run, json_array_elements_text(coalesce(health -> 'warnings', '[]'::json)) AS w
-UNION ALL
--- Seconds until the next follow-up pass: positive means the run is waiting, negative means the
--- wait ran out (the pass is running, or the process died inside the window). Only a waiting record
--- has a `next_at`. A value the server cannot parse as a timestamp (a corrupt or hand-edited row) is
--- passed through as text, and `pg_input_is_valid` (Postgres 16 and later) is what makes that safe:
--- the shell then prints one FAIL line instead of the whole query failing and losing every other
--- line of the check.
-SELECT 'followup_next_in_s', coalesce(
-    (SELECT CASE
-                WHEN pg_input_is_valid(health -> 'followup' ->> 'next_at', 'timestamptz')
-                THEN (extract(epoch FROM (health -> 'followup' ->> 'next_at')::timestamptz
-                               - now()))::bigint::text
-                ELSE health -> 'followup' ->> 'next_at'
-            END
-     FROM last_run WHERE health -> 'followup' ->> 'next_at' IS NOT NULL), '(none)')
-UNION ALL
-SELECT 'followup_next_rome', coalesce(
-    (SELECT CASE
-                WHEN pg_input_is_valid(health -> 'followup' ->> 'next_at', 'timestamptz')
-                THEN to_char((health -> 'followup' ->> 'next_at')::timestamptz
-                             AT TIME ZONE 'Europe/Rome', 'HH24:MI')
-                ELSE health -> 'followup' ->> 'next_at'
-            END
-     FROM last_run WHERE health -> 'followup' ->> 'next_at' IS NOT NULL), '(none)')
-UNION ALL
-SELECT 'followup_pass', coalesce(
-    -- The pass that is coming: `pass` counts the finished ones, so the first wait is pass 1. The
-    -- cast back to text is required: coalesce would otherwise type the '(none)' fallback as int,
-    -- and a non-numeric `pass` is passed through for the shell to report.
-    (SELECT CASE WHEN health -> 'followup' ->> 'pass' ~ '^[0-9]+$'
-                 THEN ((health -> 'followup' ->> 'pass')::int + 1)::text
-                 ELSE health -> 'followup' ->> 'pass'
-            END
-     FROM last_run), '(none)')
-UNION ALL
-SELECT 'followup_of', coalesce(
-    (SELECT health -> 'followup' ->> 'of' FROM last_run), '(none)')
-UNION ALL
-SELECT 'followup_pending', coalesce(
-    (SELECT health -> 'followup' -> 'pending' ->> 's2' FROM last_run), '(none)')
-UNION ALL
-SELECT 'followup_passes', coalesce(
-    (SELECT health -> 'followup' ->> 'passes' FROM last_run), '(none)')
-UNION ALL
-SELECT 'followup_stopped', coalesce(
-    (SELECT health -> 'followup' ->> 'stopped' FROM last_run), '(none)')
-UNION ALL
-SELECT 'open_age_s', coalesce(
-    (SELECT (extract(epoch FROM now() - min(started_at)))::bigint::text
-     FROM runs WHERE status = 'running' AND finished_at IS NULL), '(none)')
-UNION ALL
-SELECT 'admitted', (SELECT count(*)::text FROM items WHERE status = 'admitted');
+SELECT k, translate(v, E'\n\r', '  ') FROM facts;
 SQL
 }
 

@@ -156,9 +156,18 @@ What the units do, and why:
   hidden fixed temporary name and renamed only once it is complete, so even a SIGKILL, which no
   trap can catch, cannot leave a short file that looks like a backup; TERM, INT and HUP are
   trapped too, so a stop or the 1 h timeout also removes the partial file. The script creates the
-  directory 0700 and the files 0600 itself.
+  directory 0700 and the files 0600 itself. It also takes a non-blocking lock (`~/backups/.lock`)
+  so a manual run during the timer's dump exits 1 with `another backup is running` instead of
+  sharing the one temporary file, and it refuses a `PW_BACKUP_KEEP_DAYS` that is not a whole
+  number from 1 to 9999.
 - The backup starts 45 minutes before the ingestion, so it usually finishes first; that is the
   clock, not a guarantee, and an overlap is harmless because `pg_dump` reads an MVCC snapshot.
+
+Both units also set `NoNewPrivileges=yes`, so nothing they run can gain privilege through a setuid
+or setgid binary: the ingestion and `pg_dump` both work as the account and never need one. To see
+where a unit stands, run `systemd-analyze --user security paperwatch-ingest` and read its
+`Overall exposure level` line: lower is better, and the points left on it are the knobs this
+deployment leaves at their defaults.
 
 ## 7. The first run, measured
 
@@ -389,11 +398,14 @@ The Postgres server is not reachable from a network, and that stays true. An SSH
 a local port to the server's Unix socket instead:
 
 ```bash
-ssh -N -L 5433:/var/run/postgresql/.s.PGSQL.5432 shared-vps
+ssh -N -L 127.0.0.1:5433:/var/run/postgresql/.s.PGSQL.5432 shared-vps
 ```
 
-`-N` opens no shell, and the tunnel exists only while that command runs. Then, in Beekeeper Studio
-Community Edition (open source, the captain's chosen client):
+`-N` opens no shell, and the tunnel exists only while that command runs: the forward names
+`127.0.0.1` explicitly, so the local port answers only on the Mac and not on whatever network it
+is on. Close it when you are done (Ctrl-C in that terminal), and nothing outside that window can
+reach the database. Then, in Beekeeper Studio Community Edition (open source, the captain's
+chosen client):
 
 1. New connection, PostgreSQL.
 2. Host `localhost`, port `5433`, user `paperwatch`, database `paperwatch`, no password.
@@ -401,6 +413,16 @@ Community Edition (open source, the captain's chosen client):
 4. If the connection form offers a read-only or safe mode, turn it on. The role owns the data, so
    nothing else stops an accidental edit; check it by trying `create table zz (i int)` and expecting
    a refusal.
+
+Once the server admin has created the read-only role `paperwatch_ro` (SELECT only), use it as the
+user in step 2: it is the recommended connection for Beekeeper and for the M3 API and agent,
+because neither should be able to write, and then the safe mode above is a second guard rather
+than the only one. The admin also has to let that connection in: peer authentication sees the
+accessing Unix account (`paperwatch`), not the role the client asks for, so the role needs a
+`pg_ident.conf` map from `paperwatch` to `paperwatch_ro` (or a password, and then step 2 is no
+longer passwordless), and `SELECT` granted through `ALTER DEFAULT PRIVILEGES FOR ROLE paperwatch IN
+SCHEMA public GRANT SELECT ON TABLES TO paperwatch_ro` so tables added by later migrations stay
+readable too.
 
 Useful starting points: `select status, health, counts, started_at from runs order by started_at
 desc limit 5;` for recent runs, and `select tier, count(*) from items where status = 'admitted'

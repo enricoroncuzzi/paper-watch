@@ -9,6 +9,7 @@ the guide itself, so a drift in the doc fails the suite.
 import os
 import re
 import shlex
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -98,3 +99,54 @@ def test_the_unit_timeout_stays_above_the_follow_up_window() -> None:
     match = re.fullmatch(r"(\d+)h", value)
     assert match, f"unexpected TimeoutStartSec format: {value}"
     assert int(match.group(1)) * 3600 > FOLLOWUP_MAX_WINDOW.total_seconds()
+
+
+BACKUP_UNIT = REPO_ROOT / "deploy" / "vps" / "paperwatch-backup.service"
+
+
+def _service_section(unit: Path) -> list[str]:
+    # The [Service] lines only: systemd ignores a setting in the wrong section with a warning, so a
+    # NoNewPrivileges line under [Unit] would silently vanish.
+    lines = unit.read_text().splitlines()
+    start = lines.index("[Service]") + 1
+    section: list[str] = []
+    for line in lines[start:]:
+        if line.startswith("[") and line.endswith("]"):
+            break
+        section.append(line)
+    return section
+
+
+@pytest.mark.parametrize("unit", [UNIT, BACKUP_UNIT], ids=["ingest", "backup"])
+def test_each_unit_refuses_to_gain_privileges(unit: Path) -> None:
+    # Both units run code from the account's home. Neither needs a setuid or setgid binary, so the
+    # setting that stops one from raising its own privileges costs nothing to keep.
+    assert "NoNewPrivileges=yes" in _service_section(unit)
+
+
+def test_the_guide_shows_how_to_read_the_unit_security_score() -> None:
+    # The number belongs to the deployed unit on the server, so the guide names the command and how
+    # to read it rather than quoting a score that would go stale.
+    guide = GUIDE.read_text()
+    assert "systemd-analyze --user security paperwatch-ingest" in guide
+    assert "Overall exposure level" in guide
+
+
+def test_the_guide_binds_its_tunnel_to_loopback() -> None:
+    # `-L 5433:...` listens on every interface, so on a shared wifi the database would be reachable
+    # through the Mac; the guide's forward must name 127.0.0.1 and say when to close it.
+    forwards = re.findall(r"^ssh -N -L (\S+) shared-vps$", GUIDE.read_text(), re.MULTILINE)
+    assert forwards == ["127.0.0.1:5433:/var/run/postgresql/.s.PGSQL.5432"]
+    assert "Close it when you are done" in GUIDE.read_text()
+
+
+def test_the_guide_recommends_the_read_only_role() -> None:
+    # Beekeeper and the M3 API and agent only read: the owning role would let a stray query write.
+    guide = GUIDE.read_text()
+    # The sentence itself, so an unrelated mention of a read-only mode cannot satisfy the test.
+    assert "the read-only role `paperwatch_ro` (SELECT only)" in guide
+    assert "recommended connection for Beekeeper and for the M3 API and agent" in guide
+    # Peer authentication sees the ssh account, so the role needs an ident map (or a password),
+    # and default privileges keep it reading tables that later migrations create.
+    assert "`pg_ident.conf` map" in guide
+    assert "ALTER DEFAULT PRIVILEGES FOR ROLE paperwatch" in guide

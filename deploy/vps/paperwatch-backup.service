@@ -19,3 +19,5 @@ TimeoutStartSec=1h
 Nice=10
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7
+# pg_dump needs no new privilege either: it reads the socket and writes the dump as the account.
+NoNewPrivileges=yes
