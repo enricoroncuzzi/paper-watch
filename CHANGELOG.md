@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.5.0...paperwatch-v0.6.0) (2026-10-23)
+
+
+### Features
+
+* **ingest:** retry Semantic Scholar refusals with follow-up passes ([#19](https://github.com/enricoroncuzzi/paper-watch/issues/19)) ([4595014](https://github.com/enricoroncuzzi/paper-watch/commit/4595014f9b9effb7e3ee010f257e2b6ee372b0a8))
+
 ## [0.5.0](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.4.1...paperwatch-v0.5.0) (2026-10-23)
 
 
