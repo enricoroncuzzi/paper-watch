@@ -45,12 +45,12 @@ The installer puts `uv` in `~/.local/bin`, which a login shell adds to `PATH` fr
 Open a new session, or `. ~/.local/bin/env`, before step 3 relies on the bare `uv` name; the
 units always use the absolute path.
 
-## 2. Clone the repository at the current release
+## 2. Clone the repository at a release tag
 
 ```bash
 git clone https://github.com/enricoroncuzzi/paper-watch ~/paper-watch
 cd ~/paper-watch
-git checkout paperwatch-v0.6.0        # the release running on the server since 2026-10-23; tags are paperwatch-vX.Y.Z
+git checkout paperwatch-v0.6.0        # a release tag; use the latest, tags are paperwatch-vX.Y.Z
 ```
 
 Pin a tag, not `main`: a checkout that changes under a running ingestion is a different program
