@@ -885,3 +885,19 @@ def test_s2_5xx_after_every_attempt_is_refused_not_an_anomaly(monkeypatch) -> No
     assert src.checked_ids == set()
     assert src.anomaly is None
     assert src.degraded is True
+
+
+@respx.mock
+def test_s2_does_not_follow_a_redirect(monkeypatch) -> None:
+    # The batch endpoint is named in code; a 3xx means it moved, which a follow-up pass cannot fix,
+    # so it is an anomaly and the ids stay unasked rather than refused.
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    route = respx.post(S2_BATCH_URL).mock(
+        return_value=httpx.Response(302, headers={"location": "https://elsewhere.test/batch"})
+    )
+    respx.post("https://elsewhere.test/batch").mock(return_value=httpx.Response(200, json=[None]))
+    src = SemanticScholarSource(httpx.Client(), None, pause_s=0)
+    assert src.lookup(["2510.00001"]) == {}
+    assert route.call_count == 1
+    assert src.refused_ids == set()
+    assert src.anomaly is not None

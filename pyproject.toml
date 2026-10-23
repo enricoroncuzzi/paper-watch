@@ -20,6 +20,7 @@ dependencies = [
     "openai>=1.60",
     "pgvector>=0.3.6",
     "psycopg[binary]>=3.2",
+    "publicsuffixlist>=1.1.2.20261023",
     "pydantic>=2.9",
     "pydantic-settings>=2.6",
     "pyyaml>=6.0.2",

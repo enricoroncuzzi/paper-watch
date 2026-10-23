@@ -6,8 +6,10 @@ from collections.abc import Callable
 from contextlib import suppress
 from functools import partial
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
+from publicsuffixlist import PublicSuffixList
 from tenacity import (
     RetryCallState,
     Retrying,
@@ -40,6 +42,48 @@ MAX_API_BODY_BYTES = 50 * 1024 * 1024
 # whole request (connect plus every read), on top of the read timeout that catches a silent stall.
 REQUEST_DEADLINE_S = 120.0
 
+# Redirects are followed by hand, never by httpx, so a target can be checked before the request
+# goes out: a hop to plain http would send the request in the clear, and a feed that redirects off
+# its own site is no longer the official feed that was configured. Five hops is more than any real
+# feed or API needs, and it stops a redirect loop instead of spending the deadline on it.
+MAX_REDIRECTS = 5
+_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+# The public suffix list ships inside the package as a snapshot (refreshed with the dependency), so
+# nothing here does a DNS lookup or a download at run time, and a run never depends on the network
+# to decide whether a host is the configured feed's own site.
+_PUBLIC_SUFFIXES = PublicSuffixList()
+
+
+class RedirectRefused(httpx.HTTPError):
+    """A redirect this client will not follow: a downgrade, another site, or too many hops.
+
+    Deliberately not an `httpx.TransportError`: the same redirect will arrive next time, so a
+    retry would only repeat the refusal.
+    """
+
+
+def registrable_domain(url: str) -> str:
+    """The eTLD+1 of a URL's host, so one site's own hosts compare equal.
+
+    `blog.example.co.uk` and `www.example.co.uk` both give `example.co.uk`, while `evil.co.uk`
+    gives `evil.co.uk` and `a.github.io` gives `a.github.io` (a shared public suffix is not a
+    site). A host the suffix list does not know is its own domain.
+    """
+    host = (urlparse(url).hostname or "").lower()
+    return _PUBLIC_SUFFIXES.privatesuffix(host) or host
+
+
+def _redirect_target(current: httpx.URL, location: str, *, allowed: str | None) -> httpx.URL:
+    """The URL a redirect points at, or `RedirectRefused` if this client will not follow it."""
+    target = current.join(location)
+    if target.scheme not in ("http", "https"):
+        raise RedirectRefused(f"{current} redirected to a non-HTTP target: {target}")
+    if current.scheme == "https" and target.scheme == "http":
+        raise RedirectRefused(f"{current} redirected to plain http: {target}")
+    if allowed is not None and registrable_domain(str(target)) != allowed:
+        raise RedirectRefused(f"{current} redirected off its site ({allowed}): {target}")
+    return target
+
 
 class BodyTooLarge(httpx.HTTPError):
     """A response body above the per-source cap: a fetch failure for that source, never an OOM.
@@ -57,10 +101,11 @@ def make_http_client(settings: Settings) -> httpx.Client:
     # One client reused across sources; the User-Agent identifies us to source sites
     # and the timeout stops a hung source from stalling the whole weekly run.
     # arXiv's terms allow one connection per client, so the pool is capped at one.
+    # Redirects are not followed here but in `send_with_retries`, which can check each target.
     return httpx.Client(
         timeout=30.0,
         headers={"User-Agent": settings.user_agent},
-        follow_redirects=True,
+        follow_redirects=False,
         limits=httpx.Limits(max_connections=1, max_keepalive_connections=1),
     )
 
@@ -134,6 +179,8 @@ def send_with_retries(
     max_bytes: int = MAX_API_BODY_BYTES,
     request_deadline_s: float = REQUEST_DEADLINE_S,
     clock: Callable[[], float] = time.monotonic,
+    follow_redirects: bool = True,
+    stay_on_site: str | None = None,
     before_request: Callable[[], None] | None = None,
     before_sleep: Callable[[RetryCallState], None] | None = None,
     **kwargs: Any,
@@ -151,7 +198,19 @@ def send_with_retries(
     The body is streamed and read here, never by a bare `client.request`: a body over `max_bytes`
     raises `BodyTooLarge` and one that outlives the deadline raises `RequestDeadlineExceeded`, so
     the returned response is always complete in memory and bounded.
+
+    A redirect is followed only under this client's own rules (see `_redirect_target`): never to
+    plain http, and with `stay_on_site` (a URL) given, never off that URL's registrable domain.
+    `follow_redirects=False` refuses every redirect, which raises like any other answer this client
+    will not accept, so a caller never parses a page from a hop it did not agree to take.
     """
+    # The caller's params ride on the first hop only: a later hop's own Location carries them, so
+    # they are folded into the URL once, and a retry asks for exactly the same URL as the first try.
+    params = kwargs.pop("params", None)
+    first_target = httpx.URL(url)
+    if params is not None:
+        first_target = first_target.copy_merge_params(params)
+    allowed = registrable_domain(stay_on_site) if stay_on_site is not None else None
     for attempt in Retrying(
         stop=stop_after_attempt(attempts),
         wait=partial(_wait_for_retry, min_wait_s=min_wait_s, max_wait_s=max_wait_s),
@@ -164,19 +223,37 @@ def send_with_retries(
                 # A caller that must pace every attempt (arXiv's one-request-per-3 s
                 # rule) hooks in here, so a retry is paced too, not only the first try.
                 before_request()
-            # The deadline covers this request only: a pacing wait before it is not the server's.
+            # The deadline covers this request only: a pacing wait before it is not the server's,
+            # and a redirect chain is one request, so the hops share it too.
             deadline = clock() + request_deadline_s
-            with client.stream(method, url, **kwargs) as resp:
-                body = _read_body_capped(resp, max_bytes=max_bytes, deadline=deadline, clock=clock)
-                # Rebuilt as a plain response so callers keep using .text/.json().content on an
-                # already-read body, and raise_for_status still carries the server's headers.
-                result = httpx.Response(
-                    resp.status_code,
-                    headers=_body_headers(resp),
-                    content=body,
-                    request=resp.request,
-                )
-            result.raise_for_status()
-            return result
+            target = first_target
+            hops = 0
+            while True:
+                with client.stream(method, target, **kwargs) as resp:
+                    body = _read_body_capped(
+                        resp, max_bytes=max_bytes, deadline=deadline, clock=clock
+                    )
+                    # Rebuilt as a plain response so callers keep using .text/.json()/.content on
+                    # an already-read body, and raise_for_status still carries the server's headers.
+                    result = httpx.Response(
+                        resp.status_code,
+                        headers=_body_headers(resp),
+                        content=body,
+                        request=resp.request,
+                    )
+                location = result.headers.get("location")
+                if not (follow_redirects and result.status_code in _REDIRECT_STATUSES and location):
+                    result.raise_for_status()
+                    return result
+                hops += 1
+                if hops > MAX_REDIRECTS:
+                    raise RedirectRefused(f"{url} redirected more than {MAX_REDIRECTS} times")
+                # The sources that follow redirects only ever GET, so the method is kept; a 303
+                # from a POST source (S2, which refuses redirects) never reaches this line.
+                target = _redirect_target(target, location, allowed=allowed)
+                if clock() > deadline:
+                    raise RequestDeadlineExceeded(
+                        f"{url} was still redirecting after {request_deadline_s:.0f} s"
+                    )
     # Unreachable: tenacity re-raises after the final attempt.
     raise RuntimeError("retry loop exhausted without a result or an exception")

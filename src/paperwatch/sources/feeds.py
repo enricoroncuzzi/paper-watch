@@ -130,7 +130,15 @@ class FeedSource:
         """Fetch one feed; raise on a whole-feed failure, append bad entries to rejected."""
         if since.tzinfo is None or until.tzinfo is None:
             raise ValueError("since and until must be timezone-aware")
-        resp = send_with_retries(self._client, "GET", feed.url, max_bytes=MAX_FEED_BODY_BYTES)
+        # A feed may move its own hosts (blog.example.co.uk -> www.example.co.uk) but a redirect
+        # off the configured site is someone else's page, never the official feed.
+        resp = send_with_retries(
+            self._client,
+            "GET",
+            feed.url,
+            max_bytes=MAX_FEED_BODY_BYTES,
+            stay_on_site=feed.url,
+        )
         if not _looks_like_feed(resp.content):
             # A maintenance page or error document is a failure, not a quiet day.
             content_type = resp.headers.get("content-type", "unknown")

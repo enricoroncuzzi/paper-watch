@@ -164,6 +164,9 @@ class SemanticScholarSource:
                         min_wait_s=S2_MIN_WAIT_S,
                         max_wait_s=S2_MAX_WAIT_S,
                         before_sleep=_log_refusal,
+                        # The batch endpoint redirects only where this client will not go (a
+                        # moved API), so a redirect is an answer we do not follow, not a detour.
+                        follow_redirects=False,
                     )
                 except httpx.HTTPStatusError as exc:
                     if not _no_known_ids(exc):

@@ -9,11 +9,14 @@ import respx
 
 from paperwatch.config import Settings
 from paperwatch.sources.base import (
+    MAX_REDIRECTS,
     MAX_RETRY_AFTER_S,
     BodyTooLarge,
+    RedirectRefused,
     RequestDeadlineExceeded,
     is_retryable,
     make_http_client,
+    registrable_domain,
     send_with_retries,
 )
 
@@ -207,3 +210,141 @@ def test_a_request_within_the_deadline_is_returned() -> None:
 
     resp = send_with_retries(client, "GET", "https://example.test/x", clock=clock)
     assert resp.text == "ok"
+
+
+def _redirecting_client(
+    hops: dict[str, httpx.Response],
+) -> tuple[httpx.Client, list[httpx.URL]]:
+    # A transport that answers a known URL with a redirect and counts every request it served, so a
+    # test can tell a followed hop from a request that never went out.
+    seen: list[httpx.URL] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url)
+        return hops.get(str(request.url), httpx.Response(404))
+
+    return httpx.Client(transport=httpx.MockTransport(handler)), seen
+
+
+def test_registrable_domain_is_the_etld_plus_one() -> None:
+    # One site's hosts compare equal; a shared public suffix is not a site.
+    assert registrable_domain("https://blog.example.co.uk/feed.xml") == "example.co.uk"
+    assert registrable_domain("https://www.example.co.uk/feed.xml") == "example.co.uk"
+    assert registrable_domain("https://evil.co.uk/feed.xml") == "evil.co.uk"
+    assert registrable_domain("https://a.github.io/x") == "a.github.io"
+    assert registrable_domain("https://lab.example/feed.xml") == "lab.example"
+
+
+def test_a_redirect_to_plain_http_is_refused() -> None:
+    # The request would go out in the clear, so it must not go out at all.
+    client, seen = _redirecting_client(
+        {
+            "https://lab.example/feed.xml": httpx.Response(
+                302, headers={"location": "http://lab.example/feed.xml"}
+            ),
+        }
+    )
+    with pytest.raises(RedirectRefused):
+        send_with_retries(client, "GET", "https://lab.example/feed.xml")
+    assert [str(url) for url in seen] == ["https://lab.example/feed.xml"]
+
+
+def test_a_redirect_within_the_site_is_followed() -> None:
+    # A feed that moves between its own hosts is still the same official feed.
+    client, seen = _redirecting_client(
+        {
+            "https://blog.example.co.uk/feed.xml": httpx.Response(
+                301, headers={"location": "https://www.example.co.uk/feed.xml"}
+            ),
+            "https://www.example.co.uk/feed.xml": httpx.Response(200, text="<rss/>"),
+        }
+    )
+    resp = send_with_retries(
+        client,
+        "GET",
+        "https://blog.example.co.uk/feed.xml",
+        stay_on_site="https://blog.example.co.uk/feed.xml",
+    )
+    assert resp.text == "<rss/>"
+    assert [str(url) for url in seen] == [
+        "https://blog.example.co.uk/feed.xml",
+        "https://www.example.co.uk/feed.xml",
+    ]
+
+
+def test_a_feed_redirect_off_its_site_is_refused() -> None:
+    client, seen = _redirecting_client(
+        {
+            "https://lab.example/feed.xml": httpx.Response(
+                302, headers={"location": "https://evil.test/feed.xml"}
+            ),
+        }
+    )
+    with pytest.raises(RedirectRefused):
+        send_with_retries(
+            client,
+            "GET",
+            "https://lab.example/feed.xml",
+            stay_on_site="https://lab.example/feed.xml",
+        )
+    assert [str(url) for url in seen] == ["https://lab.example/feed.xml"]
+
+
+def test_a_redirect_loop_is_refused() -> None:
+    client, seen = _redirecting_client(
+        {"https://lab.example/x": httpx.Response(302, headers={"location": "/x"})}
+    )
+    with pytest.raises(RedirectRefused):
+        send_with_retries(client, "GET", "https://lab.example/x")
+    assert len(seen) == MAX_REDIRECTS + 1
+
+
+def test_a_refused_redirect_is_not_retried() -> None:
+    # The same hop arrives next time, so a retry only repeats the refusal.
+    client, seen = _redirecting_client(
+        {}
+        | {
+            "https://lab.example/x": httpx.Response(
+                302, headers={"location": "http://lab.example/x"}
+            )
+        }
+    )
+    with pytest.raises(RedirectRefused):
+        send_with_retries(client, "GET", "https://lab.example/x")
+    assert len(seen) == 1
+
+
+def test_params_ride_on_the_first_hop_only() -> None:
+    # A redirect's own Location carries the query from then on: appending the caller's params to
+    # every hop would ask a different question and drop the server's token.
+    client, seen = _redirecting_client(
+        {
+            "https://api.example.test/records?page=1&size=100": httpx.Response(
+                302, headers={"location": "/records?token=abc"}
+            ),
+            "https://api.example.test/records?token=abc": httpx.Response(200, text="ok"),
+        }
+    )
+    resp = send_with_retries(
+        client, "GET", "https://api.example.test/records", params={"page": 1, "size": 100}
+    )
+    assert resp.text == "ok"
+    assert [str(url) for url in seen] == [
+        "https://api.example.test/records?page=1&size=100",
+        "https://api.example.test/records?token=abc",
+    ]
+
+
+def test_a_source_that_refuses_redirects_does_not_follow_one() -> None:
+    # Semantic Scholar asks with follow_redirects=False: a moved endpoint is a hop this client does
+    # not take, so the answer raises instead of the target being fetched.
+    client, seen = _redirecting_client(
+        {
+            "https://example.test/x": httpx.Response(
+                302, headers={"location": "https://example.test/y"}
+            ),
+        }
+    )
+    with pytest.raises(httpx.HTTPStatusError):
+        send_with_retries(client, "GET", "https://example.test/x", follow_redirects=False)
+    assert [str(url) for url in seen] == ["https://example.test/x"]
