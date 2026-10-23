@@ -5,12 +5,16 @@ Paper Watch builds a growing, queryable corpus of AI research focused on agentic
 fallback topic. Items come only from reliable sources, in three tiers: peer-reviewed venues,
 arXiv preprints with a quality signal, and official AI-lab engineering blogs.
 
-The corpus answers questions on demand through retrieval-augmented generation, and produces one
-weekly LinkedIn draft grounded in stored sources, which the author posts, edits, skips, or defers
-by hand. Paper Watch never posts to LinkedIn itself.
+The corpus answers questions on demand through retrieval-augmented generation, and will produce one
+weekly LinkedIn draft grounded in stored sources (milestone M3, not built yet), which the author
+posts, edits, skips, or defers by hand. Paper Watch never posts to LinkedIn itself.
 
 It is also a deliberate learning project: every technology it uses has a load-bearing job in the
 code and a short lesson in [`docs/learn/`](docs/learn/).
+
+Status: M0 to M2 are done, the daily ingestion has run on a shared VPS since 2026-10-22
+([`docs/deploy/vps.md`](docs/deploy/vps.md)), and M3 (the weekly draft and the control page) is
+next.
 
 ## Quickstart
 
@@ -28,7 +32,7 @@ matters for production: `PW_USER_AGENT` should identify the deployment with an a
 contact (for example `paper-watch (+https://github.com/enricoroncuzzi/paper-watch; you@example.com)`),
 because arXiv asks bulk harvesters to leave a contact and the committed default carries none.
 
-## M1: what you can do now
+## Corpus and search (M1)
 
 With the database running and migrated (above):
 
@@ -37,7 +41,6 @@ uv run paperwatch ingest --live              # fetch, classify, admit and embed 
 uv run paperwatch search "agent memory" --live  # hybrid retrieval over the corpus
 uv run paperwatch eval                       # retrieval metrics against the committed baseline
 uv run paperwatch eval --live                # same set with the real local embedder; report only, never gates
-uv run paperwatch qa-eval                    # replay the recorded answers through the checker; no model or network
 ```
 
 The eval runs in a uniquely named throwaway database on the configured server: it creates it,
@@ -81,6 +84,7 @@ uv run paperwatch serve --live                                # POST /ask, serve
 curl -N -X POST localhost:8000/ask \
   -H 'content-type: application/json' \
   -d '{"question": "which papers evaluate coding agents?"}'
+uv run paperwatch qa-eval                                     # replay the recorded answers through the checker; no model or network
 ```
 
 The chat model is an OpenRouter free model by default, with Groq as an optional fallback
