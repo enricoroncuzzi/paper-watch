@@ -123,7 +123,12 @@ def is_retryable(exc: BaseException) -> bool:
 
 
 def _read_body_capped(
-    resp: httpx.Response, *, max_bytes: int, deadline: float, clock: Callable[[], float]
+    resp: httpx.Response,
+    *,
+    max_bytes: int,
+    deadline: float,
+    deadline_s: float,
+    clock: Callable[[], float],
 ) -> bytes:
     """Read a streamed body, aborting as soon as it passes the cap or the deadline.
 
@@ -137,9 +142,7 @@ def _read_body_capped(
         if len(body) > max_bytes:
             raise BodyTooLarge(f"{resp.request.url} sent more than {max_bytes} bytes")
         if clock() > deadline:
-            raise RequestDeadlineExceeded(
-                f"{resp.request.url} took longer than {REQUEST_DEADLINE_S:.0f} s"
-            )
+            raise RequestDeadlineExceeded(f"{resp.request.url} took longer than {deadline_s:.0f} s")
     return bytes(body)
 
 
@@ -231,7 +234,11 @@ def send_with_retries(
             while True:
                 with client.stream(method, target, **kwargs) as resp:
                     body = _read_body_capped(
-                        resp, max_bytes=max_bytes, deadline=deadline, clock=clock
+                        resp,
+                        max_bytes=max_bytes,
+                        deadline=deadline,
+                        deadline_s=request_deadline_s,
+                        clock=clock,
                     )
                     # Rebuilt as a plain response so callers keep using .text/.json()/.content on
                     # an already-read body, and raise_for_status still carries the server's headers.
