@@ -73,7 +73,7 @@ mkdir -p ~/.config/paperwatch
 umask 077
 cat > ~/.config/paperwatch/env <<'EOF'
 PW_DATABASE_URL=postgresql+psycopg://paperwatch@/paperwatch?host=/var/run/postgresql
-PW_USER_AGENT="paper-watch/0.4 (+https://github.com/enricoroncuzzi/paper-watch; you@example.com)"
+PW_USER_AGENT="paper-watch (+https://github.com/enricoroncuzzi/paper-watch; you@example.com)"
 PW_LOCAL_EMBEDDING_CACHE_DIR=/home/paperwatch/.cache/paperwatch-models
 EOF
 chmod 600 ~/.config/paperwatch/env
