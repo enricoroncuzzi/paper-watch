@@ -70,7 +70,7 @@ def _stub_flock(directory: Path, exit_code: int) -> Path:
 
 # The externals backup.sh calls, so a PATH without flock can still run it: that is the mkdir
 # fallback, which is the path a Mac (no flock) and a minimal install take.
-LOCK_FALLBACK_TOOLS = ("date", "find", "mkdir", "mv", "rm", "rmdir", "wc")
+LOCK_FALLBACK_TOOLS = ("cat", "date", "find", "mkdir", "mv", "rm", "rmdir", "wc")
 
 
 def _minimal_bin(tmp_path: Path) -> Path:
@@ -196,7 +196,24 @@ def test_backup_fails_loudly_when_pg_dump_writes_nothing(tmp_path: Path) -> None
     assert _dumps(backups) == []
 
 
-@pytest.mark.parametrize("keep_days", ["seven", "0", "-1", "1.5", " 7"])
+@pytest.mark.parametrize(
+    "keep_days",
+    [
+        "",  # an explicitly empty value is a mistake, not the default
+        "seven",
+        "1.5",
+        " 7",
+        "-1",
+        "0",
+        "00",
+        # dash reads a leading zero as octal: 010 would keep eight nights and 08 would die with
+        # "Illegal number" after the dump was written, before retention ran.
+        "08",
+        "010",
+        "10000",
+        "99999999999999999999",  # longer than any shell integer: -lt would itself fail
+    ],
+)
 def test_backup_rejects_a_keep_days_that_is_not_a_positive_whole_number(
     tmp_path: Path, keep_days: str
 ) -> None:
@@ -204,8 +221,8 @@ def test_backup_rejects_a_keep_days_that_is_not_a_positive_whole_number(
     # and no reason, and not `find -mtime +-1`, which would delete today's dump.
     backups = tmp_path / "backups"
     result = _run(tmp_path, backups, keep_days=keep_days)
-    assert result.returncode == 1
-    assert "PW_BACKUP_KEEP_DAYS" in result.stderr
+    assert result.returncode == 1, (keep_days, result.returncode, result.stderr)
+    assert "PW_BACKUP_KEEP_DAYS must be" in result.stderr
     assert list(tmp_path.rglob("*.dump")) == []
     assert list(tmp_path.rglob("*.part")) == []
 
@@ -246,6 +263,60 @@ def test_backup_refuses_while_the_directory_lock_exists(tmp_path: Path) -> None:
     assert "remove it" in result.stderr, "a stale lock needs an action, not just a refusal"
     assert (backups / ".lock").is_dir(), "a held lock is never stolen"
     assert _dumps(backups) == [] and _parts(backups) == []
+
+
+# Above every kernel's pid_max, so `kill -0` always fails for it: it cannot be a live backup.
+DEAD_PID = "2147483647"
+
+
+def test_backup_clears_a_fallback_lock_whose_process_is_gone(tmp_path: Path) -> None:
+    # The fallback lock records the pid: a SIGKILL or a reboot leaves the directory behind, and
+    # refusing for ever would mean no backup ever again. The pid is what tells a stale lock from a
+    # live one.
+    backups = tmp_path / "backups"
+    lock = backups / ".lock"
+    lock.mkdir(parents=True)
+    (lock / "pid").write_text(f"{DEAD_PID}\n")
+    result = _run(tmp_path, backups, no_flock=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "clearing the lock a killed run left" in result.stderr
+    assert not lock.exists(), "the stale lock and its pid file are gone after the run"
+    assert _dumps(backups) != [] and _parts(backups) == []
+
+
+def test_backup_refuses_a_fallback_lock_whose_process_is_alive(tmp_path: Path) -> None:
+    # The other half: a lock naming a live process is a running backup, and the pid alone must
+    # never be enough to break into it.
+    backups = tmp_path / "backups"
+    lock = backups / ".lock"
+    lock.mkdir(parents=True)
+    (lock / "pid").write_text(f"{os.getpid()}\n")
+    result = _run(tmp_path, backups, no_flock=True)
+    assert result.returncode == 1
+    assert "another backup is running" in result.stderr
+    assert "clearing the lock" not in result.stderr
+    assert (lock / "pid").is_file(), "a live lock is never stolen"
+    assert _dumps(backups) == [] and _parts(backups) == []
+
+
+@pytest.mark.parametrize("no_flock", [True, False], ids=["mkdir-fallback", "flock"])
+def test_a_losing_backup_never_deletes_the_winners_partial_file(
+    tmp_path: Path, no_flock: bool
+) -> None:
+    # The EXIT trap is armed only after the lock is won, so this is the mutant worth pinning: if it
+    # moved above the lock block, a run that loses the race would unlink the winner's half-written
+    # `.paperwatch.dump.part` and the winner would rename a truncated dump.
+    backups = tmp_path / "backups"
+    backups.mkdir()
+    part = backups / ".paperwatch.dump.part"
+    part.write_text("winner partial")
+    if no_flock:
+        (backups / ".lock").mkdir()
+        result = _run(tmp_path, backups, no_flock=True)
+    else:
+        result = _run(tmp_path, backups, flock_exit=1)  # flock reports the lock held
+    assert result.returncode == 1
+    assert part.read_text() == "winner partial", "the loser deleted the winner's partial dump"
 
 
 def test_backup_takes_the_flock_lock_and_keeps_its_file(tmp_path: Path) -> None:
