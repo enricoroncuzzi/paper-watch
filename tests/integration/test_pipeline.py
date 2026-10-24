@@ -357,22 +357,30 @@ def test_hf_listing_stored_is_set_only_when_the_step_commits(
 
     # The write succeeds but its commit is refused: nothing is stored, so no observation either.
     real = Repository.apply_hf_listing
+    armed = [False]
 
     def commit_refused(self: Repository, listed: Mapping[str, HfPaper], *, at: datetime) -> int:
         written = real(self, listed, at=at)
-
-        def boom(_session: Session) -> None:
-            raise SQLAlchemyError("commit refused")
-
-        # once=True: only the listing step's commit fails; the commits that end the run go on.
-        event.listen(db_session, "before_commit", boom, once=True)
+        armed[0] = True
         return written
+
+    def boom(session: Session) -> None:
+        # before_commit also fires when the savepoint is released, so only the outer commit that
+        # follows the write is refused; the commits that end the run go on.
+        if armed[0] and not session.in_nested_transaction():
+            armed[0] = False
+            raise SQLAlchemyError("commit refused")
 
     uncommitted = fake_sources([paper("2510.2", "Coding agent")])
     uncommitted.hf.papers.return_value = {"2510.2": HfPaper(upvotes=50)}
-    with monkeypatch.context() as patched:
-        patched.setattr(Repository, "apply_hf_listing", commit_refused)
-        failed_commit = run(db_session, uncommitted, now=NOW + timedelta(days=2))
+    event.listen(db_session, "before_commit", boom)
+    try:
+        with monkeypatch.context() as patched:
+            patched.setattr(Repository, "apply_hf_listing", commit_refused)
+            failed_commit = run(db_session, uncommitted, now=NOW + timedelta(days=2))
+    finally:
+        event.remove(db_session, "before_commit", boom)
+    assert not armed[0]
     assert failed_commit.counts["hf_listing_stored"] == 0
     assert failed_commit.health is not None
     assert "hugging face extras not stored this run" in failed_commit.health.warnings
