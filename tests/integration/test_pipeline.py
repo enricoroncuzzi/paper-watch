@@ -355,7 +355,8 @@ def test_hf_listing_stored_is_set_only_when_the_step_commits(
     whole.hf.papers.return_value = {"2510.1": HfPaper(upvotes=50)}
     assert run(db_session, whole, now=NOW + timedelta(days=1)).counts["hf_listing_stored"] == 1
 
-    # The write succeeds but its commit is refused: nothing is stored, so no observation either.
+    # The write succeeds but the step's commit is refused: the flag follows the commit, not the
+    # write.
     real = Repository.apply_hf_listing
     armed = [False]
 
