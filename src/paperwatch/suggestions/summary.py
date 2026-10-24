@@ -334,8 +334,9 @@ def _superlative_is_unbacked(body: str, source: str, word: str) -> bool:
     tokens = _hyphen_tokens(body, word)
     if not tokens:
         return False
-    # Acceptance is strict: the source needs the bare word, or the summary's own compound, as a
-    # whole token. A hyphen joins words, so "first-order" never backs "the first method".
+    # Acceptance is strict: the source needs the bare word, or the summary's own compound or
+    # plural, as a whole token. A hyphen joins words, so "first-order" never backs "the first
+    # method".
     if _whole(source, word):
         return False
     return not all(_whole(source, token) for token in tokens)
