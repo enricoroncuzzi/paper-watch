@@ -55,6 +55,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/suggestions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Suggestions */
+        get: operations["suggestions_suggestions_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/suggestions/{item_id}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Record Event */
+        post: operations["record_event_suggestions__item_id__events_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/healthz": {
         parameters: {
             query?: never;
@@ -139,6 +173,15 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** AlsoData */
+        AlsoData: {
+            /** Title */
+            title: string;
+            /** Url */
+            url: string;
+            /** Source */
+            source: string;
+        };
         /** AnswerData */
         AnswerData: {
             /** Text */
@@ -170,6 +213,8 @@ export interface components {
             profiles?: string[] | null;
             /** Since */
             since?: string | null;
+            /** Item Id */
+            item_id?: string | null;
         };
         /** CitationData */
         CitationData: {
@@ -218,6 +263,14 @@ export interface components {
             message: string;
             /** Retry At */
             retry_at?: string | null;
+        };
+        /** EventRequest */
+        EventRequest: {
+            /**
+             * Event
+             * @enum {string}
+             */
+            event: "opened" | "dismissed";
         };
         /** FlagData */
         FlagData: {
@@ -454,6 +507,93 @@ export interface components {
             /** New Sources */
             new_sources: number;
         };
+        /** SuggestionCardData */
+        SuggestionCardData: {
+            /**
+             * Item Id
+             * Format: uuid
+             */
+            item_id: string;
+            /** Title */
+            title: string;
+            /** Url */
+            url: string;
+            /** Source */
+            source: string;
+            /** Tier */
+            tier: string;
+            /** Basis */
+            basis: string;
+            /** Basis Label */
+            basis_label: string;
+            /** Venue */
+            venue: string | null;
+            /** Citation Count */
+            citation_count: number;
+            /** Hf Upvotes */
+            hf_upvotes: number | null;
+            /** Github Repo */
+            github_repo: string | null;
+            /** Github Stars */
+            github_stars: number | null;
+            /** Project Page */
+            project_page: string | null;
+            /** Org */
+            org: string | null;
+            /**
+             * Published At
+             * Format: date-time
+             */
+            published_at: string;
+            /** Profile */
+            profile: string | null;
+            /** Relevance */
+            relevance: number;
+            /** Momentum Label */
+            momentum_label: string | null;
+            /** Also */
+            also: components["schemas"]["AlsoData"][];
+            summary: components["schemas"]["SummaryData"];
+        };
+        /** SuggestionsData */
+        SuggestionsData: {
+            /**
+             * Generated At
+             * Format: date-time
+             */
+            generated_at: string;
+            /** List Version */
+            list_version: string;
+            /** Picks */
+            picks: components["schemas"]["SuggestionCardData"][];
+            /** Rising */
+            rising: components["schemas"]["SuggestionCardData"][];
+            /** Rising Note */
+            rising_note: string;
+        };
+        /** SummaryData */
+        SummaryData: {
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "pending" | "checked" | "excerpt";
+            what: components["schemas"]["SummaryFieldData"] | null;
+            result: components["schemas"]["SummaryFieldData"] | null;
+            why: components["schemas"]["SummaryFieldData"] | null;
+            catch: components["schemas"]["SummaryFieldData"] | null;
+            /** Excerpt */
+            excerpt: string;
+        };
+        /** SummaryFieldData */
+        SummaryFieldData: {
+            /** Text */
+            text: string;
+            /** Quote */
+            quote: string | null;
+            /** Interpretation */
+            interpretation: boolean;
+        };
         /**
          * Tier
          * @enum {string}
@@ -689,6 +829,122 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Refusal"];
+                };
+            };
+        };
+    };
+    suggestions_suggestions_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SuggestionsData"];
+                };
+            };
+            /** @description The Host is not allowed, or the Content-Length is bad. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description The credential is missing or invalid; `WWW-Authenticate: Bearer`. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description The request carries an Origin header. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+        };
+    };
+    record_event_suggestions__item_id__events_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EventRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The Host is not allowed, or the Content-Length is bad. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description The credential is missing or invalid; `WWW-Authenticate: Bearer`. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description The request carries an Origin header. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description No admitted item with that id. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

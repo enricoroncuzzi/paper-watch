@@ -208,7 +208,7 @@ export class AskController {
     this.timer = null;
   }
 
-  ask = async (question: string): Promise<AskStatus> => {
+  ask = async (question: string, itemId?: string | null): Promise<AskStatus> => {
     this.stopWatchdog();
     this.inFlight?.abort();
     const controller = new AbortController();
@@ -223,7 +223,8 @@ export class AskController {
       const response = await fetchImpl("/api/ask", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ question }),
+        // The API pre-registers this item as S1 before the graph starts.
+        body: JSON.stringify(itemId ? { question, item_id: itemId } : { question }),
         signal: controller.signal,
         cache: "no-store",
       });
@@ -268,7 +269,7 @@ export class AskController {
 
 export function useAsk(): {
   state: AskState;
-  ask: (question: string) => Promise<AskStatus>;
+  ask: (question: string, itemId?: string | null) => Promise<AskStatus>;
   abort: () => void;
 } {
   const controller = useMemo(() => new AskController(), []);

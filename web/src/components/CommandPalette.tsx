@@ -6,6 +6,8 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
 const SECTIONS = [
+  { value: "picks", label: "This week", hint: "The picks and their 30-second summaries" },
+  { value: "rising", label: "Rising", hint: "Trending, not yet independently vetted" },
   { value: "today", label: "Today strip", hint: "The last run at a glance" },
   { value: "runs", label: "Runs", hint: "The last seven daily ingestions" },
 ];

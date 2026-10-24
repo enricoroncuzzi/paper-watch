@@ -24,6 +24,7 @@ from paperwatch.api.app import (
 )
 from paperwatch.api.responses import RateLimited, Refusal
 from paperwatch.api.routes.runs import RunDetail, RunsData, TodayData
+from paperwatch.api.routes.suggestions import SuggestionsData
 
 WEB = Path(__file__).resolve().parents[2] / "web"
 FIXTURES = WEB / "fake-api" / "fixtures"
@@ -39,6 +40,10 @@ FIXTURE_MODELS: dict[str, type[BaseModel]] = {
     "runs": RunsData,
     "run-detail": RunDetail,
     "status": StatusData,
+    "suggestions": SuggestionsData,
+    "suggestions-empty": SuggestionsData,
+    "suggestions-pending": SuggestionsData,
+    "suggestions-javascript": SuggestionsData,
 }
 
 EVENT_MODELS: dict[str, type[BaseModel]] = {

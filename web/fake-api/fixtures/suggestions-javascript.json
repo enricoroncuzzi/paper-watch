@@ -1,0 +1,343 @@
+{
+  "generated_at": "2026-10-24T06:12:00Z",
+  "list_version": "5e6f7a8b9c0d1e2f3a4b5c6d7e8f9012",
+  "picks": [
+    {
+      "item_id": "33333333-3333-4333-8333-333333333301",
+      "title": "Replay Buffers Beat Summaries for Long-Running Coding Agents",
+      "url": "javascript:alert(1)",
+      "source": "arxiv",
+      "tier": "peer_reviewed",
+      "basis": "venue",
+      "basis_label": "peer-reviewed via venue: ICLR 2027",
+      "venue": "ICLR 2027",
+      "citation_count": 31,
+      "hf_upvotes": null,
+      "github_repo": "acme-labs/replay-buffer",
+      "github_stars": 2400,
+      "project_page": "javascript:alert(2)",
+      "org": null,
+      "published_at": "2026-10-20T00:00:00Z",
+      "profile": "agentic-engineering",
+      "relevance": 0.87,
+      "momentum_label": null,
+      "also": [],
+      "summary": {
+        "status": "checked",
+        "what": {
+          "text": "Swapped the summarised memory in a coding harness for a replay buffer of raw tool observations, dropping stale entries by age instead of rewriting them.",
+          "quote": "we replace the running summary with a replay buffer of raw tool observations",
+          "interpretation": false
+        },
+        "result": {
+          "text": "41% fewer tokens per task and 31% fewer retries across 40 long-horizon tasks, with no accuracy loss.",
+          "quote": "41% fewer tokens per task and 31% fewer retries across 40 long-horizon tasks",
+          "interpretation": false
+        },
+        "why": {
+          "text": "Long tasks fail on lost identifiers, not lost intent: a summary keeps the plan and throws away the exact strings the agent needs to act.",
+          "quote": null,
+          "interpretation": true
+        },
+        "catch": {
+          "text": "Every task is a Python repository under 2,000 files, so the result says nothing about large TypeScript monorepos.",
+          "quote": "all 40 tasks are Python repositories under 2,000 files",
+          "interpretation": true
+        },
+        "excerpt": "We replace the running summary with a replay buffer of raw tool observations and drop entries older than the horizon. All 40 tasks are Python repositories under 2,000 files."
+      }
+    },
+    {
+      "item_id": "33333333-3333-4333-8333-333333333302",
+      "title": "Detecting Re-encoded Watermarks in Generated Images",
+      "url": "https://arxiv.org/abs/2610.09931",
+      "source": "arxiv",
+      "tier": "vetted_preprint",
+      "basis": "hf_upvotes",
+      "basis_label": "vetted preprint via 63 Hugging Face upvotes",
+      "venue": null,
+      "citation_count": 9,
+      "hf_upvotes": 63,
+      "github_repo": "acme-labs/watermark-probe",
+      "github_stars": 1100,
+      "project_page": null,
+      "org": null,
+      "published_at": "2026-10-21T00:00:00Z",
+      "profile": "ai-forensics",
+      "relevance": 0.74,
+      "momentum_label": "+31 upvotes in 3 days",
+      "also": [
+        {
+          "title": "Probing image watermarks after re-encoding",
+          "url": "javascript:alert(3)",
+          "source": "feed"
+        }
+      ],
+      "summary": {
+        "status": "checked",
+        "what": {
+          "text": "Tested whether image watermarks survive the ordinary abuse of a screenshot workflow: JPEG re-encoding, cropping and rescaling.",
+          "quote": "we re-encode at quality 70 and crop to the central 60%",
+          "interpretation": false
+        },
+        "result": {
+          "text": "94% detection after re-encoding and 81% after crop and rescale, against a 52% baseline.",
+          "quote": "94% after re-encoding, 81% after crop and rescale",
+          "interpretation": false
+        },
+        "why": {
+          "text": "Provenance claims are only useful if they survive the first thing a human does to an image.",
+          "quote": null,
+          "interpretation": true
+        },
+        "catch": {
+          "text": "Two generators only, both diffusion-based, and no evaluation on synthetic video.",
+          "quote": "two diffusion generators; video is out of scope",
+          "interpretation": true
+        },
+        "excerpt": "We re-encode at quality 70 and crop to the central 60% before probing. Two diffusion generators; video is out of scope."
+      }
+    },
+    {
+      "item_id": "33333333-3333-4333-8333-333333333303",
+      "title": "Evaluating deep agents in production",
+      "url": "https://blog.langchain.com/evaluating-deep-agents/",
+      "source": "feed",
+      "tier": "lab_blog",
+      "basis": "lab_post",
+      "basis_label": "lab post: the lab's own claim",
+      "venue": "LangChain",
+      "citation_count": 0,
+      "hf_upvotes": null,
+      "github_repo": null,
+      "github_stars": null,
+      "project_page": null,
+      "org": "LangChain",
+      "published_at": "2026-10-22T00:00:00Z",
+      "profile": "agentic-engineering",
+      "relevance": 0.81,
+      "momentum_label": null,
+      "also": [],
+      "summary": {
+        "status": "checked",
+        "what": {
+          "text": "Describes what changed when a coding agent went from a benchmark harness to a product with real traces.",
+          "quote": null,
+          "interpretation": false
+        },
+        "result": {
+          "text": "No benchmark numbers, but a concrete list of what they now measure first: retries, truncations and abandoned steps.",
+          "quote": null,
+          "interpretation": false
+        },
+        "why": {
+          "text": "Production traces are longer, messier and full of tool errors the benchmarks never include.",
+          "quote": "half of the failures we see are tool errors, not reasoning errors",
+          "interpretation": true
+        },
+        "catch": {
+          "text": "A vendor write-up: no control group and no published traces.",
+          "quote": null,
+          "interpretation": true
+        },
+        "excerpt": "Half of the failures we see are tool errors, not reasoning errors. Here is what we measure first in production."
+      }
+    },
+    {
+      "item_id": "33333333-3333-4333-8333-333333333304",
+      "title": "Gated Recurrent Transformers Stay Cheap Past 128k Tokens",
+      "url": "https://arxiv.org/abs/2609.11877",
+      "source": "arxiv",
+      "tier": "vetted_preprint",
+      "basis": "citations",
+      "basis_label": "vetted preprint via 9 citations",
+      "venue": null,
+      "citation_count": 9,
+      "hf_upvotes": null,
+      "github_repo": null,
+      "github_stars": null,
+      "project_page": "https://example.org/gated-transformer",
+      "org": null,
+      "published_at": "2026-10-19T00:00:00Z",
+      "profile": "ml-architectures",
+      "relevance": 0.62,
+      "momentum_label": null,
+      "also": [],
+      "summary": {
+        "status": "excerpt",
+        "what": null,
+        "result": null,
+        "why": null,
+        "catch": null,
+        "excerpt": "We add a gated recurrent state to a transformer block and measure attention cost past 128k tokens."
+      }
+    },
+    {
+      "item_id": "33333333-3333-4333-8333-333333333305",
+      "title": "Durable execution for agent loops",
+      "url": "https://temporal.io/blog/durable-execution-agent-loops",
+      "source": "feed",
+      "tier": "lab_blog",
+      "basis": "lab_post",
+      "basis_label": "lab post: the lab's own claim",
+      "venue": "Temporal",
+      "citation_count": 0,
+      "hf_upvotes": null,
+      "github_repo": null,
+      "github_stars": null,
+      "project_page": null,
+      "org": "Temporal",
+      "published_at": "2026-10-18T00:00:00Z",
+      "profile": "agentic-engineering",
+      "relevance": 0.69,
+      "momentum_label": null,
+      "also": [],
+      "summary": {
+        "status": "checked",
+        "what": {
+          "text": "Walks through wrapping an agent loop in durable execution so a crashed step resumes instead of restarting the whole task.",
+          "quote": null,
+          "interpretation": false
+        },
+        "result": {
+          "text": "A worked example, no numbers.",
+          "quote": null,
+          "interpretation": false
+        },
+        "why": {
+          "text": "A 300-step task that restarts on failure burns the token budget twice.",
+          "quote": "a retry that restarts the workflow pays for the whole trajectory again",
+          "interpretation": true
+        },
+        "catch": {
+          "text": "Useful engineering, but it is one vendor's opinion of the right boundary.",
+          "quote": null,
+          "interpretation": true
+        },
+        "excerpt": "A retry that restarts the workflow pays for the whole trajectory again."
+      }
+    }
+  ],
+  "rising": [
+    {
+      "item_id": "33333333-3333-4333-8333-333333333311",
+      "title": "Sparse Attention With a Learned Sketch",
+      "url": "javascript:alert(4)",
+      "source": "arxiv",
+      "tier": "admitted",
+      "basis": "lab_author",
+      "basis_label": "preprint from a recognised lab's authors, not yet independently vetted",
+      "venue": null,
+      "citation_count": 0,
+      "hf_upvotes": 412,
+      "github_repo": null,
+      "github_stars": null,
+      "project_page": null,
+      "org": null,
+      "published_at": "2026-10-23T00:00:00Z",
+      "profile": "ml-architectures",
+      "relevance": 0.7,
+      "momentum_label": "+380 upvotes in 1 day",
+      "also": [],
+      "summary": {
+        "status": "checked",
+        "what": {
+          "text": "Learns a sketch of the attention pattern and attends only to the tokens the sketch keeps.",
+          "quote": "a learned sketch selects the keys the query actually needs",
+          "interpretation": false
+        },
+        "result": {
+          "text": "1.8x throughput at 256k context with a 0.6 point drop on one long-context benchmark.",
+          "quote": "1.8x throughput at 256k context",
+          "interpretation": false
+        },
+        "why": {
+          "text": "Long-context agents stop paying quadratic cost for context they rarely use.",
+          "quote": null,
+          "interpretation": true
+        },
+        "catch": {
+          "text": "One benchmark and one model size, with no tool-use evaluation.",
+          "quote": null,
+          "interpretation": true
+        },
+        "excerpt": "A learned sketch selects the keys the query actually needs."
+      }
+    },
+    {
+      "item_id": "33333333-3333-4333-8333-333333333312",
+      "title": "Agent Traces as a Training Signal",
+      "url": "https://github.com/acme-labs/trace-rl",
+      "source": "arxiv",
+      "tier": "admitted",
+      "basis": "lab_author",
+      "basis_label": "preprint from a recognised lab's authors, not yet independently vetted",
+      "venue": null,
+      "citation_count": 0,
+      "hf_upvotes": null,
+      "github_repo": "acme-labs/trace-rl",
+      "github_stars": 3400,
+      "project_page": null,
+      "org": null,
+      "published_at": "2026-10-22T00:00:00Z",
+      "profile": "agentic-engineering",
+      "relevance": 0.66,
+      "momentum_label": null,
+      "also": [],
+      "summary": {
+        "status": "excerpt",
+        "what": null,
+        "result": null,
+        "why": null,
+        "catch": null,
+        "excerpt": "We turn recorded agent traces into a preference signal for training the next policy."
+      }
+    },
+    {
+      "item_id": "33333333-3333-4333-8333-333333333313",
+      "title": "Benchmarking Browser Agents on Real Checkouts",
+      "url": "https://arxiv.org/abs/2610.08841",
+      "source": "arxiv",
+      "tier": "admitted",
+      "basis": "lab_author",
+      "basis_label": "preprint from a recognised lab's authors, not yet independently vetted",
+      "venue": null,
+      "citation_count": 7,
+      "hf_upvotes": null,
+      "github_repo": null,
+      "github_stars": null,
+      "project_page": null,
+      "org": null,
+      "published_at": "2026-10-17T00:00:00Z",
+      "profile": "agentic-engineering",
+      "relevance": 0.72,
+      "momentum_label": null,
+      "also": [],
+      "summary": {
+        "status": "checked",
+        "what": {
+          "text": "Ran browser agents against real storefronts rather than a static benchmark harness.",
+          "quote": "we evaluate on live checkouts instead of a fixed harness",
+          "interpretation": false
+        },
+        "result": {
+          "text": "A 38% completion rate over 60 tasks, with half the failures coming from a changed layout.",
+          "quote": "38% of the 60 tasks completed",
+          "interpretation": false
+        },
+        "why": {
+          "text": "A benchmark that never changes cannot measure the failure real sites cause.",
+          "quote": null,
+          "interpretation": true
+        },
+        "catch": {
+          "text": "Three sites only, all in one jurisdiction.",
+          "quote": null,
+          "interpretation": true
+        },
+        "excerpt": "We evaluate on live checkouts instead of a fixed harness."
+      }
+    }
+  ],
+  "rising_note": "Rising, not yet independently vetted."
+}

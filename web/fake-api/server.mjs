@@ -16,6 +16,8 @@ const TOKEN = "e2e";
 
 // The scenario a test picks with POST /__scenario. Tests run one worker, so one global is safe.
 let scenario = "normal";
+// How many suggestion lists this scenario has served: the summary arrives after the first one.
+let suggestionRequests = 0;
 
 const SCENARIOS = new Set([
   "normal",
@@ -31,6 +33,8 @@ const SCENARIOS = new Set([
   "yesterday",
   "slow",
   "drop",
+  "summary_pending",
+  "javascript",
 ]);
 
 function fixture(name) {
@@ -150,6 +154,7 @@ const server = createServer(async (request, response) => {
       return;
     }
     scenario = picked;
+    suggestionRequests = 0;
     json(response, 200, { scenario });
     return;
   }
@@ -217,6 +222,37 @@ const server = createServer(async (request, response) => {
     }
     // Dated like its row in the Runs list, so the heading's day matches the scenario.
     json(response, 200, runAt(detail, scenario === "yesterday" ? 1 : 0));
+    return;
+  }
+
+  if (path === "/suggestions" && request.method === "GET") {
+    if (scenario === "error") {
+      json(response, 500, { detail: "internal server error" });
+      return;
+    }
+    if (scenario === "slow") await sleep(1500);
+    if (scenario === "empty") {
+      json(response, 200, fixture("suggestions-empty"));
+      return;
+    }
+    if (scenario === "summary_pending") {
+      // The first list is served before the background summary is written, the next one after.
+      suggestionRequests += 1;
+      json(
+        response,
+        200,
+        fixture(suggestionRequests === 1 ? "suggestions-pending" : "suggestions"),
+      );
+      return;
+    }
+    json(response, 200, fixture(scenario === "javascript" ? "suggestions-javascript" : "suggestions"));
+    return;
+  }
+
+  // Events are fire-and-forget from the page: a beacon for an opened link, a fetch for a dismissal.
+  if (/^\/suggestions\/[0-9a-f-]+\/events$/.test(path) && request.method === "POST") {
+    response.writeHead(204);
+    response.end();
     return;
   }
 
