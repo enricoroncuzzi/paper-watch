@@ -218,6 +218,11 @@ def test_vector_branch_fills_candidates_under_a_filter(db_session: Session) -> N
     db_session.flush()
     db_session.execute(text("SET LOCAL enable_seqscan = off"))
     db_session.execute(text("SET LOCAL enable_bitmapscan = off"))
+    # An autovacuum ANALYZE that lands while an earlier test has committed admitted rows leaves
+    # column statistics behind after the table empties, and the planner then prefers a status
+    # index plus a Sort over the HNSW scan. A Sort is the only alternative to the HNSW scan's
+    # own ordering, so this keeps the plan on the index whatever the statistics say.
+    db_session.execute(text("SET LOCAL enable_sort = off"))
     filters = Filters(profiles=frozenset({"agentic-engineering"}))
     sql = vector_query(qvec, filters, 50).compile(
         db_session.get_bind(), compile_kwargs={"literal_binds": True}

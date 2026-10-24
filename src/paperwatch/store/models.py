@@ -249,3 +249,58 @@ class ChatCall(Base):
     model: Mapped[str] = mapped_column(String(CHAT_CALL_MODEL_MAX_CHARS))
     input_tokens: Mapped[int] = mapped_column(Integer)
     output_tokens: Mapped[int] = mapped_column(Integer)
+
+
+class SuggestionEvent(Base):
+    """One interaction with a suggestion card, so the list can learn what was already seen.
+
+    `dismissed` and `drafted` also take the item out of the ranking (never shown again); `shown`
+    throttles repeats. The score and components are stored with the event, so a ranking can be
+    audited later from the data a reader actually saw.
+    """
+
+    __tablename__ = "suggestion_events"
+    __table_args__ = (
+        CheckConstraint(
+            "event IN ('shown', 'opened', 'dismissed', 'drafted')", name="ck_suggestion_events_kind"
+        ),
+        # Reading one item's events and excluding from the ranking both filter by item and kind;
+        # Postgres does not index foreign keys on its own.
+        Index("ix_suggestion_events_item_event", "item_id", "event"),
+    )
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    item_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("items.id", ondelete="CASCADE"))
+    event: Mapped[str] = mapped_column(String(16))
+    # The API clock, not the database clock, so the hourly "shown" throttle is testable.
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    # Only a `shown` event carries these: they describe the list the reader was looking at.
+    rank: Mapped[int | None] = mapped_column(Integer)
+    score: Mapped[float | None] = mapped_column(Float)
+    components: Mapped[dict[str, float] | None] = mapped_column(JSON(none_as_null=True))
+    list_version: Mapped[str | None] = mapped_column(String(32))
+
+
+class ItemSummary(Base):
+    """The stored 30-second summary of one item, keyed by the item that has exactly one.
+
+    `text_hash` is the title plus the stored text: an item whose abstract was replaced gets a new
+    summary instead of showing one written about the previous text.
+    """
+
+    __tablename__ = "item_summaries"
+    __table_args__ = (
+        CheckConstraint("status IN ('checked', 'excerpt')", name="ck_item_summaries_status"),
+    )
+    item_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("items.id", ondelete="CASCADE"), primary_key=True
+    )
+    text_hash: Mapped[str] = mapped_column(String(64))
+    # The provider's model id, so a model change is visible and a summary is regenerated with it.
+    model: Mapped[str] = mapped_column(String(128))
+    prompt_version: Mapped[str] = mapped_column(String(16))
+    status: Mapped[str] = mapped_column(String(16))
+    # The four fields as written (or the excerpt), plus the checks that failed, so a reviewer can
+    # see why a card fell back without re-running the model.
+    fields: Mapped[dict[str, object]] = mapped_column(JSON)
+    failed_checks: Mapped[list[str]] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

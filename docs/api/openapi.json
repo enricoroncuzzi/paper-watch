@@ -3,7 +3,7 @@
   "info": {
     "title": "Paper Watch API",
     "summary": "Ask questions about the stored AI-research corpus and stream cited answers.",
-    "version": "0.3"
+    "version": "0.4"
   },
   "paths": {
     "/runs": {
@@ -219,6 +219,147 @@
             "VercelOidcOrHmac": []
           }
         ]
+      }
+    },
+    "/suggestions": {
+      "get": {
+        "summary": "Suggestions",
+        "operationId": "suggestions_suggestions_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuggestionsData"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The Host is not allowed, or the Content-Length is bad.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The credential is missing or invalid; `WWW-Authenticate: Bearer`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request carries an Origin header.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "VercelOidcOrHmac": []
+          }
+        ]
+      }
+    },
+    "/suggestions/{item_id}/events": {
+      "post": {
+        "summary": "Record Event",
+        "operationId": "record_event_suggestions__item_id__events_post",
+        "security": [
+          {
+            "VercelOidcOrHmac": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Item Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EventRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "400": {
+            "description": "The Host is not allowed, or the Content-Length is bad.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The credential is missing or invalid; `WWW-Authenticate: Bearer`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request carries an Origin header.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No admitted item with that id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/healthz": {
@@ -504,6 +645,29 @@
   },
   "components": {
     "schemas": {
+      "AlsoData": {
+        "properties": {
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "url": {
+            "type": "string",
+            "title": "Url"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source"
+          }
+        },
+        "type": "object",
+        "required": [
+          "title",
+          "url",
+          "source"
+        ],
+        "title": "AlsoData"
+      },
       "AnswerData": {
         "properties": {
           "text": {
@@ -598,6 +762,18 @@
               }
             ],
             "title": "Since"
+          },
+          "item_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Item Id"
           }
         },
         "type": "object",
@@ -728,6 +904,23 @@
           "message"
         ],
         "title": "ErrorData"
+      },
+      "EventRequest": {
+        "properties": {
+          "event": {
+            "type": "string",
+            "enum": [
+              "opened",
+              "dismissed"
+            ],
+            "title": "Event"
+          }
+        },
+        "type": "object",
+        "required": [
+          "event"
+        ],
+        "title": "EventRequest"
       },
       "FlagData": {
         "properties": {
@@ -1228,6 +1421,311 @@
         ],
         "title": "StepData",
         "description": "The `step` event: one tool round finished."
+      },
+      "SuggestionCardData": {
+        "properties": {
+          "item_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Item Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "url": {
+            "type": "string",
+            "title": "Url"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source"
+          },
+          "tier": {
+            "type": "string",
+            "title": "Tier"
+          },
+          "basis": {
+            "type": "string",
+            "title": "Basis"
+          },
+          "basis_label": {
+            "type": "string",
+            "title": "Basis Label"
+          },
+          "venue": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Venue"
+          },
+          "citation_count": {
+            "type": "integer",
+            "title": "Citation Count"
+          },
+          "hf_upvotes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hf Upvotes"
+          },
+          "github_repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Github Repo"
+          },
+          "github_stars": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Github Stars"
+          },
+          "project_page": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Page"
+          },
+          "org": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Org"
+          },
+          "published_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Published At"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile"
+          },
+          "relevance": {
+            "type": "number",
+            "title": "Relevance"
+          },
+          "momentum_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Momentum Label"
+          },
+          "also": {
+            "items": {
+              "$ref": "#/components/schemas/AlsoData"
+            },
+            "type": "array",
+            "title": "Also"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/SummaryData"
+          }
+        },
+        "type": "object",
+        "required": [
+          "item_id",
+          "title",
+          "url",
+          "source",
+          "tier",
+          "basis",
+          "basis_label",
+          "venue",
+          "citation_count",
+          "hf_upvotes",
+          "github_repo",
+          "github_stars",
+          "project_page",
+          "org",
+          "published_at",
+          "profile",
+          "relevance",
+          "momentum_label",
+          "also",
+          "summary"
+        ],
+        "title": "SuggestionCardData"
+      },
+      "SuggestionsData": {
+        "properties": {
+          "generated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Generated At"
+          },
+          "list_version": {
+            "type": "string",
+            "title": "List Version"
+          },
+          "picks": {
+            "items": {
+              "$ref": "#/components/schemas/SuggestionCardData"
+            },
+            "type": "array",
+            "title": "Picks"
+          },
+          "rising": {
+            "items": {
+              "$ref": "#/components/schemas/SuggestionCardData"
+            },
+            "type": "array",
+            "title": "Rising"
+          },
+          "rising_note": {
+            "type": "string",
+            "title": "Rising Note"
+          }
+        },
+        "type": "object",
+        "required": [
+          "generated_at",
+          "list_version",
+          "picks",
+          "rising",
+          "rising_note"
+        ],
+        "title": "SuggestionsData"
+      },
+      "SummaryData": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "checked",
+              "excerpt"
+            ],
+            "title": "Status"
+          },
+          "what": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SummaryFieldData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SummaryFieldData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "why": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SummaryFieldData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "catch": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SummaryFieldData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "excerpt": {
+            "type": "string",
+            "title": "Excerpt"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "what",
+          "result",
+          "why",
+          "catch",
+          "excerpt"
+        ],
+        "title": "SummaryData"
+      },
+      "SummaryFieldData": {
+        "properties": {
+          "text": {
+            "type": "string",
+            "title": "Text"
+          },
+          "quote": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quote"
+          },
+          "interpretation": {
+            "type": "boolean",
+            "title": "Interpretation"
+          }
+        },
+        "type": "object",
+        "required": [
+          "text",
+          "quote",
+          "interpretation"
+        ],
+        "title": "SummaryFieldData"
       },
       "Tier": {
         "type": "string",

@@ -43,6 +43,8 @@ export default defineConfig({
         PW_E2E_SESSION: "1",
         PW_API_URL: "http://127.0.0.1:8787",
         PW_API_AUTH: "e2e",
+        // The page polls for a pending summary every 20 s; the suite cannot wait that long.
+        PW_SUMMARY_REFRESH_MS: "400",
         AUTH_SECRET: "a-fixed-test-secret-that-is-long-enough",
         AUTH_TRUST_HOST: "true",
         ALLOWED_GITHUB_ID: "1",

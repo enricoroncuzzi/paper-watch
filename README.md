@@ -83,7 +83,8 @@ uv run paperwatch qa-eval   # replay recorded answers through the checker; no ke
 
 # Put PW_OPENROUTER_API_KEY in .env first (a free key from openrouter.ai; never commit it).
 uv run paperwatch ask "what is new on agent memory?" --live   # stream one answer in the terminal
-uv run paperwatch serve --live                                # POST /ask, server-sent events
+uv run paperwatch serve --live                                # the API: /ask, /suggestions, /runs
+uv run paperwatch suggest --live                              # the ranked picks and the Rising shelf
 # With PW_API_AUTH=hmac and a 32+ character PW_API_HMAC_SECRET in .env, each token works once:
 curl -N -X POST localhost:8000/ask \
   -H "authorization: Bearer $(uv run paperwatch api-token --live)" \

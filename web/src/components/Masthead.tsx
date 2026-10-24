@@ -35,9 +35,25 @@ export function Masthead({ session }: { session: Session }) {
         aria-label="Sections"
         className="order-3 flex w-full gap-4 text-[12px] text-ink-2 sm:order-none sm:w-auto"
       >
-        <Link href="/#runs" aria-current="true" className="relative flex min-h-11 min-w-11 items-center justify-center text-ink sm:min-h-0 sm:min-w-0 sm:py-0.5">
-          Runs
+        <Link
+          href="/#picks"
+          aria-current="true"
+          className="relative flex min-h-11 min-w-11 items-center justify-center text-ink sm:min-h-0 sm:min-w-0 sm:py-0.5"
+        >
+          This week
           <span aria-hidden="true" className="absolute inset-x-0 bottom-1 h-[1.5px] bg-accent" />
+        </Link>
+        <Link
+          href="/#rising"
+          className="flex min-h-11 min-w-11 items-center justify-center hover:text-ink sm:min-h-0 sm:min-w-0"
+        >
+          Rising
+        </Link>
+        <Link
+          href="/#runs"
+          className="flex min-h-11 min-w-11 items-center justify-center hover:text-ink sm:min-h-0 sm:min-w-0"
+        >
+          Runs
         </Link>
       </nav>
       <div className="ml-auto flex items-center gap-1.5 text-[11.5px] text-ink-3">

@@ -58,9 +58,12 @@ function MatchingItems({ sources }: { sources: SourceRef[] }) {
  */
 export function AskSheet({
   open,
+  item,
   onOpenChange,
 }: {
   open: boolean;
+  // Set when a card's "Ask about it" opened the sheet; the API registers the item as S1.
+  item: { id: string; title: string } | null;
   onOpenChange: (open: boolean) => void;
 }) {
   const { state, ask, abort } = useAsk();
@@ -83,7 +86,7 @@ export function AskSheet({
     // and whatever the reader types while the answer streams is theirs to keep. A failed ask puts
     // the question back, but only when nothing else has been typed since.
     setDraft("");
-    const status = await ask(question);
+    const status = await ask(question, item?.id ?? null);
     if (status === "error" || status === "dropped") {
       setDraft((current) => (current === "" ? question : current));
     }
@@ -141,6 +144,15 @@ export function AskSheet({
           </header>
 
           <div className="min-h-0 flex-1 overflow-auto px-5 py-6 sm:px-9">
+            {item ? (
+              <p
+                data-testid="asking-about"
+                className="mb-3 max-w-[38rem] border-l-2 border-accent pl-2.5 text-[11.5px] leading-[1.5] text-ink-2"
+              >
+                About this item: <span className="font-serif text-[13px] text-ink">{item.title}</span>
+              </p>
+            ) : null}
+
             {state.question ? (
               <>
                 <h2
@@ -228,7 +240,7 @@ export function AskSheet({
                 maxLength={1000}
                 onChange={(event) => setDraft(event.target.value)}
                 onKeyDown={onKeyDown}
-                placeholder="Ask a new question"
+                placeholder={item ? "Ask about this item" : "Ask a new question"}
                 aria-label="Your question"
                 className="max-h-32 min-h-7 flex-1 resize-none bg-transparent font-serif text-[16px] leading-[1.4] text-ink outline-none focus-visible:outline-none placeholder:text-ink-3"
               />

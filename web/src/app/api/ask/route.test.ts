@@ -132,7 +132,25 @@ describe("the ask proxy", () => {
     expect(response.status).toBe(400);
   });
 
-  it("forwards only the question", async () => {
+  it("forwards the item an Ask about it question is about", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response("data: {}\n\n", { headers: { "content-type": "text/event-stream" } }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const itemId = "33333333-3333-4333-8333-333333333301";
+    const response = await POST(askRequest({ question: "q", item_id: itemId }));
+    expect(response.status).toBe(200);
+    const init = fetchMock.mock.calls[0]![1] as RequestInit;
+    expect(JSON.parse(init.body as string)).toEqual({ question: "q", item_id: itemId });
+  });
+
+  it("refuses an item id that is not a UUID with 400", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    const response = await POST(askRequest({ question: "q", item_id: "not-an-id" }));
+    expect(response.status).toBe(400);
+  });
+
+  it("forwards only the question and the item", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response("data: {}\n\n", { headers: { "content-type": "text/event-stream" } }),
     );

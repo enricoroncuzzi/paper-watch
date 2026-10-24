@@ -6,9 +6,10 @@ or an embedding is refused by a check constraint.
 """
 
 import uuid
-from collections.abc import Collection, Mapping
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING, cast
 
 from sqlalchemy import and_, case, func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import distinct_on, insert
@@ -28,11 +29,27 @@ from paperwatch.store.models import (
     ChatCall,
     DeadLetter,
     Item,
+    ItemSummary,
     Run,
     SignalSnapshot,
     SourceCursor,
+    SuggestionEvent,
     TierHistory,
 )
+from paperwatch.suggestions.prompts import SUMMARY_PROMPT_VERSION
+from paperwatch.suggestions.ranking import Candidate
+
+if TYPE_CHECKING:
+    # Only an annotation: the summary module imports LangChain, and the store must stay free of it
+    # because the ingestion imports the store on every run.
+    from paperwatch.suggestions.summary import Summary
+
+# The four interaction kinds the API records; "dismissed" and "drafted" also hide the item.
+SHOWN_EVENT = "shown"
+OPENED_EVENT = "opened"
+DISMISSED_EVENT = "dismissed"
+DRAFTED_EVENT = "drafted"
+SUGGESTION_EVENTS = (SHOWN_EVENT, OPENED_EVENT, DISMISSED_EVENT, DRAFTED_EVENT)
 
 # Semantic Scholar reports the preprint server while a paper is only a preprint. A real venue,
 # once seen, is never replaced by one of these, so a temporary answer cannot erase an acceptance.
@@ -55,6 +72,19 @@ class StoredItem:
     profile: str | None
     relevance: float
     signals: Signals
+
+
+@dataclass(frozen=True)
+class SuggestionEventRow:
+    """One interaction to record, as the suggestions route builds it."""
+
+    item_id: uuid.UUID
+    event: str
+    at: datetime
+    rank: int | None = None
+    score: float | None = None
+    components: dict[str, float] | None = None
+    list_version: str | None = None
 
 
 @dataclass(frozen=True)
@@ -730,6 +760,225 @@ class Repository:
         # "failed" is what tells the operator it produced no answer.
         self._s.execute(update(ChatCall).where(ChatCall.id == call_id).values(model=FAILED_MODEL))
         self._s.flush()
+
+    def suggestion_candidates(
+        self, *, now: datetime, max_age: timedelta, momentum_days: int
+    ) -> list[Candidate]:
+        """Admitted items inside the window, with their upvote history and momentum baseline.
+
+        Snapshots are written only when a recorded number changes, so a flat paper has no recent
+        rows at all. The baseline is therefore paired with a run: the upvote count the last run
+        that actually read the Hugging Face listing saw at or before the window start. A run from
+        before `hf_listing_stored` existed lacks the key and counts as not observing, which is the
+        safe reading: no observation is credited rather than a listing nobody read.
+        """
+        items = list(
+            self._s.scalars(
+                select(Item).where(Item.status == "admitted", Item.published_at >= now - max_age)
+            ).all()
+        )
+        if not items:
+            return []
+        ids = [item.id for item in items]
+        series: dict[uuid.UUID, list[tuple[datetime, int]]] = {}
+        first_repo: dict[uuid.UUID, datetime] = {}
+        for snapshot in self._s.scalars(
+            select(SignalSnapshot)
+            .where(
+                SignalSnapshot.item_id.in_(ids),
+                SignalSnapshot.observed_at >= now - max_age,
+            )
+            .order_by(SignalSnapshot.item_id, SignalSnapshot.observed_at, SignalSnapshot.id)
+        ):
+            if snapshot.hf_upvotes is not None:
+                series.setdefault(snapshot.item_id, []).append(
+                    (snapshot.observed_at, snapshot.hf_upvotes)
+                )
+            if snapshot.github_stars is not None:
+                first_repo.setdefault(snapshot.item_id, snapshot.observed_at)
+        promotion: dict[uuid.UUID, datetime] = {}
+        for item_id, changed_at in self._s.execute(
+            select(TierHistory.item_id, func.max(TierHistory.changed_at))
+            .where(
+                TierHistory.item_id.in_(ids),
+                TierHistory.to_tier == Tier.PEER_REVIEWED.value,
+            )
+            .group_by(TierHistory.item_id)
+        ):
+            promotion[item_id] = changed_at
+        baselines = self._upvote_baselines(ids, observed_at=now - timedelta(days=momentum_days))
+        return [
+            Candidate(
+                item_id=item.id,
+                source=item.source,
+                external_id=item.external_id,
+                title=item.title,
+                url=item.url,
+                # The database's own constraint says an admitted item always has both.
+                tier=Tier(cast(str, item.tier)),
+                basis=AdmissionBasis(cast(str, item.admission_basis)),
+                profile=item.profile,
+                relevance=item.relevance,
+                published_at=item.published_at,
+                authors=tuple(item.authors or ()),
+                # A lab post's only attribution is its author, which the feed client sets to the
+                # lab's own name; Hugging Face has no organisation for it.
+                org=item.hf_org
+                or (item.authors[0] if item.source == "feed" and item.authors else None),
+                github_repo=item.github_repo,
+                github_stars=item.github_stars,
+                project_page=item.project_page,
+                text_chars=len(item.text or ""),
+                hf_upvotes=item.hf_upvotes,
+                hf_listed_at=item.hf_listed_at,
+                upvote_series=tuple(series.get(item.id, ())),
+                upvote_baseline=baselines.get(item.id),
+                promoted_to_peer_at=promotion.get(item.id),
+                repo_first_seen_at=first_repo.get(item.id),
+                embedding=tuple(item.embedding or ()),
+                venue=item.venue,
+                citation_count=item.citation_count,
+            )
+            for item in items
+        ]
+
+    def _upvote_baselines(
+        self, ids: Collection[uuid.UUID], *, observed_at: datetime
+    ) -> dict[uuid.UUID, tuple[datetime, int]]:
+        """Each item's upvotes at the last observing run at or before `observed_at`.
+
+        One query finds that run, one `DISTINCT ON` read pairs every item with its newest snapshot
+        at it. The run's own `started_at` is the time its snapshots were stamped with, so the two
+        are comparable.
+        """
+        run_at = self._s.scalar(
+            select(func.max(Run.started_at)).where(
+                Run.started_at <= observed_at,
+                Run.counts["hf_listing_stored"].as_integer() == 1,
+            )
+        )
+        if run_at is None:
+            return {}
+        baselines: dict[uuid.UUID, tuple[datetime, int]] = {}
+        for snapshot in self._s.scalars(
+            select(SignalSnapshot)
+            .where(
+                SignalSnapshot.item_id.in_(list(ids)),
+                SignalSnapshot.observed_at <= run_at,
+                SignalSnapshot.hf_upvotes.is_not(None),
+            )
+            .ext(distinct_on(SignalSnapshot.item_id))
+            .order_by(
+                SignalSnapshot.item_id,
+                SignalSnapshot.observed_at.desc(),
+                SignalSnapshot.id.desc(),
+            )
+        ):
+            # The run's own time, not the snapshot's: snapshots are written only on change, so a
+            # paper's newest one can be days older than the run that read the listing, and the
+            # gap it would add is time nobody looked (ADR 0014).
+            baselines[snapshot.item_id] = (run_at, snapshot.hf_upvotes or 0)
+        return baselines
+
+    def excluded_items(self) -> frozenset[uuid.UUID]:
+        """Items the reader dismissed or drafted: the ranking never offers them again."""
+        return frozenset(
+            self._s.scalars(
+                select(SuggestionEvent.item_id).where(
+                    SuggestionEvent.event.in_((DISMISSED_EVENT, DRAFTED_EVENT))
+                )
+            ).all()
+        )
+
+    def record_suggestion_events(self, rows: Sequence[SuggestionEventRow]) -> None:
+        if not rows:
+            return
+        self._s.execute(
+            insert(SuggestionEvent),
+            [
+                {
+                    "item_id": row.item_id,
+                    "event": row.event,
+                    "at": row.at,
+                    "rank": row.rank,
+                    "score": row.score,
+                    "components": row.components,
+                    "list_version": row.list_version,
+                }
+                for row in rows
+            ],
+        )
+        self._s.flush()
+
+    def last_shown(self, item_ids: Collection[uuid.UUID], *, since: datetime) -> set[uuid.UUID]:
+        """Which of these items were already shown since `since`, so a card is not re-recorded."""
+        if not item_ids:
+            return set()
+        return set(
+            self._s.scalars(
+                select(SuggestionEvent.item_id)
+                .where(
+                    SuggestionEvent.item_id.in_(list(item_ids)),
+                    SuggestionEvent.event == SHOWN_EVENT,
+                    SuggestionEvent.at >= since,
+                )
+                .distinct()
+            ).all()
+        )
+
+    def summaries(self, item_ids: Collection[uuid.UUID]) -> dict[uuid.UUID, ItemSummary]:
+        if not item_ids:
+            return {}
+        return {
+            row.item_id: row
+            for row in self._s.scalars(
+                select(ItemSummary).where(ItemSummary.item_id.in_(list(item_ids)))
+            )
+        }
+
+    def upsert_summary(
+        self,
+        item_id: uuid.UUID,
+        summary: "Summary",
+        *,
+        text_hash: str,
+        model: str,
+        at: datetime,
+    ) -> None:
+        row = self._s.get(ItemSummary, item_id)
+        if row is None:
+            row = ItemSummary(item_id=item_id)
+            self._s.add(row)
+        row.text_hash = text_hash
+        row.model = model
+        row.prompt_version = SUMMARY_PROMPT_VERSION
+        row.status = summary.status
+        # Imported here, not at module level: `suggestions.summary` imports LangChain, and the
+        # ingestion imports this module on every run.
+        from paperwatch.suggestions.summary import summary_fields
+
+        row.fields = summary_fields(summary)
+        row.failed_checks = list(summary.failed_checks)
+        row.created_at = at
+        self._s.flush()
+
+    def summary_sources(self, item_ids: Collection[uuid.UUID]) -> dict[uuid.UUID, tuple[str, str]]:
+        """The title and text a summary is written from, for the queue's own background session."""
+        if not item_ids:
+            return {}
+        return {
+            item_id: (title, text)
+            for item_id, title, text in self._s.execute(
+                select(Item.id, Item.title, Item.text).where(Item.id.in_(list(item_ids)))
+            )
+        }
+
+    def admitted_item(self, item_id: uuid.UUID) -> bool:
+        """Whether this id is an admitted item, so "Ask about it" can pre-register it as S1."""
+        return (
+            self._s.scalar(select(Item.id).where(Item.id == item_id, Item.status == "admitted"))
+            is not None
+        )
 
 
 class ChatCallLog:

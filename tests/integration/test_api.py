@@ -382,6 +382,7 @@ def test_the_question_is_stripped_before_it_reaches_the_agent(
         filters: Filters,
         cancel: Any = None,
         search_log: Any = None,
+        item_id: Any = None,
     ) -> Any:
         seen.append(question)
         yield AnswerEvent(CheckedAnswer(NO_SUPPORT, (), (), False))
@@ -402,6 +403,7 @@ def test_request_filters_reach_the_answer(
         filters: Filters,
         cancel: Any = None,
         search_log: Any = None,
+        item_id: Any = None,
     ) -> Any:
         seen.append(filters)
         yield AnswerEvent(CheckedAnswer(NO_SUPPORT, (), (), False))
@@ -658,6 +660,7 @@ def test_closing_the_sse_stream_closes_the_answer(
         filters: Filters,
         cancel: Any = None,
         search_log: Any = None,
+        item_id: Any = None,
     ) -> Any:
         def events() -> Any:
             try:

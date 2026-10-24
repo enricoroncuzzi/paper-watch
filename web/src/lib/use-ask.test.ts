@@ -252,6 +252,22 @@ describe("the ask controller", () => {
     await run;
   });
 
+  it("sends the item id when a card opened the sheet", async () => {
+    const stream = controllable();
+    const { fetchImpl, controller } = controllerFor(stream.body);
+    const run = controller.ask("what did they measure?", "33333333-3333-4333-8333-333333333301");
+    await vi.advanceTimersByTimeAsync(0);
+    const init = fetchImpl.mock.calls[0]![1] as RequestInit;
+    // The API registers this item as S1 before the graph starts, so only the id travels.
+    expect(JSON.parse(String(init.body))).toEqual({
+      question: "what did they measure?",
+      item_id: "33333333-3333-4333-8333-333333333301",
+    });
+    stream.push(frame("answer", ANSWER));
+    stream.close();
+    await run;
+  });
+
   it("a proxied 502 reads as the API being unreachable", async () => {
     const fetchImpl = vi
       .fn()

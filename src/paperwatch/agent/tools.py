@@ -29,7 +29,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from paperwatch.agent.prompts import TEXT_ONLY_NOTE
+from paperwatch.agent.prompts import TEXT_ONLY_NOTE, source_block
 from paperwatch.agent.sources import SourceRef, SourceRegistry
 from paperwatch.domain import Tier
 from paperwatch.llm.embedder import Embedder, EmbedderUnavailable
@@ -128,11 +128,9 @@ def _clean(value: str) -> str:
 
 
 def _block(ref: SourceRef, title: str, text: str, meta: str | None = None) -> str:
-    # Stored text is untrusted data: escaping `&`, `<` and `>` keeps it from closing this block
-    # or opening another, and the attribute values are escaped with quotes so a crafted URL cannot
-    # break out of its attribute either. The model is told to treat everything inside as data.
     # The printed URL is clipped (no ellipsis: a truncated URL is already unusable, and "..."
-    # would look like part of it); SourceRef keeps the full value for citation rendering.
+    # would look like part of it); SourceRef keeps the full value for citation rendering. The
+    # attribute values are escaped with quotes so a crafted URL cannot break out of its attribute.
     head = (
         f'<source id="{html.escape(ref.alias, quote=True)}"'
         f' tier="{html.escape(ref.tier, quote=True)}"'
@@ -140,11 +138,22 @@ def _block(ref: SourceRef, title: str, text: str, meta: str | None = None) -> st
         f' published="{ref.published_at.date().isoformat()}"'
         f' url="{html.escape(ref.url[:URL_MAX_CHARS], quote=True)}">'
     )
-    lines = [head, html.escape(_clip(title, TITLE_MAX_CHARS), quote=False)]
-    if meta is not None:
-        lines.append(html.escape(meta, quote=False))
-    lines += [html.escape(text, quote=False), "</source>"]
-    return "\n".join(lines)
+    # The body's escaping is shared with the summary prompt (Task 35), so stored text cannot close
+    # its block in either place.
+    return source_block(_clip(title, TITLE_MAX_CHARS), text, head=head, meta=meta)
+
+
+def item_block(ref: SourceRef, detail: ItemDetail) -> str:
+    """The one rendering of a stored item for a model: clipped text, metadata, escaped block.
+
+    The get_item tool and the "Ask about it" prompt both use it, so a long article is bounded in
+    both places and the block always carries the alias and the reliability attributes.
+    """
+    text = detail.text[:GET_ITEM_MAX_CHARS]
+    if len(detail.text) > GET_ITEM_MAX_CHARS:
+        # The marker says in words that the text continues; an item field has no other bound.
+        text += "\n[text truncated]"
+    return _block(ref, detail.title, text, _meta(detail))
 
 
 def _meta(detail: ItemDetail) -> str:
@@ -326,10 +335,7 @@ def make_tools(
     def get_item(source_id: str) -> str:
         with lock, session_scope("get_item") as active:
             ref, detail = registered(active, source_id)
-            text = detail.text[:GET_ITEM_MAX_CHARS]
-            if len(detail.text) > GET_ITEM_MAX_CHARS:
-                text += "\n[text truncated]"
-            return _block(ref, detail.title, text, _meta(detail))
+            return item_block(ref, detail)
 
     def compare(source_ids: list[str]) -> str:
         # A repeated alias is still one source, so dedupe before counting the 2-4 range.

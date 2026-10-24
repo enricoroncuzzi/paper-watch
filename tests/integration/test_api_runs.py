@@ -290,9 +290,16 @@ def test_limit_is_bounded(db_session: Session) -> None:
     assert client(db_session).get("/runs", params={"limit": 51}).status_code == 422
 
 
-def test_the_contract_names_version_0_3_and_the_run_routes(db_session: Session) -> None:
+def test_the_contract_names_version_0_4_and_the_page_routes(db_session: Session) -> None:
     document = client(db_session).app.openapi()
 
-    assert API_VERSION == "0.3"
-    assert set(document["paths"]) >= {"/runs", "/runs/{run_id}", "/today"}
+    assert API_VERSION == "0.4"
+    # The suggestions routes ship in the same version, so the page's client is generated once.
+    assert set(document["paths"]) >= {
+        "/runs",
+        "/runs/{run_id}",
+        "/today",
+        "/suggestions",
+        "/suggestions/{item_id}/events",
+    }
     assert "RunSummary" in document["components"]["schemas"]

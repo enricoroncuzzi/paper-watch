@@ -18,6 +18,8 @@ reference. `docs/learn/15` explains the gate and what each status code means.
 | `GET /today` | The today strip: `{"run": RunSummary or null, "search": {"mode", "reason", "since"}}`, the newest run by `started_at` and the search mode in the same call. |
 | `GET /runs?limit=10` | `{"runs": [RunSummary]}`, newest `started_at` first; `limit` is 1 to 50. |
 | `GET /runs/{run_id}` | One `RunDetail` (a summary plus `window_start`, `window_end` and `dead_letters`), or 404. |
+| `GET /suggestions` | The picks and the Rising shelf: `{generated_at, list_version, picks, rising, rising_note}`. |
+| `POST /suggestions/{item_id}/events` | `{"event": "opened" \| "dismissed"}`, 204, or 404 for an item that is not admitted. |
 | `POST /ask` | One question, streamed as server-sent events. |
 
 ## Runs and the today strip
@@ -34,6 +36,30 @@ and `error` clipped to 500 characters. All timestamps are UTC ISO 8601.
 
 These three routes open one short read-only session per request and are safe to poll: they never
 touch a model and never count against the answer limits.
+
+## Suggestions
+
+`GET /suggestions` returns up to five `picks` (the first is the lead) and up to three `rising`
+cards, computed on request and cached in the API process for five minutes. `rising_note` is the
+printed caveat, "Rising, not yet independently vetted.", so the label travels with the data it is
+about. A card is `{item_id, title, url, source, tier, basis, basis_label, venue, citation_count,
+hf_upvotes, github_repo, github_stars, project_page, org, published_at, profile, relevance,
+momentum_label, also, summary}`:
+
+- `basis_label` is the sentence a reader checks: "peer-reviewed via venue: ICLR", "vetted preprint
+  via 36 Hugging Face upvotes", "vetted preprint via 12 citations", "preprint from a recognised
+  lab's authors, not yet independently vetted", or "lab post: the lab's own claim";
+- `momentum_label` is the gain since the ranking's baseline ("+31 upvotes in 3 days"), or null;
+- `also` holds the near-duplicates merged into this card (`{title, url, source}`), with the paper
+  first;
+- `summary` is `{status, what, result, why, catch, excerpt}` where status is `pending`, `checked` or
+  `excerpt`. Each of the four fields is `{text, quote, interpretation}` or null. `pending` and
+  `excerpt` show `excerpt`, the abstract's own first sentences; `checked` fields carry the
+  verbatim `quote` the code verified, and `interpretation` is true for `why` and `catch`, which the
+  page labels as interpretation rather than as the authors' words.
+
+A dismissal or a draft removes the item from every later list. The API records a `shown` event for
+each card at most once an hour, with the rank, the score and the six score components it ranked by.
 
 ## Limits
 
@@ -54,8 +80,8 @@ same way; nothing else about the stream changes.
 
 ## The event stream
 
-`POST /ask` takes `{"question": "...", "tiers": [...], "profiles": [...], "since": "YYYY-MM-DD"}`
-(the last three optional) and answers with `text/event-stream`. Every event is one `event:` line
+`POST /ask` takes `{"question": "...", "tiers": [...], "profiles": [...], "since": "YYYY-MM-DD",
+"item_id": "..."}` (all optional except the question) and answers with `text/event-stream`. Every event is one `event:` line
 and one `data:` line holding a JSON object. The event payloads are Pydantic models (`ToolData`,
 `StepData`, `SourceData`, `TokenData`, `NoticeData`, `AnswerData`, `ErrorData`), and the committed
 contract's `text/event-stream` media type is an `itemSchema` for one parsed event: the `event` name
@@ -106,7 +132,9 @@ A request without a valid credential answers 401 before anything is read; `docs/
 the gate's other refusals. A request the gate lets through but that fails validation before the
 stream starts answers 422 in the shape the contract documents for a validation error:
 `{"detail": [{"type", "loc", "msg"}]}`. That covers both the pydantic field checks and the two
-route-level refusals (an unknown profile name, a `since` in the future).
+route-level refusals (an unknown profile name, a `since` in the future, an `item_id` that is not an
+admitted item). An admitted `item_id` is registered as `S1` before the graph starts, so "Ask about
+it" from a card produces an answer that can cite that item.
 
 ## The committed contract
 

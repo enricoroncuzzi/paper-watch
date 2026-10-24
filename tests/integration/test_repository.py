@@ -707,3 +707,135 @@ def test_snapshots_with_the_same_observed_at_order_by_id(db_session: Session) ->
         select(SignalSnapshot).where(SignalSnapshot.item_id == item_id).order_by(SignalSnapshot.id)
     ).all()
     assert [snapshot.hf_upvotes for snapshot in snapshots] == [10, 20]
+
+
+def test_suggestion_candidates_baseline_skips_runs_that_did_not_read_the_listing(
+    db_session: Session,
+) -> None:
+    # A run that read the Hugging Face listing five days ago is the baseline; the run from three
+    # days ago never read it and stored "snapshots": 0 with "hf_listing_stored": 0, so it must not
+    # become the baseline: reading it as one would credit the days nobody looked as a gain.
+    now = datetime(2026, 11, 2, 9, tzinfo=UTC)
+    repo = Repository(db_session)
+    item_id = repo.upsert_item(
+        dataclasses.replace(ITEM, published_at=now - timedelta(days=3)),
+        Tier.VETTED_PREPRINT,
+        "agentic-engineering",
+        0.9,
+        Signals(hf_upvotes=100),
+        VEC,
+    )
+    runs = ((5, {"hf_listing_stored": 1}), (3, {"snapshots": 0, "hf_listing_stored": 0}))
+    for days, counts in runs:
+        run_id = repo.start_run(now - timedelta(days=days), now, at=now - timedelta(days=days))
+        repo.finish_run(run_id, "succeeded", counts, 0, at=now - timedelta(days=days))
+    db_session.add_all(
+        [
+            SignalSnapshot(
+                item_id=item_id,
+                observed_at=now - timedelta(days=5),
+                hf_upvotes=100,
+                citation_count=0,
+            ),
+            SignalSnapshot(
+                item_id=item_id,
+                observed_at=now - timedelta(days=2),
+                hf_upvotes=180,
+                citation_count=0,
+            ),
+        ]
+    )
+    db_session.flush()
+
+    [candidate] = repo.suggestion_candidates(now=now, max_age=timedelta(days=90), momentum_days=3)
+
+    assert candidate.upvote_baseline == (now - timedelta(days=5), 100)
+    assert candidate.upvote_series[-1] == (now - timedelta(days=2), 180)
+    assert candidate.text_chars == len(ITEM.text)
+
+
+def test_the_momentum_baseline_is_stamped_with_the_observing_run(db_session: Session) -> None:
+    # Snapshots are written only on change, so the newest one before the window can be much older
+    # than the run that read the listing. The rate divides by the run's time: 60 upvotes over the
+    # three days since that run, not over the ten days since the count last moved.
+    now = datetime(2026, 11, 2, 9, tzinfo=UTC)
+    repo = Repository(db_session)
+    item_id = repo.upsert_item(
+        dataclasses.replace(ITEM, published_at=now - timedelta(days=10)),
+        Tier.VETTED_PREPRINT,
+        "agentic-engineering",
+        0.9,
+        Signals(hf_upvotes=100),
+        VEC,
+    )
+    run_at = now - timedelta(days=3)
+    run_id = repo.start_run(run_at, run_at + timedelta(minutes=3), at=run_at)
+    repo.finish_run(run_id, "succeeded", {"hf_listing_stored": 1}, 0, at=run_at)
+    db_session.add_all(
+        [
+            SignalSnapshot(
+                item_id=item_id,
+                observed_at=now - timedelta(days=10),
+                hf_upvotes=100,
+                citation_count=0,
+            ),
+            SignalSnapshot(
+                item_id=item_id,
+                observed_at=now - timedelta(days=1),
+                hf_upvotes=160,
+                citation_count=0,
+            ),
+        ]
+    )
+    db_session.flush()
+
+    [candidate] = repo.suggestion_candidates(now=now, max_age=timedelta(days=90), momentum_days=3)
+
+    assert candidate.upvote_baseline == (run_at, 100)
+
+
+def test_a_feed_item_takes_its_lab_name_from_the_author(db_session: Session) -> None:
+    # A lab post's only attribution is its author, which the feed client sets to the lab's name;
+    # the venue stays empty so the facts row says n/a instead of inventing one.
+    now = datetime(2026, 11, 2, 9, tzinfo=UTC)
+    repo = Repository(db_session)
+    item_id = repo.upsert_item(
+        dataclasses.replace(
+            ITEM,
+            source="feed",
+            external_id="https://example.test/feed/1",
+            authors=("LangChain",),
+            url="https://example.test/feed/1",
+        ),
+        Tier.LAB_BLOG,
+        "agentic-engineering",
+        0.9,
+        Signals(),
+        VEC,
+    )
+    db_session.flush()
+
+    [candidate] = repo.suggestion_candidates(now=now, max_age=timedelta(days=90), momentum_days=3)
+
+    assert candidate.item_id == item_id
+    assert candidate.org == "LangChain"
+    assert candidate.venue is None
+
+
+def test_an_arxiv_item_keeps_its_authors_out_of_the_org_field(db_session: Session) -> None:
+    # The lab-name fallback is for feed posts only; a paper's first author is not its venue.
+    now = datetime(2026, 11, 2, 9, tzinfo=UTC)
+    repo = Repository(db_session)
+    repo.upsert_item(
+        dataclasses.replace(ITEM, authors=("LangChain",)),
+        Tier.VETTED_PREPRINT,
+        "agentic-engineering",
+        0.9,
+        Signals(),
+        VEC,
+    )
+    db_session.flush()
+
+    [candidate] = repo.suggestion_candidates(now=now, max_age=timedelta(days=90), momentum_days=3)
+
+    assert candidate.org is None
