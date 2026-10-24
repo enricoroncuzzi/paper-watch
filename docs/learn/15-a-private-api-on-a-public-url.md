@@ -49,7 +49,8 @@ the first day a new project's token is refused.
 
 `PW_API_AUTH=hmac` switches to `HmacVerifier`, for local operation and the tunnel rehearsal before a
 Vercel project exists. `paperwatch api-token --live` mints one token with a 60 second life, and its
-signature is compared with `hmac.compare_digest`. A token's `jti` is remembered until the token
+signature is compared with `hmac.compare_digest`. Like the OIDC token, one whose `iat` lies more
+than 30 seconds in the future is refused. A token's `jti` is remembered until the token
 expires, so it is single use: one copied out of a shell history or a log does not work twice. The
 secret must be at least 32 characters, or `make_verifier` refuses to build the verifier and `serve`
 exits 2 naming `PW_API_HMAC_SECRET`. Two credentials never run at once; the setting picks one.
