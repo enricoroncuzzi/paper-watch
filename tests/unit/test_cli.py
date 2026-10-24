@@ -1160,6 +1160,29 @@ def test_serve_refuses_to_start_without_a_verifiable_credential(
     assert "PW_API_HMAC_SECRET" in result.stderr
 
 
+def test_serve_prefetches_the_verifier(monkeypatch: pytest.MonkeyPatch) -> None:
+    # N1: the key set is warmed in the serve path, not in `live_deps`, so `paperwatch ask` never
+    # fetches keys it does not use.
+    from fastapi import FastAPI
+
+    class Verifier:
+        prefetched = False
+
+        def prefetch(self) -> None:
+            self.prefetched = True
+
+    verifier = Verifier()
+
+    class Deps:
+        pass
+
+    deps = Deps()
+    deps.verifier = verifier  # type: ignore[attr-defined]
+    monkeypatch.setattr(cli, "create_app", lambda deps_: FastAPI())
+    cli._served_app(deps, "127.0.0.1")  # type: ignore[arg-type]
+    assert verifier.prefetched is True
+
+
 def test_an_ipv6_bind_prints_a_bracketed_url(monkeypatch: pytest.MonkeyPatch) -> None:
     # `http://::1:8000` is not a URL a person or a client can use; IPv6 literals need brackets.
     from fastapi import FastAPI

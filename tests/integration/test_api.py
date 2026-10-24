@@ -1749,25 +1749,6 @@ def test_live_deps_wires_the_child_stop_and_the_read_pool(
     assert app_deps.embedder._should_stop() is True  # type: ignore[attr-defined]
 
 
-def test_live_deps_prefetches_the_verifier(monkeypatch: pytest.MonkeyPatch) -> None:
-    # N7: the key set is warmed at startup, before the first request can race it.
-    class Verifier:
-        prefetched = False
-
-        def prefetch(self) -> None:
-            self.prefetched = True
-
-    verifier = Verifier()
-    monkeypatch.setattr(api, "make_chat_models", lambda settings: [])
-    monkeypatch.setattr(api, "make_verifier", lambda settings: verifier)
-    settings = Settings(  # type: ignore[arg-type]
-        _env_file=None, openrouter_api_key="sk-test", api_auth="hmac"
-    )
-    app_deps = api.live_deps(settings)
-    assert app_deps.verifier is verifier
-    assert verifier.prefetched is True
-
-
 def test_a_text_only_answer_never_starts_the_model(db_session: Session) -> None:
     # P10/E2: a keyword-only answer must not prewarm or embed; the child's memory belongs to the
     # ingestion for that answer.

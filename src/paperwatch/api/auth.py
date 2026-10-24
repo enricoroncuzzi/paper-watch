@@ -67,8 +67,9 @@ class JwksCache:
     A key id is chosen by the caller, so a flood of made-up ids would otherwise be a free
     amplification against Vercel's endpoint. The window is claimed before the fetch and the fetch
     itself runs outside the lock, so one slow request never blocks the others; while it runs, a
-    second caller is treated as "no key yet" and refused rather than queued. A failed fetch is
-    remembered for a shorter window than a successful one.
+    second caller is treated as "no key yet" and refused rather than queued. The API calls
+    `prefetch` at startup so the first request after a restart does not race that fetch. A failed
+    fetch is remembered for a shorter window than a successful one.
     """
 
     def __init__(

@@ -119,7 +119,11 @@ def test_two_concurrent_reservations_at_799_give_exactly_one_success(engine: Eng
             )
         session.commit()
     # Eight threads, not two: with two, a scheduler that happens to serialise the count and the
-    # insert hides a missing advisory lock. Eight overlap reliably.
+    # insert hides a missing advisory lock. Warm the pool first, or the threads serialise on
+    # connection setup instead of inside the count-and-insert window and the race never overlaps.
+    warm = [engine.connect() for _ in range(8)]
+    for connection in warm:
+        connection.close()
     barrier = threading.Barrier(8)
     outcomes: list[str] = []
     lock = threading.Lock()

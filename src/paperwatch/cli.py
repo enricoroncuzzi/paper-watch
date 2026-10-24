@@ -753,6 +753,11 @@ GRACEFUL_SHUTDOWN_S = 5
 
 def _served_app(deps: AgentDeps, host: str) -> Any:
     """The app `serve` runs. The credential and host gate is part of `create_app` itself."""
+    # Warm the OIDC key set before the first request. This lives in the serve path, not in
+    # `live_deps`: `paperwatch ask` builds the same deps and never uses the credential.
+    prefetch = getattr(getattr(deps, "verifier", None), "prefetch", None)
+    if callable(prefetch):
+        prefetch()
     app_ = create_app(deps)
     if not _is_loopback(host):
         # A public bind is the operator's choice, but the gate's host allow-list expects the tunnel
