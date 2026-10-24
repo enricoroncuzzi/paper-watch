@@ -95,6 +95,8 @@ test("a dropped stream shows connection lost", async ({ page, request }) => {
   await ask(page, "What do coding agents measure?");
 
   await expect(page.getByTestId("ask-error")).toContainText("The connection dropped. Ask again.");
+  // A dropped ask puts the question back, so the reader can send it again without retyping.
+  await expect(page.getByTestId("composer")).toHaveValue("What do coding agents measure?");
 });
 
 test("a rate-limited ask shows the wait", async ({ page, request }) => {
@@ -124,6 +126,26 @@ test("the composer is empty while streaming and keeps what the reader types", as
   await expect(page.getByTestId("answer").locator("sup")).toHaveCount(1, { timeout: 15_000 });
   // The finished answer must not wipe what the reader typed while it streamed.
   await expect(composer).toHaveValue(typed);
+});
+
+test("a failed ask does not overwrite typing that came after it", async ({ page }) => {
+  // Hold the answer long enough to type, then refuse it: the restore must not replace the draft.
+  await page.route("**/api/ask", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    await route.fulfill({
+      status: 429,
+      contentType: "application/json",
+      body: JSON.stringify({ kind: "rate_limited", retryAfterS: 30 }),
+    });
+  });
+  await openSheet(page);
+  const composer = page.getByTestId("composer");
+  await composer.fill("first question");
+  await page.getByRole("dialog").getByRole("button", { name: "Send the question" }).click();
+  await composer.fill("newer typing");
+
+  await expect(page.getByTestId("ask-error")).toContainText("Too many questions right now");
+  await expect(composer).toHaveValue("newer typing");
 });
 
 test("a failed ask puts the question back in the composer", async ({ page, request }) => {
