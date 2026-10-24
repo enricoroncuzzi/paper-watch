@@ -75,7 +75,9 @@ instead: an honest excerpt beats a fluent invention.
 
 `src/paperwatch/suggestions/prompts.py` holds the prompt and its version (`s1`), and the source goes
 into the same escaped `<source>` block the agent's tools use (`agent/prompts.py` `source_block`), so
-an abstract containing `</source>` and "ignore previous instructions" is data here too.
+an abstract containing `</source>` and "ignore previous instructions" is data here too. The text is
+clipped to `SUMMARY_TEXT_MAX_CHARS`, the same bound as `get_item`, because a feed stores a lab post
+whole.
 
 `check_summary` in `src/paperwatch/suggestions/summary.py` returns the names of the checks that
 failed, and an empty list means the summary is checked. Every comparison normalises both sides
@@ -108,4 +110,6 @@ what code rejected instead of being told to "be careful". A second failure, or u
 twice, stores `status="excerpt"` with the abstract's first two sentences (at most 60 words) and the
 failed check names, so a reviewer can see the rate and the reason rather than a silent fallback. A
 `DailyCapReached`, `BudgetExceeded` or `ModelUnavailable` is not a check failure: it propagates, and
-the queue that asked for the summary decides when to retry.
+the queue that asked for the summary decides what happens next (`api/summary_queue.py`). A budget
+overrun will recur on every attempt, so the queue stores it as an excerpt with the failed check
+`budget` and does not ask again until the text changes.
