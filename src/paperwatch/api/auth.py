@@ -112,6 +112,18 @@ class JwksCache:
                 self._keys = key_set
             return self._keys.get(kid)
 
+    def prefetch(self) -> None:
+        """Fetch now, once, so the first request after a restart does not race the key set."""
+        with self._lock:
+            if self._attempted_at is not None:
+                return
+            self._attempted_at = self._clock()
+        key_set = self._fetch_keys()
+        with self._lock:
+            self._failed = key_set is None
+            if key_set is not None:
+                self._keys = key_set
+
     def _fetch_keys(self) -> dict[str, PyJWK] | None:
         try:
             key_set = PyJWKSet.from_dict(self._fetch(self._url))
@@ -186,6 +198,10 @@ class OidcVerifier:
         if not isinstance(iat, int | float) or iat > now + TOKEN_LEEWAY_S:
             return None
         return Principal("oidc", self._subject)
+
+    def prefetch(self) -> None:
+        """Warm the key set at API startup; a failed fetch is retried after the negative window."""
+        self._keys.prefetch()
 
     def _claim_mismatch(self, token: str, claim: str, expected: str) -> None:
         # The signature already verified, so these values are Vercel's own and not secrets; this is

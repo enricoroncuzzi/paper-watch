@@ -207,6 +207,12 @@ def live_deps(settings: Settings) -> AgentDeps:
     # tunnel name arrives through the same 0600 env file as the credential.
     public_host = (settings.api_public_host or "").strip().lower()
     allowed_hosts = LOOPBACK_HOSTS | ({public_host} if public_host else set())
+    verifier = make_verifier(settings)
+    # Warm Vercel's key set before the first request: with the lock-free fetch, a request that
+    # arrives during the first fetch would otherwise get a 401 with a valid token.
+    prefetch = getattr(verifier, "prefetch", None)
+    if callable(prefetch):
+        prefetch()
     return AgentDeps(
         session_factory=factory,
         embedder=embedder,
@@ -215,7 +221,7 @@ def live_deps(settings: Settings) -> AgentDeps:
         clock=lambda: datetime.now(UTC),
         chat_calls=ChatCallLog(usage_factory),
         profile_names=frozenset(p.name for p in profiles),
-        verifier=make_verifier(settings),
+        verifier=verifier,
         allowed_hosts=frozenset(allowed_hosts),
         limiter=RequestLimiter(
             per_minute=REQUESTS_PER_MINUTE,

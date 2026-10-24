@@ -33,9 +33,9 @@ is not a way around the allow-list.
 `OidcVerifier` accepts RS256 only. The algorithm is chosen in the code, never read from the token's
 header, so `alg: none` and the classic HS256-signed-with-the-public-key trick both fail at the
 first check. The token's key id selects a key from `JwksCache`, which fetches
-`<issuer>/.well-known/jwks` on first use and on an unknown key id at most once per five minutes: a
-key id is caller-chosen, so without the window a flood of made-up ids would be a free amplification
-against Vercel's key endpoint. A failed fetch is remembered like a successful one and returns "no
+`<issuer>/.well-known/jwks` once at startup and then on an unknown key id at most once per five
+minutes: a key id is caller-chosen, so without the window a flood of made-up ids would be a free
+amplification against Vercel's key endpoint. A failed fetch is remembered like a successful one and returns "no
 key"; it never raises into the request.
 
 After the signature, the claims are checked: `iss`, `aud`, and the exact `sub` (Vercel's subject

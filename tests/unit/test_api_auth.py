@@ -318,6 +318,17 @@ def test_make_verifier_names_the_missing_variable(missing: str, build_settings: 
     assert name in str(raised.value)
 
 
+def test_prefetch_fetches_the_key_set_once() -> None:
+    # N7: the API warms the set at startup; a second prefetch is a no-op.
+    _, _, jwk = _key()
+    fetcher = Fetcher([jwk])
+    cache = JwksCache("https://keys.example/jwks", fetcher, Clock())
+    cache.prefetch()
+    assert fetcher.calls == 1
+    cache.prefetch()
+    assert fetcher.calls == 1
+
+
 def test_the_oidc_verifier_is_built_without_a_fetch(build_settings: Any) -> None:
     # Building the verifier must not reach Vercel: the key set is fetched by the first request.
     settings = build_settings(
