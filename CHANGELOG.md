@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.2](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.10.1...paperwatch-v0.10.2) (2026-10-24)
+
+
+### Bug Fixes
+
+* **suggestions:** detect plural superlatives in summaries ([#63](https://github.com/enricoroncuzzi/paper-watch/issues/63)) ([2fc6c87](https://github.com/enricoroncuzzi/paper-watch/commit/2fc6c876e2b0beb4983cbc8c6de121a07766ddb4))
+
 ## [0.10.1](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.10.0...paperwatch-v0.10.1) (2026-10-24)
 
 
