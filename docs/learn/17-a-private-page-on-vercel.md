@@ -37,7 +37,12 @@ suite proves the normal path still works.
 `web/src/lib/api-token.ts` is the only place a token is minted, and it never leaves the server:
 
 - on Vercel production (or `PW_API_AUTH=oidc`), `getVercelOidcToken()` from `@vercel/oidc`, which
-  the API verifies against Vercel's public keys and pins to the production project;
+  the API verifies against Vercel's public keys and pins to the production project. It is called
+  with no audience option, so the token carries Vercel's default audience (the team URL): the API
+  pins the issuer, the audience and the exact project plus production subject, and the subject is
+  what confines the token to this project. `getVercelOidcToken({audience})` exists, but a custom
+  audience would add a second lock and a `PW_VERCEL_OIDC_AUDIENCE` value to keep in step with the
+  server, and the subject already does the confining;
 - with `PW_API_AUTH=hmac`, a 60-second HS256 JWT signed with `jose`, with the same audience, subject,
   `iat`, `exp` and single-use `jti` that `HmacVerifier` in `src/paperwatch/api/auth.py` requires. This
   is also how the tunnel is rehearsed before the Vercel project exists;

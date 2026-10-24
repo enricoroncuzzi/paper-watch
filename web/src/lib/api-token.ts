@@ -40,6 +40,8 @@ export async function apiToken(env: Env = process.env): Promise<string> {
       .sign(new TextEncoder().encode(secret));
   }
   if (env.PW_API_AUTH === "oidc" || env.VERCEL_ENV === "production") {
+    // The default audience (the team URL), deliberately: the API pins issuer, audience and the
+    // exact project plus production subject, and the subject is what confines this token.
     return getVercelOidcToken();
   }
   throw new Error("no API credential is configured");

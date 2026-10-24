@@ -4,6 +4,11 @@ import { defineConfig, devices } from "@playwright/test";
 // and calls no model. One worker, because the fake API keeps a single global scenario.
 const PORT = 3100;
 const BASE_URL = `http://127.0.0.1:${PORT}`;
+// CI builds once in its own step and sets this, so Playwright does not build a second time; a local
+// run builds first, so the e2e suite always tests the source it just changed.
+const SERVER_COMMAND = process.env.PW_E2E_SKIP_BUILD
+  ? `npm run start -- --port ${PORT}`
+  : `npm run build && npm run start -- --port ${PORT}`;
 
 export default defineConfig({
   testDir: "./e2e",
@@ -29,7 +34,7 @@ export default defineConfig({
       stdout: "pipe",
     },
     {
-      command: `npm run build && npm run start -- --port ${PORT}`,
+      command: SERVER_COMMAND,
       url: `${BASE_URL}/signin`,
       reuseExistingServer: !process.env.CI,
       timeout: 300_000,

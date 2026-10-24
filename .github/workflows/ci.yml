@@ -214,8 +214,11 @@ jobs:
       # WebKit too: the captain reads the page on an iPhone in Safari, and CI covers it.
       - run: npx playwright install --with-deps chromium webkit
         working-directory: web
+      # The build step above already produced .next, so Playwright starts it instead of rebuilding.
       - run: npm run e2e
         working-directory: web
+        env:
+          PW_E2E_SKIP_BUILD: "1"
       # Only on failure: the report is what explains a red e2e run, and it is large.
       - if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
