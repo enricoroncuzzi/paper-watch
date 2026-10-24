@@ -1,5 +1,5 @@
 import dataclasses
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from unittest.mock import DEFAULT, MagicMock
@@ -8,8 +8,9 @@ from zoneinfo import ZoneInfo
 import httpx
 import pytest
 import respx
-from sqlalchemy import Engine, select, text
+from sqlalchemy import Engine, event, select, text
 from sqlalchemy.engine import Connection
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from structlog.testing import capture_logs
 
@@ -334,6 +335,84 @@ def test_a_run_stores_hf_extras_for_listed_papers(db_session: Session) -> None:
     assert (snapshot.observed_at, snapshot.hf_upvotes, snapshot.github_stars) == (NOW, 50, 120)
 
 
+@respx.mock
+def test_hf_listing_stored_is_set_only_when_the_step_commits(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The flag is the only record that a run observed the listing: snapshots are written only on
+    # change and `snapshots` is 0 for every run that wrote nothing, so a later momentum baseline
+    # needs this to tell "nothing changed" from "not observed".
+
+    # No arXiv item to re-check means the listing is never asked for, however much it holds. This
+    # runs first, while the store is empty, so no earlier admission can supply a target.
+    idle = fake_sources([])
+    idle.hf.papers.return_value = {"2510.1": HfPaper(upvotes=50)}
+    assert run(db_session, idle).counts["hf_listing_stored"] == 0
+    idle.hf.papers.assert_not_called()
+
+    # A run that read a whole listing and stored it observed it, even if nothing changed.
+    whole = fake_sources([paper("2510.1", "Agent harness")])
+    whole.hf.papers.return_value = {"2510.1": HfPaper(upvotes=50)}
+    assert run(db_session, whole, now=NOW + timedelta(days=1)).counts["hf_listing_stored"] == 1
+
+    # The write succeeds but its commit is refused: nothing is stored, so no observation either.
+    real = Repository.apply_hf_listing
+
+    def commit_refused(self: Repository, listed: Mapping[str, HfPaper], *, at: datetime) -> int:
+        written = real(self, listed, at=at)
+
+        def boom(_session: Session) -> None:
+            raise SQLAlchemyError("commit refused")
+
+        # once=True: only the listing step's commit fails; the commits that end the run go on.
+        event.listen(db_session, "before_commit", boom, once=True)
+        return written
+
+    uncommitted = fake_sources([paper("2510.2", "Coding agent")])
+    uncommitted.hf.papers.return_value = {"2510.2": HfPaper(upvotes=50)}
+    with monkeypatch.context() as patched:
+        patched.setattr(Repository, "apply_hf_listing", commit_refused)
+        failed_commit = run(db_session, uncommitted, now=NOW + timedelta(days=2))
+    assert failed_commit.counts["hf_listing_stored"] == 0
+    assert failed_commit.health is not None
+    assert "hugging face extras not stored this run" in failed_commit.health.warnings
+
+    # A listing step that raises stored nothing, so the run offers no observation.
+    def refuse(_self: Repository, _papers: object, *, at: datetime) -> int:
+        raise SQLAlchemyError("write refused")
+
+    refused = fake_sources([paper("2510.3", "Agent loop")])
+    refused.hf.papers.return_value = {"2510.3": HfPaper(upvotes=50)}
+    with monkeypatch.context() as patched:
+        patched.setattr(Repository, "apply_hf_listing", refuse)
+        failed_write = run(db_session, refused, now=NOW + timedelta(days=3))
+    assert failed_write.counts["hf_listing_stored"] == 0
+    assert failed_write.health is not None
+    assert "hugging face extras not stored this run" in failed_write.health.warnings
+
+    # A listing with nothing in it writes no snapshot and is not an observation either.
+    empty = fake_sources([])
+    assert run(db_session, empty, now=NOW + timedelta(days=4)).counts["hf_listing_stored"] == 0
+
+    # A degraded listing still stores what it read, but it is not an observation: a baseline
+    # measured from it would count a failed day's upvotes as gained on the day of recovery.
+    missing_day = (NOW - timedelta(days=10)).date()
+
+    def listing(request: httpx.Request) -> httpx.Response:
+        if request.url.params["date"] == missing_day.isoformat():
+            return httpx.Response(404)
+        return httpx.Response(200, json=[{"paper": {"id": "2510.00003", "upvotes": 50}}])
+
+    respx.get(HF_URL).mock(side_effect=listing)
+    degraded = fake_sources([paper("2510.00003", "Agent loop")])
+    degraded.hf = HfDailySource(httpx.Client())
+    partial = run(db_session, degraded, now=NOW + timedelta(days=5))
+    assert degraded.hf.degraded  # the one failed day really degraded this listing
+    assert partial.counts["hf_listing_stored"] == 0
+    assert partial.counts["snapshots"] == 1
+    assert row(db_session, "2510.00003").hf_upvotes == 50
+
+
 def test_a_bad_extra_row_does_not_sink_the_listing_step(db_session: Session) -> None:
     # The real store, not a stub: a number and a name the columns cannot hold are sanitised, and
     # the other paper's extras and snapshot still land.
@@ -487,6 +566,7 @@ def test_a_surrogate_in_the_listing_is_a_warning_not_a_failed_run(db_session: Se
     with capture_logs() as logs:
         res = run(db_session, src)
     assert res.status == "succeeded"
+    assert res.counts["hf_listing_stored"] == 0  # the UnicodeError branch stores nothing
     assert res.health is not None and res.health.healthy
     assert "hugging face extras not stored this run" in res.health.warnings
     [failed] = [entry for entry in logs if entry.get("event") == "hf_listing_not_stored"]
@@ -503,6 +583,7 @@ def test_a_real_database_error_in_the_listing_step_is_a_warning(db_session: Sess
     with capture_logs() as logs:
         res = run(db_session, src)
     assert res.status == "succeeded"
+    assert res.counts["hf_listing_stored"] == 0
     assert res.health is not None and res.health.healthy
     assert "hugging face extras not stored this run" in res.health.warnings
     assert [item.admit_attempts for item in db_session.scalars(select(Item)).all()] == [0]
