@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.0](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.9.2...paperwatch-v0.10.0) (2026-10-24)
+
+
+### Features
+
+* add ranked weekly picks with checked 30-second summaries and the Rising shelf ([#59](https://github.com/enricoroncuzzi/paper-watch/issues/59)) ([cc0482a](https://github.com/enricoroncuzzi/paper-watch/commit/cc0482a19fe836a7b9810280215e18cf10bceacb))
+
 ## [0.9.2](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.9.1...paperwatch-v0.9.2) (2026-10-24)
 
 

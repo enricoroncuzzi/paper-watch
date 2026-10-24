@@ -1,6 +1,6 @@
 [project]
 name = "paperwatch"
-version = "0.9.2"
+version = "0.10.0"
 description = "A growing, queryable corpus of AI research, answered with hybrid retrieval and citation-checked agents"
 readme = "README.md"
 authors = [
