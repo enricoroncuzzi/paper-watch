@@ -44,9 +44,11 @@ test("the page sends its security headers", async ({ page }) => {
   }
 });
 
-test("a known proxy bypass header still lands on sign-in", async ({ request }) => {
-  // The per-page guard is the real check; the proxy is only a courtesy. The header that once
-  // skipped Next's proxy must not open either page.
+test("an anonymous document request is redirected even with a bypass header", async ({
+  request,
+}) => {
+  // Next 16 no longer honours this header, so this pins the proxy's redirect for a document
+  // request, not the per-page guard: that one is unit-tested in src/app/guards.test.ts.
   const headers = { "x-middleware-subrequest": "middleware" };
   for (const path of ["/", "/runs/11111111-1111-4111-8111-111111111111"]) {
     const response = await request.get(path, { headers, maxRedirects: 0 });
