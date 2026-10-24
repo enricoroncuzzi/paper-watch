@@ -160,6 +160,32 @@ def test_a_dead_child_holds_no_memory(workers: Callable[..., WorkerEmbedder]) ->
     assert worker.child_rss_mb() is None
 
 
+def test_a_crashed_child_holds_no_memory(
+    workers: Callable[..., WorkerEmbedder], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The child died on its own and the worker noticed: there is no process left whose memory the
+    # gate could count.
+    from paperwatch.llm.embedder import EmbedderUnavailable
+
+    monkeypatch.setenv("FAKE_WORKER_MODE", "crash")
+    worker = workers(read_status=lambda pid: "RssAnon:\t 225280 kB\n")
+    with pytest.raises(EmbedderUnavailable):
+        worker.embed(["hello"])
+    assert worker.child_rss_mb() is None
+
+
+def test_a_finished_child_holds_no_memory(workers: Callable[..., WorkerEmbedder]) -> None:
+    # A child that died while its Popen is still held (poll has not run yet) is gone: the gate must
+    # count nothing rather than the figure of a pid that no longer holds any memory.
+    worker = workers(read_status=lambda pid: "RssAnon:\t 225280 kB\n")
+    worker.embed(["hello"])
+    process = worker._process  # type: ignore[attr-defined]
+    assert process is not None
+    process.kill()
+    process.wait()
+    assert worker.child_rss_mb() is None
+
+
 def test_an_unreadable_child_status_holds_no_memory(
     workers: Callable[..., WorkerEmbedder],
 ) -> None:

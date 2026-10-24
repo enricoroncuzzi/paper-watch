@@ -153,6 +153,23 @@ def test_no_child_counts_as_no_child() -> None:
     )
 
 
+def test_psi_still_switches_to_keyword_only_with_a_child_present() -> None:
+    # The add-back only lifts the memory figure. A machine whose processes are stalling on memory
+    # is short whatever one child holds, so the pressure check runs for a resident child too.
+    decision = _gate(meminfo=_meminfo(2_000), psi=_psi(9.0), read_child_rss=lambda: 220.0).current()
+    assert decision == ModeDecision("text_only", "memory")
+
+
+def test_a_running_ingestion_wins_over_a_large_child_figure() -> None:
+    # During a main pass the answer is keyword-only even when the child's own memory would cover
+    # the shortage: that memory is what the ingestion needs, so the child exits.
+    since = NOW - timedelta(minutes=30)
+    decision = _gate(
+        since, meminfo=_meminfo(5_000), psi=_psi(0.0), read_child_rss=lambda: 5_000.0
+    ).current()
+    assert decision == ModeDecision("text_only", "ingestion", since)
+
+
 @pytest.mark.parametrize("available", [799, 800])
 def test_the_memory_threshold_is_inclusive_at_eight_hundred_mb(available: int) -> None:
     decision = _gate(meminfo=_meminfo(available), psi=_psi(0.0)).current()

@@ -198,8 +198,7 @@ def live_deps(settings: Settings, verifier: Verifier) -> AgentDeps:
         pool_timeout=ANSWER_POOL_TIMEOUT_S,
     )
     read_factory = make_session_factory(read_engine)
-    # The gate needs the live child's own memory, and the child needs the gate's verdict before it
-    # exits, so the two close over each other's local: both are called after `live_deps` returns.
+    # The gate and the child's stop check need each other, so `worker` is bound after both exist.
     worker: WorkerEmbedder | None = None
 
     def child_rss_mb() -> float | None:
