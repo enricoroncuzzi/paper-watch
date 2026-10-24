@@ -45,10 +45,13 @@ from paperwatch.agent.graph import (
 )
 from paperwatch.agent.sources import SourceRegistry
 from paperwatch.agent.tools import make_tools
+from paperwatch.api.auth import Verifier, make_verifier
+from paperwatch.api.gate import ApiGate
 from paperwatch.config import (
     ANSWER_POOL_OVERFLOW,
     ANSWER_POOL_SIZE,
     ANSWER_POOL_TIMEOUT_S,
+    LOOPBACK_HOSTS,
     PROFILES_PATH,
     READY_CONCURRENCY,
     READY_TIMEOUT_S,
@@ -110,6 +113,10 @@ class AgentDeps:
     chat_calls: ChatCallStore
     # The profile names the corpus knows, so a typo is refused before a model call is spent.
     profile_names: frozenset[str]
+    # The credential verifier and the host names the gate accepts. `create_app` always installs the
+    # gate with them, so no code path can serve a route without one.
+    verifier: Verifier
+    allowed_hosts: frozenset[str]
     # `/readyz` queries the database through this factory. In production it is the usage engine,
     # not the answer pool: with every answer connection held by a live answer, a healthy database
     # would otherwise answer 503, which an orchestrator reads as "restart me".
@@ -138,6 +145,10 @@ def live_deps(settings: Settings) -> AgentDeps:
     )
     profiles = load_profiles(PROFILES_PATH)
     usage_factory = make_session_factory(usage_engine)
+    # The tunnel's own host name is added to the loopback ones; unset means loopback only, and the
+    # tunnel name arrives through the same 0600 env file as the credential.
+    public_host = (settings.api_public_host or "").strip().lower()
+    allowed_hosts = LOOPBACK_HOSTS | ({public_host} if public_host else set())
     return AgentDeps(
         session_factory=factory,
         # Local embeddings need no token budget of their own; the ledger is here because
@@ -148,6 +159,8 @@ def live_deps(settings: Settings) -> AgentDeps:
         clock=lambda: datetime.now(UTC),
         chat_calls=ChatCallLog(usage_factory),
         profile_names=frozenset(p.name for p in profiles),
+        verifier=make_verifier(settings),
+        allowed_hosts=frozenset(allowed_hosts),
         ready_session_factory=usage_factory,
     )
 
@@ -542,7 +555,16 @@ def create_app(deps: AgentDeps) -> FastAPI:
         title="Paper Watch API",
         version=API_VERSION,
         summary="Ask questions about the stored AI-research corpus and stream cited answers.",
+        # The served app publishes no docs and no schema: the credential gate would otherwise
+        # decide who may read them, and the committed docs/api/openapi.json is the contract a
+        # client builds from. `create_app(...).openapi()` still builds the document in process.
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
     )
+    # Every request, including the routes FastAPI adds itself, meets the gate first. Adding it here
+    # rather than in `serve` means a test, a script or a future caller cannot build an open app.
+    app.add_middleware(ApiGate, verifier=deps.verifier, allowed_hosts=deps.allowed_hosts)
     # The readiness gate lives on the app so a test can replace it, and so two apps never share
     # one limiter (a limiter belongs to one event loop's concurrency budget).
     app.state.ready_limiter = anyio.CapacityLimiter(READY_CONCURRENCY)

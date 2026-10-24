@@ -139,6 +139,22 @@ CONNECT_TIMEOUT_S = 3
 READY_CONCURRENCY = 2
 READY_TIMEOUT_S = 2.0
 
+# The request gate (Task 26). 16 KB is far above the largest request the API takes (a points of
+# view box is capped at 2,000 characters), so a bigger body is a client bug or an attack.
+API_MAX_BODY_BYTES = 16_384
+# Vercel rotates the keys that sign its OIDC tokens; an unknown key id triggers a refetch, but
+# never more often than this, so an unauthenticated caller cannot use the API to hammer Vercel's
+# key endpoint.
+JWKS_REFETCH_MIN_S = 300
+# Clock skew between Vercel and this server, applied to the token's exp, nbf and iat claims.
+TOKEN_LEEWAY_S = 30
+# An HMAC token is minted for one check and expires at once: it is the fallback credential for
+# local operation and the tunnel rehearsal, not a long-lived key.
+HMAC_TOKEN_TTL_S = 60
+HMAC_AUDIENCE = "paperwatch-api"
+# The names a browser uses for this machine; the tunnel's own name comes from PW_API_PUBLIC_HOST.
+LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
 
 class Settings(BaseSettings):
     # Each field is read from an env var with the PW_ prefix (database_url <- PW_DATABASE_URL),
@@ -213,6 +229,17 @@ class Settings(BaseSettings):
     followup_max_passes: int = Field(default=FOLLOWUP_MAX_PASSES, ge=1)
     followup_interval_s: int = Field(default=FOLLOWUP_INTERVAL_S, ge=60)
     followup_deadline_hour: int = Field(default=FOLLOWUP_DEADLINE_HOUR, ge=1, le=22)
+
+    # The API credential (Task 26): a token Vercel signs for one project's production deployment,
+    # verified against Vercel's published keys, or the HMAC fallback for local operation and the
+    # tunnel rehearsal. One credential at a time, never both.
+    api_auth: Literal["oidc", "hmac"] = "oidc"
+    vercel_oidc_issuer: str | None = None
+    vercel_oidc_audience: str | None = None
+    vercel_oidc_subject: str | None = None
+    api_hmac_secret: SecretStr | None = None
+    # The tunnel's host name, added to the loopback names the gate accepts.
+    api_public_host: str | None = None
 
     log_level: str = "INFO"
     # Sent with every HTTP request so source sites can identify us.

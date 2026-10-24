@@ -45,11 +45,13 @@ from paperwatch.api.app import (
     create_app,
     run_question,
 )
+from paperwatch.api.auth import HmacVerifier, mint_hmac_token
 from paperwatch.config import (
     ANSWER_POOL_OVERFLOW,
     ANSWER_POOL_SIZE,
     ANSWER_POOL_TIMEOUT_S,
     CONNECT_TIMEOUT_S,
+    LOOPBACK_HOSTS,
     USAGE_POOL_SIZE,
     Settings,
 )
@@ -70,6 +72,24 @@ PROFILES = frozenset({"agentic-engineering", "ai-forensics", "ml-architectures"}
 Seed = Callable[[list[SeedRow]], dict[str, UUID]]
 # The model id a `ChatCall` row gets when the provider answered without naming one.
 UNKNOWN_MODEL = "unknown"
+# The gate's credential for the whole module: a real HMAC verifier, so the tests exercise the same
+# check production runs instead of a stub that would accept anything.
+TEST_SECRET = "a-test-secret-that-is-long-enough-to-pass"  # noqa: S105 - a test secret
+
+
+class AuthedClient(TestClient):
+    """A client that mints a fresh single-use token for every request, as a real caller does."""
+
+    def request(self, method: str, url: Any, **kwargs: Any) -> Any:
+        headers = dict(kwargs.pop("headers", None) or {})
+        if "authorization" not in {name.lower() for name in headers}:
+            headers["Authorization"] = f"Bearer {mint_hmac_token(TEST_SECRET, 'test', time.time())}"
+        return super().request(method, url, headers=headers, **kwargs)
+
+
+def client(app: Any) -> AuthedClient:
+    # localhost, not TestClient's default testserver, so the host allow-list accepts the request.
+    return AuthedClient(app, base_url="http://localhost")
 
 
 class MemoryChatCalls:
@@ -130,6 +150,8 @@ def deps(
         clock=lambda: NOW,
         chat_calls=store or MemoryChatCalls(),
         profile_names=PROFILES,
+        verifier=HmacVerifier(TEST_SECRET, time.time),
+        allowed_hosts=LOOPBACK_HOSTS,
     )
 
 
@@ -142,18 +164,18 @@ def events(body: str) -> list[tuple[str, dict[str, Any]]]:
 
 
 def ask(app_deps: AgentDeps, payload: dict[str, Any]) -> Any:
-    return TestClient(create_app(app_deps)).post("/ask", json=payload)
+    return client(create_app(app_deps)).post("/ask", json=payload)
 
 
 def test_healthz(db_session: Session) -> None:
-    assert TestClient(create_app(deps(db_session, []))).get("/healthz").json() == {"status": "ok"}
+    assert client(create_app(deps(db_session, []))).get("/healthz").json() == {"status": "ok"}
 
 
 def test_readyz_checks_the_database(db_session: Session) -> None:
-    assert TestClient(create_app(deps(db_session, []))).get("/readyz").status_code == 200
+    assert client(create_app(deps(db_session, []))).get("/readyz").status_code == 200
     broken = deps(db_session, [])
     broken.session_factory = lambda: (_ for _ in ()).throw(RuntimeError("db down"))  # type: ignore[assignment,return-value]
-    response = TestClient(create_app(broken)).get("/readyz")
+    response = client(create_app(broken)).get("/readyz")
     assert response.status_code == 503
     assert response.json() == {"status": "unavailable"}
 
@@ -171,8 +193,8 @@ class _FullLimiter:
 def test_readyz_answers_every_time(db_session: Session) -> None:
     # The limiter slot is released in a finally, so a check that timed out cannot leave /readyz
     # answering 503 forever: the server would look permanently unready.
-    client = TestClient(create_app(deps(db_session, [])))
-    assert [client.get("/readyz").status_code for _ in range(5)] == [200] * 5
+    client_ = client(create_app(deps(db_session, [])))
+    assert [client_.get("/readyz").status_code for _ in range(5)] == [200] * 5
 
 
 def test_readyz_uses_the_readiness_factory(db_session: Session, engine: Engine) -> None:
@@ -187,14 +209,14 @@ def test_readyz_uses_the_readiness_factory(db_session: Session, engine: Engine) 
 
     app_deps = deps(db_session, [])
     app_deps.ready_session_factory = ready
-    assert TestClient(create_app(app_deps)).get("/readyz").status_code == 200
+    assert client(create_app(app_deps)).get("/readyz").status_code == 200
     assert seen == [1]
 
 
 def test_readyz_is_503_when_the_check_slots_are_full(db_session: Session) -> None:
     app = create_app(deps(db_session, []))
     app.state.ready_limiter = _FullLimiter()
-    response = TestClient(app).get("/readyz")
+    response = client(app).get("/readyz")
     assert response.status_code == 503 and response.json() == {"status": "unavailable"}
 
 
@@ -219,14 +241,14 @@ def test_readyz_times_out_while_healthz_still_answers(
     results: dict[str, Any] = {}
 
     def call_readyz() -> None:
-        results["ready"] = TestClient(app).get("/readyz")
+        results["ready"] = client(app).get("/readyz")
 
     worker = threading.Thread(target=call_readyz)
     try:
         worker.start()
         assert entered.wait(10)
         started = time.monotonic()
-        health = TestClient(app).get("/healthz")
+        health = client(app).get("/healthz")
         assert health.status_code == 200
         assert time.monotonic() - started < 1.0
         worker.join(10)
@@ -592,7 +614,14 @@ def _scope(spec_version: str) -> dict[str, Any]:
         "path": "/ask",
         "raw_path": b"/ask",
         "query_string": b"",
-        "headers": [(b"content-type", b"application/json")],
+        "headers": [
+            (b"content-type", b"application/json"),
+            (b"host", b"localhost"),
+            (
+                b"authorization",
+                f"Bearer {mint_hmac_token(TEST_SECRET, 'test', time.time())}".encode(),
+            ),
+        ],
         "server": ("testserver", 80),
         "client": ("testclient", 1),
         "scheme": "http",
@@ -938,7 +967,9 @@ def test_live_deps_wires_a_usage_log_on_its_own_engine(
     # usage write never queues behind an answer that is holding its connection for a model call.
     monkeypatch.setattr(api, "make_embedder", lambda settings, ledger: FakeEmbedder())
     monkeypatch.setattr(api, "make_chat_models", lambda settings: [])
-    settings = Settings(openrouter_api_key="sk-test")  # type: ignore[arg-type]
+    settings = Settings(  # type: ignore[arg-type]
+        openrouter_api_key="sk-test", api_auth="hmac", api_hmac_secret=TEST_SECRET
+    )
     app_deps = api.live_deps(settings)
     assert isinstance(app_deps.chat_calls, ChatCallLog)
     answer_engine = app_deps.session_factory.kw["bind"]
@@ -955,6 +986,9 @@ def test_live_deps_wires_a_usage_log_on_its_own_engine(
     assert app_deps.profile_names == {profile.name for profile in load_profiles(api.PROFILES_PATH)}
     assert app_deps.ready_session_factory is not None
     assert app_deps.ready_session_factory.kw["bind"] is usage_engine
+    # The gate's host allow-list starts from the loopback names; PW_API_PUBLIC_HOST adds the
+    # tunnel's own name when the server has one.
+    assert app_deps.allowed_hosts == LOOPBACK_HOSTS
     answer_engine.dispose()
     usage_engine.dispose()
 
@@ -1055,6 +1089,8 @@ def _dummy_deps() -> AgentDeps:
         clock=lambda: NOW,
         chat_calls=MemoryChatCalls(),
         profile_names=PROFILES,
+        verifier=HmacVerifier(TEST_SECRET, time.time),
+        allowed_hosts=LOOPBACK_HOSTS,
     )
 
 

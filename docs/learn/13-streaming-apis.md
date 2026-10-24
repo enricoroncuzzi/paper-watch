@@ -10,8 +10,8 @@ place the database session is released, and both surfaces use it:
 - `POST /ask` (`create_app`) formats `run_question`'s events as server-sent events.
 - `paperwatch ask "QUESTION" --live` (`src/paperwatch/cli.py`) prints the same events to a
   terminal, and prints tool calls and errors on stderr so a redirected answer stays clean text.
-- `paperwatch serve --live` runs the API with uvicorn. It binds to `127.0.0.1` by default because
-  the API has no sign-in until M3.
+- `paperwatch serve --live` runs the API with uvicorn. It binds to `127.0.0.1` by default and sits
+  behind the credential gate (`docs/learn/15`).
 
 The graph, the tools, the guard and the checker do not know which surface is consuming them.
 

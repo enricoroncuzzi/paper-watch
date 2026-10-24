@@ -1,10 +1,13 @@
 # API
 
 `paperwatch serve --live` runs the FastAPI app from `src/paperwatch/api/app.py` on
-`http://127.0.0.1:8000` by default. It has no sign-in yet (Entra ID arrives with M3), so it is
-bound to the loopback interface unless `--host` says otherwise; a non-loopback bind prints a
-warning, and a loopback bind only accepts `Host: 127.0.0.1`, `localhost` or `::1` (an IPv6 host
-arrives in brackets, `Host: [::1]:8000`), so a DNS-rebinding page cannot reach it.
+`http://127.0.0.1:8000` by default, behind the credential gate in `src/paperwatch/api/gate.py`.
+Every route but `GET /healthz` needs `Authorization: Bearer <token>`: a Vercel OIDC token when
+`PW_API_AUTH=oidc`, or one minted by `paperwatch api-token --live` when it is `hmac`. A request
+whose `Host` is not loopback or `PW_API_PUBLIC_HOST` gets 400, any request carrying an `Origin`
+gets 403, and a body over 16 KB gets 413. The served app publishes no `/docs`, `/redoc` or
+`/openapi.json`; the committed contract is the client's reference. `docs/learn/15` explains the
+gate and what each status code means.
 
 | Route | Purpose |
 |---|---|
@@ -44,8 +47,9 @@ A client parses the `data:` line alone, which is what it will find:
 - On a `NO_SUPPORT` answer the `flags` list is empty and the flags are logged server-side: they
   describe model text the reader never saw.
 
-A request that is refused before the stream starts answers 422 in the shape the contract documents
-for a validation error: `{"detail": [{"type", "loc", "msg"}]}`. That covers both the pydantic
+A request without a valid credential answers 401 before anything is read; `docs/learn/15` lists
+the gate's other refusals. A request the gate lets through but that fails validation before the
+stream starts answers 422 in the shape the contract documents for a validation error: `{"detail": [{"type", "loc", "msg"}]}`. That covers both the pydantic
 field checks and the two route-level refusals (an unknown profile name, a `since` in the future).
 
 ## The committed contract
@@ -54,7 +58,7 @@ field checks and the two route-level refusals (an unknown profile name, a `since
 `tests/integration/test_api.py`. Rewrite it only after an intended API change:
 
 ```bash
-uv run python -c "import json; from datetime import UTC, datetime; from paperwatch.api.app import AgentDeps, ChatCallLog, create_app; from paperwatch.config import Settings; from paperwatch.llm.embedder import FakeEmbedder; deps = AgentDeps(lambda: None, FakeEmbedder(), [], Settings(), lambda: datetime.now(UTC), ChatCallLog(lambda: None), frozenset()); open('docs/api/openapi.json', 'w').write(json.dumps(create_app(deps).openapi(), indent=2) + '\n')"
+uv run python -c "import json; from datetime import UTC, datetime; from paperwatch.api.app import AgentDeps, create_app; from paperwatch.config import Settings; from paperwatch.llm.embedder import FakeEmbedder; from paperwatch.api.auth import HmacVerifier; deps = AgentDeps(lambda: None, FakeEmbedder(), [], Settings(), lambda: datetime.now(UTC), type('S', (), {'record_chat_call': lambda *a, **k: None, 'chat_calls_since': lambda *a: 0})(), frozenset(), HmacVerifier('x' * 32, lambda: 0.0), frozenset({'localhost'})); open('docs/api/openapi.json', 'w').write(json.dumps(create_app(deps).openapi(), indent=2) + '\n')"
 ```
 
 The dependencies are stubs because the OpenAPI document depends only on the routes and their

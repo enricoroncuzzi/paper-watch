@@ -2,6 +2,7 @@ import json
 import os
 import signal
 import threading
+import time
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -20,7 +21,9 @@ from paperwatch import cli
 from paperwatch.agent.citations import CheckedAnswer, Citation, Flag
 from paperwatch.agent.graph import AnswerEvent, TokenEvent, ToolEvent
 from paperwatch.api.app import ErrorEvent
+from paperwatch.api.auth import HmacVerifier
 from paperwatch.cli import app
+from paperwatch.config import Settings
 from paperwatch.ingest.health import Health
 from paperwatch.llm.embedder import FakeEmbedder
 from paperwatch.retrieval.hybrid import Filters
@@ -1115,8 +1118,8 @@ def test_the_second_ctrl_c_leaves_at_once(
 
 
 def test_serve_runs_uvicorn_on_localhost_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    # The API has no sign-in until M3's Entra ID, so it must not listen on every interface, and
-    # uvicorn is told not to configure logging: the app's own structured setup stays in charge.
+    # The API must not listen on every interface, and uvicorn is told not to configure logging:
+    # the app's own structured setup stays in charge.
     captured: dict[str, object] = {}
 
     def fake_run(app_: object, **kwargs: object) -> None:
@@ -1125,53 +1128,36 @@ def test_serve_runs_uvicorn_on_localhost_by_default(monkeypatch: pytest.MonkeyPa
     from fastapi import FastAPI
 
     built = FastAPI()
+    seen: list[object] = []
     monkeypatch.setattr(cli, "live_deps", lambda s: "deps")
-    monkeypatch.setattr(cli, "create_app", lambda deps: built)
+    monkeypatch.setattr(cli, "create_app", lambda deps: seen.append(deps) or built)
     monkeypatch.setattr(cli.uvicorn, "run", fake_run)
     result = CliRunner().invoke(app, ["serve", "--live"])
     assert result.exit_code == 0
     assert captured["app"] is built
+    assert seen == ["deps"]
     assert (captured["host"], captured["port"]) == ("127.0.0.1", 8000)
     assert captured["log_config"] is None
     assert captured["log_level"] == "info"
     # Open streams are cancelled when the server stops instead of being waited for: a Ctrl-C on
     # `serve` must not wait for a whole in-flight answer.
     assert captured["timeout_graceful_shutdown"] == cli.GRACEFUL_SHUTDOWN_S
-    assert any(m.cls.__name__ == "_LoopbackHosts" for m in built.user_middleware)
     assert "warning" not in result.stderr.lower()
 
 
-def _served_loopback() -> object:
-    return cli._served_app(object(), "127.0.0.1")  # type: ignore[arg-type]
+def test_serve_refuses_to_start_without_a_verifiable_credential(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fastapi import FastAPI
 
+    def no_credential(settings: object) -> object:
+        raise cli.ApiAuthNotConfigured("PW_API_HMAC_SECRET is not set")
 
-@pytest.mark.parametrize(
-    "host",
-    ["127.0.0.1", "127.0.0.1:8000", "localhost", "localhost:8000", "LOCALHOST:8000", "[::1]:8000"],
-)
-def test_a_loopback_server_accepts_every_loopback_host(host: str) -> None:
-    # A browser writes an IPv6 host in brackets, so a plain string comparison against `::1` could
-    # never match and `serve --host ::1` refused every request.
-    from fastapi.testclient import TestClient
-
-    assert TestClient(_served_loopback()).get("/healthz", headers={"host": host}).status_code == 200
-
-
-@pytest.mark.parametrize(
-    "host",
-    [
-        "evil.example",
-        "127.0.0.1.evil.example",
-        "localhost.",
-        "localhost.:8000",
-        "[::1].evil.example",
-    ],
-)
-def test_a_loopback_server_refuses_a_foreign_host(host: str) -> None:
-    # The middleware must actually reject a rebound Host header, not just be installed.
-    from fastapi.testclient import TestClient
-
-    assert TestClient(_served_loopback()).get("/healthz", headers={"host": host}).status_code == 400
+    monkeypatch.setattr(cli, "live_deps", no_credential)
+    monkeypatch.setattr(cli, "create_app", lambda deps: FastAPI())
+    result = CliRunner().invoke(app, ["serve", "--live"])
+    assert result.exit_code == 2
+    assert "PW_API_HMAC_SECRET" in result.stderr
 
 
 def test_an_ipv6_bind_prints_a_bracketed_url(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1196,9 +1182,29 @@ def test_serve_warns_about_a_public_host(monkeypatch: pytest.MonkeyPatch) -> Non
     result = CliRunner().invoke(app, ["serve", "--live", "--host", "192.0.2.7"])
     assert result.exit_code == 0
     assert "warning" in result.stderr.lower()
-    # A public bind is the operator's choice; the loopback host allow-list would only fail
-    # requests there, so it is not installed.
-    assert not any(m.cls.__name__ == "_LoopbackHosts" for m in built.user_middleware)
+    assert "behind the tunnel" in result.stderr.lower()
+
+
+def test_api_token_refuses_the_oidc_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A token minted under the OIDC setting would never verify, so the command refuses instead of
+    # printing something useless.
+    monkeypatch.setattr(cli, "get_settings", lambda: Settings(_env_file=None))
+    result = CliRunner().invoke(app, ["api-token", "--live"])
+    assert result.exit_code == 2
+    assert "not hmac" in result.stderr
+
+
+def test_api_token_prints_a_verifiable_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    secret = "a-test-secret-that-is-long-enough-to-pass"  # noqa: S105 - a test secret
+    monkeypatch.setattr(
+        cli,
+        "get_settings",
+        lambda: Settings(_env_file=None, api_auth="hmac", api_hmac_secret=secret),
+    )
+    result = CliRunner().invoke(app, ["api-token", "--live"])
+    assert result.exit_code == 0
+    verifier = HmacVerifier(secret, time.time)
+    assert verifier.verify(result.stdout.strip()) is not None
 
 
 def test_the_cli_never_claims_an_answer_was_verified() -> None:

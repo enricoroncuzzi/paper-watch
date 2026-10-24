@@ -93,7 +93,10 @@ The chat model is an OpenRouter free model by default, with Groq as an optional 
 (`PW_GROQ_API_KEY` and `PW_GROQ_CHAT_MODEL`); embedding and relevance classification stay local, so
 only the question and the retrieved abstracts and lab posts leave the machine. `ask` needs
 `--live`, the same as the other commands that touch a real service. `serve` listens on
-`127.0.0.1:8000` only: the API has no sign-in until M3, so do not put it on a public interface.
+`127.0.0.1:8000` only. Every route but `GET /healthz` needs a credential (`PW_API_AUTH=oidc` for a
+Vercel OIDC token, or `hmac` with a token from `paperwatch api-token --live`), and `PW_API_PUBLIC_HOST`
+names the tunnel host the gate accepts; keep the API behind the tunnel rather than on a public
+interface.
 
 `docs/api/README.md` documents the event stream and the client rules; `docs/learn/13` explains how
 the stream works. Every answer stays within `PW_CHAT_MAX_CALLS_PER_DAY` (800, counted from UTC
