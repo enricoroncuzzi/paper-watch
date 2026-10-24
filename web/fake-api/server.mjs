@@ -194,8 +194,19 @@ const server = createServer(async (request, response) => {
       json(response, 500, { detail: "internal server error" });
       return;
     }
+    const id = path.slice("/runs/".length);
+    // FastAPI refuses a path id that is not a UUID with 422 before the route runs; the page turns
+    // that into "nothing here" without asking.
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+      json(response, 422, {
+        detail: [
+          { type: "uuid_parsing", loc: ["path", "run_id"], msg: "Input should be a valid UUID" },
+        ],
+      });
+      return;
+    }
     const detail = fixture("run-detail");
-    if (path.slice("/runs/".length) !== detail.id) {
+    if (id !== detail.id) {
       json(response, 404, { detail: "run not found" });
       return;
     }
