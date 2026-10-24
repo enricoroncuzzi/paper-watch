@@ -39,8 +39,8 @@ test.describe("a first visit with no theme cookie on a dark OS", () => {
 test("the today strip shows the last run", async ({ page }) => {
   const strip = page.getByTestId("today-strip");
   await expect(strip).toContainText("healthy");
-  await expect(strip).toContainText("06:00");
   await expect(strip).toContainText("Europe/Rome");
+  await expect(page.getByTestId("run-day")).toHaveText("Today");
   await expect(strip).toContainText("9 stored");
   await expect(strip).toContainText("41 fetched");
   await expect(strip).toContainText("Runs");
@@ -59,7 +59,6 @@ test("a waiting follow-up shows the next pass", async ({ page, request }) => {
   await page.reload();
   const strip = page.getByTestId("today-strip");
   await expect(strip).toContainText("follow-up pass 3 of 40");
-  await expect(strip).toContainText("10:30");
   await expect(strip).toContainText("12 papers pending");
 });
 
@@ -101,14 +100,19 @@ test("each section shows its loading empty and error states", async ({ page, req
   );
 });
 
-test("a rate-limited read shows the wait", async ({ page, request }) => {
-  await setScenario(request, "refused");
-  await page.goto("/");
+test("a run from an earlier day says so in amber", async ({ page, request }) => {
+  await setScenario(request, "yesterday");
+  await page.reload();
 
-  // The 429 body is the gate's RateLimited; the page shows the wait from retry_after_s.
-  await expect(page.getByTestId("today-error")).toContainText("The API is busy");
-  await expect(page.getByTestId("today-error")).toContainText("retry in 30s");
-  await expect(page.getByTestId("runs-error")).toContainText("The API is busy");
+  const day = page.getByTestId("run-day");
+  await expect(day).toHaveText("Yesterday");
+  await expect(day).toHaveClass(/text-warn/);
+});
+
+test("a link to a malformed run id says nothing here", async ({ page }) => {
+  const response = await page.goto("/runs/not-a-uuid");
+  expect(response?.status()).toBe(404);
+  await expect(page.getByRole("heading", { name: "Nothing here" })).toBeVisible();
 });
 
 test("the theme toggle persists across a reload", async ({ page }) => {

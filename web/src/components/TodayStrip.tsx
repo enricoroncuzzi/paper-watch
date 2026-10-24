@@ -37,6 +37,7 @@ export function TodayStrip({ today }: { today: TodayData }) {
       className="flex flex-wrap items-center gap-x-2.5 gap-y-1 border-b border-rule py-2.5 text-[12px] text-ink-2"
     >
       <span
+        data-testid="run-day"
         className={`text-[9.5px] uppercase tracking-[0.14em] ${
           runDayLabel(run.started_at) === "Today" ? "text-ink-3" : "text-warn"
         }`}

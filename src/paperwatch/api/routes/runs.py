@@ -17,7 +17,7 @@ from fastapi import APIRouter, HTTPException, Query, Security
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy.orm import Session
 
-from paperwatch.api.responses import BEARER, GATE_RESPONSES
+from paperwatch.api.responses import BEARER, GATE_RESPONSES, Refusal
 from paperwatch.api.search_mode import ModeDecision
 from paperwatch.store.models import DeadLetter, Run
 from paperwatch.store.repository import Repository
@@ -186,7 +186,11 @@ def make_runs_router(session_factory: Callable[[], Session], search_mode: ModeGa
     @router.get(
         "/runs/{run_id}",
         response_model=RunDetail,
-        responses=GATE_RESPONSES,
+        # The 404 is the route's own body (`{"detail": "run not found"}`), the same Refusal shape.
+        responses={
+            **GATE_RESPONSES,
+            404: {"model": Refusal, "description": "No run with that id."},
+        },
         dependencies=[Security(BEARER)],
     )
     def run_detail(run_id: UUID) -> RunDetail:

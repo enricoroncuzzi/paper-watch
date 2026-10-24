@@ -26,6 +26,7 @@ const SCENARIOS = new Set([
   "citations",
   "flagged",
   "refused",
+  "yesterday",
   "slow",
   "drop",
 ]);
@@ -61,20 +62,45 @@ function json(response, status, body, headers = {}) {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// The real API always serves recent runs; the fake rewrites its fixtures' dates relative to now so
+// the strip's Today/Yesterday label and every screenshot match what the captain sees.
+function runAt(run, daysAgo) {
+  const started = new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000 - 3 * 60 * 60 * 1000);
+  const finished = new Date(started.getTime() + 3 * 60 * 1000);
+  const dated = {
+    ...run,
+    started_at: started.toISOString(),
+    finished_at: finished.toISOString(),
+  };
+  if (run.followup) {
+    dated.followup = {
+      ...run.followup,
+      next_at: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(),
+    };
+  }
+  return dated;
+}
+
 function todayFor(name) {
-  if (name === "unhealthy") return fixture("today-unhealthy");
-  if (name === "followup") return fixture("today-followup");
-  if (name === "text_only") return fixture("today-text-only");
+  if (name === "unhealthy") return dated(fixture("today-unhealthy"), 0);
+  if (name === "followup") return dated(fixture("today-followup"), 0);
+  if (name === "text_only") return dated(fixture("today-text-only"), 0);
+  if (name === "yesterday") return dated(fixture("today"), 1);
   if (name === "empty") {
     return { run: null, search: { mode: "hybrid", reason: "ok", since: null } };
   }
-  return fixture("today");
+  return dated(fixture("today"), 0);
+}
+
+function dated(today, daysAgo) {
+  return { ...today, run: runAt(today.run, daysAgo) };
 }
 
 function runsFor(name) {
-  const base = fixture("runs").runs;
+  // The rows are dated one day apart, newest first, so the list reads like a real week.
+  const base = fixture("runs").runs.map((run, index) => runAt(run, index));
   // A scenario about today's run must not leave the Runs grid showing a different, healthy one.
-  if (name === "unhealthy" || name === "followup" || name === "text_only") {
+  if (name === "unhealthy" || name === "followup" || name === "text_only" || name === "yesterday") {
     const first = todayFor(name).run;
     return { runs: [first, ...base.filter((run) => run.id !== first.id)] };
   }
@@ -123,19 +149,14 @@ const server = createServer(async (request, response) => {
     return;
   }
 
-  if (request.headers.origin) {
-    // The real gate refuses any request carrying an Origin header; a browser always sends one.
-    refused(response, 403);
-    return;
-  }
-
+  // The real gate checks the credential first, then refuses any request carrying an Origin.
   if (request.headers.authorization !== `Bearer ${TOKEN}`) {
     refused(response, 401);
     return;
   }
 
-  if (scenario === "refused") {
-    refused(response, 429);
+  if (request.headers.origin) {
+    refused(response, 403);
     return;
   }
 
@@ -146,7 +167,7 @@ const server = createServer(async (request, response) => {
 
   if (path === "/today") {
     if (scenario === "error") {
-      json(response, 503, { status: "unavailable" });
+      json(response, 500, { detail: "internal server error" });
       return;
     }
     if (scenario === "slow") await sleep(1500);
@@ -156,7 +177,7 @@ const server = createServer(async (request, response) => {
 
   if (path === "/runs") {
     if (scenario === "error") {
-      json(response, 503, { status: "unavailable" });
+      json(response, 500, { detail: "internal server error" });
       return;
     }
     if (scenario === "slow") await sleep(1500);
@@ -170,7 +191,7 @@ const server = createServer(async (request, response) => {
 
   if (path.startsWith("/runs/")) {
     if (scenario === "error") {
-      json(response, 503, { status: "unavailable" });
+      json(response, 500, { detail: "internal server error" });
       return;
     }
     const detail = fixture("run-detail");
@@ -183,6 +204,10 @@ const server = createServer(async (request, response) => {
   }
 
   if (path === "/ask" && request.method === "POST") {
+    if (scenario === "refused") {
+      refused(response, 429);
+      return;
+    }
     const name = scenario === "normal" || scenario === "empty" ? "normal" : scenario;
     await serveStream(name, response);
     return;
