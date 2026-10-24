@@ -11,34 +11,62 @@ gate and what each status code means.
 
 | Route | Purpose |
 |---|---|
-| `GET /healthz` | Liveness: the process is up. Never touches the database. |
+| `GET /healthz` | Liveness: the process is up. Never touches the database. The one route without a token. |
 | `GET /readyz` | Readiness: one `SELECT 1` against Postgres succeeds, else 503. |
 | `POST /ask` | One question, streamed as server-sent events. |
 
+## Limits
+
+`POST /ask` spends a free-tier model call, so it is limited per client: 6 requests a minute, 100 a
+UTC day, and 2 answers at once. A refused request answers `429` with
+`{"detail": "rate_limited" | "busy", "retry_after_s": N}` and the same value in a `Retry-After`
+header. `rate_limited` means the minute or the day is spent, and `retry_after_s` counts to when it
+frees (the next UTC midnight for the day). `busy` means both answer slots are open; a slot frees
+when its stream ends, however it ends.
+
+An answer that runs for 120 seconds ends with an `error` event whose code is `deadline`; the server
+also cancels the model call, so the answer stops rather than finishing invisibly.
+
+## The event stream
+
 `POST /ask` takes `{"question": "...", "tiers": [...], "profiles": [...], "since": "YYYY-MM-DD"}`
-(the last three optional) and answers with `text/event-stream`. Every event is one
-`event:` line and one `data:` line holding a JSON object. The event payloads are Pydantic models
-(`ToolData`, `TokenData`, `AnswerData`, `ErrorData`), and the committed contract's
-`text/event-stream` media type is an `itemSchema` for one parsed event: the `event` name (one of
-the four below) and `data`, a JSON string whose `contentSchema` is the `anyOf` of those payloads.
-A client parses the `data:` line alone, which is what it will find:
+(the last three optional) and answers with `text/event-stream`. Every event is one `event:` line
+and one `data:` line holding a JSON object. The event payloads are Pydantic models (`ToolData`,
+`StepData`, `SourceData`, `TokenData`, `NoticeData`, `AnswerData`, `ErrorData`), and the committed
+contract's `text/event-stream` media type is an `itemSchema` for one parsed event: the `event` name
+(one of the seven below) and `data`, a JSON string whose `contentSchema` is the `anyOf` of those
+payloads. A client parses the `data:` line alone, which is what it will find:
 
 - `tool` with `{"name", "args"}`, emitted when the model calls one of the read-only corpus tools;
+- `step` with `{"round", "ms", "new_sources"}`, emitted when a tool round finishes: its number, how
+  long it took and how many sources it added;
+- `source` with `{"id", "item_id", "title", "url", "tier", "basis"}`, one per alias the first time
+  a tool returns it, in alias order. It carries the same facts as a citation, so a card can render
+  before the answer exists;
 - `token` with `{"text"}`, the model's words as it writes them;
-- `answer` with `{"text", "supported", "citations", "flags"}`: the checked answer, its sources
-  (`{"id", "item_id", "title", "url", "tier", "basis"}`) and any flags
-  (`{"kind", "sentence", "detail"}`). It is the last event unless an `error` follows. `id` is the
-  per-answer alias (`S1`, `S2`, ...) the answer cites;
-- `error` with `{"code", "message"}`, where `code` is `daily_cap`, `budget`, `model_unavailable`
-  or `internal`. It ends the stream, and the HTTP status is still 200: the stream had started.
+- `notice` with `{"code", "message"}`, sent once before the answer when the server runs in a
+  reduced mode (today `text_only`, while the ingestion needs the memory);
+- `answer` with `{"text", "search_mode", "supported", "citations", "flags"}`: the checked answer,
+  the mode that produced it, its sources (`{"id", "item_id", "title", "url", "tier", "basis"}`) and
+  any flags (`{"kind", "sentence", "detail"}`). It is the last event unless an `error` follows.
+  `id` is the per-answer alias (`S1`, `S2`, ...) the answer cites;
+- `error` with `{"code", "message", "retry_at"}`, where `code` is `daily_cap`, `budget`,
+  `model_unavailable`, `internal` or `deadline`, and `retry_at` is the reset time for `daily_cap`
+  (else null). It ends the stream, and the HTTP status is still 200: the stream had started.
+
+A stream that has nothing to say for 15 seconds receives a server-sent comment line, `: ping`,
+followed by a blank line. It has no `event:` or `data:` line. A client resets its watchdog on any
+received bytes, so the comment is enough to tell thinking from a dead connection.
 
 ## Rules for a client
 
 - Render `text`, `title`, `sentence` and `detail` as text, never as HTML, and take every link
-  from `citations[].url`. Nothing the model wrote is a link.
+  from a stored `url` (a `source` or `citations[]` entry). Nothing the model wrote is a link.
+- Never render model markdown: an answer is paragraphs and citation superscripts, and a `*` or a
+  `<b>` in it is a character, not formatting.
 - Replace the streamed text with `answer.text` when the `answer` event arrives; never append it.
   The streamed words can differ from the checked answer: an unknown alias is masked to `[?]`, and
-  an answer with no supporting source is replaced with the fixed no-support message. M2 has no
+  an answer with no supporting source is replaced with the fixed no-support message. There is no
   per-model-call boundary on `token` events, so the `answer` event, not the accumulated tokens,
   is the signature of what was checked.
 - `supported` is true when every visible claim points at a retrieved source. That is not a
@@ -46,11 +74,14 @@ A client parses the `data:` line alone, which is what it will find:
   (`docs/learn/11-citations-and-grounding.md`).
 - On a `NO_SUPPORT` answer the `flags` list is empty and the flags are logged server-side: they
   describe model text the reader never saw.
+- A dropped stream is not an error in the answer: the server cancels it. A client shows a
+  connection lost state after 45 seconds without bytes, and asks again.
 
 A request without a valid credential answers 401 before anything is read; `docs/learn/15` lists
 the gate's other refusals. A request the gate lets through but that fails validation before the
-stream starts answers 422 in the shape the contract documents for a validation error: `{"detail": [{"type", "loc", "msg"}]}`. That covers both the pydantic
-field checks and the two route-level refusals (an unknown profile name, a `since` in the future).
+stream starts answers 422 in the shape the contract documents for a validation error:
+`{"detail": [{"type", "loc", "msg"}]}`. That covers both the pydantic field checks and the two
+route-level refusals (an unknown profile name, a `since` in the future).
 
 ## The committed contract
 
@@ -58,11 +89,11 @@ field checks and the two route-level refusals (an unknown profile name, a `since
 `tests/integration/test_api.py`. Rewrite it only after an intended API change:
 
 ```bash
-uv run python -c "import json; from datetime import UTC, datetime; from paperwatch.api.app import AgentDeps, create_app; from paperwatch.config import Settings; from paperwatch.llm.embedder import FakeEmbedder; from paperwatch.api.auth import HmacVerifier; deps = AgentDeps(lambda: None, FakeEmbedder(), [], Settings(), lambda: datetime.now(UTC), type('S', (), {'record_chat_call': lambda *a, **k: None, 'chat_calls_since': lambda *a: 0})(), frozenset(), HmacVerifier('x' * 32, lambda: 0.0), frozenset({'localhost'})); open('docs/api/openapi.json', 'w').write(json.dumps(create_app(deps).openapi(), indent=2) + '\n')"
+uv run python -m paperwatch.api.contract
 ```
 
-The dependencies are stubs because the OpenAPI document depends only on the routes and their
-models, so rewriting it needs no database and no API key.
+The dependencies in `api/contract.py` are stubs because the OpenAPI document depends only on the
+routes and their models, so rewriting it needs no database and no API key.
 
 `API_VERSION` in `api/app.py` is the contract's own version, independent of the package version.
 Bump it, and rewrite `openapi.json` in the same change, when a route, a request field or an event

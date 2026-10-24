@@ -46,12 +46,16 @@ from paperwatch.api.app import (
     run_question,
 )
 from paperwatch.api.auth import HmacVerifier, mint_hmac_token
+from paperwatch.api.limits import Admitted, RequestLimiter
 from paperwatch.config import (
     ANSWER_POOL_OVERFLOW,
     ANSWER_POOL_SIZE,
     ANSWER_POOL_TIMEOUT_S,
+    CONCURRENT_ANSWERS,
     CONNECT_TIMEOUT_S,
     LOOPBACK_HOSTS,
+    REQUESTS_PER_DAY,
+    REQUESTS_PER_MINUTE,
     USAGE_POOL_SIZE,
     Settings,
 )
@@ -152,6 +156,12 @@ def deps(
         profile_names=PROFILES,
         verifier=HmacVerifier(TEST_SECRET, time.time),
         allowed_hosts=LOOPBACK_HOSTS,
+        limiter=RequestLimiter(
+            per_minute=REQUESTS_PER_MINUTE,
+            per_day=REQUESTS_PER_DAY,
+            concurrent=CONCURRENT_ANSWERS,
+            clock=lambda: NOW,
+        ),
     )
 
 
@@ -286,9 +296,14 @@ def test_every_streamed_payload_validates_against_its_model(
     # documents them and the route builds every payload from them.
     seed_items(AGENT_ROWS)
     response = ask(deps(db_session, search_then()), {"question": "q"})
+    from paperwatch.api.app import NoticeData, SourceData, StepData
+
     models: dict[str, Any] = {
         "tool": ToolData,
+        "step": StepData,
+        "source": SourceData,
         "token": TokenData,
+        "notice": NoticeData,
         "answer": AnswerData,
         "error": ErrorData,
     }
@@ -1035,9 +1050,11 @@ def test_make_engine_bounds_a_connect(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_the_openapi_contract_is_committed(db_session: Session) -> None:
-    """Rewrite after an intended API change with the one-liner in docs/api/README.md."""
+    """Rewrite after an intended API change with `python -m paperwatch.api.contract`."""
+    from paperwatch.api.contract import build_contract
+
     committed = json.loads(Path("docs/api/openapi.json").read_text())
-    assert create_app(deps(db_session, [])).openapi() == committed
+    assert build_contract() == committed
 
 
 def test_the_openapi_contract_never_claims_verification(db_session: Session) -> None:
@@ -1053,7 +1070,17 @@ def test_the_openapi_contract_never_claims_verification(db_session: Session) -> 
 def test_the_openapi_contract_types_the_event_payloads(db_session: Session) -> None:
     # M3 generates its client from the contract, so the stream's payloads are schemas, not prose.
     schemas = create_app(deps(db_session, [])).openapi()["components"]["schemas"]
-    for name in ("ToolData", "TokenData", "AnswerData", "CitationData", "FlagData", "ErrorData"):
+    for name in (
+        "ToolData",
+        "StepData",
+        "SourceData",
+        "TokenData",
+        "NoticeData",
+        "AnswerData",
+        "CitationData",
+        "FlagData",
+        "ErrorData",
+    ):
         assert name in schemas, name
 
 
@@ -1066,12 +1093,23 @@ def test_the_contract_describes_one_parsed_event_not_the_body(db_session: Sessio
     assert "schema" not in media
     item = media["itemSchema"]
     assert set(item["required"]) == {"event", "data"}
-    assert item["properties"]["event"]["enum"] == ["tool", "token", "answer", "error"]
+    assert item["properties"]["event"]["enum"] == [
+        "tool",
+        "step",
+        "source",
+        "token",
+        "notice",
+        "answer",
+        "error",
+    ]
     data = item["properties"]["data"]
     assert data["contentMediaType"] == "application/json"
     assert {ref["$ref"] for ref in data["contentSchema"]["anyOf"]} == {
         "#/components/schemas/ToolData",
+        "#/components/schemas/StepData",
+        "#/components/schemas/SourceData",
         "#/components/schemas/TokenData",
+        "#/components/schemas/NoticeData",
         "#/components/schemas/AnswerData",
         "#/components/schemas/ErrorData",
     }
@@ -1091,6 +1129,12 @@ def _dummy_deps() -> AgentDeps:
         profile_names=PROFILES,
         verifier=HmacVerifier(TEST_SECRET, time.time),
         allowed_hosts=LOOPBACK_HOSTS,
+        limiter=RequestLimiter(
+            per_minute=REQUESTS_PER_MINUTE,
+            per_day=REQUESTS_PER_DAY,
+            concurrent=CONCURRENT_ANSWERS,
+            clock=lambda: NOW,
+        ),
     )
 
 
@@ -1179,3 +1223,120 @@ def test_all_three_tools_work_in_a_read_only_transaction(
 
     with pytest.raises(SQLAlchemyError):
         db_session.execute(text("CREATE TABLE probe_should_fail (a int)"))
+
+
+def test_the_seventh_question_in_a_minute_is_refused_before_any_model_call(
+    db_session: Session,
+) -> None:
+    # The limit is spent before the graph starts, so a refused question costs no model call.
+    model = ScriptedChatModel(script=[AIMessage(ANSWER) for _ in range(6)])
+    app_deps = deps(db_session, [ChatModel("openrouter", model)])
+    for index in range(6):
+        assert (
+            client(create_app(app_deps)).post("/ask", json={"question": f"q{index}"}).status_code
+            == 200
+        )
+    refused = client(create_app(app_deps)).post("/ask", json={"question": "q7"})
+    assert refused.status_code == 429
+    assert refused.json() == {"detail": "rate_limited", "retry_after_s": 60}
+    assert refused.headers["retry-after"] == "60"
+    assert len(model.seen) == 6
+
+
+def test_a_third_concurrent_answer_is_busy(db_session: Session) -> None:
+    # Two answers already hold the slots; the third is refused at once rather than queued behind
+    # two slow free models.
+    app_deps = deps(db_session, [])
+    first = app_deps.limiter.admit()
+    second = app_deps.limiter.admit()
+    assert isinstance(first, Admitted) and isinstance(second, Admitted)
+    refused = client(create_app(app_deps)).post("/ask", json={"question": "q"})
+    assert refused.status_code == 429
+    assert refused.json()["detail"] == "busy"
+    first.release()
+    second.release()
+
+
+def test_a_released_answer_frees_its_slot(db_session: Session) -> None:
+    # The slot belongs to the stream, so a finished answer releases it without an operator.
+    app_deps = deps(db_session, scripted(AIMessage(ANSWER)))
+    for _ in range(3):
+        assert client(create_app(app_deps)).post("/ask", json={"question": "q"}).status_code == 200
+    assert app_deps.limiter.admit().__class__ is Admitted
+
+
+def test_daily_cap_streams_matching_sources_then_the_error(
+    db_session: Session, seed_items: Seed
+) -> None:
+    # With the cap spent, the sheet keeps its search results: one keyword search runs, its sources
+    # stream, and only then the error with the reset time.
+    seed_items(AGENT_ROWS)
+    # A cap of 1 with one call already recorded is the same state as a spent cap; the settings
+    # refuse 0 because a server with no model calls would be a misconfiguration, not a limit.
+    store = MemoryChatCalls()
+    store.rows.append((NOW, UNKNOWN_MODEL))
+    response = ask(
+        deps(db_session, scripted(AIMessage(ANSWER)), store=store, chat_max_calls_per_day=1),
+        {"question": "coding agents"},
+    )
+    received = events(response.text)
+    assert [name for name, _ in received][-1] == "error"
+    assert all(name == "source" for name, _ in received[:-1]) and received[:-1]
+    assert received[-1][1]["code"] == "daily_cap"
+    assert received[-1][1]["retry_at"] == "2026-10-17T00:00:00Z"
+
+
+def test_no_token_or_question_text_in_info_logs(db_session: Session, seed_items: Seed) -> None:
+    # A token and the question are the two things a log must never carry at info: the token is a
+    # credential, and the question is the captain's private text.
+    seed_items(AGENT_ROWS)
+    phrase = "distinctive phrase from the captain's private question"
+    app_deps = deps(db_session, search_then())
+    token = mint_hmac_token(TEST_SECRET, "test", time.time())
+    with capture_logs() as logs:
+        authed = TestClient(create_app(app_deps), base_url="http://localhost")
+        authed.post(
+            "/ask",
+            json={"question": phrase},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        # A 401 and a 429 are logged with a reason code only.
+        TestClient(create_app(app_deps), base_url="http://localhost").post(
+            "/ask", json={"question": phrase}
+        )
+        for _ in range(6):
+            authed.post(
+                "/ask",
+                json={"question": phrase},
+                headers={
+                    "Authorization": f"Bearer {mint_hmac_token(TEST_SECRET, 'test', time.time())}"
+                },
+            )
+    text = str(logs)
+    assert token not in text
+    assert phrase not in text
+
+
+def test_every_streamed_event_has_a_payload_model(db_session: Session, seed_items: Seed) -> None:
+    # Every event the stream can emit is one of these models, and the contract's itemSchema lists
+    # the same set. A new event without a payload model would fail here.
+    from paperwatch.api.app import STREAM_ITEM_SCHEMA, NoticeData, SourceData, StepData
+
+    seed_items(AGENT_ROWS)
+    response = ask(deps(db_session, search_then()), {"question": "q"})
+    models: dict[str, Any] = {
+        "tool": ToolData,
+        "step": StepData,
+        "source": SourceData,
+        "token": TokenData,
+        "notice": NoticeData,
+        "answer": AnswerData,
+        "error": ErrorData,
+    }
+    for name, data in events(response.text):
+        assert isinstance(models[name].model_validate(data), models[name])
+    referenced = {
+        ref["$ref"].rsplit("/", 1)[-1]
+        for ref in STREAM_ITEM_SCHEMA["properties"]["data"]["contentSchema"]["anyOf"]
+    }
+    assert referenced == {model.__name__ for model in models.values()}

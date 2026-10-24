@@ -139,6 +139,16 @@ CONNECT_TIMEOUT_S = 3
 READY_CONCURRENCY = 2
 READY_TIMEOUT_S = 2.0
 
+# Answer pacing (Task 27). Six model-spending requests a minute and 100 a UTC day bound what one
+# caller can spend, two concurrent answers bound the memory they hold, and the deadline is well
+# under Vercel Hobby's 300 s function limit. iOS and proxies drop a stream that says nothing, so a
+# silent answer gets a comment line every 15 s.
+REQUESTS_PER_MINUTE = 6
+REQUESTS_PER_DAY = 100
+CONCURRENT_ANSWERS = 2
+ANSWER_DEADLINE_S = 120
+SSE_HEARTBEAT_S = 15
+
 # The request gate (Task 26). 16 KB is far above the largest request the API takes (a points of
 # view box is capped at 2,000 characters), so a bigger body is a client bug or an attack.
 API_MAX_BODY_BYTES = 16_384

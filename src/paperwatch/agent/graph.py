@@ -11,6 +11,7 @@ then one checked answer); `answer_question` is the synchronous form for tests an
 """
 
 import threading
+import time
 from collections.abc import Generator, Sequence
 from contextlib import closing
 from dataclasses import dataclass
@@ -36,7 +37,7 @@ from langgraph.prebuilt import ToolNode
 
 from paperwatch.agent.citations import CheckedAnswer, check_answer
 from paperwatch.agent.prompts import FINAL_ROUND_NOTE, SYSTEM_PROMPT
-from paperwatch.agent.sources import SourceRegistry
+from paperwatch.agent.sources import SourceRef, SourceRegistry
 from paperwatch.config import MAX_TOOL_ROUNDS
 from paperwatch.llm.chat import CallGuard, ChatModel, ModelUnavailable
 
@@ -68,13 +69,29 @@ class TokenEvent:
 
 
 @dataclass(frozen=True)
+class SourceEvent:
+    """A source a tool just returned, emitted once per alias the first time it appears."""
+
+    ref: SourceRef
+
+
+@dataclass(frozen=True)
+class StepEvent:
+    """One tool round finished: its number, how long it took, and how many sources it added."""
+
+    round: int
+    ms: int
+    new_sources: int
+
+
+@dataclass(frozen=True)
 class AnswerEvent:
     """The checked answer: always the last event, and it replaces any text streamed before it."""
 
     answer: CheckedAnswer
 
 
-AgentEvent = ToolEvent | TokenEvent | AnswerEvent
+AgentEvent = ToolEvent | SourceEvent | StepEvent | TokenEvent | AnswerEvent
 
 # `CompiledStateGraph` is generic; the state is ours and nothing else is used, but mypy strict
 # needs the parameters spelled out.
@@ -312,13 +329,20 @@ def _run_config(cancel: threading.Event | None = None) -> RunnableConfig:
 
 
 def stream_answer(
-    graph: AgentGraph, question: str, cancel: threading.Event | None = None
+    graph: AgentGraph,
+    question: str,
+    cancel: threading.Event | None = None,
+    registry: SourceRegistry | None = None,
 ) -> Generator[AgentEvent, None, None]:
-    """Yield tool calls and tokens as they happen, then exactly one `AnswerEvent`.
+    """Yield tool calls, sources and tokens as they happen, then exactly one `AnswerEvent`.
 
     `cancel` is the consumer's signal that nobody is listening any more: once it is set, the
     in-flight model call raises at its next token instead of running to the end. One graph, one
     run: build a new one for the next question (see `build_agent`).
+
+    `registry` is the answer's registry, which the graph writes to through the tools. Without it
+    the stream carries no `source` or `step` events: a caller that only wants the answer (a test,
+    the eval) does not need them.
     """
     state = _initial_state(question)
     config = _run_config(cancel)
@@ -328,6 +352,12 @@ def stream_answer(
         Generator[tuple[str, Any], None, None],
         graph.stream(state, config=config, stream_mode=["messages", "updates"]),
     )
+    # The page shows sources as they are found and the time each tool round took, so the stream
+    # carries them next to the tool calls. `seen` counts the aliases already sent: the registry is
+    # the source of truth, and it keeps an item's alias across rounds.
+    seen = 0
+    round_number = 0
+    round_started: float | None = None
     # Closed explicitly, not left to garbage collection: closing the graph's stream joins its worker
     # thread, so the aborted call has written its usage row before the caller releases anything.
     with closing(stream):
@@ -347,9 +377,33 @@ def stream_answer(
             elif mode == "updates":
                 if "agent" in chunk:
                     last = chunk["agent"]["messages"][-1]
+                    tool_calls = getattr(last, "tool_calls", [])
+                    if tool_calls and round_started is None:
+                        # Timed from the model's decision, so a round's duration includes the tool
+                        # work the reader waited for.
+                        round_started = time.monotonic()
                     # The call the model just decided to make, echoed so a client can show progress.
-                    for tool_call in getattr(last, "tool_calls", []):
+                    for tool_call in tool_calls:
                         yield ToolEvent(tool_call["name"], tool_call["args"])
+                if "tools" in chunk:
+                    round_number += 1
+                    finished = time.monotonic()
+                    started = round_started if round_started is not None else finished
+                    round_started = None
+                    refs = registry.all() if registry is not None else []
+                    new_refs = refs[seen:]
+                    seen = len(refs)
+                    # Sources first, then the step that counts them: a client renders sources as
+                    # they arrive and uses the step as the round's closing marker. Without a
+                    # registry there is nothing to announce.
+                    if registry is not None:
+                        for ref in new_refs:
+                            yield SourceEvent(ref)
+                        yield StepEvent(
+                            round=round_number,
+                            ms=int((finished - started) * 1000),
+                            new_sources=len(new_refs),
+                        )
                 if "check" in chunk:
                     yield AnswerEvent(chunk["check"]["answer"])
 

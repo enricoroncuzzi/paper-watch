@@ -20,7 +20,15 @@ from starlette.routing import Route
 from paperwatch.api.app import AgentDeps, create_app
 from paperwatch.api.auth import Principal
 from paperwatch.api.gate import ApiGate, _host_name
-from paperwatch.config import API_MAX_BODY_BYTES, LOOPBACK_HOSTS, Settings
+from paperwatch.api.limits import RequestLimiter
+from paperwatch.config import (
+    API_MAX_BODY_BYTES,
+    CONCURRENT_ANSWERS,
+    LOOPBACK_HOSTS,
+    REQUESTS_PER_DAY,
+    REQUESTS_PER_MINUTE,
+    Settings,
+)
 from paperwatch.llm.embedder import FakeEmbedder
 
 GOOD = "good"
@@ -254,6 +262,12 @@ def _deps() -> AgentDeps:
         profile_names=frozenset(),
         verifier=StubVerifier(),
         allowed_hosts=LOOPBACK_HOSTS,
+        limiter=RequestLimiter(
+            per_minute=REQUESTS_PER_MINUTE,
+            per_day=REQUESTS_PER_DAY,
+            concurrent=CONCURRENT_ANSWERS,
+            clock=lambda: NOW,
+        ),
     )
 
 
