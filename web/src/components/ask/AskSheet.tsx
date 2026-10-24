@@ -75,18 +75,20 @@ export function AskSheet({
     state.error ??
     (state.status === "dropped" ? { code: "dropped", message: "", retryAt: null } : null);
 
-  function send() {
+  async function send() {
     const question = draft.trim();
     if (!question || streaming) return;
     setAskedAt(new Date().toISOString());
-    setDraft("");
-    void ask(question);
+    // The draft stays in the composer until the answer is checked, so an error or a drop leaves
+    // the question where the reader typed it; only a finished answer clears it.
+    const status = await ask(question);
+    if (status === "done") setDraft("");
   }
 
   function onKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
     if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
       event.preventDefault();
-      send();
+      void send();
     }
   }
 
@@ -219,6 +221,7 @@ export function AskSheet({
                 data-testid="composer"
                 rows={1}
                 value={draft}
+                maxLength={1000}
                 onChange={(event) => setDraft(event.target.value)}
                 onKeyDown={onKeyDown}
                 placeholder="Ask a new question"
@@ -227,7 +230,7 @@ export function AskSheet({
               />
               <button
                 type="button"
-                onClick={send}
+                onClick={() => void send()}
                 disabled={streaming || draft.trim() === ""}
                 aria-label="Send the question"
                 className="grid h-11 w-11 flex-none place-items-center rounded-[2px] bg-accent text-accent-ink disabled:opacity-40 sm:h-[30px] sm:w-[30px]"
@@ -245,9 +248,10 @@ export function AskSheet({
                 </svg>
               </button>
             </div>
-            <p className="mt-1.5 hidden gap-3 text-[10.5px] text-ink-3 sm:flex">
-              <span>⌘↵ to send</span>
-              <span>Esc to close</span>
+            <p className="mt-1.5 flex gap-3 text-[10.5px] text-ink-3">
+              <span className="hidden sm:inline">⌘↵ to send</span>
+              <span className="hidden sm:inline">Esc to close</span>
+              {draft.length > 800 ? <span className="ml-auto">{draft.length}/1000</span> : null}
             </p>
           </footer>
         </Dialog.Content>

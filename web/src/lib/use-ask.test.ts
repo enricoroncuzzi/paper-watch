@@ -148,6 +148,51 @@ describe("the ask controller", () => {
     await run;
   });
 
+  it("the shipped watchdog drops at 45 seconds and aborts the request", async () => {
+    const stream = controllable();
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(stream.body));
+    // No watchdogMs: this pins the default the app ships with, not the test's own value.
+    const controller = new AskController({ fetchImpl });
+    const run = controller.ask("q");
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(44_999);
+    expect(controller.getState().status).toBe("streaming");
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(controller.getState().status).toBe("dropped");
+    const init = fetchImpl.mock.calls[0]![1] as RequestInit;
+    expect((init.signal as AbortSignal).aborted).toBe(true);
+    stream.close();
+    await run;
+  });
+
+  it("a request that never answers is dropped, not left streaming", async () => {
+    // The tunnel stalls before the response headers: the watchdog must cover that wait too.
+    const fetchImpl = vi.fn(() => new Promise<Response>(() => undefined));
+    const controller = new AskController({ fetchImpl });
+    void controller.ask("q");
+    await vi.advanceTimersByTimeAsync(45_000);
+    expect(controller.getState().status).toBe("dropped");
+  });
+
+  it("abort clears the sheet instead of keeping a partial answer", async () => {
+    const stream = controllable();
+    const { controller } = controllerFor(stream.body);
+    const run = controller.ask("q");
+    await vi.advanceTimersByTimeAsync(0);
+    stream.push(frame("token", { text: "partial unchecked" }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(controller.getState().text).toBe("partial unchecked");
+
+    controller.abort();
+    const state = controller.getState();
+    expect(state.question).toBe("");
+    expect(state.text).toBe("");
+    expect(state.status).toBe("idle");
+    stream.close();
+    await run;
+  });
+
   it("a 429 becomes a rate_limited error with the wait", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(
       Response.json(

@@ -203,12 +203,15 @@ export class AskController {
     this.timer = null;
   }
 
-  ask = async (question: string): Promise<void> => {
+  ask = async (question: string): Promise<AskStatus> => {
     this.stopWatchdog();
     this.inFlight?.abort();
     const controller = new AbortController();
     this.inFlight = controller;
     this.dispatch({ type: "start", question });
+    // The clock starts before the request: a tunnel that stalls before the response headers is a
+    // dead connection too, and every received byte resets it below.
+    this.startWatchdog(controller);
 
     const fetchImpl = this.options.fetchImpl ?? fetch;
     try {
@@ -225,10 +228,8 @@ export class AskController {
           retryAfterS?: number;
         };
         this.set({ ...this.state, status: "error", error: errorFor(response.status, payload) });
-        return;
+        return this.state.status;
       }
-      // The clock starts before the first byte: a server that never answers is also a drop.
-      this.startWatchdog(controller);
       for await (const event of parseSse(response.body, () => this.startWatchdog(controller))) {
         this.dispatch({ type: "event", event: event.event, data: event.data });
       }
@@ -241,19 +242,21 @@ export class AskController {
       this.stopWatchdog();
       if (this.inFlight === controller) this.inFlight = null;
     }
+    return this.state.status;
   };
 
   abort = (): void => {
     this.stopWatchdog();
     this.inFlight?.abort();
     this.inFlight = null;
-    this.dispatch({ type: "abort" });
+    // A closed sheet starts clean: a partial, unchecked answer must not come back as if it were one.
+    this.set(INITIAL_ASK_STATE);
   };
 }
 
 export function useAsk(): {
   state: AskState;
-  ask: (question: string) => Promise<void>;
+  ask: (question: string) => Promise<AskStatus>;
   abort: () => void;
 } {
   const controller = useMemo(() => new AskController(), []);

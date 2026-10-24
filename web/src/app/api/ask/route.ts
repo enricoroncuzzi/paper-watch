@@ -6,6 +6,11 @@ import { apiToken } from "@/lib/api-token";
 // A streamed answer can run to the API's 120 s deadline, so Vercel must allow the function to live
 // longer than that; the proxy itself adds no buffering.
 export const runtime = "nodejs";
+// The API caps a request body at 16 KB; the proxy refuses the same size before parsing.
+const BODY_MAX_BYTES = 16 * 1024;
+// A tunnel can stall before the response headers. The sheet's watchdog covers the whole wait; this
+// bound keeps the function from holding a request open for its full maxDuration.
+const HEADERS_TIMEOUT_MS = 30_000;
 export const maxDuration = 300;
 export const dynamic = "force-dynamic";
 
@@ -31,7 +36,17 @@ export async function POST(request: Request): Promise<Response> {
   const session = await requireOwnerApi();
   if (session instanceof Response) return session;
 
-  const body = AskBody.safeParse(await request.json().catch(() => null));
+  const declared = Number(request.headers.get("content-length") ?? 0);
+  if (declared > BODY_MAX_BYTES) return refused("error", 413);
+  const raw = await request.text();
+  if (new TextEncoder().encode(raw).length > BODY_MAX_BYTES) return refused("error", 413);
+  let payload: unknown;
+  try {
+    payload = JSON.parse(raw);
+  } catch {
+    return refused("error", 400);
+  }
+  const body = AskBody.safeParse(payload);
   if (!body.success) return refused("error", 400);
 
   const base = process.env.PW_API_URL;
@@ -44,18 +59,23 @@ export async function POST(request: Request): Promise<Response> {
     return refused("unauthorized", 401);
   }
 
+  // Only the headers phase is bounded: once the body streams, the API's own 120 s deadline owns
+  // the answer, while the browser hanging up still cancels it as the CLI's Ctrl-C does.
+  const headers = new AbortController();
+  const timer = setTimeout(() => headers.abort(), HEADERS_TIMEOUT_MS);
   let upstream: Response;
   try {
     upstream = await fetch(new URL("/ask", base), {
       method: "POST",
       headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
       body: JSON.stringify(body.data),
-      // The browser hanging up cancels the answer upstream too, as the CLI's Ctrl-C does.
-      signal: request.signal,
+      signal: AbortSignal.any([request.signal, headers.signal]),
       cache: "no-store",
     });
   } catch {
     return refused("unavailable", 503);
+  } finally {
+    clearTimeout(timer);
   }
 
   if (upstream.status !== 200 || !upstream.body) {
