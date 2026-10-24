@@ -19,8 +19,8 @@ reference. `docs/learn/15` explains the gate and what each status code means.
 
 ## Limits
 
-`POST /ask` spends a free-tier model call, so it is limited per client: 6 requests a minute, 100 a
-UTC day, and 2 answers at once. A refused request answers `429` with
+`POST /ask` spends a free-tier model call, so it is limited per client: 6 requests a minute and 100
+a UTC day, and the server runs 2 answers at once across all clients. A refused request answers `429` with
 `{"detail": "rate_limited" | "busy", "retry_after_s": N}` and the same value in a `Retry-After`
 header. `rate_limited` means the minute or the day is spent, and `retry_after_s` counts to when it
 frees (the next UTC midnight for the day). `busy` means both answer slots are open; a slot frees

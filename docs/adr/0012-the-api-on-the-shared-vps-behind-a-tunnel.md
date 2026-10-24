@@ -50,8 +50,8 @@ Vercel project exists.
   not removed; the gate is in front of them like every other route. The committed contract
   (`docs/api/openapi.json`) stays the client's reference because Swagger UI cannot attach the
   header from a browser.
-- **Limits:** `/ask` is limited per client to 6 requests a minute, 100 a UTC day and 2 concurrent
-  answers (`api/limits.py`), refused as 429 with `Retry-After` before any model call. An answer
+- **Limits:** `/ask` is limited per credential subject to 6 requests a minute and 100 a UTC day,
+  and the process to 2 concurrent answers (`api/limits.py`), refused as 429 with `Retry-After` before any model call. An answer
   ends at 120 s with a `deadline` error, and `: ping` keeps a silent stream alive.
 - **Units:** the API as a long-lived user unit with `MemoryMax=700M`, no swap, `OOMScoreAdjust=900`,
   joining `paperwatch.slice` (ADR 0013). `deploy/vps/api-check.sh` is the acceptance script; it

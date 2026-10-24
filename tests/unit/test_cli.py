@@ -598,7 +598,7 @@ def test_ask_prints_answer_sources_and_flags(monkeypatch: pytest.MonkeyPatch) ->
         citations=(citation(title="SWE-bench results", url="https://x/swe"),),
         flags=(flag,),
     )
-    monkeypatch.setattr(cli, "live_deps", lambda s: object())
+    monkeypatch.setattr(cli, "live_deps", lambda s, verifier: object())
     monkeypatch.setattr(
         cli, "run_question", scripted_run(TokenEvent("Coding agents"), AnswerEvent(answer))
     )
@@ -610,7 +610,7 @@ def test_ask_prints_answer_sources_and_flags(monkeypatch: pytest.MonkeyPatch) ->
 
 
 def test_ask_exits_1_on_error_event(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(cli, "live_deps", lambda s: object())
+    monkeypatch.setattr(cli, "live_deps", lambda s, verifier: object())
     monkeypatch.setattr(
         cli, "run_question", scripted_run(ErrorEvent("daily_cap", "800 calls today"))
     )
@@ -622,7 +622,7 @@ def test_ask_exits_1_on_error_event(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_ask_ends_the_streamed_line_before_an_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(cli, "live_deps", lambda s: object())
+    monkeypatch.setattr(cli, "live_deps", lambda s, verifier: object())
     monkeypatch.setattr(
         cli,
         "run_question",
@@ -637,7 +637,7 @@ def test_ask_ends_the_streamed_line_before_an_error(monkeypatch: pytest.MonkeyPa
 def test_ask_exits_1_when_the_stream_ends_without_an_answer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(cli, "live_deps", lambda s: object())
+    monkeypatch.setattr(cli, "live_deps", lambda s, verifier: object())
     monkeypatch.setattr(cli, "run_question", scripted_run(TokenEvent("nothing")))
     result = CliRunner().invoke(app, ["ask", "q", "--live"])
     assert result.exit_code == 1
@@ -656,7 +656,7 @@ def test_a_cleanup_cancel_is_not_a_user_interrupt(monkeypatch: pytest.MonkeyPatc
         finally:
             cancel.set()  # type: ignore[attr-defined] - what run_question's cleanup does
 
-    monkeypatch.setattr(cli, "live_deps", lambda s: object())
+    monkeypatch.setattr(cli, "live_deps", lambda s, verifier: object())
     monkeypatch.setattr(cli, "run_question", stream)
     result = CliRunner().invoke(app, ["ask", "q", "--live"])
     assert result.exit_code == 1
@@ -670,7 +670,7 @@ def test_ask_prints_the_checked_text_again_when_it_differs(
     # The streamed text can differ from the checked answer: an alias was masked to [?], or the
     # checker replaced the whole answer with NO_SUPPORT. The checked text is authoritative.
     answer = answer_with("Coding agents cite [S1].", supported=True)
-    monkeypatch.setattr(cli, "live_deps", lambda s: object())
+    monkeypatch.setattr(cli, "live_deps", lambda s, verifier: object())
     monkeypatch.setattr(
         cli,
         "run_question",
@@ -684,7 +684,7 @@ def test_ask_prints_the_checked_text_again_when_it_differs(
 
 def test_ask_does_not_repeat_identical_text(monkeypatch: pytest.MonkeyPatch) -> None:
     answer = answer_with("Coding agents cite [S1].", supported=True)
-    monkeypatch.setattr(cli, "live_deps", lambda s: object())
+    monkeypatch.setattr(cli, "live_deps", lambda s, verifier: object())
     monkeypatch.setattr(
         cli,
         "run_question",
@@ -703,7 +703,7 @@ def test_ask_hides_and_logs_flags_beside_no_support(
 
     flag = Flag("uncited_claim", "Most agents forget everything", "no citation")
     answer = answer_with(NO_SUPPORT, flags=(flag,))
-    monkeypatch.setattr(cli, "live_deps", lambda s: object())
+    monkeypatch.setattr(cli, "live_deps", lambda s, verifier: object())
     # The command configures structlog for the process; keep the capture's configuration so the
     # log call can be read back.
     monkeypatch.setattr(cli, "configure_logging", lambda level: None)
@@ -763,7 +763,7 @@ def test_ask_neutralises_an_osc_8_link_in_a_streamed_token(
     # clickable link must come from Citation.url, so control bytes never reach the terminal.
     hostile = "\x1b]8;;http://evil.example\x1b\\click me\x1b]8;;\x1b\\"
     answer = answer_with(hostile, supported=False)
-    monkeypatch.setattr(cli, "live_deps", lambda s: object())
+    monkeypatch.setattr(cli, "live_deps", lambda s, verifier: object())
     monkeypatch.setattr(cli, "run_question", scripted_run(TokenEvent(hostile), AnswerEvent(answer)))
     result = CliRunner().invoke(app, ["ask", "q", "--live"])
     assert result.exit_code == 0
@@ -776,7 +776,7 @@ def test_ask_escapes_every_citation_field(field: str, monkeypatch: pytest.Monkey
     # One test per printed field: a mutant that drops terminal_safe from one call site must fail.
     ref = citation(**{field: f"bad{HOSTILE}side marker"})
     answer = answer_with("Some answer [S1].", citations=(ref,), supported=True)
-    monkeypatch.setattr(cli, "live_deps", lambda s: object())
+    monkeypatch.setattr(cli, "live_deps", lambda s, verifier: object())
     monkeypatch.setattr(cli, "run_question", scripted_run(AnswerEvent(answer)))
     result = CliRunner().invoke(app, ["ask", "q", "--live"])
     assert result.exit_code == 0
@@ -795,7 +795,7 @@ def test_ask_escapes_every_flag_field(field: str, monkeypatch: pytest.MonkeyPatc
         }
     )  # type: ignore[arg-type]
     answer = answer_with("Some answer [S1].", flags=(flag,))
-    monkeypatch.setattr(cli, "live_deps", lambda s: object())
+    monkeypatch.setattr(cli, "live_deps", lambda s, verifier: object())
     monkeypatch.setattr(cli, "run_question", scripted_run(AnswerEvent(answer)))
     result = CliRunner().invoke(app, ["ask", "q", "--live"])
     assert result.exit_code == 0
@@ -806,7 +806,7 @@ def test_ask_escapes_every_flag_field(field: str, monkeypatch: pytest.MonkeyPatc
 def test_ask_escapes_the_checked_text(monkeypatch: pytest.MonkeyPatch) -> None:
     # The checked text replaces the model's, and it is rendered too.
     answer = answer_with(f"right{HOSTILE}to left [S1].", supported=True)
-    monkeypatch.setattr(cli, "live_deps", lambda s: object())
+    monkeypatch.setattr(cli, "live_deps", lambda s, verifier: object())
     monkeypatch.setattr(cli, "run_question", scripted_run(AnswerEvent(answer)))
     result = CliRunner().invoke(app, ["ask", "q", "--live"])
     assert result.exit_code == 0
@@ -814,7 +814,7 @@ def test_ask_escapes_the_checked_text(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_ask_escapes_the_error_message(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(cli, "live_deps", lambda s: object())
+    monkeypatch.setattr(cli, "live_deps", lambda s, verifier: object())
     monkeypatch.setattr(
         cli, "run_question", scripted_run(ErrorEvent("internal", f"bad{HOSTILE}side marker"))
     )
@@ -825,7 +825,7 @@ def test_ask_escapes_the_error_message(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_ask_escapes_the_tool_name(monkeypatch: pytest.MonkeyPatch) -> None:
     event = ToolEvent(f"search{HOSTILE}_corpus", {"query": "x"})
-    monkeypatch.setattr(cli, "live_deps", lambda s: object())
+    monkeypatch.setattr(cli, "live_deps", lambda s, verifier: object())
     monkeypatch.setattr(
         cli, "run_question", scripted_run(event, AnswerEvent(answer_with("ok [S1].")))
     )
@@ -838,7 +838,7 @@ def test_ask_quotes_model_written_tool_arguments(monkeypatch: pytest.MonkeyPatch
     # The tool call is model output too. It is rendered as JSON, whose escaping (ensure_ascii,
     # the json.dumps default) keeps a hostile character as the text `\u202e` instead of a byte.
     event = ToolEvent("search_corpus", {"query": f"bad{HOSTILE}side marker"})
-    monkeypatch.setattr(cli, "live_deps", lambda s: object())
+    monkeypatch.setattr(cli, "live_deps", lambda s, verifier: object())
     monkeypatch.setattr(
         cli, "run_question", scripted_run(event, AnswerEvent(answer_with("ok [S1].")))
     )
@@ -854,7 +854,7 @@ def test_ask_prints_a_lone_surrogate_as_replacement_text(
 ) -> None:
     # A provider can send "\ud800" in a JSON stream and the SDK decodes a lone surrogate, which
     # cannot be encoded: the answer must print, not crash with a traceback (Review Focus 3).
-    monkeypatch.setattr(cli, "live_deps", lambda s: object())
+    monkeypatch.setattr(cli, "live_deps", lambda s, verifier: object())
     monkeypatch.setattr(
         cli,
         "run_question",
@@ -941,7 +941,7 @@ def test_ask_keeps_log_lines_out_of_its_stdout(monkeypatch: pytest.MonkeyPatch) 
         yield ToolEvent("search_corpus", {"query": "SWE-bench"})
         yield AnswerEvent(answer_with(supported=True))
 
-    monkeypatch.setattr(cli, "live_deps", lambda s: object())
+    monkeypatch.setattr(cli, "live_deps", lambda s, verifier: object())
     monkeypatch.setattr(cli, "run_question", stream)
     result = CliRunner().invoke(app, ["ask", "q", "--live"])
     assert result.exit_code == 0
@@ -958,6 +958,7 @@ def test_serve_without_a_chat_key_exits_2(monkeypatch: pytest.MonkeyPatch) -> No
 
     monkeypatch.setattr(api, "make_embedder", boom)
     monkeypatch.setattr(api, "make_engine", boom)
+    monkeypatch.setattr(cli, "make_verifier", lambda s: object())
     result = CliRunner().invoke(app, ["serve", "--live"])
     assert result.exit_code == 2
     assert "PW_OPENROUTER_API_KEY" in result.stderr
@@ -975,7 +976,8 @@ def test_serve_cannot_crash_on_a_log_level_alias(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setenv("PW_LOG_LEVEL", "WARN")
     # `get_settings` is cached per process; build from the test's own environment instead.
     monkeypatch.setattr(cli, "get_settings", lambda: Settings())
-    monkeypatch.setattr(cli, "live_deps", lambda s: "deps")
+    monkeypatch.setattr(cli, "make_verifier", lambda s: object())
+    monkeypatch.setattr(cli, "live_deps", lambda s, verifier: "deps")
     monkeypatch.setattr(cli, "create_app", lambda deps: FastAPI())
     monkeypatch.setattr(cli.uvicorn, "run", lambda app_, **kwargs: captured.update(kwargs))
     result = CliRunner().invoke(app, ["serve", "--live"])
@@ -1008,7 +1010,7 @@ def test_ask_passes_the_filters_to_run_question(monkeypatch: pytest.MonkeyPatch)
         seen.append((question, filters))
         yield AnswerEvent(answer_with("ok [S1].", supported=True))
 
-    monkeypatch.setattr(cli, "live_deps", lambda s: object())
+    monkeypatch.setattr(cli, "live_deps", lambda s, verifier: object())
     monkeypatch.setattr(cli, "run_question", stream)
     result = CliRunner().invoke(
         app,
@@ -1031,7 +1033,7 @@ def test_ask_closes_the_stream_when_an_error_ends_it(monkeypatch: pytest.MonkeyP
         finally:
             closed.append(True)
 
-    monkeypatch.setattr(cli, "live_deps", lambda s: object())
+    monkeypatch.setattr(cli, "live_deps", lambda s, verifier: object())
     monkeypatch.setattr(cli, "run_question", stream)
     result = CliRunner().invoke(app, ["ask", "q", "--live"])
     assert result.exit_code == 1
@@ -1055,7 +1057,7 @@ def test_ask_exits_130_on_ctrl_c(monkeypatch: pytest.MonkeyPatch) -> None:
         finally:
             closed.append(True)
 
-    monkeypatch.setattr(cli, "live_deps", lambda s: object())
+    monkeypatch.setattr(cli, "live_deps", lambda s, verifier: object())
     monkeypatch.setattr(cli, "configure_logging", lambda level: None)
     monkeypatch.setattr(cli, "run_question", stream)
     result = CliRunner().invoke(app, ["ask", "q", "--live"])
@@ -1087,7 +1089,7 @@ def test_ask_handles_a_real_sigint_and_restores_the_handler(
         if not cancel.is_set():  # type: ignore[attr-defined]
             yield AnswerEvent(answer_with(supported=True))
 
-    monkeypatch.setattr(cli, "live_deps", lambda s: object())
+    monkeypatch.setattr(cli, "live_deps", lambda s, verifier: object())
     monkeypatch.setattr(cli, "run_question", stream)
     result = CliRunner().invoke(app, ["ask", "q", "--live"])
     assert result.exit_code == 130
@@ -1129,7 +1131,8 @@ def test_serve_runs_uvicorn_on_localhost_by_default(monkeypatch: pytest.MonkeyPa
 
     built = FastAPI()
     seen: list[object] = []
-    monkeypatch.setattr(cli, "live_deps", lambda s: "deps")
+    monkeypatch.setattr(cli, "make_verifier", lambda s: object())
+    monkeypatch.setattr(cli, "live_deps", lambda s, verifier: "deps")
     monkeypatch.setattr(cli, "create_app", lambda deps: seen.append(deps) or built)
     monkeypatch.setattr(cli.uvicorn, "run", fake_run)
     result = CliRunner().invoke(app, ["serve", "--live"])
@@ -1148,16 +1151,39 @@ def test_serve_runs_uvicorn_on_localhost_by_default(monkeypatch: pytest.MonkeyPa
 def test_serve_refuses_to_start_without_a_verifiable_credential(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from fastapi import FastAPI
-
-    def no_credential(settings: object) -> object:
-        raise cli.ApiAuthNotConfigured("PW_API_HMAC_SECRET is not set")
-
-    monkeypatch.setattr(cli, "live_deps", no_credential)
-    monkeypatch.setattr(cli, "create_app", lambda deps: FastAPI())
+    # The default `oidc` mode with no PW_VERCEL_OIDC_* values: a usage error naming the variable,
+    # before any engine or model is built.
+    monkeypatch.setattr(cli, "live_deps", boom)
     result = CliRunner().invoke(app, ["serve", "--live"])
     assert result.exit_code == 2
-    assert "PW_API_HMAC_SECRET" in result.stderr
+    assert "PW_VERCEL_OIDC_ISSUER" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_ask_runs_without_an_api_credential(monkeypatch: pytest.MonkeyPatch) -> None:
+    # `ask` serves no route: a .env with only the chat key must reach the answer through the real
+    # `live_deps`, not die on the unset PW_VERCEL_OIDC_* values `serve` needs.
+    from paperwatch.api import app as api
+    from paperwatch.config import Settings
+
+    monkeypatch.setenv("PW_OPENROUTER_API_KEY", "sk-test")
+    # `get_settings` is cached per process; build from the test's own environment instead.
+    monkeypatch.setattr(cli, "get_settings", lambda: Settings())
+    monkeypatch.setattr(api, "load_profiles", lambda path: [])
+    monkeypatch.setattr(api, "WorkerEmbedder", lambda should_stop: object())
+    built: list[object] = []
+
+    def stream(
+        deps: object, question: str, filters: object, cancel: object = None
+    ) -> Iterator[object]:
+        built.append(deps)
+        yield AnswerEvent(answer_with(supported=True))
+
+    monkeypatch.setattr(cli, "run_question", stream)
+    result = CliRunner().invoke(app, ["ask", "q", "--live"])
+    assert result.exit_code == 0, result.output
+    assert isinstance(built[0], api.AgentDeps)
+    assert built[0].verifier.verify("any-token") is None
 
 
 def test_serve_prefetches_the_verifier(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1187,7 +1213,8 @@ def test_an_ipv6_bind_prints_a_bracketed_url(monkeypatch: pytest.MonkeyPatch) ->
     # `http://::1:8000` is not a URL a person or a client can use; IPv6 literals need brackets.
     from fastapi import FastAPI
 
-    monkeypatch.setattr(cli, "live_deps", lambda s: "deps")
+    monkeypatch.setattr(cli, "make_verifier", lambda s: object())
+    monkeypatch.setattr(cli, "live_deps", lambda s, verifier: "deps")
     monkeypatch.setattr(cli, "create_app", lambda deps: FastAPI())
     monkeypatch.setattr(cli.uvicorn, "run", lambda app_, **kwargs: None)
     result = CliRunner().invoke(app, ["serve", "--live", "--host", "::1"])
@@ -1199,7 +1226,8 @@ def test_serve_warns_about_a_public_host(monkeypatch: pytest.MonkeyPatch) -> Non
     from fastapi import FastAPI
 
     built = FastAPI()
-    monkeypatch.setattr(cli, "live_deps", lambda s: "deps")
+    monkeypatch.setattr(cli, "make_verifier", lambda s: object())
+    monkeypatch.setattr(cli, "live_deps", lambda s, verifier: "deps")
     monkeypatch.setattr(cli, "create_app", lambda deps: built)
     monkeypatch.setattr(cli.uvicorn, "run", lambda app_, **kwargs: None)
     result = CliRunner().invoke(app, ["serve", "--live", "--host", "192.0.2.7"])

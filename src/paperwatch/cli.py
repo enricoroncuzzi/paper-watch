@@ -34,6 +34,8 @@ from paperwatch.api.app import (
 from paperwatch.api.auth import (
     HMAC_SECRET_MIN_CHARS,
     ApiAuthNotConfigured,
+    RefuseEveryToken,
+    make_verifier,
     mint_hmac_token,
 )
 from paperwatch.config import (
@@ -673,9 +675,10 @@ def ask(
     s = get_settings()
     configure_logging(s.log_level)
     # A missing key is a setup error (exit 2) with the variable's name, not a traceback from
-    # inside the first request.
+    # inside the first request. `ask` serves no route, so its deps get a verifier that accepts no
+    # token rather than failing on API credential settings this command never reads.
     try:
-        deps = live_deps(s)
+        deps = live_deps(s, RefuseEveryToken())
     except ChatNotConfigured as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(2) from exc
@@ -773,7 +776,7 @@ def serve(host: str = HOST, port: int = PORT, live: bool = LIVE) -> None:
     s = get_settings()
     configure_logging(s.log_level)
     try:
-        deps = live_deps(s)
+        deps = live_deps(s, make_verifier(s))
     except (ChatNotConfigured, ApiAuthNotConfigured) as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(2) from exc

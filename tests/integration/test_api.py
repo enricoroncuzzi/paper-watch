@@ -62,7 +62,7 @@ from paperwatch.config import (
 )
 from paperwatch.domain import load_profiles
 from paperwatch.llm.chat import ChatModel, ScriptedChatModel
-from paperwatch.llm.embedder import FakeEmbedder, WorkerEmbedder
+from paperwatch.llm.embedder import EmbedderUnavailable, FakeEmbedder, WorkerEmbedder
 from paperwatch.retrieval.hybrid import Filters
 from paperwatch.store.db import make_engine, make_session_factory
 from paperwatch.store.models import ChatCall
@@ -1061,7 +1061,7 @@ def test_live_deps_wires_a_usage_log_on_its_own_engine(
         api_auth="hmac",
         api_hmac_secret=TEST_SECRET,
     )
-    app_deps = api.live_deps(settings)
+    app_deps = api.live_deps(settings, HmacVerifier(TEST_SECRET, time.time))
     assert isinstance(app_deps.chat_calls, ChatCallLog)
     answer_engine = app_deps.session_factory.kw["bind"]
     usage_engine = app_deps.chat_calls._session_factory.kw["bind"]  # type: ignore[attr-defined]
@@ -1323,10 +1323,11 @@ def test_the_seventh_question_in_a_minute_is_refused_before_any_model_call(
 
 def test_a_third_concurrent_answer_is_busy(db_session: Session) -> None:
     # Two answers already hold the slots; the third is refused at once rather than queued behind
-    # two slow free models.
+    # two slow free models. The slots protect the server's memory, so another caller's answers
+    # hold them too.
     app_deps = deps(db_session, [])
-    first = app_deps.limiter.admit()
-    second = app_deps.limiter.admit()
+    first = app_deps.limiter.admit("another-caller")
+    second = app_deps.limiter.admit("another-caller")
     assert isinstance(first, Admitted) and isinstance(second, Admitted)
     refused = client(create_app(app_deps)).post("/ask", json={"question": "q"})
     assert refused.status_code == 429
@@ -1340,7 +1341,7 @@ def test_a_released_answer_frees_its_slot(db_session: Session) -> None:
     app_deps = deps(db_session, scripted(AIMessage(ANSWER)))
     for _ in range(3):
         assert client(create_app(app_deps)).post("/ask", json={"question": "q"}).status_code == 200
-    assert app_deps.limiter.admit().__class__ is Admitted
+    assert app_deps.limiter.admit("test").__class__ is Admitted
 
 
 def test_daily_cap_streams_matching_sources_then_the_error(
@@ -1603,6 +1604,36 @@ def test_the_cap_fallback_in_text_only_mode_does_not_start_the_model(
     assert order == []
 
 
+def test_the_cap_fallback_searches_keywords_when_the_model_child_fails(
+    db_session: Session, seed_items: Seed
+) -> None:
+    # A child that cannot start or times out costs the fallback its semantic half, not the sheet:
+    # the keyword search still streams its sources before the cap error.
+    seed_items(AGENT_ROWS)
+
+    class _DeadChild:
+        def embed(self, texts: list[str]) -> list[list[float]]:
+            raise EmbedderUnavailable("the embedding worker is not running")
+
+    store = MemoryChatCalls()
+    store.record_chat_call(
+        at=NOW, provider="openrouter", model=UNKNOWN_MODEL, input_tokens=0, output_tokens=0
+    )
+    response = ask(
+        deps(
+            db_session,
+            scripted(AIMessage(ANSWER)),
+            store=store,
+            embedder=_DeadChild(),
+            chat_max_calls_per_day=1,
+        ),
+        {"question": "coding agents"},
+    )
+    received = events(response.text)
+    assert received[-1][1]["code"] == "daily_cap"
+    assert all(name == "source" for name, _ in received[:-1]) and received[:-1]
+
+
 def test_the_stream_uses_the_configured_heartbeat_and_deadline(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1741,7 +1772,7 @@ def test_live_deps_wires_the_child_stop_and_the_read_pool(
         api_auth="hmac",
         api_hmac_secret=TEST_SECRET,
     )
-    app_deps = api.live_deps(settings)
+    app_deps = api.live_deps(settings, HmacVerifier(TEST_SECRET, time.time))
     assert app_deps.read_session_factory is not None
     assert isinstance(app_deps.embedder, WorkerEmbedder)
     assert app_deps.embedder._should_stop() is False  # type: ignore[attr-defined]

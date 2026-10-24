@@ -50,7 +50,7 @@ from paperwatch.agent.graph import (
 )
 from paperwatch.agent.sources import SourceRef, SourceRegistry
 from paperwatch.agent.tools import SearchLog, make_tools
-from paperwatch.api.auth import Verifier, make_verifier
+from paperwatch.api.auth import Principal, Verifier
 from paperwatch.api.gate import ApiGate
 from paperwatch.api.limits import Admitted, Refused, RequestLimiter
 from paperwatch.api.pacing import paced
@@ -81,7 +81,7 @@ from paperwatch.llm.chat import (
     ModelUnavailable,
     make_chat_models,
 )
-from paperwatch.llm.embedder import Embedder, WorkerEmbedder, make_embedder
+from paperwatch.llm.embedder import Embedder, EmbedderUnavailable, WorkerEmbedder, make_embedder
 from paperwatch.llm.ledger import BudgetExceeded, Ledger
 from paperwatch.retrieval.hybrid import Filters, hybrid_search
 from paperwatch.store.db import make_engine, make_session_factory
@@ -164,7 +164,7 @@ class AgentDeps:
     ready_session_factory: Callable[[], Session] | None = None
 
 
-def live_deps(settings: Settings) -> AgentDeps:
+def live_deps(settings: Settings, verifier: Verifier) -> AgentDeps:
     """Build the production dependencies: the provider chain, then the two engines."""
     # The chat chain is built first: without a key it refuses here, before the local embedding
     # model is loaded or its ~180 MB file is downloaded.
@@ -215,7 +215,7 @@ def live_deps(settings: Settings) -> AgentDeps:
         clock=lambda: datetime.now(UTC),
         chat_calls=ChatCallLog(usage_factory),
         profile_names=frozenset(p.name for p in profiles),
-        verifier=make_verifier(settings),
+        verifier=verifier,
         allowed_hosts=frozenset(allowed_hosts),
         limiter=RequestLimiter(
             per_minute=REQUESTS_PER_MINUTE,
@@ -585,7 +585,10 @@ def _cap_fallback(
         with _read_scope(deps, session) as active:
             if active is None:
                 return
-            hits = hybrid_search(active, embedder, question, k=CAP_FALLBACK_K, filters=filters)
+            try:
+                hits = hybrid_search(active, embedder, question, k=CAP_FALLBACK_K, filters=filters)
+            except EmbedderUnavailable:
+                hits = hybrid_search(active, None, question, k=CAP_FALLBACK_K, filters=filters)
             details = Repository(active).admitted_details([hit.item_id for hit in hits])
             refs = [
                 registry.register(details[hit.item_id]) for hit in hits if hit.item_id in details
@@ -968,7 +971,7 @@ def create_app(deps: AgentDeps) -> FastAPI:
         dependencies=[Security(_BEARER)],
         responses={**_ASK_RESPONSES, **_ASK_GATE_RESPONSES},
     )
-    async def ask(body: AskRequest) -> Response:
+    async def ask(body: AskRequest, request: Request) -> Response:
         """Answer one question as server-sent events, one `itemSchema` event per frame."""
         # Refused here rather than in `AskRequest`: both would only buy an empty search after a
         # model call was paid for, and the profile names are the process's, not the model's.
@@ -977,7 +980,8 @@ def create_app(deps: AgentDeps) -> FastAPI:
             raise _refused(f"unknown profiles: {', '.join(unknown)}", ["profiles"])
         if body.since is not None and body.since > deps.clock().astimezone(UTC).date():
             raise _refused("since must not be in the future", ["since"])
-        admitted = deps.limiter.admit()
+        principal: Principal = request.state.principal
+        admitted = deps.limiter.admit(principal.subject)
         if isinstance(admitted, Refused):
             # Refused before the stream starts, so the client gets a status and a Retry-After it
             # can honour instead of a 200 that ends in an error event.

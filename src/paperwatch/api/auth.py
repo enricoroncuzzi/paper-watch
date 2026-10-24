@@ -61,6 +61,13 @@ class Verifier(Protocol):
     def verify(self, token: str) -> Principal | None: ...
 
 
+class RefuseEveryToken:
+    """The verifier of a process that serves no route, such as `paperwatch ask`: it accepts none."""
+
+    def verify(self, token: str) -> Principal | None:
+        return None
+
+
 class JwksCache:
     """Vercel's signing keys, fetched on first use and on an unknown key id at most once a window.
 

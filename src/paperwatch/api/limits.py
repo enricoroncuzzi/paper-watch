@@ -5,10 +5,10 @@ it: how many answers one caller may start at all, so an authenticated loop canno
 and leave nothing for a real question. The two scarce things are the 800 provider calls a day and
 the memory one open answer holds, so both are bounded here.
 
-One counter for the whole process: the credential pins exactly one caller (one Vercel project and
-environment, or the operator's HMAC token), so per process is per client. A second allowed
-subject would need a counter per subject. In-memory on purpose: a restart is rare, and a limiter
-that outlived the process would need a table the API role can write.
+The minute and the day are counted per credential subject, so one caller's loop cannot spend
+another's budget. The answer slots are shared by the whole process: they protect the server's
+memory, not a client's budget. In-memory on purpose: a restart is rare, and a limiter that
+outlived the process would need a table the API role can write.
 """
 
 import math
@@ -42,8 +42,17 @@ class Refused:
     retry_after_s: int
 
 
+@dataclass
+class _Budget:
+    """One subject's sliding minute and UTC-day count."""
+
+    minute: deque[datetime] = field(default_factory=deque)
+    day: date | None = None
+    day_count: int = 0
+
+
 class RequestLimiter:
-    """A sliding minute, a UTC-day count and a concurrency slot, under one lock."""
+    """A sliding minute and a UTC-day count per subject, and shared concurrency slots, one lock."""
 
     def __init__(
         self,
@@ -58,36 +67,44 @@ class RequestLimiter:
         self._concurrent = concurrent
         self._clock = clock
         self._lock = threading.Lock()
-        self._minute: deque[datetime] = deque()
-        self._day: date | None = None
-        self._day_count = 0
+        # Only subjects the verifier accepted reach this map, and a subject whose minute and day
+        # are both empty is dropped, so it holds the few callers seen today and no more.
+        self._budgets: dict[str, _Budget] = {}
         self._active = 0
 
-    def admit(self) -> Admitted | Refused:
+    def admit(self, subject: str) -> Admitted | Refused:
         now = self._clock()
         # A naive clock read as local time would shift both the window and the day boundary.
         if now.tzinfo is None:
             raise ValueError("the clock must return an aware datetime")
         now = now.astimezone(UTC)
+        today = now.date()
         with self._lock:
-            while self._minute and now - self._minute[0] >= WINDOW:
-                self._minute.popleft()
-            today = now.date()
-            if self._day != today:
-                self._day = today
-                self._day_count = 0
-            if len(self._minute) >= self._per_minute:
-                oldest = self._minute[0]
+            for budget in self._budgets.values():
+                while budget.minute and now - budget.minute[0] >= WINDOW:
+                    budget.minute.popleft()
+                if budget.day != today:
+                    budget.day = today
+                    budget.day_count = 0
+            self._budgets = {
+                key: budget
+                for key, budget in self._budgets.items()
+                if budget.minute or budget.day_count
+            }
+            budget = self._budgets.get(subject, _Budget(day=today))
+            if len(budget.minute) >= self._per_minute:
+                oldest = budget.minute[0]
                 return Refused("rate_limited", _ceil_s(oldest + WINDOW - now))
-            if self._day_count >= self._per_day:
+            if budget.day_count >= self._per_day:
                 midnight = datetime(today.year, today.month, today.day, tzinfo=UTC) + timedelta(
                     days=1
                 )
                 return Refused("rate_limited", _ceil_s(midnight - now))
             if self._active >= self._concurrent:
                 return Refused("busy", BUSY_RETRY_AFTER_S)
-            self._minute.append(now)
-            self._day_count += 1
+            budget.minute.append(now)
+            budget.day_count += 1
+            self._budgets[subject] = budget
             self._active += 1
         released = threading.Lock()
 
