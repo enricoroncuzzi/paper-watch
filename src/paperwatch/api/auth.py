@@ -273,6 +273,10 @@ class HmacVerifier:
         # A token minted here never lives longer than the TTL, whatever its issuer claims.
         if exp - iat > HMAC_TOKEN_TTL_S or exp <= now:
             return None
+        # Refused before the jti is remembered, so a token only skewed into the future stays
+        # usable once the clock catches up.
+        if iat > now + TOKEN_LEEWAY_S:
+            return None
         with self._lock:
             # Drop ids whose tokens have expired, so the set does not grow without bound.
             self._seen = {seen: until for seen, until in self._seen.items() if until > now}

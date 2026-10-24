@@ -278,6 +278,59 @@ def test_hmac_token_round_trip_and_replay() -> None:
     assert verifier.verify(forged) is None
 
 
+@pytest.mark.parametrize(
+    ("iat_offset_s", "refused"),
+    [
+        # Signed with the right secret and short-lived, but minted beyond the leeway: a skewed
+        # issuer must not be able to hand out tokens that stay valid in a future window.
+        (TOKEN_LEEWAY_S + 1, True),
+        # The edge of the leeway is still inside it, exactly as on the OIDC side.
+        (TOKEN_LEEWAY_S, False),
+    ],
+    ids=["future_iat", "iat_at_the_leeway_edge"],
+)
+def test_hmac_refuses_a_token_minted_in_the_future(iat_offset_s: int, refused: bool) -> None:
+    secret = TEST_SECRET
+    clock = Clock()
+    verifier = _hmac_verifier(secret, clock)
+    iat = int(clock.now) + iat_offset_s
+    token = jwt.encode(
+        {
+            "sub": "operator",
+            "aud": HMAC_AUDIENCE,
+            "iat": iat,
+            "exp": iat + HMAC_TOKEN_TTL_S,
+            "jti": "future",
+        },
+        secret,
+        algorithm="HS256",
+    )
+    assert (verifier.verify(token) is None) is refused
+
+
+def test_a_refused_future_token_is_not_remembered_for_replay() -> None:
+    # The refusal happens before the jti is recorded, so a token refused for a claim that time
+    # itself repairs (clock skew) is usable once the verifier's clock catches up.
+    secret = TEST_SECRET
+    clock = Clock()
+    verifier = _hmac_verifier(secret, clock)
+    iat = int(clock.now) + TOKEN_LEEWAY_S + 1
+    token = jwt.encode(
+        {
+            "sub": "operator",
+            "aud": HMAC_AUDIENCE,
+            "iat": iat,
+            "exp": iat + HMAC_TOKEN_TTL_S,
+            "jti": "skewed",
+        },
+        secret,
+        algorithm="HS256",
+    )
+    assert verifier.verify(token) is None
+    clock.now = iat - TOKEN_LEEWAY_S
+    assert verifier.verify(token) is not None
+
+
 def test_mint_hmac_token_is_short_lived() -> None:
     token = mint_hmac_token(TEST_SECRET, "operator", NOW)
     claims = jwt.decode(token, options={"verify_signature": False})
