@@ -2,6 +2,7 @@ import { Suspense } from "react";
 
 import { requireOwner } from "@/auth";
 import { AskProvider } from "@/components/ask/AskProvider";
+import { CorpusSection } from "@/components/corpus/CorpusSection";
 import { DraftsSection } from "@/components/drafts/DraftsSection";
 import { Footer } from "@/components/Footer";
 import { Masthead } from "@/components/Masthead";
@@ -10,7 +11,13 @@ import { RunsSection } from "@/components/RunsSection";
 import { ErrorState, LoadingState } from "@/components/SectionState";
 import { TodayStrip } from "@/components/TodayStrip";
 import { apiGet } from "@/lib/api";
-import type { DraftsData, RunSummary, SuggestionsData, TodayData } from "@/lib/types";
+import type {
+  CorpusData,
+  DraftsData,
+  RunSummary,
+  SuggestionsData,
+  TodayData,
+} from "@/lib/types";
 
 // A private page reads a live corpus: nothing here may be cached or statically rendered.
 export const dynamic = "force-dynamic";
@@ -55,6 +62,23 @@ async function DraftsSectionData() {
   return <DraftsSection drafts={result.data.drafts} />;
 }
 
+async function CorpusSectionData() {
+  // The first page is rendered with the page, so the table is never a loading box on arrival;
+  // filtering, searching and paging go through the section's own proxy.
+  const result = await apiGet<CorpusData>("/items?limit=10");
+  if (!result.ok) {
+    return (
+      <ErrorState
+        kind={result.kind}
+        testId="corpus-error"
+        detail="GET /items"
+        retryAfterS={result.retryAfterS}
+      />
+    );
+  }
+  return <CorpusSection initial={result.data} />;
+}
+
 async function RunsSectionData() {
   const result = await apiGet<{ runs: RunSummary[] }>("/runs?limit=7");
   if (!result.ok) {
@@ -86,6 +110,9 @@ export default async function Home() {
         </Suspense>
         <Suspense fallback={<LoadingState testId="drafts-loading" lines={2} />}>
           <DraftsSectionData />
+        </Suspense>
+        <Suspense fallback={<LoadingState testId="corpus-loading" lines={3} />}>
+          <CorpusSectionData />
         </Suspense>
         <Suspense fallback={<LoadingState testId="runs-loading" lines={4} />}>
           <RunsSectionData />

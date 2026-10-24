@@ -53,14 +53,19 @@ the standing rules.
   released; `auth.py` verifies the Vercel OIDC or HMAC token, `limits.py` bounds requests,
   `pacing.py` adds heartbeats and the deadline, `search_mode.py` decides hybrid or keyword-only and
   `contract.py` rewrites `docs/api/openapi.json` (`uv run python -m paperwatch.api.contract`).
-  The page's read routes (`/today`, `/runs`, `/runs/{id}`) are in `api/routes/runs.py`, and a
-  thread's list and turns (`/threads`, `/threads/{id}`) in `api/routes/threads.py`; a finished
-  answer is stored as the thread's next turn on `AgentDeps.write_session_factory` (ADR 0016).
+  The page's read routes (`/today`, `/runs`, `/runs/{id}`) are in `api/routes/runs.py`, a thread's
+  list and turns (`/threads`, `/threads/{id}`) in `api/routes/threads.py` (a finished answer is
+  stored as the thread's next turn on `AgentDeps.write_session_factory`, ADR 0016), and the corpus
+  table and the item page read `api/routes/items.py`: a keyset page on `(published_at, id)`, or the
+  full-text ranking paged by offset, and never a model.
 - `web/` is the Next.js page and the only caller of the API: server components and route handlers
   check the GitHub session themselves (`web/src/auth.ts`), the API's address and token live only on
   the server (`web/src/lib/api.ts`, `api-token.ts`), the ask sheet keeps one conversation and reads
   its thread back after a dropped stream (`web/src/lib/use-ask.ts`, `app/api/threads/`), and
-  `web/fake-api/` is the fixture server every page test runs against (`docs/learn/17`).
+  `web/fake-api/` is the fixture server every page test runs against (`docs/learn/17`). The corpus
+  table is `web/src/components/corpus/`, its filter, search and paging calls go through
+  `web/src/app/api/corpus/route.ts`, and `/items/[id]` renders one item and reuses the drafts
+  dialog.
 - `evals/` holds the retrieval eval (`retrieval_eval.py`: recall@k, MRR, nDCG@k over the
   deterministic fake embedder) and the relevance eval (`relevance_eval.py`: classifier
   calibration and held-out scores), each with a committed baseline.

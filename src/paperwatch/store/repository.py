@@ -9,9 +9,9 @@ import uuid
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
-from sqlalchemy import and_, case, func, or_, select, text, update
+from sqlalchemy import Select, and_, case, func, or_, select, text, tuple_, update
 from sqlalchemy.dialects.postgresql import distinct_on, insert
 from sqlalchemy.orm import Session, load_only, sessionmaker
 
@@ -26,6 +26,7 @@ from paperwatch.config import (
 )
 from paperwatch.domain import AdmissionBasis, HfPaper, Signals, SourceItem, Tier
 from paperwatch.store.models import (
+    ADMITTED_SQL,
     ChatCall,
     DeadLetter,
     Draft,
@@ -61,6 +62,11 @@ PREPRINT_VENUES = frozenset({"arxiv", "arxiv.org"})
 # "reserved" and "failed" are the two non-answer model values, like the chat guard's "failed".
 RESERVED_MODEL = "reserved"
 FAILED_MODEL = "failed"
+# A search over the corpus is read, not ranked into a list someone scrolls forever: past this the
+# page offers a narrower query instead of deeper paging, which keeps the offset cursor bounded.
+CORPUS_SEARCH_MAX = 200
+# The item page draws the signal series as a table; thirty readings are a month of mornings.
+CORPUS_SIGNALS_MAX = 30
 
 
 @dataclass(frozen=True)
@@ -188,6 +194,66 @@ class ItemDetail:
     citation_count: int
     hf_upvotes: int | None
     profile: str | None
+
+
+@dataclass(frozen=True)
+class CorpusItemRow:
+    """One row of the browsable corpus table, as the API lists it."""
+
+    id: uuid.UUID
+    title: str
+    source: str
+    tier: str
+    basis: str
+    profile: str | None
+    venue: str | None
+    citation_count: int
+    hf_upvotes: int | None
+    github_stars: int | None
+    published_at: datetime
+
+
+@dataclass(frozen=True)
+class CorpusPage:
+    """One page of the table, plus whether another page follows it."""
+
+    rows: tuple[CorpusItemRow, ...]
+    total: int
+    has_more: bool
+
+
+@dataclass(frozen=True)
+class CorpusItemDetail:
+    """A row plus the text and extras the item page prints."""
+
+    row: CorpusItemRow
+    authors: tuple[str, ...]
+    url: str
+    text: str
+    github_repo: str | None
+    project_page: str | None
+    org: str | None
+
+
+@dataclass(frozen=True)
+class TierChangeRow:
+    """One move in an item's tier history, oldest first on the page."""
+
+    from_tier: str | None
+    to_tier: str
+    basis: str
+    changed_at: datetime
+
+
+@dataclass(frozen=True)
+class SignalPointRow:
+    """One observed reading of an item's quality signals."""
+
+    observed_at: datetime
+    hf_upvotes: int | None
+    hf_comments: int | None
+    github_stars: int | None
+    citation_count: int
 
 
 def _int4(value: int | None) -> int | None:
@@ -336,6 +402,66 @@ def _thread_turn_row(row: ThreadTurn) -> ThreadTurnRow:
         answer=row.answer,
         search_mode=row.search_mode,
         created_at=row.created_at,
+    )
+
+
+def _corpus_select() -> Any:
+    # Returns Any: SQLAlchemy types a Select over its exact column tuple, which no single
+    # annotation here can name. The columns are the table's and the item page's, and no vector:
+    # a 384-dimension embedding per row would dwarf a fifty-row page.
+    return select(
+        Item.id,
+        Item.title,
+        Item.source,
+        Item.tier,
+        Item.admission_basis,
+        Item.profile,
+        Item.venue,
+        Item.citation_count,
+        Item.hf_upvotes,
+        Item.github_stars,
+        Item.published_at,
+    )
+
+
+def _corpus_filters(
+    statement: Select[Any],
+    *,
+    tiers: frozenset[str] | None,
+    source: str | None,
+    profile: str | None,
+    since: datetime | None,
+) -> Select[Any]:
+    # The literal predicate, not a bound parameter, so the planner can match the partial search
+    # index and the (status, published_at) keyset index under a cached plan.
+    statement = statement.where(text(f"items.{ADMITTED_SQL}"))
+    if tiers:
+        statement = statement.where(Item.tier.in_(tiers))
+    if source is not None:
+        statement = statement.where(Item.source == source)
+    if profile is not None:
+        statement = statement.where(Item.profile == profile)
+    if since is not None:
+        statement = statement.where(Item.published_at >= since)
+    return statement
+
+
+def _corpus_row(row: Any) -> CorpusItemRow:
+    # An admitted row always has a tier and a basis (the check constraints say so); the assert
+    # narrows the columns for mypy instead of writing a fallback nobody should ever see.
+    assert row.tier is not None and row.admission_basis is not None
+    return CorpusItemRow(
+        id=row.id,
+        title=row.title,
+        source=row.source,
+        tier=row.tier,
+        basis=row.admission_basis,
+        profile=row.profile,
+        venue=row.venue,
+        citation_count=row.citation_count,
+        hf_upvotes=row.hf_upvotes,
+        github_stars=row.github_stars,
+        published_at=row.published_at,
     )
 
 
@@ -1291,6 +1417,158 @@ class Repository:
         )
         self._s.flush()
         return thread_id, n
+
+    def browse_items(
+        self,
+        *,
+        text_search: str | None = None,
+        tiers: frozenset[str] | None = None,
+        source: str | None = None,
+        profile: str | None = None,
+        since: datetime | None = None,
+        after: tuple[datetime, uuid.UUID] | None = None,
+        offset: int = 0,
+        limit: int,
+    ) -> CorpusPage:
+        """One page of admitted items: the newest published first, or the full-text matches.
+
+        Without a query the page walks the keyset `(published_at, id)` descending, which the
+        `(status, published_at)` index serves; with one, Postgres full-text ranks the matches and
+        the cursor is an offset into that ranking, capped at `CORPUS_SEARCH_MAX`.
+        """
+        narrowed = _corpus_filters(
+            select(func.count()).select_from(Item),
+            tiers=tiers,
+            source=source,
+            profile=profile,
+            since=since,
+        )
+        if text_search is None:
+            total = int(self._s.scalar(narrowed) or 0)
+            statement = _corpus_filters(
+                _corpus_select(),
+                tiers=tiers,
+                source=source,
+                profile=profile,
+                since=since,
+            )
+            if after is not None:
+                # Row comparison: one predicate, so the keyset cannot skip or repeat a row whose
+                # published date it shares with another.
+                statement = statement.where(
+                    tuple_(Item.published_at, Item.id) < tuple_(after[0], after[1])
+                )
+            statement = statement.order_by(Item.published_at.desc(), Item.id.desc()).limit(limit)
+            rows = tuple(_corpus_row(row) for row in self._s.execute(statement))
+            return CorpusPage(rows, total, len(rows) == limit)
+
+        # Imported here, not at module level: `retrieval.hybrid` imports the embedder, and the
+        # ingestion imports this module on every run.
+        from paperwatch.retrieval.hybrid import TS_RANK_NORMALIZATION, any_term_tsquery
+
+        tsq = any_term_tsquery(text_search)
+        matching = narrowed.where(Item.tsv.op("@@")(tsq))
+        # The count is capped like the paging: past the cap the table says "many" rather than
+        # counting a match set nobody can page through.
+        total = min(int(self._s.scalar(matching) or 0), CORPUS_SEARCH_MAX)
+        rank = func.ts_rank_cd(Item.tsv, tsq, TS_RANK_NORMALIZATION)
+        statement = (
+            _corpus_filters(
+                _corpus_select(),
+                tiers=tiers,
+                source=source,
+                profile=profile,
+                since=since,
+            )
+            .where(Item.tsv.op("@@")(tsq))
+            # The stable key breaks a rank tie, so paging never repeats or hides a row; the
+            # statement sorts anyway, so the GIN index still serves the match.
+            .order_by(rank.desc(), Item.source.collate("C"), Item.external_id.collate("C"))
+            .offset(offset)
+            .limit(limit)
+        )
+        rows = tuple(_corpus_row(row) for row in self._s.execute(statement))
+        return CorpusPage(rows, total, offset + len(rows) < total)
+
+    def corpus_item(self, item_id: uuid.UUID) -> CorpusItemDetail | None:
+        """One admitted item with its text, or None when it is not admitted or not stored."""
+        row = self._s.execute(
+            _corpus_filters(
+                _corpus_select().add_columns(
+                    Item.authors,
+                    Item.url,
+                    Item.text,
+                    Item.github_repo,
+                    Item.project_page,
+                    Item.hf_org,
+                ),
+                tiers=None,
+                source=None,
+                profile=None,
+                since=None,
+            ).where(Item.id == item_id)
+        ).first()
+        if row is None:
+            return None
+        return CorpusItemDetail(
+            row=_corpus_row(row),
+            authors=tuple(str(author) for author in row.authors or ()),
+            url=row.url,
+            text=row.text or "",
+            github_repo=row.github_repo,
+            project_page=row.project_page,
+            org=row.hf_org,
+        )
+
+    def corpus_tier_history(self, item_id: uuid.UUID) -> tuple[TierChangeRow, ...]:
+        """An item's tier moves, oldest first, so the page draws a timeline without sorting."""
+        rows = self._s.execute(
+            select(
+                TierHistory.from_tier,
+                TierHistory.to_tier,
+                TierHistory.basis,
+                TierHistory.changed_at,
+            )
+            .where(TierHistory.item_id == item_id)
+            .order_by(TierHistory.changed_at, TierHistory.id)
+        )
+        return tuple(
+            TierChangeRow(row.from_tier, row.to_tier, row.basis, row.changed_at) for row in rows
+        )
+
+    def corpus_signals(self, item_id: uuid.UUID) -> tuple[SignalPointRow, ...]:
+        """The newest readings of an item's signals, oldest first for the page's table."""
+        rows = self._s.execute(
+            select(
+                SignalSnapshot.observed_at,
+                SignalSnapshot.hf_upvotes,
+                SignalSnapshot.hf_comments,
+                SignalSnapshot.github_stars,
+                SignalSnapshot.citation_count,
+            )
+            .where(SignalSnapshot.item_id == item_id)
+            .order_by(SignalSnapshot.observed_at.desc(), SignalSnapshot.id.desc())
+            .limit(CORPUS_SIGNALS_MAX)
+        )
+        return tuple(
+            SignalPointRow(
+                row.observed_at,
+                row.hf_upvotes,
+                row.hf_comments,
+                row.github_stars,
+                row.citation_count,
+            )
+            for row in reversed(rows.all())
+        )
+
+    def corpus_drafts(self, item_id: uuid.UUID) -> tuple[tuple[uuid.UUID, datetime], ...]:
+        """The drafts an item already has, newest first, so the page need not load them all."""
+        rows = self._s.execute(
+            select(Draft.id, Draft.created_at)
+            .where(Draft.item_id == item_id)
+            .order_by(Draft.created_at.desc(), Draft.id)
+        )
+        return tuple((row.id, row.created_at) for row in rows)
 
 
 class ChatCallLog:

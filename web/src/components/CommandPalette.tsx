@@ -9,6 +9,7 @@ const SECTIONS = [
   { value: "picks", label: "This week", hint: "The picks and their 30-second summaries" },
   { value: "rising", label: "Rising", hint: "Trending, not yet independently vetted" },
   { value: "today", label: "Today strip", hint: "The last run at a glance" },
+  { value: "corpus", label: "The corpus", hint: "Every admitted item, searchable" },
   { value: "runs", label: "Runs", hint: "The last seven daily ingestions" },
 ];
 

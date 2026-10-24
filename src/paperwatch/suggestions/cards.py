@@ -141,11 +141,11 @@ def card(
         also=tuple(
             AlsoData(title=other.title, url=other.url, source=other.source) for other in scored.also
         ),
-        summary=_summary(summary, text),
+        summary=summary_data(summary, text),
     )
 
 
-def _summary(row: ItemSummary | None, text: str) -> SummaryData:
+def summary_data(row: ItemSummary | None, text: str) -> SummaryData:
     # The card always has something true to show: a pending or failed summary falls back to the
     # abstract's own first sentences, never to nothing and never to an unchecked claim.
     if row is None:

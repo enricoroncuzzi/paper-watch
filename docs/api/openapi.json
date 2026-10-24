@@ -3,7 +3,7 @@
   "info": {
     "title": "Paper Watch API",
     "summary": "Ask questions about the stored AI-research corpus and stream cited answers.",
-    "version": "0.6"
+    "version": "0.7"
   },
   "paths": {
     "/runs": {
@@ -881,6 +881,277 @@
         }
       }
     },
+    "/items": {
+      "get": {
+        "summary": "Items",
+        "operationId": "items_items_get",
+        "security": [
+          {
+            "VercelOidcOrHmac": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 200
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          },
+          {
+            "name": "tier",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "peer_reviewed",
+                    "vetted_preprint",
+                    "lab_blog"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Tier"
+            }
+          },
+          {
+            "name": "source",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "arxiv",
+                    "feed"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Source"
+            }
+          },
+          {
+            "name": "profile",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 64
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Profile"
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Since"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 512
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 50,
+              "minimum": 1,
+              "default": 25,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CorpusData"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The Host is not allowed, or the Content-Length is bad.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The credential is missing or invalid; `WWW-Authenticate: Bearer`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request carries an Origin header.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "An unknown profile, tier or cursor.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/items/{item_id}": {
+      "get": {
+        "summary": "Item Detail",
+        "operationId": "item_detail_items__item_id__get",
+        "security": [
+          {
+            "VercelOidcOrHmac": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Item Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CorpusItemDetail"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The Host is not allowed, or the Content-Length is bad.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The credential is missing or invalid; `WWW-Authenticate: Bearer`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request carries an Origin header.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No admitted item with that id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/healthz": {
       "get": {
         "summary": "Healthz",
@@ -1365,6 +1636,327 @@
           "basis"
         ],
         "title": "CitationData"
+      },
+      "CorpusData": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/CorpusItemData"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "next_cursor",
+          "total"
+        ],
+        "title": "CorpusData",
+        "description": "One page: the rows, the cursor for the next page (null at the end) and the match count."
+      },
+      "CorpusItemData": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source"
+          },
+          "tier": {
+            "type": "string",
+            "title": "Tier"
+          },
+          "basis": {
+            "type": "string",
+            "title": "Basis"
+          },
+          "basis_label": {
+            "type": "string",
+            "title": "Basis Label"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile"
+          },
+          "venue": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Venue"
+          },
+          "citation_count": {
+            "type": "integer",
+            "title": "Citation Count"
+          },
+          "hf_upvotes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hf Upvotes"
+          },
+          "github_stars": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Github Stars"
+          },
+          "published_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Published At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "source",
+          "tier",
+          "basis",
+          "basis_label",
+          "profile",
+          "venue",
+          "citation_count",
+          "hf_upvotes",
+          "github_stars",
+          "published_at"
+        ],
+        "title": "CorpusItemData",
+        "description": "One row of the table: the facts the columns show, and the API's own basis label."
+      },
+      "CorpusItemDetail": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source"
+          },
+          "tier": {
+            "type": "string",
+            "title": "Tier"
+          },
+          "basis": {
+            "type": "string",
+            "title": "Basis"
+          },
+          "basis_label": {
+            "type": "string",
+            "title": "Basis Label"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile"
+          },
+          "venue": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Venue"
+          },
+          "citation_count": {
+            "type": "integer",
+            "title": "Citation Count"
+          },
+          "hf_upvotes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hf Upvotes"
+          },
+          "github_stars": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Github Stars"
+          },
+          "published_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Published At"
+          },
+          "authors": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Authors"
+          },
+          "url": {
+            "type": "string",
+            "title": "Url"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text"
+          },
+          "github_repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Github Repo"
+          },
+          "project_page": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Page"
+          },
+          "org": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Org"
+          },
+          "tier_history": {
+            "items": {
+              "$ref": "#/components/schemas/TierChangeData"
+            },
+            "type": "array",
+            "title": "Tier History"
+          },
+          "signals": {
+            "items": {
+              "$ref": "#/components/schemas/SignalPointData"
+            },
+            "type": "array",
+            "title": "Signals"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SummaryData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "drafts": {
+            "items": {
+              "$ref": "#/components/schemas/ItemDraftData"
+            },
+            "type": "array",
+            "title": "Drafts"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "source",
+          "tier",
+          "basis",
+          "basis_label",
+          "profile",
+          "venue",
+          "citation_count",
+          "hf_upvotes",
+          "github_stars",
+          "published_at",
+          "authors",
+          "url",
+          "text",
+          "github_repo",
+          "project_page",
+          "org",
+          "tier_history",
+          "signals",
+          "summary",
+          "drafts"
+        ],
+        "title": "CorpusItemDetail",
+        "description": "The row plus the text, the extras, the history and what was already written about it."
       },
       "DeadLetterData": {
         "properties": {
@@ -1886,6 +2478,27 @@
         "type": "object",
         "title": "HTTPValidationError"
       },
+      "ItemDraftData": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "created_at"
+        ],
+        "title": "ItemDraftData",
+        "description": "A draft the item already has, so the page can offer to open it instead of making another."
+      },
       "NoticeData": {
         "properties": {
           "code": {
@@ -2202,6 +2815,62 @@
           "runs"
         ],
         "title": "RunsData"
+      },
+      "SignalPointData": {
+        "properties": {
+          "observed_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Observed At"
+          },
+          "hf_upvotes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hf Upvotes"
+          },
+          "hf_comments": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hf Comments"
+          },
+          "github_stars": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Github Stars"
+          },
+          "citation_count": {
+            "type": "integer",
+            "title": "Citation Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "observed_at",
+          "hf_upvotes",
+          "hf_comments",
+          "github_stars",
+          "citation_count"
+        ],
+        "title": "SignalPointData",
+        "description": "One observed reading of the item's signals, oldest first in the list."
       },
       "SourceData": {
         "properties": {
@@ -2750,6 +3419,43 @@
           "lab_blog"
         ],
         "title": "Tier"
+      },
+      "TierChangeData": {
+        "properties": {
+          "from_tier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "From Tier"
+          },
+          "to_tier": {
+            "type": "string",
+            "title": "To Tier"
+          },
+          "basis": {
+            "type": "string",
+            "title": "Basis"
+          },
+          "changed_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Changed At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "from_tier",
+          "to_tier",
+          "basis",
+          "changed_at"
+        ],
+        "title": "TierChangeData",
+        "description": "One move in the item's tier history."
       },
       "TodayData": {
         "properties": {

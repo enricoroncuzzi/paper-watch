@@ -1,0 +1,92 @@
+import Link from "next/link";
+
+import { TierChip } from "@/components/picks/Chips";
+import { basisWord, publishedDay, signalLine } from "@/lib/corpus";
+import type { CorpusItem } from "@/lib/types";
+
+const CELL = "border-b border-rule px-2 py-2.5 align-top";
+
+function SourceCell({ item }: { item: CorpusItem }) {
+  // The stored source is "arxiv" or "feed"; a reader sees the two words the mockup prints.
+  return (
+    <td className={`${CELL} hidden text-[12px] text-ink-2 sm:table-cell`}>
+      {item.source === "arxiv" ? "arXiv" : "feed"}
+    </td>
+  );
+}
+
+/**
+ * One row of the corpus table, the row the keyset cursor walks. The title is the control: it is a
+ * link a reader can open in a new tab, and `selected` only moves a visual highlight over it.
+ */
+export function CorpusRow({
+  item,
+  selected,
+  onSelect,
+}: {
+  item: CorpusItem;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <tr
+      data-testid="corpus-row"
+      data-selected={selected ? "true" : undefined}
+      onMouseEnter={onSelect}
+      className={selected ? "bg-accent-soft/60" : "transition-colors hover:bg-card"}
+    >
+      <td className={`${CELL} title-cell`}>
+        <Link
+          href={`/items/${item.id}`}
+          aria-current={selected ? "true" : undefined}
+          className="block max-w-[52ch] font-serif text-[15px] leading-[1.4] hover:underline hover:decoration-rule-2 hover:underline-offset-2"
+        >
+          {item.title}
+        </Link>
+        <span className="mt-0.5 block text-[10.5px] text-ink-3">
+          {item.profile ?? "no topic"} · {publishedDay(item.published_at)}
+        </span>
+      </td>
+      <td className={`${CELL} whitespace-nowrap`}>
+        <TierChip tier={item.tier} />
+      </td>
+      <SourceCell item={item} />
+      <td
+        className={`${CELL} hidden whitespace-nowrap text-right tabular-nums text-[12px] text-ink-2 sm:table-cell`}
+      >
+        <span className="block">{signalLine(item)}</span>
+        <span className="mt-0.5 block text-[10.5px] text-ink-3">
+          {item.venue ?? basisWord(item.basis)}
+        </span>
+      </td>
+    </tr>
+  );
+}
+
+/** The table's head; the two narrow columns are the ones a phone leaves out. */
+export function CorpusHead() {
+  return (
+    <thead>
+      <tr className="text-[9.5px] uppercase tracking-[0.13em] text-ink-3">
+        <th scope="col" className="border-b border-rule px-2 py-2 text-left font-medium">
+          Item
+        </th>
+        <th scope="col" className="border-b border-rule px-2 py-2 text-left font-medium">
+          Tier
+        </th>
+        <th
+          scope="col"
+          className="hidden border-b border-rule px-2 py-2 text-left font-medium sm:table-cell"
+        >
+          Source
+        </th>
+        <th
+          scope="col"
+          className="hidden border-b border-rule px-2 py-2 text-right font-medium sm:table-cell"
+        >
+          Signals
+        </th>
+      </tr>
+    </thead>
+  );
+}

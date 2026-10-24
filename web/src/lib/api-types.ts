@@ -184,6 +184,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/items": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Items */
+        get: operations["items_items_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/items/{item_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Item Detail */
+        get: operations["item_detail_items__item_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/healthz": {
         parameters: {
             query?: never;
@@ -330,6 +364,109 @@ export interface components {
             tier: string;
             /** Basis */
             basis: string;
+        };
+        /**
+         * CorpusData
+         * @description One page: the rows, the cursor for the next page (null at the end) and the match count.
+         */
+        CorpusData: {
+            /** Items */
+            items: components["schemas"]["CorpusItemData"][];
+            /** Next Cursor */
+            next_cursor: string | null;
+            /** Total */
+            total: number;
+        };
+        /**
+         * CorpusItemData
+         * @description One row of the table: the facts the columns show, and the API's own basis label.
+         */
+        CorpusItemData: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Title */
+            title: string;
+            /** Source */
+            source: string;
+            /** Tier */
+            tier: string;
+            /** Basis */
+            basis: string;
+            /** Basis Label */
+            basis_label: string;
+            /** Profile */
+            profile: string | null;
+            /** Venue */
+            venue: string | null;
+            /** Citation Count */
+            citation_count: number;
+            /** Hf Upvotes */
+            hf_upvotes: number | null;
+            /** Github Stars */
+            github_stars: number | null;
+            /**
+             * Published At
+             * Format: date-time
+             */
+            published_at: string;
+        };
+        /**
+         * CorpusItemDetail
+         * @description The row plus the text, the extras, the history and what was already written about it.
+         */
+        CorpusItemDetail: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Title */
+            title: string;
+            /** Source */
+            source: string;
+            /** Tier */
+            tier: string;
+            /** Basis */
+            basis: string;
+            /** Basis Label */
+            basis_label: string;
+            /** Profile */
+            profile: string | null;
+            /** Venue */
+            venue: string | null;
+            /** Citation Count */
+            citation_count: number;
+            /** Hf Upvotes */
+            hf_upvotes: number | null;
+            /** Github Stars */
+            github_stars: number | null;
+            /**
+             * Published At
+             * Format: date-time
+             */
+            published_at: string;
+            /** Authors */
+            authors: string[];
+            /** Url */
+            url: string;
+            /** Text */
+            text: string;
+            /** Github Repo */
+            github_repo: string | null;
+            /** Project Page */
+            project_page: string | null;
+            /** Org */
+            org: string | null;
+            /** Tier History */
+            tier_history: components["schemas"]["TierChangeData"][];
+            /** Signals */
+            signals: components["schemas"]["SignalPointData"][];
+            summary: components["schemas"]["SummaryData"] | null;
+            /** Drafts */
+            drafts: components["schemas"]["ItemDraftData"][];
         };
         /** DeadLetterData */
         DeadLetterData: {
@@ -552,6 +689,22 @@ export interface components {
             detail?: components["schemas"]["ValidationError"][];
         };
         /**
+         * ItemDraftData
+         * @description A draft the item already has, so the page can offer to open it instead of making another.
+         */
+        ItemDraftData: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
+        /**
          * NoticeData
          * @description The `notice` event: the answer runs in a reduced mode and says so.
          */
@@ -706,6 +859,25 @@ export interface components {
         RunsData: {
             /** Runs */
             runs: components["schemas"]["RunSummary"][];
+        };
+        /**
+         * SignalPointData
+         * @description One observed reading of the item's signals, oldest first in the list.
+         */
+        SignalPointData: {
+            /**
+             * Observed At
+             * Format: date-time
+             */
+            observed_at: string;
+            /** Hf Upvotes */
+            hf_upvotes: number | null;
+            /** Hf Comments */
+            hf_comments: number | null;
+            /** Github Stars */
+            github_stars: number | null;
+            /** Citation Count */
+            citation_count: number;
         };
         /**
          * SourceData
@@ -921,6 +1093,23 @@ export interface components {
          * @enum {string}
          */
         Tier: "peer_reviewed" | "vetted_preprint" | "lab_blog";
+        /**
+         * TierChangeData
+         * @description One move in the item's tier history.
+         */
+        TierChangeData: {
+            /** From Tier */
+            from_tier: string | null;
+            /** To Tier */
+            to_tier: string;
+            /** Basis */
+            basis: string;
+            /**
+             * Changed At
+             * Format: date-time
+             */
+            changed_at: string;
+        };
         /** TodayData */
         TodayData: {
             run: components["schemas"]["RunSummary"] | null;
@@ -1670,6 +1859,137 @@ export interface operations {
                 };
             };
             /** @description No thread with that id. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    items_items_get: {
+        parameters: {
+            query?: {
+                q?: string | null;
+                tier?: ("peer_reviewed" | "vetted_preprint" | "lab_blog") | null;
+                source?: ("arxiv" | "feed") | null;
+                profile?: string | null;
+                since?: string | null;
+                cursor?: string | null;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CorpusData"];
+                };
+            };
+            /** @description The Host is not allowed, or the Content-Length is bad. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description The credential is missing or invalid; `WWW-Authenticate: Bearer`. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description The request carries an Origin header. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description An unknown profile, tier or cursor. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+        };
+    };
+    item_detail_items__item_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CorpusItemDetail"];
+                };
+            };
+            /** @description The Host is not allowed, or the Content-Length is bad. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description The credential is missing or invalid; `WWW-Authenticate: Bearer`. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description The request carries an Origin header. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description No admitted item with that id. */
             404: {
                 headers: {
                     [name: string]: unknown;

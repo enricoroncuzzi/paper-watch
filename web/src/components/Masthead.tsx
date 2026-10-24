@@ -16,10 +16,7 @@ function initials(session: Session): string {
   return (parts[0]?.[0] ?? "?") + (parts[1]?.[0] ?? parts[0]?.[1] ?? "");
 }
 
-/**
- * The masthead carries only the sections this release has: Corpus arrives with its slice. The
- * avatar opens a small menu with the sign-out.
- */
+/** The masthead carries only the sections this release has. The avatar opens the sign-out. */
 export function Masthead({ session }: { session: Session }) {
   const image = session.user?.image;
   const label = session.user?.name ?? session.githubId ?? "the owner";
@@ -54,6 +51,12 @@ export function Masthead({ session }: { session: Session }) {
           className="flex min-h-11 min-w-11 items-center justify-center hover:text-ink sm:min-h-0 sm:min-w-0"
         >
           Drafts
+        </Link>
+        <Link
+          href="/#corpus"
+          className="flex min-h-11 min-w-11 items-center justify-center hover:text-ink sm:min-h-0 sm:min-w-0"
+        >
+          Corpus
         </Link>
         <Link
           href="/#runs"

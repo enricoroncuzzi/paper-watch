@@ -25,6 +25,7 @@ from paperwatch.api.app import (
 )
 from paperwatch.api.responses import RateLimited, Refusal
 from paperwatch.api.routes.drafts import DraftData, DraftDetail, DraftError, DraftsData
+from paperwatch.api.routes.items import CorpusData, CorpusItemDetail
 from paperwatch.api.routes.runs import RunDetail, RunsData, TodayData
 from paperwatch.api.routes.suggestions import SuggestionsData
 from paperwatch.api.routes.threads import ThreadDetailData
@@ -56,6 +57,9 @@ FIXTURE_MODELS: dict[str, type[BaseModel]] = {
     "draft-refused": DraftError,
     "draft-capped": DraftError,
     "thread": ThreadDetailData,
+    "corpus": CorpusData,
+    "corpus-empty": CorpusData,
+    "item-detail": CorpusItemDetail,
 }
 
 EVENT_MODELS: dict[str, type[BaseModel]] = {

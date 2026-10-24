@@ -16,7 +16,9 @@ code and a short lesson in [`docs/learn/`](docs/learn/).
 
 Status: M0 to M2 are done, the daily ingestion has run on a shared VPS since 2026-10-22, and
 M3 is in progress: the API is built to be public (credential gate, limits, its own user unit
-behind a tunnel) and the page follows ([`docs/deploy/vps.md`](docs/deploy/vps.md)).
+behind a tunnel) and the page follows ([`docs/deploy/vps.md`](docs/deploy/vps.md)). The page's
+Corpus section browses every admitted item and opens one with its tier history, its signal series,
+its stored text and its 30-second summary.
 
 ## Quickstart
 
@@ -86,7 +88,7 @@ uv run paperwatch qa-eval   # replay recorded answers through the checker; no ke
 # Put PW_OPENROUTER_API_KEY in .env first (a free key from openrouter.ai; never commit it).
 uv run paperwatch ask "what is new on agent memory?" --live   # stream one answer; it prints a thread id
 uv run paperwatch ask "and how was it measured?" --thread ID --live   # continue that conversation
-uv run paperwatch serve --live                                # the API: /ask, /threads, /suggestions, /drafts, /runs
+uv run paperwatch serve --live                                # the API: /ask, /threads, /suggestions, /items, /runs
 uv run paperwatch suggest --live                              # the ranked picks and the Rising shelf
 uv run paperwatch draft ITEM_ID --live                        # one checked LinkedIn draft, with its notes
 # With PW_API_AUTH=hmac and a 32+ character PW_API_HMAC_SECRET in .env, each token works once:

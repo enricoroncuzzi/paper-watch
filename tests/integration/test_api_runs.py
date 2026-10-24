@@ -290,12 +290,12 @@ def test_limit_is_bounded(db_session: Session) -> None:
     assert client(db_session).get("/runs", params={"limit": 51}).status_code == 422
 
 
-def test_the_contract_names_version_0_6_and_the_page_routes(db_session: Session) -> None:
+def test_the_contract_names_version_0_7_and_the_page_routes(db_session: Session) -> None:
     document = client(db_session).app.openapi()
 
-    assert API_VERSION == "0.6"
-    # The suggestions, drafts and threads routes ship in the same version, so the page's client is
-    # generated once and its thread types exist beside the card and draft types.
+    assert API_VERSION == "0.7"
+    # Every page route ships in the same version, so the page's client is generated once and its
+    # thread, table and item types exist beside the card and draft types.
     assert set(document["paths"]) >= {
         "/runs",
         "/runs/{run_id}",
@@ -307,7 +307,10 @@ def test_the_contract_names_version_0_6_and_the_page_routes(db_session: Session)
         "/drafts/{draft_id}/regenerate",
         "/threads",
         "/threads/{thread_id}",
+        "/items",
+        "/items/{item_id}",
     }
     assert "RunSummary" in document["components"]["schemas"]
     assert "DraftData" in document["components"]["schemas"]
     assert "ThreadDetailData" in document["components"]["schemas"]
+    assert "CorpusItemDetail" in document["components"]["schemas"]

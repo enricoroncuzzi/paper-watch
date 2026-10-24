@@ -68,6 +68,7 @@ from paperwatch.api.responses import (
     Refusal,
 )
 from paperwatch.api.routes.drafts import DraftService, make_drafts_router
+from paperwatch.api.routes.items import make_items_router
 from paperwatch.api.routes.runs import make_runs_router
 from paperwatch.api.routes.suggestions import (
     SuggestionService,
@@ -116,7 +117,7 @@ log = structlog.get_logger()
 
 # The API contract's own version, not the package version: release-please bumps the package on
 # every release, and the committed docs/api/openapi.json must change only when the API does.
-API_VERSION = "0.6"
+API_VERSION = "0.7"
 
 # The fixed text of the `internal` event: the client gets something it can show, and the detail
 # (which could carry a provider body or stored text) stays in the server log.
@@ -1146,6 +1147,11 @@ def create_app(deps: AgentDeps) -> FastAPI:
     app.include_router(make_drafts_router(deps.drafts or _default_drafts(deps, suggestions)))
     # The Recent menu and the re-fetch after a dropped stream: reads only, so no limiter.
     app.include_router(make_threads_router(deps.read_session_factory or deps.session_factory))
+    # The corpus table and the item page: read-only, one short session per request, and never a
+    # model, so they stay cheap while an answer holds the model's memory.
+    app.include_router(
+        make_items_router(deps.read_session_factory or deps.session_factory, deps.profile_names)
+    )
 
     # FastAPI types the SSE media type with the `StreamItem` envelope, which exists only to
     # register the payload models. Post-processing swaps in the shape a client parses and drops

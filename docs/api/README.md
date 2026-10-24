@@ -26,6 +26,8 @@ reference. `docs/learn/15` explains the gate and what each status code means.
 | `GET /drafts/{draft_id}` | One `DraftDetail`: the same fields plus `pov`. |
 | `GET /threads?limit=20` | `{"threads": [ThreadSummary]}`, newest conversation first; `limit` is 1 to 20. |
 | `GET /threads/{thread_id}` | One `ThreadDetail` (`{id, title, turns}`), or 404. |
+| `GET /items` | The browsable corpus: `{items, next_cursor, total}`, admitted items only, newest published first or ranked full-text matches. |
+| `GET /items/{item_id}` | One admitted item with its text, extras, tier history, signal series, cached summary and drafts; 404 when it is not admitted. |
 | `POST /ask` | One question, streamed as server-sent events. With `thread_id`, a follow-up. |
 
 ## Runs and the today strip
@@ -117,6 +119,32 @@ never trimmed, so `S1` from the first answer is still citable in the fifth: `HIS
 model that, and `get_item` re-reads a source before a detail is relied on. A follow-up's `item_id`
 is ignored; on a new thread it is registered as `S1` as before. An unknown `thread_id` is a 404
 before the stream starts, so no model call is spent on it.
+
+## Corpus
+
+`GET /items` takes `q`, `tier` (`peer_reviewed`, `vetted_preprint`, `lab_blog`), `source` (`arxiv`
+or `feed`), `profile` (one of the corpus's own topic names, else 422), `since` (a date, from its UTC
+midnight), `cursor` and `limit` (1 to 50, default 25). A row is `{id, title, source, tier, basis,
+basis_label, profile, venue, citation_count, hf_upvotes, github_stars, published_at}`, with the same
+`basis_label` sentence the picks print.
+
+Without `q` the list is the newest `published_at` first and `cursor` is the opaque keyset position
+(`published_at` and `id`), so a shared date never repeats or hides a row. With `q` the search runs
+on the full-text branch alone, needs no model and works in every search mode, including while the
+ingestion holds the memory; `cursor` is then an offset into that ranking and the list stops at 200
+matches. `total` counts the filtered set without `q`, and the capped match count with it;
+`next_cursor` is null on the last page.
+
+`GET /items/{item_id}` adds `authors`, `url`, `text` (the stored abstract or post text),
+`github_repo`, `project_page`, `org`, `tier_history` (`[{from_tier, to_tier, basis, changed_at}]`,
+oldest first), `signals` (`[{observed_at, hf_upvotes, hf_comments, github_stars, citation_count}]`,
+the last 30 readings, oldest first), `summary` (the same shape a card carries, or null when none is
+cached yet) and `drafts` (`[{id, created_at}]`, newest first). A `404` is an item that is not
+admitted; a `422` is an unknown profile, a cursor from the other branch, or a cursor that is not
+ours.
+
+Both routes are read-only, open one short session per request and never touch a model, so they are
+safe to poll.
 
 ## Limits
 

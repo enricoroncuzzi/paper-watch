@@ -10,7 +10,7 @@ import { draftParagraphs } from "@/lib/draft-body";
 import { draftFailureMessage } from "@/lib/draft-errors";
 import { profileLabel } from "@/lib/format";
 import { linkedinText } from "@/lib/linkedin-text";
-import type { Draft, SuggestionCard } from "@/lib/types";
+import type { Draft, DraftTarget } from "@/lib/types";
 
 // The API's own bound and the route's maxDuration: the button says it is writing for as long as
 // the request can legitimately take, then gives up with a sentence instead of spinning forever.
@@ -22,8 +22,8 @@ const SMALL =
 const PRIMARY =
   "inline-flex h-11 items-center justify-center rounded-[2px] border border-accent bg-accent px-3 text-[11.5px] font-medium text-accent-ink hover:border-accent-2 hover:bg-accent-2 disabled:opacity-60 sm:h-8";
 
-function Context({ card }: { card: SuggestionCard }) {
-  const context = card.summary.what?.text ?? card.summary.excerpt;
+function Context({ card }: { card: DraftTarget }) {
+  const context = card.summary?.what?.text ?? card.summary?.excerpt ?? null;
   return (
     <>
       <div className="mb-3 flex flex-wrap items-center gap-1.5 text-[10.5px] text-ink-3">
@@ -31,9 +31,11 @@ function Context({ card }: { card: SuggestionCard }) {
         {card.venue ?? card.org ? <Chip>{card.venue ?? card.org}</Chip> : null}
         {card.profile ? <Chip>{profileLabel(card.profile)}</Chip> : null}
       </div>
-      <p className="mb-4 max-w-[46ch] font-serif text-[15.5px] leading-[1.5] text-ink-2">
-        {context}
-      </p>
+      {context ? (
+        <p className="mb-4 max-w-[46ch] font-serif text-[15.5px] leading-[1.5] text-ink-2">
+          {context}
+        </p>
+      ) : null}
     </>
   );
 }
@@ -52,7 +54,8 @@ export function PovDialog({
   onSaved,
   returnFocus,
 }: {
-  card: SuggestionCard | null;
+  // A pick's card, or a corpus item page: the dialog reads only the fields a draft needs (slice 7).
+  card: DraftTarget | null;
   early: boolean;
   open: boolean;
   onOpenChange: (open: boolean) => void;
