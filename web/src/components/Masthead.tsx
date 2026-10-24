@@ -17,8 +17,8 @@ function initials(session: Session): string {
 }
 
 /**
- * The masthead carries only the sections this release has: This week, Drafts and Corpus arrive
- * with their slices. The avatar opens a small menu with the sign-out.
+ * The masthead carries only the sections this release has: Corpus arrives with its slice. The
+ * avatar opens a small menu with the sign-out.
  */
 export function Masthead({ session }: { session: Session }) {
   const image = session.user?.image;
@@ -48,6 +48,12 @@ export function Masthead({ session }: { session: Session }) {
           className="flex min-h-11 min-w-11 items-center justify-center hover:text-ink sm:min-h-0 sm:min-w-0"
         >
           Rising
+        </Link>
+        <Link
+          href="/#drafts"
+          className="flex min-h-11 min-w-11 items-center justify-center hover:text-ink sm:min-h-0 sm:min-w-0"
+        >
+          Drafts
         </Link>
         <Link
           href="/#runs"

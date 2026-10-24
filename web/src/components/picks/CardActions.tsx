@@ -50,6 +50,29 @@ export function ReadOriginal({ card }: { card: SuggestionCard }) {
   );
 }
 
+/**
+ * The way into the draft dialog. The card owns which item is previewed, so this button only says
+ * which one it is for: seven of them sit on one page.
+ */
+export function LinkedInPreview({
+  card,
+  onPreview,
+}: {
+  card: SuggestionCard;
+  onPreview: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onPreview}
+      aria-label={`LinkedIn post preview: ${card.title}`}
+      className={PRIMARY}
+    >
+      LinkedIn post preview
+    </button>
+  );
+}
+
 /** Opens the reading sheet with this item, so the API registers it as S1 before the question. */
 export function AskAbout({ card }: { card: SuggestionCard }) {
   const { askAbout } = useAskLauncher();

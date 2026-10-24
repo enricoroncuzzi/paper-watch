@@ -10,3 +10,10 @@ export type SuggestionsData = components["schemas"]["SuggestionsData"];
 export type SuggestionCard = components["schemas"]["SuggestionCardData"];
 export type SummaryData = components["schemas"]["SummaryData"];
 export type SummaryFieldData = components["schemas"]["SummaryFieldData"];
+
+export type Draft = components["schemas"]["DraftData"];
+export type DraftDetail = components["schemas"]["DraftDetail"];
+export type DraftsData = components["schemas"]["DraftsData"];
+export type DraftFlag = components["schemas"]["DraftFlagData"];
+/** The 503 body a failed draft generation returns. */
+export type DraftErrorBody = components["schemas"]["DraftError"];

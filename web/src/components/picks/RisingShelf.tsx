@@ -1,4 +1,4 @@
-import { AskAbout, ReadOriginal } from "@/components/picks/CardActions";
+import { AskAbout, LinkedInPreview, ReadOriginal } from "@/components/picks/CardActions";
 import { arxivLabel } from "@/components/picks/Chips";
 import { DismissButton } from "@/components/picks/DismissButton";
 import { compactCount } from "@/components/picks/Facts";
@@ -17,9 +17,11 @@ function signalFor(card: SuggestionCard): string | null {
 function RisingCard({
   card,
   onDismiss,
+  onPreview,
 }: {
   card: SuggestionCard;
   onDismiss: (itemId: string) => void;
+  onPreview: () => void;
 }) {
   const signal = signalFor(card);
   // The stored location a reader can recognise: an arXiv id, the repository, or the lab's name.
@@ -52,10 +54,15 @@ function RisingCard({
             {signal}
           </b>
         ) : null}
-        <div className="flex flex-wrap items-center gap-1.5">
+        {/* Every Rising item is not pick-grade, so every draft from here says it is early work. */}
+        <p className="text-[10.5px] leading-[1.4] text-warn sm:max-w-[220px] sm:text-right">
+          This item is early work; the draft will say so.
+        </p>
+        <div className="flex flex-wrap items-center justify-end gap-1.5">
           <ReadOriginal card={card} />
           <AskAbout card={card} />
           <DismissButton title={card.title} onDismiss={() => onDismiss(card.item_id)} />
+          <LinkedInPreview card={card} onPreview={onPreview} />
         </div>
       </div>
     </div>
@@ -70,10 +77,12 @@ export function RisingShelf({
   rising,
   note,
   onDismiss,
+  onPreview,
 }: {
   rising: SuggestionCard[];
   note: string;
   onDismiss: (itemId: string) => void;
+  onPreview: (card: SuggestionCard) => void;
 }) {
   return (
     <section
@@ -122,7 +131,12 @@ export function RisingShelf({
             <span className="ml-auto hidden text-[10.5px] text-ink-3 sm:inline">re-checked every run</span>
           </div>
           {rising.map((card) => (
-            <RisingCard key={card.item_id} card={card} onDismiss={onDismiss} />
+            <RisingCard
+              key={card.item_id}
+              card={card}
+              onDismiss={onDismiss}
+              onPreview={() => onPreview(card)}
+            />
           ))}
         </div>
       )}

@@ -1,4 +1,4 @@
-import { AskAbout, ReadOriginal } from "@/components/picks/CardActions";
+import { AskAbout, LinkedInPreview, ReadOriginal } from "@/components/picks/CardActions";
 import { AlsoLine, arxivLabel, Chip, TierChip } from "@/components/picks/Chips";
 import { DismissButton } from "@/components/picks/DismissButton";
 import { Facts } from "@/components/picks/Facts";
@@ -13,9 +13,11 @@ import type { SuggestionCard } from "@/lib/types";
 export function LeadPick({
   card,
   onDismiss,
+  onPreview,
 }: {
   card: SuggestionCard;
   onDismiss: (itemId: string) => void;
+  onPreview: () => void;
 }) {
   const arxiv = arxivLabel(card.url);
   return (
@@ -63,6 +65,9 @@ export function LeadPick({
         <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-1 sm:gap-1.5">
           <ReadOriginal card={card} />
           <AskAbout card={card} />
+          <div className="col-span-2 sm:col-span-1 [&>button]:w-full">
+            <LinkedInPreview card={card} onPreview={onPreview} />
+          </div>
         </div>
         {card.momentum_label ? (
           <p className="mt-2.5 text-[10.5px] leading-[1.45] text-ink-3">{card.momentum_label}</p>

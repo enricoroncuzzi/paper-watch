@@ -23,6 +23,7 @@ from paperwatch.api.app import (
     ToolData,
 )
 from paperwatch.api.responses import RateLimited, Refusal
+from paperwatch.api.routes.drafts import DraftData, DraftDetail, DraftError, DraftsData
 from paperwatch.api.routes.runs import RunDetail, RunsData, TodayData
 from paperwatch.api.routes.suggestions import SuggestionsData
 
@@ -44,6 +45,13 @@ FIXTURE_MODELS: dict[str, type[BaseModel]] = {
     "suggestions-empty": SuggestionsData,
     "suggestions-pending": SuggestionsData,
     "suggestions-javascript": SuggestionsData,
+    "drafts": DraftsData,
+    "drafts-empty": DraftsData,
+    "draft-detail": DraftDetail,
+    "draft-created": DraftData,
+    "draft-flagged": DraftData,
+    "draft-refused": DraftError,
+    "draft-capped": DraftError,
 }
 
 EVENT_MODELS: dict[str, type[BaseModel]] = {

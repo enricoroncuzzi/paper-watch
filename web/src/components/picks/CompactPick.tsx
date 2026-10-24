@@ -1,4 +1,4 @@
-import { AskAbout, ReadOriginal } from "@/components/picks/CardActions";
+import { AskAbout, LinkedInPreview, ReadOriginal } from "@/components/picks/CardActions";
 import { AlsoLine, arxivLabel, Chip, TierChip } from "@/components/picks/Chips";
 import { DismissButton } from "@/components/picks/DismissButton";
 import { Facts } from "@/components/picks/Facts";
@@ -10,10 +10,12 @@ export function CompactPick({
   card,
   rank,
   onDismiss,
+  onPreview,
 }: {
   card: SuggestionCard;
   rank: number;
   onDismiss: (itemId: string) => void;
+  onPreview: () => void;
 }) {
   const arxiv = arxivLabel(card.url);
   return (
@@ -45,6 +47,9 @@ export function CompactPick({
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-1 sm:gap-1.5">
           <ReadOriginal card={card} />
           <AskAbout card={card} />
+          <div className="col-span-2 sm:col-span-1 [&>button]:w-full">
+            <LinkedInPreview card={card} onPreview={onPreview} />
+          </div>
         </div>
         <div className="flex justify-end">
           <DismissButton title={card.title} onDismiss={() => onDismiss(card.item_id)} />
