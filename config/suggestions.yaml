@@ -1,0 +1,93 @@
+# How the suggestion list is built (Task 34, design section 15). The ranking function reads this
+# file and nothing else, so a change to what the list prefers is a reviewed edit here and never a
+# code change. Scores can be replayed from the components the API records on each card.
+#
+# weights: the five scored components. They must be non-negative and sum to 1.0, because a list
+# whose components do not add up to the score could not be audited from the recorded values.
+weights:
+  # Momentum is measured from a baseline at the window start, never from the lifetime average,
+  # because a paper that stopped gaining upvotes must not keep its early speed.
+  momentum: 0.30
+  recency: 0.25
+  shareability: 0.20
+  topic_fit: 0.15
+  credibility: 0.10
+# Recency halves the component every this many days. A lab post is a dated announcement, so it
+# ages a day faster than a paper.
+half_life_days:
+  paper: 5
+  lab_post: 4
+# How old an item may be and still be suggested at all.
+window_days:
+  paper: 21
+  lab_post: 14
+# The momentum window: upvotes gained over the last few days, not over the item's whole life.
+momentum_days: 3
+# A one-off event bonus, added after the weighted sum because it is news rather than a rate.
+event_bonus:
+  promoted_to_peer_reviewed: 0.10
+  promotion_window_days: 14
+  repo_appeared: 0.05
+  repo_window_days: 7
+# Credibility per tier and basis: only the top slots need evidence a reader can check.
+credibility:
+  peer_reviewed: 1.0
+  vetted_by_upvotes_or_citations: 0.8
+  lab_blog: 0.7
+  vetted_by_lab_author: 0.6
+# Slots: five visible picks (one lead, four compact) and the Rising shelf.
+picks: 5
+rising: 3
+# The credibility a pick needs unless its lab is one the reader recognises (see below), in which
+# case a lab post may take a pick too.
+pick_min_credibility: 0.8
+# Title-only or short posts carry too little text for a checked 30-second summary, so they are
+# never suggested: a card whose summary could only be invented is worse than no card.
+min_text_chars: 400
+# Maximal marginal relevance: how much score outweighs novelty when the next pick is chosen, how
+# deep the pool it chooses from is, and how similar two items must be to become one card.
+mmr_lambda: 0.7
+mmr_pool: 30
+duplicate_cosine: 0.90
+# No topic profile may fill the whole list, so one subject never crowds out the others.
+max_picks_per_profile: 3
+# Stars count for at most this many, so a repository with a hundred thousand stars and one with
+# ten thousand share the top of the scale.
+stars_full_at: 10000
+# Labs a reader of this corpus recognises, taken from the active feeds in config/feeds.yaml and
+# every lab_authors entry in config/admission.yaml. A presentation choice, not a reliability rule:
+# it only lifts a lab post into the picks and lifts shareability. The captain may edit it freely,
+# and an edit needs no release.
+recognisable_names:
+  # The 14 active feeds (config/feeds.yaml), a lab post's own author.
+  - Microsoft Agent Framework
+  - Microsoft Foundry
+  - LangChain
+  - Sourcegraph
+  - Arize AI
+  - Braintrust
+  - Zep
+  - Temporal
+  - Modal
+  - Sierra
+  - OpenAI
+  - Google DeepMind
+  - Microsoft Research
+  - Mistral AI
+  # Every lab_authors entry (config/admission.yaml), the arXiv team names that vet a paper.
+  - OpenAI
+  - DeepSeek-AI
+  - Qwen
+  - Qwen Team
+  - Kimi Team
+  - MiniMax
+  - Bytedance Seed
+  - ByteDance Seed
+  - Gemini Team
+  - Gemma Team
+  - Tencent Hunyuan Team
+  - StepFun
+  - MiniCPM Team
+  - Ant Group
+  - Ling Team
+  - Xiaomi LLM-Core Team
