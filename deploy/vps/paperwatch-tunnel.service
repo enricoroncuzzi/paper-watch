@@ -1,0 +1,24 @@
+# The Tailscale tunnel agent in userspace, as a systemd user unit for the `paperwatch` account.
+# Install into ~/.config/systemd/user/ and follow docs/deploy/vps.md section 16. The Funnel
+# mapping itself is tailscaled state, set once by the runbook, not by this unit.
+[Unit]
+Description=Paper Watch tunnel (Tailscale userspace)
+Documentation=https://github.com/enricoroncuzzi/paperwatch/blob/main/docs/deploy/vps.md
+# No relationship to the API: a tunnel restart must not stop or delay an answer.
+[Service]
+Type=simple
+# Userspace networking needs no root and no TUN device; the socket and state stay in the account's
+# home, so nothing outside /home/paperwatch is written.
+ExecStart=/home/paperwatch/.local/bin/tailscaled --tun=userspace-networking --statedir=%h/.local/state/tailscale --socket=%h/.local/state/tailscale/tailscaled.sock
+# The agent usually sits under 100 MB and never holds a model, so it has its own small cap and
+# stays out of paperwatch.slice: a tunnel bug must not be able to take the slice's budget.
+MemoryMax=150M
+MemorySwapMax=0
+# Yield to the API and the ingestion on a shared 2-vCPU machine.
+Nice=10
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target
