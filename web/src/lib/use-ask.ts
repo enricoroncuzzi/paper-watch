@@ -235,7 +235,11 @@ export class AskController {
         this.set({ ...this.state, status: "error", error: errorFor(response.status, payload) });
         return this.state.status;
       }
-      for await (const event of parseSse(response.body, () => this.startWatchdog(controller))) {
+      // Only the active request may re-arm the watchdog: a late byte on an aborted or superseded
+      // stream would otherwise start a timer that nothing clears.
+      for await (const event of parseSse(response.body, () => {
+        if (this.inFlight === controller) this.startWatchdog(controller);
+      })) {
         this.dispatch({ type: "event", event: event.event, data: event.data });
       }
       // A stream that ends without an `answer` or an `error` lost its connection.
@@ -244,8 +248,11 @@ export class AskController {
       // An abort is the user's own doing; anything else is a connection that died.
       if (!controller.signal.aborted) this.dispatch({ type: "dropped" });
     } finally {
-      this.stopWatchdog();
-      if (this.inFlight === controller) this.inFlight = null;
+      // Only the active request owns the watchdog: an older request's abort must not disarm it.
+      if (this.inFlight === controller) {
+        this.stopWatchdog();
+        this.inFlight = null;
+      }
     }
     return this.state.status;
   };
