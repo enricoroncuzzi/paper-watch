@@ -297,12 +297,52 @@ def test_hf_a_hostile_listing_time_is_none() -> None:
                 "submittedOnDailyAt": "2026-10-09T05:00:00+05:00",
             }
         },
+        # The span is inclusive at both ends, and one second outside either end is dropped.
+        {
+            "paper": {
+                "id": "2510.00007",
+                "upvotes": 7,
+                "submittedOnDailyAt": "2019-12-31T23:59:59Z",
+            }
+        },
+        {
+            "paper": {
+                "id": "2510.00008",
+                "upvotes": 8,
+                "submittedOnDailyAt": "2020-01-01T00:00:00Z",
+            }
+        },
+        {
+            "paper": {
+                "id": "2510.00009",
+                "upvotes": 9,
+                "submittedOnDailyAt": "2100-01-01T00:00:00Z",
+            }
+        },
+        {
+            "paper": {
+                "id": "2510.00010",
+                "upvotes": 10,
+                "submittedOnDailyAt": "2100-01-01T00:00:01Z",
+            }
+        },
     ]
     respx.get(HF_URL).mock(return_value=httpx.Response(200, json=rows))
     src = HfDailySource(httpx.Client())
     out = src.papers(date(2026, 10, 9), date(2026, 10, 9))
-    for dropped in ("2510.00001", "2510.00002", "2510.00003", "2510.00004", "2510.00005"):
+    for dropped in (
+        "2510.00001",
+        "2510.00002",
+        "2510.00003",
+        "2510.00004",
+        "2510.00005",
+        "2510.00007",
+        "2510.00010",
+    ):
         assert out[dropped].listed_at is None
+    # Both ends of the span are kept, so the bounds are inclusive and exactly 2020 to 2100.
+    assert out["2510.00008"].listed_at == datetime(2020, 1, 1, tzinfo=UTC)
+    assert out["2510.00009"].listed_at == datetime(2100, 1, 1, tzinfo=UTC)
     # The normal row keeps its instant, normalised to UTC whatever offset it arrived with.
     assert out["2510.00006"].listed_at == datetime(2026, 10, 9, tzinfo=UTC)
     assert out["2510.00006"].listed_at.utcoffset() == timedelta(0)

@@ -36,9 +36,9 @@ GITHUB_REPO_MAX_CHARS = 200
 # hostile or enormous value would cost the whole write for every paper: new style 2510.12345, old
 # style hep-th/9901001 (arxiv_base_id has already stripped the version).
 ARXIV_ID = re.compile(r"[0-9]{4}\.[0-9]{4,5}|[a-z][a-z-]*/[0-9]{7}")
-# The daily listing began in 2023. A stamp outside this span is a bad extra, and one at the edge of
-# years 1..9999 cannot be read back whenever the database session time zone moves it across the
-# edge, which would fail every later run and search.
+# The daily listing began in 2023; the floor leaves a margin below that. A stamp outside this span
+# is a bad extra, and one at the edge of years 1..9999 cannot be read back whenever the database
+# session time zone moves it across the edge, which would fail every later run and search.
 LISTED_AT_FLOOR = datetime(2020, 1, 1, tzinfo=UTC)
 LISTED_AT_CEILING = datetime(2100, 1, 1, tzinfo=UTC)
 log = structlog.get_logger()
