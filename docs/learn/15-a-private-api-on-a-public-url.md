@@ -71,8 +71,8 @@ key or a host, and the log line carries a reason code only.
 ## What this does not do
 
 The gate does not rate-limit (that is `api/limits.py`, which counts each credential subject the
-gate stored and shares the answer slots across callers), does not decide which routes exist (FastAPI's router still answers 405),
-and does not protect the database: the API's Postgres role is read-only apart from what
+gate stored and shares the answer slots across callers), does not decide which routes exist
+(FastAPI's router still answers 405), and does not protect the database: the API's Postgres role is read-only apart from what
 `docs/deploy/vps.md` grants it. `/docs`, `/redoc` and `/openapi.json` are served, not removed; the
 gate puts the same credential in front of them, which is why a browser without the header gets
 401.
