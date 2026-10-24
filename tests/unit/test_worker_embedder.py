@@ -136,6 +136,58 @@ def test_the_worker_raises_its_own_oom_score(workers: Callable[..., WorkerEmbedd
     assert worker.embed(["__oom__"])[0][0] == 1000
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="the RSS figures come from /proc")
+def test_the_child_memory_is_the_real_proc_figure(
+    workers: Callable[..., WorkerEmbedder],
+) -> None:
+    # The default reader against a real child and a real /proc: the child holds the interpreter and
+    # the fake model, so its anonymous memory is a plausible figure rather than None.
+    worker = workers()
+    worker.embed(["hello"])
+    rss = worker.child_rss_mb()
+    assert rss is not None and 5 < rss < 1_000
+
+
+def test_no_child_holds_no_memory(workers: Callable[..., WorkerEmbedder]) -> None:
+    # Nothing was spawned yet: the gate gets None and counts the child as zero.
+    assert workers().child_rss_mb() is None
+
+
+def test_a_dead_child_holds_no_memory(workers: Callable[..., WorkerEmbedder]) -> None:
+    worker = workers()
+    worker.embed(["hello"])
+    worker.stop()
+    assert worker.child_rss_mb() is None
+
+
+def test_an_unreadable_child_status_holds_no_memory(
+    workers: Callable[..., WorkerEmbedder],
+) -> None:
+    # A /proc read that fails says nothing about the child's memory, so it counts as zero rather
+    # than as a reason not to trust the reading: the gate must still be able to say "short".
+    worker = workers(read_status=lambda pid: None)
+    worker.embed(["hello"])
+    assert worker.child_rss_mb() is None
+
+
+def test_the_child_reports_its_own_anonymous_memory(
+    workers: Callable[..., WorkerEmbedder],
+) -> None:
+    # RssAnon is the memory killing the child frees; RssFile is page cache the kernel already
+    # counts as reclaimable, so counting it would make the gate overestimate what a kill buys.
+    seen: list[int] = []
+    status = "Name:\tpython\nVmRSS:\t  300000 kB\nRssAnon:\t  225280 kB\nRssFile:\t   47104 kB\n"
+
+    def read_status(pid: int) -> str | None:
+        seen.append(pid)
+        return status
+
+    worker = workers(read_status=read_status)
+    worker.embed(["hello"])
+    assert worker.child_rss_mb() == 220.0
+    assert seen and seen[-1] == worker._process.pid  # type: ignore[attr-defined]
+
+
 def test_serve_reports_an_error_line_without_dying() -> None:
     # A bad request is a line the parent can read, not a crash: the API turns it into a text-only
     # search for that call and keeps the child for the next one.

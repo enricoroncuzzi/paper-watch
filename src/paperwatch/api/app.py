@@ -198,14 +198,24 @@ def live_deps(settings: Settings, verifier: Verifier) -> AgentDeps:
         pool_timeout=ANSWER_POOL_TIMEOUT_S,
     )
     read_factory = make_session_factory(read_engine)
-    search_mode = SearchModeGate(read_factory, clock=lambda: datetime.now(UTC))
+    # The gate needs the live child's own memory, and the child needs the gate's verdict before it
+    # exits, so the two close over each other's local: both are called after `live_deps` returns.
+    worker: WorkerEmbedder | None = None
+
+    def child_rss_mb() -> float | None:
+        return worker.child_rss_mb() if worker is not None else None
+
+    search_mode = SearchModeGate(
+        read_factory, clock=lambda: datetime.now(UTC), read_child_rss=child_rss_mb
+    )
     # The model lives in a child process and exits when idle or when the ingestion needs the memory
     # (ADR 0013). Azure embeddings are the kept Azure proof, not the deployment: they run in
     # process because there is no local model to release.
     if settings.embedding_provider == "azure":
         embedder: Embedder = make_embedder(settings, Ledger(settings.max_tokens_per_run))
     else:
-        embedder = WorkerEmbedder(should_stop=lambda: search_mode.current().mode == "text_only")
+        worker = WorkerEmbedder(should_stop=lambda: search_mode.current().mode == "text_only")
+        embedder = worker
     profiles = load_profiles(PROFILES_PATH)
     usage_factory = make_session_factory(usage_engine)
     # The tunnel's own host name is added to the loopback ones; unset means loopback only, and the

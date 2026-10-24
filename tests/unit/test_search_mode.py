@@ -4,6 +4,7 @@ The gate reads the run record and two `/proc` files; every reader and the clock 
 test covers each rule and the two second cache without a database or a real server.
 """
 
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -49,6 +50,7 @@ def _gate(
     psi: str | None = None,
     cache_s: float = SEARCH_MODE_CACHE_S,
     factory_calls: list[int] | None = None,
+    read_child_rss: Callable[[], float | None] = lambda: None,
 ) -> SearchModeGate:
     clock = clock or Clock()
 
@@ -62,6 +64,7 @@ def _gate(
         clock=clock,
         read_meminfo=lambda: meminfo,
         read_psi=lambda: psi,
+        read_child_rss=read_child_rss,
         cache_s=cache_s,
     )
 
@@ -119,6 +122,35 @@ def test_the_decision_is_cached_for_two_seconds() -> None:
     clock.now += timedelta(seconds=SEARCH_MODE_CACHE_S + 0.1)
     assert gate.current().mode == "hybrid"
     assert len(calls) == 2
+
+
+def test_a_live_model_child_does_not_trip_the_memory_gate() -> None:
+    # Measured on the server on 2026-10-24: idle MemAvailable 1104 MB, the API 130 MB and its
+    # model child 213 to 219 MB RssAnon. The child's own memory is what killing it frees, so the
+    # gate must add it back and stay hybrid instead of turning keyword-only on its own child.
+    decision = _gate(meminfo=_meminfo(700), psi=_psi(0.0), read_child_rss=lambda: 220.0).current()
+    assert decision == ModeDecision("hybrid", "ok")
+
+
+def test_the_child_memory_is_not_enough_when_the_machine_is_short() -> None:
+    # 500 + 220 is still under the threshold: killing the child would not buy the machine its
+    # memory back, so the search stays keyword-only and the child exits.
+    decision = _gate(meminfo=_meminfo(500), psi=_psi(0.0), read_child_rss=lambda: 220.0).current()
+    assert decision == ModeDecision("text_only", "memory")
+
+
+def test_an_unreadable_child_status_counts_as_no_child() -> None:
+    # A /proc read that fails must not make the gate trust memory it cannot see; the reader
+    # answers None and the child counts as nothing.
+    decision = _gate(meminfo=_meminfo(700), psi=_psi(0.0), read_child_rss=lambda: None).current()
+    assert decision == ModeDecision("text_only", "memory")
+
+
+def test_no_child_counts_as_no_child() -> None:
+    # The default reader: an idle API with no model child gets the plain MemAvailable number.
+    assert _gate(meminfo=_meminfo(700), psi=_psi(0.0)).current() == ModeDecision(
+        "text_only", "memory"
+    )
 
 
 @pytest.mark.parametrize("available", [799, 800])

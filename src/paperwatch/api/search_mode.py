@@ -6,6 +6,11 @@ signals: while a main pass is running, or memory is short, a search uses full-te
 so. The database is the source of truth for the run; `/proc` is the source for memory, and a Mac
 (no `/proc`) simply does not report pressure there.
 
+A live model child is not pressure on the machine: its own anonymous memory is exactly what
+killing it would free, so the gate adds it back before comparing. Without that, an idle API
+holding its child would read its own memory as shortage, turn keyword-only and kill the child it
+just paid to load.
+
 The decision is cached for two seconds: a tool call is a few database queries and checking the run
 table before every one of them would be noise, while two seconds is far shorter than a main pass.
 """
@@ -89,12 +94,14 @@ class SearchModeGate:
         clock: Callable[[], datetime],
         read_meminfo: Callable[[], str | None] = lambda: _read(MEMINFO_PATH),
         read_psi: Callable[[], str | None] = lambda: _read(PSI_MEMORY_PATH),
+        read_child_rss: Callable[[], float | None] = lambda: None,
         cache_s: float = SEARCH_MODE_CACHE_S,
     ) -> None:
         self._session_factory = session_factory
         self._clock = clock
         self._read_meminfo = read_meminfo
         self._read_psi = read_psi
+        self._read_child_rss = read_child_rss
         self._cache_s = cache_s
         self._lock = threading.Lock()
         self._cached: ModeDecision | None = None
@@ -134,8 +141,12 @@ class SearchModeGate:
             return ModeDecision("text_only", "ingestion", started_at)
 
         available = available_mb(self._read_meminfo())
-        if available is not None and available < SEARCH_MODE_MIN_AVAILABLE_MB:
-            return ModeDecision("text_only", "memory")
+        if available is not None:
+            # The child's own anonymous memory is what its exit gives back, so it is not part of
+            # the shortage; a missing or unreadable child counts as nothing.
+            available += self._read_child_rss() or 0.0
+            if available < SEARCH_MODE_MIN_AVAILABLE_MB:
+                return ModeDecision("text_only", "memory")
         pressure = psi_some_avg10(self._read_psi())
         if pressure is not None and pressure > SEARCH_MODE_MAX_PSI_SOME_AVG10:
             return ModeDecision("text_only", "memory")
