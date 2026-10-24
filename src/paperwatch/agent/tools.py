@@ -13,6 +13,7 @@ body also runs in a savepoint: one failed statement would otherwise abort the se
 and fail every later tool call in the same answer.
 """
 
+import contextlib
 import html
 import threading
 from collections.abc import Callable, Iterator
@@ -209,6 +210,7 @@ def make_tools(
             with _database_work(session, tool):
                 yield session
             return
+        short = None
         try:
             short = session_factory()
             # The tools only read, so the database enforces it per session: a tool added later
@@ -216,7 +218,13 @@ def make_tools(
             short.execute(text("SET TRANSACTION READ ONLY"))
         except SQLAlchemyError as exc:
             # A pool timeout or a connect failure must reach the model as a tool message, not as a
-            # raw OperationalError whose repr ends up in the prompt.
+            # raw OperationalError whose repr ends up in the prompt. A session that was checked
+            # out must go back to the pool even though its first statement failed.
+            if short is not None:
+                with contextlib.suppress(Exception):
+                    short.rollback()
+                with contextlib.suppress(Exception):
+                    short.close()
             log.error("tool_database_error", tool=tool, error=str(exc))
             raise ToolException(
                 f"{tool} failed on a database error; try the same call again."

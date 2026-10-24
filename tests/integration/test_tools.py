@@ -810,20 +810,27 @@ def test_a_broken_tool_session_is_a_tool_message_not_a_raw_error(engine: Engine)
     from paperwatch.agent.tools import make_tools
 
     class Broken:
+        def __init__(self) -> None:
+            self.rolled_back = False
+            self.closed = False
+
         def execute(self, statement: object, *args: object, **kwargs: object) -> object:
             raise OperationalError("SET TRANSACTION READ ONLY", {}, Exception("pool is down"))
 
         def rollback(self) -> None:
-            raise AssertionError("a session that never opened must not roll back")
+            self.rolled_back = True
 
         def close(self) -> None:
-            raise AssertionError("a session that never opened must not close")
+            self.closed = True
 
+    broken = Broken()
     tools = dict(
         (t.name, t)
         for t in make_tools(  # type: ignore[arg-type]
-            None, FakeEmbedder(), SourceRegistry(), session_factory=lambda: Broken()
+            None, FakeEmbedder(), SourceRegistry(), session_factory=lambda: broken
         )
     )
     out = tools["search_corpus"].invoke({"query": "x"})
     assert "database error" in out and "OperationalError" not in out
+    # N6: the checked-out connection is released even when its first statement failed.
+    assert broken.rolled_back and broken.closed

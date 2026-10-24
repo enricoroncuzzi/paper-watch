@@ -195,7 +195,8 @@ def test_api_check_never_puts_the_token_on_curl_argv(engine: Engine, tmp_path: P
         '  case "$arg" in\n'
         "    @*)\n"
         "      file=${arg#@}\n"
-        "      mode=$(python3 -c 'import os,stat,sys;print(oct(stat.S_IMODE(os.stat(sys.argv[1]).st_mode)))' \"$file\")\n"
+        "      mode=$(python3 -c 'import os,stat,sys;"
+        "print(oct(stat.S_IMODE(os.stat(sys.argv[1]).st_mode)))' \"$file\")\n"
         f'      printf \'HEADER %s %s\\n\' "$mode" "$(cat "$file")" >> {shlex.quote(str(log))}\n'
         "      ;;\n"
         "  esac\n"
