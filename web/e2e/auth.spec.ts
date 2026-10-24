@@ -15,7 +15,8 @@ test("the e2e session signs in and reaches the page", async ({ page }) => {
   await page.goto("/signin");
   await page.getByRole("button", { name: "Sign in as the test owner" }).click();
   await expect(page).toHaveURL(/\/$/);
-  await expect(page.getByText("Signed in as GitHub account 1.")).toBeVisible();
+  await expect(page.getByTestId("today-strip")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Runs" })).toBeVisible();
 });
 
 test("an api route without a session is 401", async ({ request }) => {

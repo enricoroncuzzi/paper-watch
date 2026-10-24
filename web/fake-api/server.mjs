@@ -57,6 +57,16 @@ function todayFor(name) {
   return fixture("today");
 }
 
+function runsFor(name) {
+  const base = fixture("runs").runs;
+  // A scenario about today's run must not leave the Runs grid showing a different, healthy one.
+  if (name === "unhealthy" || name === "followup" || name === "text_only") {
+    const first = todayFor(name).run;
+    return { runs: [first, ...base.filter((run) => run.id !== first.id)] };
+  }
+  return { runs: base };
+}
+
 async function serveStream(name, response) {
   const frames = stream(name);
   response.writeHead(200, {
@@ -129,7 +139,7 @@ const server = createServer(async (request, response) => {
       json(response, 200, { runs: [] });
       return;
     }
-    json(response, 200, fixture("runs"));
+    json(response, 200, runsFor(scenario));
     return;
   }
 
