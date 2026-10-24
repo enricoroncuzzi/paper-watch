@@ -63,6 +63,122 @@ def test_a_superlative_not_in_the_source_fails() -> None:
     assert "superlative:why:breakthrough" in failed
 
 
+def test_a_hyphenated_first_does_not_license_first() -> None:
+    # "first-order" is a different claim from "the first method", so it backs nothing.
+    text = "We apply first-order optimisation to the planner over 41 tasks."
+    raw = good()
+    raw["what"] = {
+        "text": "The work applies first-order optimisation to the planner.",
+        "quote": "first-order optimisation to the planner",
+    }
+    raw["result"] = {"text": "The work covers 41 tasks.", "quote": "the planner over 41 tasks"}
+    raw["why"]["text"] = "This is the first method to plan tool calls in one pass."
+
+    failed = check_summary(raw, title="A planning benchmark", text=text)
+
+    assert "superlative:why:first" in failed
+
+
+def test_a_plural_breakthrough_does_not_license_the_claim() -> None:
+    # The paper discussing past "breakthroughs" has not made one of its own.
+    text = "The authors list earlier breakthroughs in tool use and test 41 tasks."
+    raw = good()
+    raw["what"] = {
+        "text": "The work reviews earlier breakthroughs in tool use.",
+        "quote": "earlier breakthroughs in tool use",
+    }
+    raw["result"] = {
+        "text": "It tests 41 tasks.",
+        "quote": "breakthroughs in tool use and test 41 tasks",
+    }
+    raw["why"]["text"] = "This is a breakthrough for cheap harness comparisons."
+
+    failed = check_summary(raw, title="A tool-use review", text=text)
+
+    assert "superlative:why:breakthrough" in failed
+
+
+def test_a_first_ever_compound_is_still_a_first_claim() -> None:
+    # Detection is loose, so an invented compound cannot slip past a hyphen-aware boundary.
+    text = "We apply a two-stage planner to tool calls over 41 tasks."
+    raw = good()
+    raw["what"] = {
+        "text": "The work applies a two-stage planner to tool calls.",
+        "quote": "a two-stage planner to tool calls",
+    }
+    raw["result"] = {"text": "It covers 41 tasks.", "quote": "tool calls over 41 tasks"}
+    raw["why"]["text"] = "This is a first-ever method for planning tool calls."
+
+    failed = check_summary(raw, title="A planning benchmark", text=text)
+
+    assert "superlative:why:first" in failed
+
+
+def test_a_first_order_compound_in_both_is_backed() -> None:
+    # The summary and the source use the same hyphenated token, so the word is the paper's own.
+    text = "We apply first-order methods to the planner over 41 tasks."
+    raw = good()
+    raw["what"] = {
+        "text": "The work applies first-order methods to the planner.",
+        "quote": "apply first-order methods to the planner",
+    }
+    raw["result"] = {"text": "It covers 41 tasks.", "quote": "the planner over 41 tasks"}
+    raw["why"]["text"] = "The first-order methods keep the planner cheap to run."
+
+    failed = check_summary(raw, title="A planning benchmark", text=text)
+
+    assert [check for check in failed if check.startswith("superlative:")] == []
+
+
+def test_a_first_ever_compound_in_both_is_backed() -> None:
+    # "first-ever" in the source is a whole-token match even though it is not the bare word.
+    text = "This is a first-ever benchmark for agents that plan over 41 tasks."
+    raw = good()
+    raw["what"] = {
+        "text": "The work is a first-ever benchmark for agents that plan.",
+        "quote": "a first-ever benchmark for agents that plan",
+    }
+    raw["result"] = {"text": "It covers 41 tasks.", "quote": "over 41 tasks in all"}
+    raw["why"]["text"] = "The first-ever benchmark makes comparisons cheaper."
+
+    failed = check_summary(raw, title="Long horizons", text=text)
+
+    assert [check for check in failed if check.startswith("superlative:")] == []
+
+
+def test_a_source_that_says_first_licenses_first() -> None:
+    text = (
+        "This is the first benchmark for agents that plan over long horizons. "
+        "The authors report 41 tasks."
+    )
+    raw = good()
+    raw["what"] = {
+        "text": "The work is the first benchmark for agents that plan.",
+        "quote": "This is the first benchmark for agents that plan",
+    }
+    raw["result"] = {"text": "It reports 41 tasks.", "quote": "The authors report 41 tasks"}
+    raw["why"]["text"] = "The first benchmark of its kind makes comparisons cheaper."
+
+    failed = check_summary(raw, title="Long horizons", text=text)
+
+    assert [check for check in failed if check.startswith("superlative:")] == []
+
+
+def test_a_state_of_the_art_source_licenses_the_phrase() -> None:
+    text = "The method reaches state-of-the-art accuracy on 41 tasks. The authors report the gains."
+    raw = good()
+    raw["what"] = {
+        "text": "The method reaches state-of-the-art accuracy.",
+        "quote": "The method reaches state-of-the-art accuracy",
+    }
+    raw["result"] = {"text": "It covers 41 tasks.", "quote": "accuracy on 41 tasks"}
+    raw["why"]["text"] = "The state-of-the-art result on 41 tasks is the paper's claim."
+
+    failed = check_summary(raw, title="Accuracy", text=text)
+
+    assert [check for check in failed if check.startswith("superlative:")] == []
+
+
 def test_interpretation_fields_need_no_quote() -> None:
     raw = good()
     assert "quote" not in raw["why"]

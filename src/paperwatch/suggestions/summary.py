@@ -59,6 +59,8 @@ _SENTENCE = re.compile(r"(?<=[.!?])\s+")
 # A word as a name check sees it: letters, digits and the punctuation real names carry.
 _TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9+.'\-]*")
 _HYPHENATED_LETTERS = re.compile(r"[A-Za-z]-[A-Za-z]")
+# A character that continues a token: the hyphen joins words for matching, so "first-order" is one.
+_TOKEN_CHAR = re.compile(r"[\w-]")
 # Typographic variants a model produces that are the same character to a reader. Written as escapes
 # so this file contains no dash character of its own.
 _TRANSLATION = str.maketrans(
@@ -122,7 +124,7 @@ def check_summary(raw: Mapping[str, Any], *, title: str, text: str) -> list[str]
         failed += [
             f"superlative:{name}:{word}"
             for word in SUPERLATIVES
-            if word in body and word not in source
+            if _superlative_is_unbacked(body, source, word)
         ]
         if len(field["text"].split()) > MAX_FIELD_WORDS:
             failed.append(f"length:{name}")
@@ -324,6 +326,37 @@ def _unknown_names(text: str, source: str) -> list[str]:
             if re.search(rf"(?<!\w){re.escape(_normalise(token))}(?!\w)", source) is None:
                 unknown.append(token)
     return unknown
+
+
+def _superlative_is_unbacked(body: str, source: str, word: str) -> bool:
+    """True when the summary uses the superlative and the source does not carry it."""
+    # Detection is loose, so a compound cannot hide the claim: "first-ever" is still a "first".
+    tokens = _hyphen_tokens(body, word)
+    if not tokens:
+        return False
+    # Acceptance is strict: the source needs the bare word, or the summary's own compound, as a
+    # whole token. A hyphen joins words, so "first-order" never backs "the first method".
+    if _whole(source, word):
+        return False
+    return not all(_whole(source, token) for token in tokens)
+
+
+def _hyphen_tokens(normalised: str, word: str) -> set[str]:
+    # The hyphenated token each use of the word sits in, so "first-order" can be looked up whole.
+    tokens = set()
+    for match in re.finditer(rf"(?<!\w){re.escape(word)}(?!\w)", normalised):
+        start, end = match.span()
+        while start and _TOKEN_CHAR.match(normalised[start - 1]):
+            start -= 1
+        while end < len(normalised) and _TOKEN_CHAR.match(normalised[end]):
+            end += 1
+        tokens.add(normalised[start:end])
+    return tokens
+
+
+def _whole(source: str, phrase: str) -> bool:
+    # Letters, digits, underscore and hyphen all count as part of the word on both sides.
+    return re.search(rf"(?<![\w-]){re.escape(phrase)}(?![\w-])", source) is not None
 
 
 def _name_like(token: str, *, first: bool) -> bool:
