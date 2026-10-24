@@ -36,6 +36,12 @@ the standing rules.
   quotes, numbers and names against the stored text, falling back to the abstract's excerpt;
   `cards.py` builds the card a reader sees. The route, its 5-minute cache and the background
   summary queue are `api/routes/suggestions.py` and `api/summary_queue.py` (`docs/learn/18`).
+- `src/paperwatch/drafts/` is the LinkedIn draft: `generate.py` makes the one OpenRouter-only call
+  (`purpose="draft"`, data collection denied, no fallback), `check.py` is the code check over its
+  numbers, quotes, links, first-person claims, attribution, early notice and copying, and
+  `prompts.py` holds the versioned prompt. The route is `api/routes/drafts.py`, the table is
+  migration 0007, and the page's dialog and Drafts section are `web/src/components/drafts/`
+  (`docs/adr/0015-linkedin-drafts.md`). The point of view is stored with the draft and never logged.
 - `src/paperwatch/agent/` is the answering layer: the read-only corpus tools (`tools.py`) with
   the per-answer `SourceRegistry` that issues the aliases S1, S2, ... (`sources.py`), the LangGraph
   graph that loops model and tools (`graph.py`), and `citations.py`, which checks every finished

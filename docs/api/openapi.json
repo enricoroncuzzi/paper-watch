@@ -3,7 +3,7 @@
   "info": {
     "title": "Paper Watch API",
     "summary": "Ask questions about the stored AI-research corpus and stream cited answers.",
-    "version": "0.4"
+    "version": "0.5"
   },
   "paths": {
     "/runs": {
@@ -341,6 +341,362 @@
           },
           "404": {
             "description": "No admitted item with that id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/drafts": {
+      "post": {
+        "summary": "Create Draft",
+        "description": "Generate, check and save one draft; generating is saving.",
+        "operationId": "create_draft_drafts_post",
+        "security": [
+          {
+            "VercelOidcOrHmac": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DraftRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DraftData"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The Host is not allowed, or the Content-Length is bad.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The credential is missing or invalid; `WWW-Authenticate: Bearer`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request carries an Origin header.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No admitted item, or no draft, with that id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The stored text is too short to draft from, or a field is invalid."
+          },
+          "429": {
+            "description": "The per-client limit refused the request; also sends Retry-After.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RateLimited"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "No draft was generated: the daily cap (`retry_at`), no compliant provider, or a reply that could not be read as a draft.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DraftError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "summary": "List Drafts",
+        "operationId": "list_drafts_drafts_get",
+        "security": [
+          {
+            "VercelOidcOrHmac": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 50,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DraftsData"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The Host is not allowed, or the Content-Length is bad.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The credential is missing or invalid; `WWW-Authenticate: Bearer`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request carries an Origin header.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/drafts/{draft_id}/regenerate": {
+      "post": {
+        "summary": "Regenerate Draft",
+        "description": "Re-run the stored inputs and point of view; the old draft stays, linked.",
+        "operationId": "regenerate_draft_drafts__draft_id__regenerate_post",
+        "security": [
+          {
+            "VercelOidcOrHmac": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "draft_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Draft Id"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DraftData"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The Host is not allowed, or the Content-Length is bad.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The credential is missing or invalid; `WWW-Authenticate: Bearer`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request carries an Origin header.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No admitted item, or no draft, with that id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The stored text is too short to draft from, or a field is invalid."
+          },
+          "429": {
+            "description": "The per-client limit refused the request; also sends Retry-After.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RateLimited"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "No draft was generated: the daily cap (`retry_at`), no compliant provider, or a reply that could not be read as a draft.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DraftError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/drafts/{draft_id}": {
+      "get": {
+        "summary": "Get Draft",
+        "operationId": "get_draft_drafts__draft_id__get",
+        "security": [
+          {
+            "VercelOidcOrHmac": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "draft_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Draft Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DraftDetail"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The Host is not allowed, or the Content-Length is bad.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The credential is missing or invalid; `WWW-Authenticate: Bearer`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request carries an Origin header.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No saved draft with that id.",
             "content": {
               "application/json": {
                 "schema": {
@@ -867,6 +1223,347 @@
           "resolved_at"
         ],
         "title": "DeadLetterData"
+      },
+      "DraftData": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "item_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Item Id"
+          },
+          "item_title": {
+            "type": "string",
+            "title": "Item Title"
+          },
+          "item_url": {
+            "type": "string",
+            "title": "Item Url"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "regenerated_from": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Regenerated From"
+          },
+          "language": {
+            "type": "string",
+            "title": "Language"
+          },
+          "model": {
+            "type": "string",
+            "title": "Model"
+          },
+          "hook": {
+            "type": "string",
+            "title": "Hook"
+          },
+          "body": {
+            "type": "string",
+            "title": "Body"
+          },
+          "hashtags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Hashtags"
+          },
+          "source_link": {
+            "type": "string",
+            "title": "Source Link"
+          },
+          "flags": {
+            "items": {
+              "$ref": "#/components/schemas/DraftFlagData"
+            },
+            "type": "array",
+            "title": "Flags"
+          },
+          "counts": {
+            "additionalProperties": {
+              "prefixItems": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "integer"
+                }
+              ],
+              "type": "array",
+              "maxItems": 2,
+              "minItems": 2
+            },
+            "type": "object",
+            "title": "Counts"
+          },
+          "chars": {
+            "type": "integer",
+            "title": "Chars"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "item_id",
+          "item_title",
+          "item_url",
+          "created_at",
+          "regenerated_from",
+          "language",
+          "model",
+          "hook",
+          "body",
+          "hashtags",
+          "source_link",
+          "flags",
+          "counts",
+          "chars"
+        ],
+        "title": "DraftData",
+        "description": "One saved draft as the list shows it; the detail adds the owner's own words."
+      },
+      "DraftDetail": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "item_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Item Id"
+          },
+          "item_title": {
+            "type": "string",
+            "title": "Item Title"
+          },
+          "item_url": {
+            "type": "string",
+            "title": "Item Url"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "regenerated_from": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Regenerated From"
+          },
+          "language": {
+            "type": "string",
+            "title": "Language"
+          },
+          "model": {
+            "type": "string",
+            "title": "Model"
+          },
+          "hook": {
+            "type": "string",
+            "title": "Hook"
+          },
+          "body": {
+            "type": "string",
+            "title": "Body"
+          },
+          "hashtags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Hashtags"
+          },
+          "source_link": {
+            "type": "string",
+            "title": "Source Link"
+          },
+          "flags": {
+            "items": {
+              "$ref": "#/components/schemas/DraftFlagData"
+            },
+            "type": "array",
+            "title": "Flags"
+          },
+          "counts": {
+            "additionalProperties": {
+              "prefixItems": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "integer"
+                }
+              ],
+              "type": "array",
+              "maxItems": 2,
+              "minItems": 2
+            },
+            "type": "object",
+            "title": "Counts"
+          },
+          "chars": {
+            "type": "integer",
+            "title": "Chars"
+          },
+          "pov": {
+            "type": "string",
+            "title": "Pov"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "item_id",
+          "item_title",
+          "item_url",
+          "created_at",
+          "regenerated_from",
+          "language",
+          "model",
+          "hook",
+          "body",
+          "hashtags",
+          "source_link",
+          "flags",
+          "counts",
+          "chars",
+          "pov"
+        ],
+        "title": "DraftDetail",
+        "description": "The detail adds the owner's own words, so \"Open\" shows what the draft was built from."
+      },
+      "DraftError": {
+        "properties": {
+          "code": {
+            "type": "string",
+            "enum": [
+              "daily_cap",
+              "model_unavailable",
+              "unusable"
+            ],
+            "title": "Code"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          },
+          "retry_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retry At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "DraftError",
+        "description": "A 503 the page can show: which failure, a sentence, and the cap's reset time."
+      },
+      "DraftFlagData": {
+        "properties": {
+          "n": {
+            "type": "integer",
+            "title": "N"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text"
+          },
+          "detail": {
+            "type": "string",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "required": [
+          "n",
+          "kind",
+          "text",
+          "detail"
+        ],
+        "title": "DraftFlagData",
+        "description": "One numbered note under a draft; `text` is the claim it is about."
+      },
+      "DraftRequest": {
+        "properties": {
+          "item_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Item Id"
+          },
+          "pov": {
+            "type": "string",
+            "maxLength": 2000,
+            "title": "Pov",
+            "default": ""
+          },
+          "language": {
+            "type": "string",
+            "maxLength": 8,
+            "minLength": 2,
+            "title": "Language",
+            "default": "en"
+          }
+        },
+        "type": "object",
+        "required": [
+          "item_id"
+        ],
+        "title": "DraftRequest"
+      },
+      "DraftsData": {
+        "properties": {
+          "drafts": {
+            "items": {
+              "$ref": "#/components/schemas/DraftData"
+            },
+            "type": "array",
+            "title": "Drafts"
+          }
+        },
+        "type": "object",
+        "required": [
+          "drafts"
+        ],
+        "title": "DraftsData"
       },
       "ErrorData": {
         "properties": {

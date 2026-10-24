@@ -1057,7 +1057,7 @@ def test_live_deps_wires_a_usage_log_on_its_own_engine(
     # Production has one wiring path: the answer engine and the usage engine are separate, so a
     # usage write never queues behind an answer that is holding its connection for a model call.
     monkeypatch.setattr(api, "make_embedder", lambda settings, ledger: FakeEmbedder())
-    monkeypatch.setattr(api, "make_chat_models", lambda settings: [])
+    monkeypatch.setattr(api, "make_chat_models", lambda settings, **kwargs: [])
     settings = Settings(  # type: ignore[arg-type]
         _env_file=None,
         openrouter_api_key="sk-test",
@@ -1772,7 +1772,7 @@ def test_live_deps_wires_the_child_stop_the_read_pool_and_the_child_memory(
         return gate
 
     monkeypatch.setattr(api, "SearchModeGate", make_gate)
-    monkeypatch.setattr(api, "make_chat_models", lambda settings: [])
+    monkeypatch.setattr(api, "make_chat_models", lambda settings, **kwargs: [])
     settings = Settings(  # type: ignore[arg-type]
         _env_file=None,
         openrouter_api_key="sk-test",

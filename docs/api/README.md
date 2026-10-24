@@ -20,6 +20,10 @@ reference. `docs/learn/15` explains the gate and what each status code means.
 | `GET /runs/{run_id}` | One `RunDetail` (a summary plus `window_start`, `window_end` and `dead_letters`), or 404. |
 | `GET /suggestions` | The picks and the Rising shelf: `{generated_at, list_version, picks, rising, rising_note}`. |
 | `POST /suggestions/{item_id}/events` | `{"event": "opened" \| "dismissed"}`, 204, or 404 for an item that is not admitted. |
+| `POST /drafts` | `{item_id, pov, language}`: generate, check and save one draft; 201 `Draft`. |
+| `POST /drafts/{draft_id}/regenerate` | Re-run the stored inputs and point of view; 201, with `regenerated_from` set. |
+| `GET /drafts?limit=50` | `{"drafts": [Draft]}`, newest first; the list leaves out the point of view. |
+| `GET /drafts/{draft_id}` | One `DraftDetail`: the same fields plus `pov`. |
 | `POST /ask` | One question, streamed as server-sent events. |
 
 ## Runs and the today strip
@@ -60,6 +64,39 @@ momentum_label, also, summary}`:
 
 A dismissal or a draft removes the item from every later list. The API records a `shown` event for
 each card at most once an hour, with the rank, the score and the six score components it ranked by.
+
+## Drafts
+
+`POST /drafts` writes one LinkedIn post from an admitted item with enough stored text and the
+owner's point of view (`pov`, up to 2,000 characters, may be empty; `language` is a code such as
+`en`). The draft is checked by code and saved in the same request: generating is saving, so there
+is no separate save call. `Draft` is `{id, item_id, item_title, item_url, created_at,
+regenerated_from, language, model, hook, body, hashtags, source_link, flags, counts, chars}`:
+
+- `flags` is the check's numbered notes, `[{n, kind, text, detail}]`, where `kind` is one of
+  `number`, `quote`, `link`, `first_person`, `attribution`, `preprint_fact`, `early_notice` or
+  `long_copy`, `text` is the sentence, quote or URL it is about, and `detail` says what to fix;
+- `counts` is `{kind: [checked, passed]}` for every kind, including kinds with nothing to check,
+  so the page can print "Numbers 3/3" and "Quotes 0/0";
+- `chars` is the length of the "Copy for LinkedIn" text (hook, body, hashtags with one `#` each,
+  and the source link), so the count on a card matches what a copy puts on the clipboard;
+- `regenerated_from` is the id of the draft this one replaced, or null.
+
+A saved draft is never edited; `POST /drafts/{draft_id}/regenerate` re-runs the stored inputs and
+point of view and returns a new draft that links the old one. A draft request spends one model
+call from the same daily cap and counts against the same per-client limit as an answer.
+
+`503` means no draft was generated and nothing was saved. Its body is
+`{code, message, retry_at}` with `code` one of:
+
+- `daily_cap`: the free tier's calls are spent until `retry_at` (UTC midnight);
+- `model_unavailable`: no model that refuses training on inputs answered. There is no fallback,
+  because the point of view may only go to a provider with `data_collection: "deny"`;
+- `unusable`: the reply was not the JSON draft structure, or it was over the answer budget.
+
+A `404` is an item that is not admitted, or a draft that is not stored; a `422` is stored text
+under `min_text_chars` or a request field out of bounds. The point of view is stored with its
+draft, returned only by `GET /drafts/{draft_id}`, and never logged at any level.
 
 ## Limits
 

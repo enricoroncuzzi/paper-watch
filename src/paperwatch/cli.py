@@ -38,6 +38,7 @@ from paperwatch.api.auth import (
     make_verifier,
     mint_hmac_token,
 )
+from paperwatch.api.routes.drafts import draft_source
 from paperwatch.config import (
     ADMISSION_PATH,
     CHAT_MODEL,
@@ -51,6 +52,9 @@ from paperwatch.config import (
     get_settings,
 )
 from paperwatch.domain import Tier, load_profiles
+from paperwatch.drafts.check import check_draft
+from paperwatch.drafts.generate import DraftUnusable, draft_text, generate_draft
+from paperwatch.drafts.prompts import MAX_POV_CHARS
 from paperwatch.ingest.pipeline import Followup, Sources, run_ingestion
 from paperwatch.llm.chat import (
     CallGuard,
@@ -569,6 +573,67 @@ def _suggestion_lines(position: int, lane: str, entry: Scored, status: str) -> s
         parts.append(momentum)
     parts.append(f"summary: {status}")
     return f"{position}. [{lane}] {candidate.title}\n   {' | '.join(parts)}\n   {candidate.url}"
+
+
+@app.command()
+def draft(
+    item_id: str = typer.Argument(..., help="The admitted item's id"),
+    pov: str = typer.Option("", "--pov", help="Your own point of view, as text"),
+    language: str = typer.Option("en", "--language", help="Language code for the post"),
+    live: bool = LIVE,
+) -> None:
+    """Print one checked LinkedIn draft for an item, with its numbered flags."""
+    _require_live(live)
+    s = get_settings()
+    configure_logging(s.log_level)
+    try:
+        parsed = uuid.UUID(item_id)
+    except ValueError as exc:
+        raise typer.BadParameter(f"not a UUID: {item_id}") from exc
+    if len(pov) > MAX_POV_CHARS:
+        raise typer.BadParameter(f"--pov is longer than {MAX_POV_CHARS} characters")
+    config = load_suggestions(SUGGESTIONS_PATH)
+    engine = make_engine(s.database_url)
+    usage_engine = make_engine(s.database_url, pool_size=USAGE_POOL_SIZE, max_overflow=0)
+    session = make_session_factory(engine)()
+    try:
+        repo = Repository(session)
+        item = repo.draft_item(parsed)
+        if item is None:
+            typer.echo("no admitted item with that id", err=True)
+            raise typer.Exit(2)
+        summary = repo.summaries([parsed]).get(parsed)
+        source = draft_source(item, summary, config)
+        # The same guard and chain the API uses: a CLI draft spends the same daily free calls, and
+        # its point of view may only go to a provider that refuses training.
+        guard = _suggestion_guard(ChatCallLog(make_session_factory(usage_engine)), s)
+        text, model = generate_draft(
+            make_chat_models(s, purpose="draft"), guard, source, pov=pov, language=language
+        )
+        check = check_draft(text, source, pov=pov)
+        typer.echo(f"draft from {source.title} ({model})")
+        typer.echo("")
+        typer.echo(draft_text(text))
+        typer.echo("")
+        if check.flags:
+            for number, flag in enumerate(check.flags, start=1):
+                typer.echo(f"{number}. [{flag.kind}] {flag.text}: {flag.detail}")
+        else:
+            typer.echo("No flags: every number, quote and link was found in the stored evidence.")
+        counts = ", ".join(
+            f"{kind} {checked}/{passed}" for kind, (checked, passed) in check.counts.items()
+        )
+        typer.echo(f"counts: {counts}")
+    except ChatNotConfigured as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(2) from exc
+    except (DailyCapReached, BudgetExceeded, ModelUnavailable, DraftUnusable) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(2) from exc
+    finally:
+        session.close()
+        engine.dispose()
+        usage_engine.dispose()
 
 
 @app.command(name="eval")

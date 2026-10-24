@@ -27,6 +27,7 @@ from paperwatch.domain import Profile
 from paperwatch.store.models import ItemSummary
 from paperwatch.store.repository import (
     DISMISSED_EVENT,
+    DRAFTED_EVENT,
     Repository,
     SuggestionEventRow,
 )
@@ -188,7 +189,7 @@ class SuggestionService:
             rising_note=RISING_NOTE,
         )
 
-    def record(self, item_id: UUID, event: Literal["opened", "dismissed"]) -> None:
+    def record(self, item_id: UUID, event: Literal["opened", "dismissed", "drafted"]) -> None:
         now = self._clock()
         with self._session_factory() as session:
             repo = Repository(session)
@@ -198,7 +199,8 @@ class SuggestionService:
                 [SuggestionEventRow(item_id=item_id, event=event, at=now)]
             )
             session.commit()
-        if event == DISMISSED_EVENT:
+        if event in (DISMISSED_EVENT, DRAFTED_EVENT):
+            # Both take the item out of the ranking; a cached list would still show it.
             self.invalidate()
 
     def _compute(self, now: datetime) -> _Cached:

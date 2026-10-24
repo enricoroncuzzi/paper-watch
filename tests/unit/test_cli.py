@@ -1527,3 +1527,123 @@ def test_suggest_summaries_on_other_limits_also_exits_two(
     assert result.exit_code == 2
     assert "summaries: 0 checked, 0 excerpt of 2 cards" in result.output
     assert str(error) in result.output
+
+
+def test_draft_requires_live() -> None:
+    result = CliRunner().invoke(app, ["draft", str(uuid4())])
+    assert result.exit_code == 2 and "pass --live" in result.output
+
+
+def test_draft_prints_the_draft_and_its_flags(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The CLI is the way to inspect a draft without the page: the post as it would be copied, then
+    # every note the code wrote, numbered in the same order the page shows them.
+    from paperwatch.drafts.generate import DraftText
+    from paperwatch.store.repository import DraftItem
+
+    item_id = uuid4()
+    url = "https://arxiv.org/abs/2601.01234"
+    text = (
+        "Replaying exact tool results cut tokens per task by 41% on 40 long-horizon coding tasks, "
+        "with no loss in task success."
+    )
+    candidate = Candidate(
+        item_id=item_id,
+        source="arxiv",
+        external_id="2601.01234",
+        title="Replay Buffers for Long-Running Coding Agents",
+        url=url,
+        tier=Tier.PEER_REVIEWED,
+        basis=AdmissionBasis.VENUE,
+        profile=None,
+        relevance=0.9,
+        published_at=datetime(2026, 11, 1, tzinfo=UTC),
+        authors=("Ada Lovelace",),
+        org=None,
+        github_repo=None,
+        github_stars=None,
+        project_page=None,
+        text_chars=len(text),
+        hf_upvotes=None,
+        hf_listed_at=None,
+        upvote_series=(),
+        upvote_baseline=None,
+        promoted_to_peer_at=None,
+        repo_first_seen_at=None,
+        embedding=(),
+        venue="ICLR",
+    )
+    item = DraftItem(
+        item_id=item_id,
+        title=candidate.title,
+        url=url,
+        source="arxiv",
+        text=text,
+        org=None,
+        github_repo=None,
+        project_page=None,
+        candidate=candidate,
+    )
+
+    class Repo:
+        def __init__(self, session: object) -> None:
+            pass
+
+        def draft_item(self, wanted: object) -> DraftItem | None:
+            return item if wanted == item_id else None
+
+        def summaries(self, ids: object) -> dict[object, object]:
+            return {}
+
+    engine = SimpleNamespace(dispose=lambda: None)
+    session = SimpleNamespace(close=lambda: None)
+    monkeypatch.setattr(cli, "get_settings", lambda: Settings())
+    monkeypatch.setattr(cli, "make_engine", lambda url, **kwargs: engine)
+    monkeypatch.setattr(cli, "make_session_factory", lambda engine: lambda: session)
+    monkeypatch.setattr(cli, "Repository", Repo)
+    monkeypatch.setattr(cli, "ChatCallLog", lambda factory: object())
+    monkeypatch.setattr(cli, "make_chat_models", lambda settings, **kwargs: [object()])
+    monkeypatch.setattr(
+        cli,
+        "generate_draft",
+        lambda models, guard, source, *, pov, language: (
+            DraftText(
+                hook="A memory layer worth a look.",
+                body="A replay buffer cut tokens per task by 45% on 40 coding tasks.",
+                hashtags=("agents", "memory"),
+                source_link=url,
+            ),
+            "vendor/model:free",
+        ),
+    )
+
+    result = CliRunner().invoke(
+        app, ["draft", str(item_id), "--pov", "I would test this.", "--live"]
+    )
+
+    assert result.exit_code == 0
+    assert "vendor/model:free" in result.output
+    assert "A replay buffer cut tokens per task by 45% on 40 coding tasks." in result.output
+    assert "1. [number]" in result.output
+    assert "45%" in result.output
+    assert "counts: number 2/1" in result.output
+
+
+def test_draft_refuses_an_unknown_item(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Repo:
+        def __init__(self, session: object) -> None:
+            pass
+
+        def draft_item(self, wanted: object) -> None:
+            return None
+
+    engine = SimpleNamespace(dispose=lambda: None)
+    session = SimpleNamespace(close=lambda: None)
+    monkeypatch.setattr(cli, "get_settings", lambda: Settings())
+    monkeypatch.setattr(cli, "make_engine", lambda url, **kwargs: engine)
+    monkeypatch.setattr(cli, "make_session_factory", lambda engine: lambda: session)
+    monkeypatch.setattr(cli, "Repository", Repo)
+
+    result = CliRunner().invoke(app, ["draft", str(uuid4()), "--live"])
+
+    assert result.exit_code == 2
+    assert "no admitted item" in result.output

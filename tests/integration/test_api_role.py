@@ -175,3 +175,48 @@ def test_the_suggestion_grants_cover_what_the_api_writes(engine: Engine) -> None
     # leftover candidate item would make every later test in the session see one more due paper.
     with engine.begin() as conn:
         conn.execute(text("DELETE FROM items WHERE external_id = 'grant-check'"))
+
+
+def test_the_draft_grant_lets_the_api_save_a_draft(engine: Engine) -> None:
+    # Generating is saving, so the API inserts a draft and nothing else: no UPDATE (a saved draft
+    # is what the check saw) and no DELETE, and the grant comes from migration 0007.
+    _roles(engine)
+    with engine.begin() as conn:
+        conn.exec_driver_sql(grant_api_writes(["drafts"]))
+        item_id = conn.scalar(
+            text(
+                "INSERT INTO items "
+                "(id, source, external_id, status, profile, relevance, title, authors, text, url, "
+                "published_at, version, licence, venue_aliases, citation_count, admit_attempts) "
+                "VALUES (gen_random_uuid(), 'arxiv', 'draft-grant-check', 'candidate', NULL, 0.0, "
+                "'t', '[]', 'body', 'https://example.org/x', now(), 1, 'unknown', '[]', 0, 0) "
+                "RETURNING id"
+            )
+        )
+
+    with engine.connect() as conn:
+        conn.execute(text("SET ROLE paperwatch_api"))
+        draft_id = conn.scalar(
+            text(
+                "INSERT INTO drafts "
+                "(id, item_id, pov, language, model, prompt_version, inputs, hook, body, hashtags, "
+                'source_link, "check", created_at) VALUES (gen_random_uuid(), :item_id, '
+                "'', 'en', 'model', 'd1', '{}', 'h', 'b', '[]', "
+                "'https://example.org/x', '{}', now()) "
+                "RETURNING id"
+            ),
+            {"item_id": item_id},
+        )
+        assert draft_id is not None
+        conn.rollback()
+
+    for statement in ("UPDATE drafts SET body = 'rewritten'", "DELETE FROM drafts"):
+        with engine.connect() as conn:
+            conn.execute(text("SET ROLE paperwatch_api"))
+            with pytest.raises(SQLAlchemyError):
+                conn.execute(text(statement))
+            conn.rollback()
+
+    # This test commits its own item (the grants are connection-level), so remove it again.
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM items WHERE external_id = 'draft-grant-check'"))

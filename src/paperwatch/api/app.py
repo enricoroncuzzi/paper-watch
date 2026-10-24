@@ -59,6 +59,7 @@ from paperwatch.api.responses import (
     BEARER,
     GATE_RESPONSES,
 )
+from paperwatch.api.routes.drafts import DraftService, make_drafts_router
 from paperwatch.api.routes.runs import make_runs_router
 from paperwatch.api.routes.suggestions import (
     SuggestionService,
@@ -105,7 +106,7 @@ log = structlog.get_logger()
 
 # The API contract's own version, not the package version: release-please bumps the package on
 # every release, and the committed docs/api/openapi.json must change only when the API does.
-API_VERSION = "0.4"
+API_VERSION = "0.5"
 
 # The fixed text of the `internal` event: the client gets something it can show, and the detail
 # (which could carry a provider body or stored text) stays in the server log.
@@ -179,6 +180,11 @@ class AgentDeps:
     # The suggestions page's ranking cache and summary queue. Unset builds the default one from
     # this deps object; a test hands in its own so the queue never starts a real thread.
     suggestions: SuggestionService | None = None
+    # The draft chain, OpenRouter only with data collection denied. Unset builds it lazily from
+    # the settings, so a test or the contract build needs no key until a draft is asked for.
+    draft_models: list[ChatModel] | None = None
+    # The drafts service. Unset builds the default one; a test hands in its own scripted models.
+    drafts: DraftService | None = None
 
 
 def _default_suggestions(deps: AgentDeps) -> SuggestionService:
@@ -210,6 +216,29 @@ def _default_suggestions(deps: AgentDeps) -> SuggestionService:
         load_suggestions(SUGGESTIONS_PATH),
         queue,
         deps.clock,
+    )
+
+
+def _default_drafts(deps: AgentDeps, suggestions: SuggestionService) -> DraftService:
+    """The drafts service: the stored item, the draft chain and the same limiter as an answer."""
+    session_factory = deps.read_session_factory or deps.session_factory
+
+    def models() -> list[ChatModel]:
+        # Lazy on purpose: building the document or an app without drafts needs no key, while a
+        # live app fails here the first time a draft is asked for if its chain cannot be built.
+        if deps.draft_models is not None:
+            return deps.draft_models
+        return make_chat_models(deps.settings, purpose="draft")
+
+    return DraftService(
+        session_factory=session_factory,
+        models_factory=models,
+        settings=deps.settings,
+        chat_calls=deps.chat_calls,
+        limiter=deps.limiter,
+        suggestions=suggestions,
+        config=load_suggestions(SUGGESTIONS_PATH),
+        clock=deps.clock,
     )
 
 
@@ -284,6 +313,9 @@ def live_deps(settings: Settings, verifier: Verifier) -> AgentDeps:
         search_mode=search_mode,
         read_session_factory=read_factory,
         ready_session_factory=usage_factory,
+        # Built here with the answer chain: without an OpenRouter key the app refuses to start,
+        # and the draft chain is the one-model chain data collection denied.
+        draft_models=make_chat_models(settings, purpose="draft"),
     )
 
 
@@ -950,7 +982,10 @@ def create_app(deps: AgentDeps) -> FastAPI:
     )
     # The page's list of picks. Its route module owns the ranking cache, so one process serves one
     # list and a dismissal can drop it.
-    app.include_router(make_suggestions_router(deps.suggestions or _default_suggestions(deps)))
+    suggestions = deps.suggestions or _default_suggestions(deps)
+    app.include_router(make_suggestions_router(suggestions))
+    # The same suggestions service, so a saved draft takes its item out of the cached list.
+    app.include_router(make_drafts_router(deps.drafts or _default_drafts(deps, suggestions)))
 
     # FastAPI types the SSE media type with the `StreamItem` envelope, which exists only to
     # register the payload models. Post-processing swaps in the shape a client parses and drops

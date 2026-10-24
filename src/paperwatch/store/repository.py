@@ -7,7 +7,7 @@ or an embedding is refused by a check constraint.
 
 import uuid
 from collections.abc import Collection, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, cast
 
@@ -28,6 +28,7 @@ from paperwatch.domain import AdmissionBasis, HfPaper, Signals, SourceItem, Tier
 from paperwatch.store.models import (
     ChatCall,
     DeadLetter,
+    Draft,
     Item,
     ItemSummary,
     Run,
@@ -88,6 +89,48 @@ class SuggestionEventRow:
 
 
 @dataclass(frozen=True)
+class DraftItem:
+    """One admitted item as a draft reads it: the stored text, its card facts and its candidate.
+
+    The candidate is built by the same code path the ranking uses, so a Rising item and an early
+    draft agree on `is_pick_grade` by construction rather than by two similar checks.
+    """
+
+    item_id: uuid.UUID
+    title: str
+    url: str
+    source: str
+    text: str
+    org: str | None
+    github_repo: str | None
+    project_page: str | None
+    candidate: Candidate
+
+
+@dataclass(frozen=True)
+class DraftRow:
+    """One saved draft as the API and the CLI read it back."""
+
+    id: uuid.UUID
+    item_id: uuid.UUID
+    item_title: str
+    item_url: str
+    created_at: datetime
+    regenerated_from: uuid.UUID | None
+    pov: str
+    language: str
+    model: str
+    prompt_version: str
+    inputs: Mapping[str, object]
+    hook: str
+    body: str
+    hashtags: tuple[str, ...]
+    source_link: str
+    flags: tuple[Mapping[str, object], ...]
+    counts: Mapping[str, tuple[int, int]]
+
+
+@dataclass(frozen=True)
 class ItemDetail:
     """One admitted item as the agent's tools may show it to the model."""
 
@@ -115,6 +158,44 @@ def _int4(value: int | None) -> int | None:
 
 def _is_preprint(venue: str | None) -> bool:
     return venue is not None and venue.strip().lower() in PREPRINT_VENUES
+
+
+def _candidate(row: Item) -> Candidate:
+    """One stored item as a ranking candidate, without its momentum history.
+
+    The single place the item-to-candidate mapping lives, so the ranking and a draft's `early`
+    flag cannot drift apart. Momentum fields are filled in by `suggestion_candidates`.
+    """
+    return Candidate(
+        item_id=row.id,
+        source=row.source,
+        external_id=row.external_id,
+        title=row.title,
+        url=row.url,
+        # The database's own constraint says an admitted item always has both.
+        tier=Tier(cast(str, row.tier)),
+        basis=AdmissionBasis(cast(str, row.admission_basis)),
+        profile=row.profile,
+        relevance=row.relevance,
+        published_at=row.published_at,
+        authors=tuple(row.authors or ()),
+        # A lab post's only attribution is its author, which the feed client sets to the lab's own
+        # name; Hugging Face has no organisation for it.
+        org=row.hf_org or (row.authors[0] if row.source == "feed" and row.authors else None),
+        github_repo=row.github_repo,
+        github_stars=row.github_stars,
+        project_page=row.project_page,
+        text_chars=len(row.text or ""),
+        hf_upvotes=row.hf_upvotes,
+        hf_listed_at=row.hf_listed_at,
+        upvote_series=(),
+        upvote_baseline=None,
+        promoted_to_peer_at=None,
+        repo_first_seen_at=None,
+        embedding=tuple(row.embedding or ()),
+        venue=row.venue,
+        citation_count=row.citation_count,
+    )
 
 
 def _signals(row: Item) -> Signals:
@@ -168,6 +249,41 @@ def _detail(row: Item) -> ItemDetail:
         citation_count=row.citation_count,
         hf_upvotes=row.hf_upvotes,
         profile=row.profile,
+    )
+
+
+def _draft_row(row: Draft) -> DraftRow:
+    # The check is JSON, so a tuple round-trips as a list; the API's shape is (checked, passed).
+    raw_counts = row.check.get("counts")
+    counts = {
+        str(kind): (int(values[0]), int(values[1]))
+        for kind, values in (raw_counts if isinstance(raw_counts, Mapping) else {}).items()
+        if isinstance(values, list | tuple) and len(values) == 2
+    }
+    raw_flags = row.check.get("flags")
+    flags = tuple(
+        flag
+        for flag in (raw_flags if isinstance(raw_flags, list | tuple) else ())
+        if isinstance(flag, Mapping)
+    )
+    return DraftRow(
+        id=row.id,
+        item_id=row.item_id,
+        item_title=str(row.inputs.get("title") or ""),
+        item_url=str(row.inputs.get("url") or ""),
+        created_at=row.created_at,
+        regenerated_from=row.regenerated_from,
+        pov=row.pov,
+        language=row.language,
+        model=row.model,
+        prompt_version=row.prompt_version,
+        inputs=row.inputs,
+        hook=row.hook,
+        body=row.body,
+        hashtags=tuple(row.hashtags or ()),
+        source_link=row.source_link,
+        flags=flags,
+        counts=counts,
     )
 
 
@@ -808,36 +924,12 @@ class Repository:
             promotion[item_id] = changed_at
         baselines = self._upvote_baselines(ids, observed_at=now - timedelta(days=momentum_days))
         return [
-            Candidate(
-                item_id=item.id,
-                source=item.source,
-                external_id=item.external_id,
-                title=item.title,
-                url=item.url,
-                # The database's own constraint says an admitted item always has both.
-                tier=Tier(cast(str, item.tier)),
-                basis=AdmissionBasis(cast(str, item.admission_basis)),
-                profile=item.profile,
-                relevance=item.relevance,
-                published_at=item.published_at,
-                authors=tuple(item.authors or ()),
-                # A lab post's only attribution is its author, which the feed client sets to the
-                # lab's own name; Hugging Face has no organisation for it.
-                org=item.hf_org
-                or (item.authors[0] if item.source == "feed" and item.authors else None),
-                github_repo=item.github_repo,
-                github_stars=item.github_stars,
-                project_page=item.project_page,
-                text_chars=len(item.text or ""),
-                hf_upvotes=item.hf_upvotes,
-                hf_listed_at=item.hf_listed_at,
+            replace(
+                _candidate(item),
                 upvote_series=tuple(series.get(item.id, ())),
                 upvote_baseline=baselines.get(item.id),
                 promoted_to_peer_at=promotion.get(item.id),
                 repo_first_seen_at=first_repo.get(item.id),
-                embedding=tuple(item.embedding or ()),
-                venue=item.venue,
-                citation_count=item.citation_count,
             )
             for item in items
         ]
@@ -979,6 +1071,72 @@ class Repository:
             self._s.scalar(select(Item.id).where(Item.id == item_id, Item.status == "admitted"))
             is not None
         )
+
+    def draft_item(self, item_id: uuid.UUID) -> DraftItem | None:
+        """One admitted item for a draft, or None when it is not admitted or not stored."""
+        row = self._s.scalar(select(Item).where(Item.id == item_id, Item.status == "admitted"))
+        if row is None:
+            return None
+        candidate = _candidate(row)
+        return DraftItem(
+            item_id=row.id,
+            title=row.title,
+            url=row.url,
+            source=row.source,
+            text=row.text or "",
+            org=candidate.org,
+            github_repo=row.github_repo,
+            project_page=row.project_page,
+            candidate=candidate,
+        )
+
+    def add_draft(
+        self,
+        *,
+        item_id: uuid.UUID,
+        inputs: Mapping[str, object],
+        pov: str,
+        language: str,
+        model: str,
+        prompt_version: str,
+        hook: str,
+        body: str,
+        hashtags: Sequence[str],
+        source_link: str,
+        check: Mapping[str, object],
+        regenerated_from: uuid.UUID | None,
+        at: datetime,
+    ) -> DraftRow:
+        """Save one draft exactly as the model wrote it, with its inputs and its check."""
+        row = Draft(
+            item_id=item_id,
+            regenerated_from=regenerated_from,
+            pov=pov,
+            language=language,
+            model=model,
+            prompt_version=prompt_version,
+            inputs=dict(inputs),
+            hook=hook,
+            body=body,
+            hashtags=list(hashtags),
+            source_link=source_link,
+            check=dict(check),
+            created_at=at,
+        )
+        self._s.add(row)
+        self._s.flush()
+        return _draft_row(row)
+
+    def drafts(self, limit: int) -> list[DraftRow]:
+        """The saved drafts, newest first, for the Drafts section."""
+        return [
+            _draft_row(row)
+            for row in self._s.scalars(select(Draft).order_by(Draft.created_at.desc()).limit(limit))
+        ]
+
+    def draft(self, draft_id: uuid.UUID) -> DraftRow | None:
+        row = self._s.get(Draft, draft_id)
+        return _draft_row(row) if row is not None else None
 
 
 class ChatCallLog:
