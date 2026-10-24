@@ -181,6 +181,18 @@ test("command enter opens the sheet and sends", async ({ page }) => {
   await expect(sheet.getByTestId("answer")).toContainText("Coding agents are measured");
 });
 
+test("the ask bar keeps its send circle at the right end on every width", async ({ page }) => {
+  const pill = page.getByRole("button", { name: /Ask the corpus/ });
+  const send = pill.locator("span").last();
+  const pillBox = await pill.boundingBox();
+  const sendBox = await send.boundingBox();
+  expect(pillBox).not.toBeNull();
+  expect(sendBox).not.toBeNull();
+  // The circle ends at the bar's right padding, not after the label (the hint is hidden on touch).
+  const gap = pillBox!.x + pillBox!.width - (sendBox!.x + sendBox!.width);
+  expect(gap).toBeLessThanOrEqual(20);
+});
+
 test("the sheet is full screen on the phone and the composer sits above the safe area", async ({
   page,
 }, testInfo) => {

@@ -40,8 +40,9 @@ export function AskPill() {
         >
           <path d="M4 5.5h16v10H9l-5 4v-14Z" />
         </svg>
-        <span>Ask the corpus…</span>
-        <span className="ml-auto hidden font-mono text-[10px] text-ink-3 sm:inline">⌘↵</span>
+        {/* The label takes the free space, so the send circle stays at the end when the hint is hidden. */}
+        <span className="mr-auto">Ask the corpus…</span>
+        <span className="hidden font-mono text-[10px] text-ink-3 sm:inline">⌘↵</span>
         <span className="grid h-7 w-7 flex-none place-items-center rounded-full bg-accent text-accent-ink">
           <svg
             width="13"
