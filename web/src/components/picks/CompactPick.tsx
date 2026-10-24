@@ -3,6 +3,7 @@ import { AlsoLine, arxivLabel, Chip, TierChip } from "@/components/picks/Chips";
 import { DismissButton } from "@/components/picks/DismissButton";
 import { Facts } from "@/components/picks/Facts";
 import { ThirtySeconds } from "@/components/picks/ThirtySeconds";
+import { profileLabel } from "@/lib/format";
 import type { SuggestionCard } from "@/lib/types";
 
 /** A pick after the lead: the same four answers, with the facts in a narrow side column. */
@@ -35,7 +36,7 @@ export function CompactPick({
           {card.venue ?? card.org ? <Chip>{card.venue ?? card.org}</Chip> : null}
           {card.hf_upvotes !== null ? <Chip>HF {card.hf_upvotes} ↑</Chip> : null}
           {card.citation_count > 0 ? <Chip>{card.citation_count} cites</Chip> : null}
-          {card.profile ? <Chip>{card.profile}</Chip> : null}
+          {card.profile ? <Chip>{profileLabel(card.profile)}</Chip> : null}
           {arxiv ? <span className="font-mono text-[11px]">{arxiv}</span> : null}
         </div>
         <AlsoLine card={card} />

@@ -3,6 +3,7 @@ import { AlsoLine, arxivLabel, Chip, TierChip } from "@/components/picks/Chips";
 import { DismissButton } from "@/components/picks/DismissButton";
 import { Facts } from "@/components/picks/Facts";
 import { ThirtySeconds } from "@/components/picks/ThirtySeconds";
+import { profileLabel } from "@/lib/format";
 import type { SuggestionCard } from "@/lib/types";
 
 /**
@@ -31,7 +32,7 @@ export function LeadPick({
         {card.profile ? (
           <>
             <span aria-hidden="true">·</span>
-            <span>{card.profile}</span>
+            <span>{profileLabel(card.profile)}</span>
           </>
         ) : null}
         <span className="ml-auto normal-case tracking-normal">

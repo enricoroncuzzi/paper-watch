@@ -3,6 +3,7 @@ import { arxivLabel } from "@/components/picks/Chips";
 import { DismissButton } from "@/components/picks/DismissButton";
 import { compactCount } from "@/components/picks/Facts";
 import { EmptyState } from "@/components/SectionState";
+import { profileLabel } from "@/lib/format";
 import type { SuggestionCard } from "@/lib/types";
 
 /** The one signal beside the title: a gain if there is one, else the count that earned the card. */
@@ -39,7 +40,7 @@ function RisingCard({
           {card.profile ? (
             <>
               <span aria-hidden="true">·</span>
-              <span>{card.profile}</span>
+              <span>{profileLabel(card.profile)}</span>
             </>
           ) : null}
           <span aria-hidden="true">·</span>

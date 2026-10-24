@@ -26,7 +26,7 @@ test("the lead pick and four compact picks render with their facts", async ({ pa
   await expect(lead).toContainText("peer-reviewed via venue: ICLR 2027");
   await expect(lead).toContainText("2.4k ★");
   await expect(lead).toContainText("2026-10-20");
-  await expect(lead).toContainText("agentic-engineering");
+  await expect(lead).toContainText("Agentic engineering");
   await expect(lead).toContainText("0.87");
   // A value the item never had prints n/a rather than an empty cell.
   await expect(lead).toContainText("Hugging Face");
@@ -44,6 +44,9 @@ test("the lead pick and four compact picks render with their facts", async ({ pa
     "hf_upvotes",
     "lab_post",
     "lab_author",
+    "agentic-engineering",
+    "ai-forensics",
+    "ml-architectures",
   ]) {
     expect(text).not.toContain(raw);
   }

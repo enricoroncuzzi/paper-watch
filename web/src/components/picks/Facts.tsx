@@ -1,3 +1,4 @@
+import { profileLabel } from "@/lib/format";
 import type { SuggestionCard } from "@/lib/types";
 
 const NO_VALUE = "n/a";
@@ -44,7 +45,7 @@ export function Facts({
   ]);
   rows.push(["Published", publishedDay(card.published_at)]);
   if (!compact) {
-    rows.push(["Topic", card.profile ?? NO_VALUE]);
+    rows.push(["Topic", card.profile ? profileLabel(card.profile) : NO_VALUE]);
     rows.push(["Relevance", card.relevance.toFixed(2)]);
   }
   return (

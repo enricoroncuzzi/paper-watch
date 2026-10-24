@@ -8,6 +8,7 @@ import { CopyButton } from "@/components/drafts/CopyButton";
 import { Chip, TierChip } from "@/components/picks/Chips";
 import { draftParagraphs } from "@/lib/draft-body";
 import { draftFailureMessage } from "@/lib/draft-errors";
+import { profileLabel } from "@/lib/format";
 import { linkedinText } from "@/lib/linkedin-text";
 import type { Draft, SuggestionCard } from "@/lib/types";
 
@@ -28,7 +29,7 @@ function Context({ card }: { card: SuggestionCard }) {
       <div className="mb-3 flex flex-wrap items-center gap-1.5 text-[10.5px] text-ink-3">
         <TierChip tier={card.tier} />
         {card.venue ?? card.org ? <Chip>{card.venue ?? card.org}</Chip> : null}
-        {card.profile ? <Chip>{card.profile}</Chip> : null}
+        {card.profile ? <Chip>{profileLabel(card.profile)}</Chip> : null}
       </div>
       <p className="mb-4 max-w-[46ch] font-serif text-[15.5px] leading-[1.5] text-ink-2">
         {context}
