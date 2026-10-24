@@ -11,8 +11,9 @@ the standing rules.
 - `src/paperwatch/sources/` has one client per source: arXiv OAI-PMH (`arxiv.py`), Hugging Face
   daily papers (`hf_daily.py`), Semantic Scholar (`semantic_scholar.py`) and the official lab
   feeds in `config/feeds.yaml` (`feeds.py`). arXiv and the feeds return a normalised `SourceItem`
-  from `domain.py`; Hugging Face and Semantic Scholar return quality signals for arXiv ids. The
-  shared HTTP client and retries are in `sources/base.py`.
+  from `domain.py`; Hugging Face returns an `HfPaper` (upvotes plus extras) and Semantic Scholar
+  returns venue and citation signals for arXiv ids. The shared HTTP client and retries are in
+  `sources/base.py`.
 - `src/paperwatch/ingest/` is the run: window, dedupe, classify, admit, embed, upsert, re-check
   late evidence, then write counts, tokens and a health verdict (`health.py`). One Postgres
   advisory lock (`INGEST_LOCK_KEY` in `config.py`) allows one run at a time.

@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 
 import structlog
 from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from paperwatch.admission import AdmissionConfig, admit, basis_improves, promote
@@ -28,7 +29,7 @@ from paperwatch.config import (
     S2_MAX_PAPERS_PER_RUN,
     S2_RECHECK_HORIZON,
 )
-from paperwatch.domain import Classification, Signals, SourceItem
+from paperwatch.domain import Classification, HfPaper, Signals, SourceItem
 from paperwatch.ingest.health import Health, assess_run
 from paperwatch.llm.classifier import Classifier
 from paperwatch.llm.embedder import Embedder, embedding_text
@@ -450,6 +451,8 @@ def run_ingestion(
                 "duplicate_url": 0,
                 # Follow-up passes used, 0 unless the run was given --followup and S2 refused.
                 "followup_passes": 0,
+                # Signal snapshots appended by the listing step; 0 when it had nothing to write.
+                "snapshots": 0,
             }
             # Why this run is degraded, one cause per problem the sources caused ("arxiv",
             # "feeds", "hf", "s2", "classification", "admission", "malformed", "payload").
@@ -752,6 +755,8 @@ def run_ingestion(
             # Keyless: stored papers come only when due under S2_CADENCE, at most
             # S2_MAX_PAPERS_PER_RUN of them, most overdue first; the rest wait for the next run.
             targets: list[StoredItem] = []
+            papers: dict[str, HfPaper] = {}
+            upvotes: dict[str, int] = {}
             if status != "budget_exhausted":
                 targets = repo.recheck_targets(
                     now, S2_RECHECK_HORIZON, also=new_ids, paper_limit=S2_MAX_PAPERS_PER_RUN
@@ -760,7 +765,6 @@ def run_ingestion(
                 paper_ids = sorted(
                     {t.item.external_id for t in targets if t.item.source == "arxiv"}
                 )
-                upvotes: dict[str, int] = {}
                 s2: dict[str, Signals] = {}
                 checked: set[str] = set()
                 # `recheck_targets` opened a transaction; the two signal sources are asked over the
@@ -769,8 +773,9 @@ def run_ingestion(
                 if paper_ids:
                     # Re-read the last 30 days of Hugging Face listings: about 31-62 requests
                     # whatever the corpus size; max() in the store keeps a paper's upvotes current
-                    # while it is listed.
-                    upvotes = sources.hf.upvotes((now - HF_RECHECK_HORIZON).date(), now.date())
+                    # while it is listed, and the extras and snapshots are stored after admission.
+                    papers = sources.hf.papers((now - HF_RECHECK_HORIZON).date(), now.date())
+                    upvotes = {key: paper.upvotes for key, paper in papers.items()}
                     s2 = sources.s2.lookup(paper_ids)
                     # Only ids whose chunk Semantic Scholar answered count as checked; a refused
                     # chunk leaves its papers due, so a congested day delays evidence, never loses
@@ -813,6 +818,20 @@ def run_ingestion(
                     failed=failed_admissions,
                 )
 
+            if papers:
+                # Extras and snapshots are presentation data: a failure here must never cost an
+                # item an admission attempt or make the run unhealthy, so it runs in its own
+                # savepoint after admission.
+                try:
+                    with session.begin_nested():
+                        counts["snapshots"] = repo.apply_hf_listing(papers, at=now)
+                    session.commit()
+                except (SQLAlchemyError, UnicodeError) as exc:
+                    # A lone surrogate raises UnicodeEncodeError before SQLAlchemy wraps it, so
+                    # the encoding failure is caught here too and stays a warning.
+                    log.warning("hf_listing_not_stored", error_type=type(exc).__name__)
+                    warnings.append("hugging face extras not stored this run")
+
             # Follow-up passes (ADR 0008). A keyless S2 burst can last hours (refused at 06:03 and
             # again at 09:52 on 2026-10-23), and the papers it refused stay due: instead of losing
             # a day of evidence, a scheduled run waits and asks again for exactly those ids until
@@ -832,7 +851,7 @@ def run_ingestion(
                 # The main pass's pages, parked letters and evidence are not needed while waiting;
                 # dropping the references keeps a long window from holding a first-run window's
                 # worth of items, which the loop re-reads from the store anyway.
-                del fetched, items, pending, targets, s2, upvotes
+                del fetched, items, pending, targets, s2, papers, upvotes
                 while s2_pending and passes < bounds.max_passes:
                     delay = bounds.delay_s(passes + 1)
                     next_at = clock() + timedelta(seconds=delay)
