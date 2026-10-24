@@ -17,6 +17,9 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, Validation
 WEIGHT_NAMES = ("momentum", "recency", "shareability", "topic_fit", "credibility")
 # How far the weights may miss 1.0, for YAML's binary floats (0.30 + 0.25 + 0.20 + 0.15 + 0.10).
 WEIGHT_SUM_TOLERANCE = 0.001
+# The longest age window the ranking may ask the store for, whatever the file says: a window
+# longer than this would read a large slice of the corpus on every page load.
+MAX_CANDIDATE_DAYS = 90
 
 
 @dataclass(frozen=True)

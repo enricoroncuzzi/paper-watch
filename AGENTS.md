@@ -30,6 +30,12 @@ the standing rules.
   embedding-similarity classifier, the Azure implementations kept for the Azure proof, the token
   ledger with its per-run cap (`ledger.py`), and the OpenAI-compatible chat models with the
   daily-call `CallGuard` (`chat.py`).
+- `src/paperwatch/suggestions/` is the weekly picks: `ranking.py` gates admitted items, scores six
+  components, merges near-duplicates and diversifies with maximal marginal relevance, all pure and
+  weighted from `config/suggestions.yaml`; `summary.py` writes the 30-second summary and checks its
+  quotes, numbers and names against the stored text, falling back to the abstract's excerpt;
+  `cards.py` builds the card a reader sees. The route, its 5-minute cache and the background
+  summary queue are `api/routes/suggestions.py` and `api/summary_queue.py` (`docs/learn/18`).
 - `src/paperwatch/agent/` is the answering layer: the read-only corpus tools (`tools.py`) with
   the per-answer `SourceRegistry` that issues the aliases S1, S2, ... (`sources.py`), the LangGraph
   graph that loops model and tools (`graph.py`), and `citations.py`, which checks every finished
@@ -48,12 +54,13 @@ the standing rules.
 - `evals/` holds the retrieval eval (`retrieval_eval.py`: recall@k, MRR, nDCG@k over the
   deterministic fake embedder) and the relevance eval (`relevance_eval.py`: classifier
   calibration and held-out scores), each with a committed baseline.
-- `config/` holds the hand-edited YAML (topic profiles, admission thresholds, feeds),
+- `config/` holds the hand-edited YAML (topic profiles, admission thresholds, feeds, suggestion
+  weights),
   `deploy/vps/` the systemd user units, the shared slice, the ingestion drop-in and the two check
   scripts, `docs/adr/` records architecture decisions, `docs/learn/` explains each technology, and
   `docs/architecture.md` is the current unit map.
 - `src/paperwatch/cli.py` exposes `paperwatch ingest`, `paperwatch search`, `paperwatch ask`,
-  `paperwatch serve` and `paperwatch eval`.
+  `paperwatch suggest`, `paperwatch serve` and `paperwatch eval`.
 
 ## Standing rules
 

@@ -7,6 +7,7 @@ allowed in fields the page labels as interpretation. When the checks fail twice,
 abstract's own first sentences instead: a model failure must never put an invented claim on a card.
 """
 
+import hashlib
 import json
 import re
 import unicodedata
@@ -133,6 +134,26 @@ def excerpt(text: str) -> str:
         # An ellipsis marks the cut; a reader must never read a truncated abstract as the whole.
         return " ".join(words[:EXCERPT_MAX_WORDS]) + "..."
     return joined
+
+
+def text_hash(title: str, text: str) -> str:
+    """The fingerprint of what a summary was written from, so a replaced abstract regenerates it."""
+    return hashlib.sha256(f"{title}\n{text}".encode()).hexdigest()
+
+
+def summary_fields(summary: Summary) -> dict[str, object]:
+    """The JSON stored in `item_summaries.fields`: the four fields, or the excerpt."""
+    if summary.status == "excerpt":
+        return {"excerpt": summary.excerpt}
+    fields: dict[str, object] = {}
+    for name in FIELD_NAMES:
+        field = getattr(summary, name)
+        fields[name] = {
+            "text": field.text,
+            "quote": field.quote,
+            "interpretation": field.interpretation,
+        }
+    return fields
 
 
 class SummaryWriter:
@@ -307,4 +328,6 @@ __all__ = [
     "SummaryWriter",
     "check_summary",
     "excerpt",
+    "summary_fields",
+    "text_hash",
 ]

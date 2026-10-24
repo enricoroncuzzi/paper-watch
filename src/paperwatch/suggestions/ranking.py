@@ -59,6 +59,9 @@ class Candidate:
     repo_first_seen_at: datetime | None
     # Empty means "no vector": similarity to it is then 0, which keeps eval and test data usable.
     embedding: tuple[float, ...]
+    # The facts a card prints beside the basis label. Defaults keep eval and test fixtures short.
+    venue: str | None = None
+    citation_count: int = 0
 
 
 @dataclass(frozen=True)

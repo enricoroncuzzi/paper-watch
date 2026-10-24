@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
+from uuid import UUID
 
 import anyio
 import structlog
@@ -59,7 +60,12 @@ from paperwatch.api.responses import (
     GATE_RESPONSES,
 )
 from paperwatch.api.routes.runs import make_runs_router
+from paperwatch.api.routes.suggestions import (
+    SuggestionService,
+    make_suggestions_router,
+)
 from paperwatch.api.search_mode import SearchModeGate
+from paperwatch.api.summary_queue import SummaryQueue
 from paperwatch.config import (
     ANSWER_DEADLINE_S,
     ANSWER_POOL_OVERFLOW,
@@ -74,6 +80,7 @@ from paperwatch.config import (
     REQUESTS_PER_DAY,
     REQUESTS_PER_MINUTE,
     SSE_HEARTBEAT_S,
+    SUGGESTIONS_PATH,
     USAGE_POOL_SIZE,
     Settings,
 )
@@ -91,12 +98,14 @@ from paperwatch.llm.ledger import BudgetExceeded, Ledger
 from paperwatch.retrieval.hybrid import Filters, hybrid_search
 from paperwatch.store.db import make_engine, make_session_factory
 from paperwatch.store.repository import ChatCallLog, Repository
+from paperwatch.suggestions.config import load_suggestions
+from paperwatch.suggestions.summary import SummaryWriter
 
 log = structlog.get_logger()
 
 # The API contract's own version, not the package version: release-please bumps the package on
 # every release, and the committed docs/api/openapi.json must change only when the API does.
-API_VERSION = "0.3"
+API_VERSION = "0.4"
 
 # The fixed text of the `internal` event: the client gets something it can show, and the detail
 # (which could carry a provider body or stored text) stays in the server log.
@@ -167,6 +176,41 @@ class AgentDeps:
     # not the answer pool: with every answer connection held by a live answer, a healthy database
     # would otherwise answer 503, which an orchestrator reads as "restart me".
     ready_session_factory: Callable[[], Session] | None = None
+    # The suggestions page's ranking cache and summary queue. Unset builds the default one from
+    # this deps object; a test hands in its own so the queue never starts a real thread.
+    suggestions: SuggestionService | None = None
+
+
+def _default_suggestions(deps: AgentDeps) -> SuggestionService:
+    """The page's suggestions service: the config file, the profiles and a background queue."""
+    session_factory = deps.read_session_factory or deps.session_factory
+    profiles = {profile.name: profile for profile in load_profiles(PROFILES_PATH)}
+
+    def writer() -> SummaryWriter:
+        # A guard per call: a summary runs later, on the queue's thread, so its ledger is its own.
+        guard = CallGuard(
+            deps.chat_calls,
+            Ledger(deps.settings.chat_max_tokens_per_answer),
+            deps.settings.chat_max_calls_per_day,
+            deps.clock,
+        )
+        return SummaryWriter(deps.models, lambda: guard)
+
+    queue = SummaryQueue(
+        writer,
+        session_factory,
+        deps.clock,
+        # The configured model id is what `item_summaries` records, so a model change on the server
+        # regenerates the cards instead of leaving a page written by two models.
+        lambda: deps.settings.chat_model,
+    )
+    return SuggestionService(
+        session_factory,
+        profiles,
+        load_suggestions(SUGGESTIONS_PATH),
+        queue,
+        deps.clock,
+    )
 
 
 def live_deps(settings: Settings, verifier: Verifier) -> AgentDeps:
@@ -397,6 +441,7 @@ def run_question(
     filters: Filters,
     cancel: threading.Event | None = None,
     search_log: SearchLog | None = None,
+    item_id: UUID | None = None,
 ) -> Generator[AgentEvent | ErrorEvent | NoticeEvent, None, None]:
     """Drive one answer, yielding its events and closing its database session whatever happens.
 
@@ -437,6 +482,16 @@ def run_question(
             deps.settings.chat_max_calls_per_day,
             deps.clock,
         )
+        if item_id is not None:
+            # Registered before the graph starts, so S1 is this item whatever the search returns:
+            # "Ask about it" means the question is about that paper, and the citation check reads
+            # the same registry the answer cites from.
+            opener = deps.read_session_factory or deps.session_factory
+            with closing(opener()) as reader:
+                detail = Repository(reader).admitted_details([item_id]).get(item_id)
+            if detail is not None:
+                registry.register(detail)
+                question = f"The reader is asking about S1.\n{question}"
         tools = make_tools(
             session,
             deps.embedder,
@@ -594,6 +649,9 @@ class AskRequest(BaseModel):
     tiers: list[Tier] | None = Field(default=None, max_length=3)
     profiles: list[str] | None = Field(default=None, max_length=PROFILES_MAX)
     since: date | None = None
+    # "Ask about it" from a suggestion card: the item is registered as S1 before the graph starts,
+    # so the answer can talk about "this paper" and still cite a source the check can verify.
+    item_id: UUID | None = None
 
     @field_validator("question")
     @classmethod
@@ -877,6 +935,9 @@ def create_app(deps: AgentDeps) -> FastAPI:
     app.include_router(
         make_runs_router(deps.read_session_factory or deps.session_factory, deps.search_mode)
     )
+    # The page's list of picks. Its route module owns the ranking cache, so one process serves one
+    # list and a dismissal can drop it.
+    app.include_router(make_suggestions_router(deps.suggestions or _default_suggestions(deps)))
 
     # FastAPI types the SSE media type with the `StreamItem` envelope, which exists only to
     # register the payload models. Post-processing swaps in the shape a client parses and drops
@@ -960,6 +1021,12 @@ def create_app(deps: AgentDeps) -> FastAPI:
             raise _refused(f"unknown profiles: {', '.join(unknown)}", ["profiles"])
         if body.since is not None and body.since > deps.clock().astimezone(UTC).date():
             raise _refused("since must not be in the future", ["since"])
+        if body.item_id is not None:
+            # Refused before the stream starts: an id that is not in the corpus would only spend a
+            # model call on a question about nothing.
+            with closing((deps.read_session_factory or deps.session_factory)()) as reader:
+                if not Repository(reader).admitted_item(body.item_id):
+                    raise _refused("item_id is not an admitted item", ["item_id"])
         principal: Principal = request.state.principal
         admitted = deps.limiter.admit(principal.subject)
         if isinstance(admitted, Refused):

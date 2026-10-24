@@ -113,3 +113,65 @@ def test_the_grant_helper_never_emits_an_empty_grant() -> None:
     statement = grant_api_writes(update=["chat_calls"])
     assert "GRANT INSERT" not in statement
     assert "GRANT UPDATE ON chat_calls TO paperwatch_api;" in statement
+
+
+def test_the_suggestion_grants_cover_what_the_api_writes(engine: Engine) -> None:
+    # The API records interactions and stores summaries; those are its only writes in slice 4, and
+    # they come from migration 0006 rather than the admin's block, so the captain has no new step.
+    _roles(engine)
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            grant_api_writes(["suggestion_events"], sequences=["suggestion_events_id_seq"])
+        )
+        conn.exec_driver_sql(grant_api_writes(["item_summaries"], update=["item_summaries"]))
+        item_id = conn.scalar(
+            text(
+                "INSERT INTO items "
+                "(id, source, external_id, status, profile, relevance, title, authors, text, url, "
+                "published_at, version, licence, venue_aliases, citation_count, admit_attempts) "
+                "VALUES (gen_random_uuid(), 'arxiv', 'grant-check', 'candidate', NULL, 0.0, 't', "
+                "'[]', 'body', 'https://example.org/x', now(), 1, 'unknown', '[]', 0, 0) "
+                "RETURNING id"
+            )
+        )
+
+    with engine.connect() as conn:
+        conn.execute(text("SET ROLE paperwatch_api"))
+        # An id from the table's own sequence, then the completion the queue does.
+        event_id = conn.scalar(
+            text(
+                "INSERT INTO suggestion_events (item_id, event, at) "
+                "VALUES (:item_id, 'shown', now()) RETURNING id"
+            ),
+            {"item_id": item_id},
+        )
+        assert event_id is not None
+        conn.rollback()
+
+    with engine.connect() as conn:
+        conn.execute(text("SET ROLE paperwatch_api"))
+        conn.execute(
+            text(
+                "INSERT INTO item_summaries "
+                "(item_id, text_hash, model, prompt_version, status, fields, failed_checks, "
+                "created_at) VALUES (:item_id, 'hash', 'model', 's1', 'excerpt', '{}', '[]', now())"
+            ),
+            {"item_id": item_id},
+        )
+        conn.execute(
+            text("UPDATE item_summaries SET status = 'checked' WHERE item_id = :item_id"),
+            {"item_id": item_id},
+        )
+        conn.rollback()
+
+    # Still no write grant on the corpus itself: the API records interactions, it does not curate.
+    with engine.connect() as conn:
+        conn.execute(text("SET ROLE paperwatch_api"))
+        with pytest.raises(SQLAlchemyError):
+            conn.execute(text("UPDATE items SET title = 'rewritten'"))
+        conn.rollback()
+
+    # This test commits its own row (the grants are connection-level), so it removes it again: a
+    # leftover candidate item would make every later test in the session see one more due paper.
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM items WHERE external_id = 'grant-check'"))

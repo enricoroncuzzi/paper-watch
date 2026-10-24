@@ -9,7 +9,7 @@ import unicodedata
 import uuid
 from collections.abc import Callable
 from contextlib import closing
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -45,12 +45,15 @@ from paperwatch.config import (
     LOOPBACK_HOSTS,
     PROFILES_PATH,
     REPO_ROOT,
+    SUGGESTIONS_PATH,
+    USAGE_POOL_SIZE,
     Settings,
     get_settings,
 )
 from paperwatch.domain import Tier, load_profiles
 from paperwatch.ingest.pipeline import Followup, Sources, run_ingestion
 from paperwatch.llm.chat import (
+    CallGuard,
     ChatModel,
     ChatNotConfigured,
     DailyCapReached,
@@ -67,6 +70,13 @@ from paperwatch.sources.feeds import FeedSource, load_feeds
 from paperwatch.sources.hf_daily import HfDailySource
 from paperwatch.sources.semantic_scholar import SemanticScholarSource
 from paperwatch.store.db import make_engine, make_session_factory
+from paperwatch.store.models import ItemSummary
+from paperwatch.store.repository import ChatCallLog, Repository
+from paperwatch.suggestions.cards import basis_label, momentum_label
+from paperwatch.suggestions.config import MAX_CANDIDATE_DAYS, load_suggestions
+from paperwatch.suggestions.prompts import SUMMARY_PROMPT_VERSION
+from paperwatch.suggestions.ranking import Scored, rank
+from paperwatch.suggestions.summary import SummaryWriter, text_hash
 
 log = structlog.get_logger()
 app = typer.Typer(no_args_is_help=True)
@@ -420,6 +430,124 @@ def search(
             typer.echo(f"{h.score:.4f}  [{h.tier}]  {h.title}\n        {h.url}")
     finally:
         session.close()
+
+
+@app.command()
+def suggest(
+    live: bool = LIVE,
+    summaries: bool = typer.Option(
+        False,
+        "--summaries",
+        help="Write the missing summaries now and report how many were checked",
+    ),
+) -> None:
+    """Print the ranked picks and the Rising shelf, as the page shows them."""
+    _require_live(live)
+    s = get_settings()
+    configure_logging(s.log_level)
+    config = load_suggestions(SUGGESTIONS_PATH)
+    profiles = {profile.name: profile for profile in load_profiles(PROFILES_PATH)}
+    now = datetime.now(UTC)
+    engine = make_engine(s.database_url)
+    session = make_session_factory(engine)()
+    writer: SummaryWriter | None = None
+    if summaries:
+        usage_engine = make_engine(s.database_url, pool_size=USAGE_POOL_SIZE, max_overflow=0)
+        usage = ChatCallLog(make_session_factory(usage_engine))
+        writer = SummaryWriter(
+            make_chat_models(s),
+            lambda: _suggestion_guard(usage, s),
+        )
+    try:
+        repo = Repository(session)
+        candidates = repo.suggestion_candidates(
+            now=now,
+            max_age=timedelta(
+                days=min(
+                    max(config.window_days.paper, config.window_days.lab_post),
+                    MAX_CANDIDATE_DAYS,
+                )
+            ),
+            momentum_days=config.momentum_days,
+        )
+        ranking = rank(
+            candidates,
+            now=now,
+            config=config,
+            profiles=profiles,
+            excluded=repo.excluded_items(),
+        )
+        rows = [*ranking.picks, *ranking.rising]
+        ids = [entry.candidate.item_id for entry in rows]
+        sources = repo.summary_sources(ids)
+        stored = repo.summaries(ids)
+        checked = excerpts = 0
+        for lane, entries in (("pick", ranking.picks), ("rising", ranking.rising)):
+            for position, entry in enumerate(entries, start=1):
+                item_id = entry.candidate.item_id
+                if item_id not in sources:
+                    continue
+                row = stored.get(item_id)
+                title, text = sources[item_id]
+                if writer is not None and _needs_summary(row, title, text, model=s.chat_model):
+                    summary = writer.write(title=title, text=text)
+                    repo.upsert_summary(
+                        item_id,
+                        summary,
+                        text_hash=text_hash(title, text),
+                        model=s.chat_model,
+                        at=datetime.now(UTC),
+                    )
+                    session.commit()
+                    row = repo.summaries([item_id])[item_id]
+                status = row.status if row is not None else "pending"
+                checked += status == "checked"
+                excerpts += status == "excerpt"
+                typer.echo(_suggestion_lines(position, lane, entry, status))
+        if writer is not None:
+            typer.echo(f"summaries: {checked} checked, {excerpts} excerpt of {len(rows)} cards")
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def _suggestion_guard(usage: ChatCallLog, s: Settings) -> CallGuard:
+    # The same two free-tier limits the API uses, from the same settings: a CLI summary run must
+    # not be able to spend past the day's cap.
+    return CallGuard(
+        usage,
+        Ledger(s.chat_max_tokens_per_answer),
+        s.chat_max_calls_per_day,
+        lambda: datetime.now(UTC),
+    )
+
+
+def _needs_summary(row: ItemSummary | None, title: str, text: str, *, model: str) -> bool:
+    if row is None:
+        return True
+    return (
+        row.text_hash != text_hash(title, text)
+        or row.prompt_version != SUMMARY_PROMPT_VERSION
+        or row.model != model
+    )
+
+
+def _suggestion_lines(position: int, lane: str, entry: Scored, status: str) -> str:
+    candidate = entry.candidate
+    parts = [
+        basis_label(
+            candidate.tier,
+            candidate.basis,
+            candidate.venue,
+            candidate.hf_upvotes,
+            candidate.citation_count,
+        )
+    ]
+    momentum = momentum_label(candidate, datetime.now(UTC))
+    if momentum:
+        parts.append(momentum)
+    parts.append(f"summary: {status}")
+    return f"{position}. [{lane}] {candidate.title}\n   {' | '.join(parts)}\n   {candidate.url}"
 
 
 @app.command(name="eval")

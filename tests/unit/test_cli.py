@@ -1,3 +1,4 @@
+import dataclasses
 import json
 import os
 import signal
@@ -24,9 +25,11 @@ from paperwatch.api.app import ErrorEvent
 from paperwatch.api.auth import HmacVerifier
 from paperwatch.cli import app
 from paperwatch.config import Settings
+from paperwatch.domain import AdmissionBasis, Tier
 from paperwatch.ingest.health import Health
 from paperwatch.llm.embedder import FakeEmbedder
 from paperwatch.retrieval.hybrid import Filters
+from paperwatch.suggestions.ranking import Candidate
 from tests.unit.qa_helpers import qa_cli_paths as _qa_cli_paths
 from tests.unit.qa_helpers import qa_recording, qa_row
 
@@ -1369,3 +1372,79 @@ def test_ingest_takes_over_sigterm_only_for_the_run(monkeypatch: pytest.MonkeyPa
     assert result.exit_code == 0
     assert seen["handler"] is cli._exit_on_sigterm
     assert signal.getsignal(signal.SIGTERM) is before
+
+
+class _SuggestRepo:
+    """The repository the `suggest` command reads: one pick and one Rising item, no summaries."""
+
+    def __init__(self) -> None:
+        now = datetime(2026, 11, 2, 9, tzinfo=UTC)
+        self.pick = Candidate(
+            item_id=uuid4(),
+            source="arxiv",
+            external_id="2510.00001",
+            title="AgentBench-Lite: a small benchmark for tool-using agents",
+            url="https://arxiv.org/abs/2510.00001",
+            tier=Tier.PEER_REVIEWED,
+            basis=AdmissionBasis.VENUE,
+            profile="agentic-engineering",
+            relevance=0.93,
+            published_at=now - timedelta(days=1),
+            authors=("Ada Lovelace",),
+            org=None,
+            github_repo=None,
+            github_stars=None,
+            project_page=None,
+            text_chars=900,
+            hf_upvotes=None,
+            hf_listed_at=None,
+            upvote_series=(),
+            upvote_baseline=None,
+            promoted_to_peer_at=None,
+            repo_first_seen_at=None,
+            embedding=(),
+            venue="ICLR",
+            citation_count=12,
+        )
+        self.rising = dataclasses.replace(
+            self.pick,
+            item_id=uuid4(),
+            external_id="2510.00002",
+            tier=Tier.VETTED_PREPRINT,
+            basis=AdmissionBasis.LAB_AUTHOR,
+            title="A prevalence study of agent memory",
+        )
+
+    def suggestion_candidates(self, **kwargs: object) -> list[Candidate]:
+        return [self.pick, self.rising]
+
+    def excluded_items(self) -> frozenset[object]:
+        return frozenset()
+
+    def summary_sources(self, ids: object) -> dict[object, tuple[str, str]]:
+        return {
+            candidate.item_id: (candidate.title, "A body " * 100)
+            for candidate in (self.pick, self.rising)
+        }
+
+    def summaries(self, ids: object) -> dict[object, object]:
+        return {}
+
+
+def test_suggest_prints_picks_and_rising(monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = _SuggestRepo()
+    engine = SimpleNamespace(dispose=lambda: None)
+    monkeypatch.setattr(cli, "get_settings", lambda: Settings())
+    monkeypatch.setattr(cli, "make_engine", lambda url, **kwargs: engine)
+    session = SimpleNamespace(close=lambda: None)
+    monkeypatch.setattr(cli, "make_session_factory", lambda engine: lambda: session)
+    monkeypatch.setattr(cli, "Repository", lambda session: repo)
+
+    result = CliRunner().invoke(app, ["suggest", "--live"])
+
+    assert result.exit_code == 0
+    assert "[pick] AgentBench-Lite" in result.output
+    assert "[rising] A prevalence study of agent memory" in result.output
+    assert "peer-reviewed via venue: ICLR" in result.output
+    assert "preprint from a recognised lab's authors" in result.output
+    assert "summary: pending" in result.output
