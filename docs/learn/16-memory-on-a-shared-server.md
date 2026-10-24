@@ -55,7 +55,11 @@ model.
    hours, the morning check's own stale-row limit) means the ingestion's main pass is running:
    `text_only`, reason `ingestion`, `since` that start.
 2. `MemAvailable` below 800 MB (`SEARCH_MODE_MIN_AVAILABLE_MB`) means the machine is short:
-   `text_only`, reason `memory`.
+   `text_only`, reason `memory`. A live model child is exempt from that count: its own `RssAnon` is
+   added back before the comparison, because killing it is what would free it. Without that, the
+   API's own child alone could put the machine under the threshold (measured on the deployment,
+   2026-10-24: 1104 MB idle, 700 to 830 MB with the child loaded), and the gate would turn
+   keyword-only and kill the child it just paid to load.
 3. PSI `some avg10` above 5.0 (`SEARCH_MODE_MAX_PSI_SOME_AVG10`) means processes are stalling on
    memory: the same decision.
 4. A database error means `text_only`, reason `database`: a search that cannot read the run table

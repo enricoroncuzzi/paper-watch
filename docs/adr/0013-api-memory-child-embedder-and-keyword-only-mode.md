@@ -36,7 +36,12 @@ provided the reader is told.
   answers `text_only` when a `runs` row is `running` and younger than three hours (reason
   `ingestion`, with `since`), when `MemAvailable` is below 800 MB or PSI `some avg10` is above 5.0
   (reason `memory`), or when the run table cannot be read (reason `database`); otherwise
-  `hybrid`. The decision is cached for two seconds. A missing `/proc` is ignored, which is the
+  `hybrid`. While a model child is alive, the gate adds that child's own `RssAnon` to
+  `MemAvailable` first, because that is the memory its exit gives back: measured on 2026-10-24, the
+  idle machine read 1104 MB available with the API at 130 MB RSS and its child at 213 to 219 MB
+  `RssAnon` (46 MB `RssFile`, 276 MB peak), which left 700 to 830 MB with the child loaded, at or
+  below the threshold, so an idle API would otherwise turn keyword-only and kill its own child.
+  The decision is cached for two seconds. A missing `/proc` is ignored, which is the
   Mac. Each `search_corpus` asks again, so an ingestion starting mid-answer switches the next
   round; a child that fails makes that one search keyword-only, and the answer says so with a
   `notice` event and `search_mode`.

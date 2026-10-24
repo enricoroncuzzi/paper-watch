@@ -78,7 +78,7 @@ it.
 
 `paperwatch ask "QUESTION" --live` and `POST /ask` run the same path. `run_question` first asks
 `SearchModeGate` for the search mode: a main-pass row in `runs` younger than three hours, or
-`MemAvailable` below 800 MB, or PSI `some avg10` above 5.0, switches this answer to keyword-only;
+`MemAvailable` plus the live model child's own memory below 800 MB (ADR 0013), or PSI `some avg10` above 5.0, switches this answer to keyword-only;
 the page is sent a `notice` and the answer carries `search_mode: text_only`. On the API, each tool
 call then opens its own short `SET TRANSACTION READ ONLY` session and closes it when the tool
 returns, so an answer waiting for the model holds no database connection; the CLI keeps one
