@@ -16,11 +16,6 @@ export const dynamic = "force-dynamic";
 
 const AskBody = z.object({
   question: z.string().trim().min(1).max(1000),
-  // Slices 4 and 6 send these; the fields exist now so the contract does not change twice.
-  tiers: z.array(z.string()).max(3).optional(),
-  profiles: z.array(z.string()).max(8).optional(),
-  item_id: z.string().uuid().optional(),
-  thread_id: z.string().uuid().optional(),
 });
 
 function refused(kind: string, status: number, retryAfterS?: number): Response {

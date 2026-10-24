@@ -15,8 +15,6 @@ export type ApiResult<T> =
 
 /** Reads are a page load, not an answer: ten seconds is already a slow corpus query. */
 export const READ_TIMEOUT_MS = 10_000;
-/** A write can wait longer than a read, but still not forever. */
-export const WRITE_TIMEOUT_MS = 20_000;
 
 function kindFor(status: number): ApiErrorKind {
   if (status === 401 || status === 403) return "unauthorized";
@@ -47,11 +45,7 @@ async function declaredRefusal(
   }
 }
 
-async function call<T>(
-  method: "GET" | "POST",
-  path: string,
-  options: { body?: unknown; timeoutMs: number },
-): Promise<ApiResult<T>> {
+export async function apiGet<T>(path: string): Promise<ApiResult<T>> {
   // The API's address lives only here, on the server; there is no NEXT_PUBLIC_ variable.
   const base = process.env.PW_API_URL;
   if (!base) return { ok: false, kind: "unavailable" };
@@ -64,15 +58,10 @@ async function call<T>(
   }
   // An explicit controller rather than `AbortSignal.timeout`: a test can advance its clock.
   const timeout = new AbortController();
-  const timer = setTimeout(() => timeout.abort(), options.timeoutMs);
+  const timer = setTimeout(() => timeout.abort(), READ_TIMEOUT_MS);
   try {
     const response = await fetch(new URL(path, base), {
-      method,
-      headers: {
-        authorization: `Bearer ${token}`,
-        ...(options.body === undefined ? {} : { "content-type": "application/json" }),
-      },
-      body: options.body === undefined ? undefined : JSON.stringify(options.body),
+      headers: { authorization: `Bearer ${token}` },
       cache: "no-store",
       signal: timeout.signal,
     });
@@ -95,13 +84,4 @@ async function call<T>(
   } finally {
     clearTimeout(timer);
   }
-}
-
-export function apiGet<T>(path: string): Promise<ApiResult<T>> {
-  return call<T>("GET", path, { timeoutMs: READ_TIMEOUT_MS });
-}
-
-/** For the write routes the page adds later (drafts in slice 5); reads use `apiGet`. */
-export function apiPost<T>(path: string, body: unknown): Promise<ApiResult<T>> {
-  return call<T>("POST", path, { body, timeoutMs: WRITE_TIMEOUT_MS });
 }

@@ -131,4 +131,17 @@ describe("the ask proxy", () => {
     const response = await POST(askRequest({ question: "   " }));
     expect(response.status).toBe(400);
   });
+
+  it("forwards only the question", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response("data: {}\n\n", { headers: { "content-type": "text/event-stream" } }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const response = await POST(
+      askRequest({ question: "q", thread_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", tiers: [1] }),
+    );
+    expect(response.status).toBe(200);
+    const init = fetchMock.mock.calls[0]![1] as RequestInit;
+    expect(JSON.parse(init.body as string)).toEqual({ question: "q" });
+  });
 });

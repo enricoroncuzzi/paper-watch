@@ -16,7 +16,8 @@ export default async function SignInPage({
 }: {
   searchParams: Promise<{ error?: string }>;
 }) {
-  // Auth.js sends a refused sign-in here (pages.error) instead of its own unstyled page.
+  // Auth.js sends every sign-in failure here (pages.error) instead of its own unstyled page;
+  // only AccessDenied, the signIn callback's refusal, means the account is not the owner.
   const { error } = await searchParams;
   // The test button is rendered only where the provider exists; the provider itself is the gate.
   const testOwner = e2eSessionAllowed(process.env);
@@ -33,7 +34,9 @@ export default async function SignInPage({
           data-testid="signin-refused"
           className="mt-5 max-w-[30rem] border border-bad/40 bg-bad-soft px-3.5 py-2.5 text-[12.5px] leading-[1.55] text-ink"
         >
-          That GitHub account is not the owner of this page. Sign in with the account it belongs to.
+          {error === "AccessDenied"
+            ? "That GitHub account is not the owner of this page. Sign in with the account it belongs to."
+            : "Sign-in did not complete. Try again in a moment."}
         </p>
       ) : null}
       <form action={signInWithGithub} className="mt-8">

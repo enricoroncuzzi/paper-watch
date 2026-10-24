@@ -2,6 +2,7 @@
 
 import * as Dialog from "@radix-ui/react-dialog";
 import { Command } from "cmdk";
+import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
 const SECTIONS = [
@@ -15,6 +16,7 @@ const SECTIONS = [
  */
 export function CommandPalette() {
   const [open, setOpen] = useState(false);
+  const router = useRouter();
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
@@ -29,9 +31,15 @@ export function CommandPalette() {
 
   function go(section: string) {
     setOpen(false);
-    // A hash, not a router push: the sections live on the same page and the link is shareable.
+    const target = document.getElementById(section);
+    // The sections live on the home page: from a run detail the palette goes there first.
+    if (!target) {
+      router.push(`/#${section}`);
+      return;
+    }
+    // A hash, not a router push: the section is on this page and the link is shareable.
     window.history.pushState(null, "", `#${section}`);
-    document.getElementById(section)?.scrollIntoView({ block: "start" });
+    target.scrollIntoView({ block: "start" });
   }
 
   return (

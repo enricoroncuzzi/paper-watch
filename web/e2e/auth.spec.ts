@@ -29,6 +29,13 @@ test("a refused account lands on the styled sign-in page", async ({ page }) => {
   await expect(page.getByRole("button", { name: "Sign in with GitHub" })).toBeVisible();
 });
 
+test("any other sign-in failure does not blame the account", async ({ page }) => {
+  await page.goto("/signin?error=Configuration");
+  const notice = page.getByTestId("signin-refused");
+  await expect(notice).toContainText("Sign-in did not complete.");
+  await expect(notice).not.toContainText("not the owner");
+});
+
 test("the page sends its security headers", async ({ page }) => {
   await signIn(page);
   for (const path of ["/signin", "/"]) {

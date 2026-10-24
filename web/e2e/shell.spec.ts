@@ -134,6 +134,21 @@ test("command k opens the palette and navigates", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "Runs" })).toBeVisible();
 });
 
+test("from a run detail the masthead and the palette return to Runs", async ({ page }) => {
+  const detail = "/runs/11111111-1111-4111-8111-111111111111";
+  await page.goto(detail);
+  await page.getByRole("navigation", { name: "Sections" }).getByRole("link", { name: "Runs" }).click();
+  await expect(page).toHaveURL(/\/#runs$/);
+  await expect(page.getByTestId("runs-section")).toBeVisible();
+
+  await page.goto(detail);
+  await expect(page.getByTestId("run-detail")).toBeVisible();
+  await page.keyboard.press("ControlOrMeta+k");
+  await page.getByRole("dialog").getByRole("option", { name: /Runs/ }).click();
+  await expect(page).toHaveURL(/\/#runs$/);
+  await expect(page.getByTestId("runs-section")).toBeVisible();
+});
+
 test("the phone layout has no horizontal scroll and 44px targets", async ({ page }, testInfo) => {
   // The 44 px rule is the phone layout's; on a desktop viewport the masthead follows the mockup.
   test.skip(!testInfo.project.name.includes("iphone"), "checked on the iPhone project");
