@@ -148,3 +148,17 @@ def test_serve_reports_an_error_line_without_dying() -> None:
     out = io.StringIO()
     serve(Broken(), inp, out)  # type: ignore[arg-type]
     assert json.loads(out.getvalue()) == {"error": "ValueError"}
+
+
+def test_a_failing_stop_check_keeps_the_reaper_alive(
+    workers: Callable[..., WorkerEmbedder],
+) -> None:
+    # A database error in the mode check is already handled by the gate, but a callback that raises
+    # must not kill the reaper thread: the child would then never exit when it goes idle.
+    def broken() -> bool:
+        raise RuntimeError("the mode check is down")
+
+    worker = workers(should_stop=broken, idle_s=10, clock=Clock())
+    worker.embed(["hello"])
+    worker.reap_once()  # must not raise
+    assert worker.alive()

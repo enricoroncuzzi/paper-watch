@@ -183,11 +183,19 @@ class WorkerEmbedder:
                 return
             now = self._clock()
             idle = self._last_used is not None and now - self._last_used >= self._idle_s
-        if not idle and not self._should_stop():
-            return
+        if not idle:
+            try:
+                stop = self._should_stop()
+            except Exception as exc:  # noqa: BLE001 - a mode read must not kill the reaper
+                # The child must still exit when idle even if the mode check is broken.
+                log.warning("embed_worker_stop_check_failed", error_type=type(exc).__name__)
+                stop = False
+            if not stop:
+                return
         with self._state:
-            # Another thread may have replaced the child while the mode check ran.
-            if self._process is process:
+            # Another thread may have replaced the child, and an answer may have opened, while the
+            # mode check ran; the child may not exit mid-answer.
+            if self._process is process and self._answers == 0:
                 self._terminate_locked(process)
 
     def stop(self) -> None:
