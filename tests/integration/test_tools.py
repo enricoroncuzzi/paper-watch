@@ -770,3 +770,60 @@ def test_each_tool_call_opens_and_closes_its_own_read_only_session(engine: Engin
             first_statements[current] = payload
     assert set(first_statements) == {0, 1}
     assert all("SET TRANSACTION READ ONLY" in statement for statement in first_statements.values())
+
+
+def test_a_dead_child_keeps_the_rest_of_the_answer_keyword_only(
+    db_session: Session, seed_items: Seed
+) -> None:
+    # N6: after the child times out or dies, another search must not wait for the same cold start
+    # to fail again; the answer stays keyword-only and says so.
+    from paperwatch.agent.prompts import TEXT_ONLY_NOTE
+    from paperwatch.agent.tools import SearchLog
+    from paperwatch.llm.embedder import EmbedderUnavailable
+
+    seed_items(AGENT_ROWS)
+
+    class CountingDead(FakeEmbedder):
+        calls = 0
+
+        def embed(self, texts: list[str]) -> list[list[float]]:
+            type(self).calls += 1
+            raise EmbedderUnavailable("the worker is gone")
+
+    log = SearchLog()
+    tools = dict(
+        (t.name, t)
+        for t in make_tools(db_session, CountingDead(), SourceRegistry(), search_log=log)  # type: ignore[arg-type]
+    )
+    first = tools["search_corpus"].invoke({"query": "SWE-bench coding agents"})
+    second = tools["search_corpus"].invoke({"query": "agent harness"})
+    assert first.startswith(TEXT_ONLY_NOTE) and second.startswith(TEXT_ONLY_NOTE)
+    assert CountingDead.calls == 1
+    assert log.text_only is True
+
+
+def test_a_broken_tool_session_is_a_tool_message_not_a_raw_error(engine: Engine) -> None:
+    # N7: a pool timeout or a connect failure on the short session must reach the model as a
+    # retryable ToolException, never as a repr in the prompt.
+    from sqlalchemy.exc import OperationalError
+
+    from paperwatch.agent.tools import make_tools
+
+    class Broken:
+        def execute(self, statement: object, *args: object, **kwargs: object) -> object:
+            raise OperationalError("SET TRANSACTION READ ONLY", {}, Exception("pool is down"))
+
+        def rollback(self) -> None:
+            raise AssertionError("a session that never opened must not roll back")
+
+        def close(self) -> None:
+            raise AssertionError("a session that never opened must not close")
+
+    tools = dict(
+        (t.name, t)
+        for t in make_tools(  # type: ignore[arg-type]
+            None, FakeEmbedder(), SourceRegistry(), session_factory=lambda: Broken()
+        )
+    )
+    out = tools["search_corpus"].invoke({"query": "x"})
+    assert "database error" in out and "OperationalError" not in out

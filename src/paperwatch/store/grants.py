@@ -11,13 +11,19 @@ API_ROLE = "paperwatch_api"
 
 
 def grant_api_writes(
-    tables: Sequence[str],
+    tables: Sequence[str] = (),
     *,
     update: Sequence[str] = (),
     sequences: Sequence[str] = (),
 ) -> str:
-    """One `DO` block: INSERT on `tables`, UPDATE on `update`, USAGE on `sequences`."""
-    statements = [f"GRANT INSERT ON {', '.join(tables)} TO {API_ROLE};"]
+    """One `DO` block: INSERT on `tables`, UPDATE on `update`, USAGE on `sequences`.
+
+    Every list is optional, so a migration that only adds an UPDATE or a sequence grant can use
+    the same helper; an empty list is no GRANT at all, never `GRANT INSERT ON  TO ...`.
+    """
+    statements: list[str] = []
+    if tables:
+        statements.append(f"GRANT INSERT ON {', '.join(tables)} TO {API_ROLE};")
     if update:
         statements.append(f"GRANT UPDATE ON {', '.join(update)} TO {API_ROLE};")
     if sequences:

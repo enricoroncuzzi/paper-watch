@@ -90,13 +90,22 @@ def calls(session: Session) -> int:
 
 
 class _FailingStore:
-    """A `chat_calls` store that cannot write, to prove that failure cannot hide a model error."""
+    """A `chat_calls` store that reserves but cannot complete a row.
 
-    def record_chat_call(self, **kwargs: Any) -> None:
+    Reservation has to succeed, or the model would never be called; the failure under test is the
+    completion write, which must not hide the provider error or the abort.
+    """
+
+    def reserve_chat_call(self, *, at: datetime, provider: str, cap: int) -> tuple[int, int]:
+        return 1, 1
+
+    def fill_chat_call(
+        self, call_id: int, *, model: str, input_tokens: int, output_tokens: int
+    ) -> None:
         raise RuntimeError("chat_calls is unwritable")
 
-    def chat_calls_since(self, at: datetime) -> int:
-        return 0
+    def fail_chat_call(self, call_id: int) -> None:
+        raise RuntimeError("chat_calls is unwritable")
 
 
 class _AbortingModel(ScriptedChatModel):

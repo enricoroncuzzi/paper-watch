@@ -190,15 +190,15 @@ def build_agent(
                 raise AnswerAborted
             # Outside the try on purpose: a cap or budget decision must not look like provider
             # trouble, because another provider would spend the same budget or bypass the same
-            # cap.
-            guard.before_call()
+            # cap. The reservation is the attempt's row, made before the provider is asked.
+            reservation = guard.before_call(provider)
             try:
                 message = model.invoke(messages)
             except AnswerAborted:
                 # The request reached the provider before the client left, so it counts against
                 # the daily cap. The store's own failure is logged, never raised over the abort.
                 try:
-                    guard.after_failure(provider)
+                    guard.after_failure(provider, reservation)
                 except Exception as store_exc:  # noqa: BLE001 - never hide the abort
                     log.warning(
                         "chat_failure_record_failed",
@@ -207,11 +207,11 @@ def build_agent(
                     )
                 raise
             except Exception as exc:  # noqa: BLE001 - any provider error moves to the next model
-                # The attempt reached the provider, so it counts against the daily cap (Task 13
-                # Step 11). A store that cannot record it is logged, never raised: the provider
+                # The attempt reached the provider, so its reserved row is marked failed (Task 13
+                # Step 11). A store that cannot update it is logged, never raised: the provider
                 # error is what the caller needs to see.
                 try:
-                    guard.after_failure(provider)
+                    guard.after_failure(provider, reservation)
                 except Exception as store_exc:  # noqa: BLE001 - never hide the provider error
                     # The store error's own text is statement parameters, not provider text, but
                     # a rendered traceback would chain to the provider error above it.
@@ -231,7 +231,7 @@ def build_agent(
                 failures.append((provider, exc))
                 continue
             # Outside the try on purpose, as above: the ledger's refusal is this answer's budget.
-            guard.after_call(provider, message)
+            guard.after_call(provider, message, reservation)
             # Every chat model returns an AIMessage; the cast only keeps mypy strict honest
             # about the generic `_Model` above.
             return cast(AIMessage, message)

@@ -54,6 +54,10 @@ def paced(
     started = last_frame = clock()
     try:
         while True:
+            # No per-frame cancel check: Starlette's TestClient reports http.disconnect as soon as
+            # the request body is read, so checking here would truncate a stream that a real
+            # client is still reading. `_ClosingStream` closes this generator on a hang-up, which
+            # runs the finally below (cancel and join) at once.
             now = clock()
             if now - started >= deadline_s:
                 # Set the flag before yielding: the model call in flight hears it at its next token,
@@ -61,8 +65,11 @@ def paced(
                 cancel.set()
                 yield deadline_error()
                 return
+            # Wake at the next heartbeat or the deadline, whichever is first, and no later than
+            # the poll interval so a cancel arrives promptly.
+            next_due = min(started + deadline_s, last_frame + heartbeat_s)
             try:
-                item = frames.get(timeout=POLL_S)
+                item = frames.get(timeout=max(0.0, min(POLL_S, next_due - now)))
             except queue.Empty:
                 item = _EMPTY
             if item is _DONE:

@@ -5,9 +5,10 @@
 Every route but `GET /healthz` needs `Authorization: Bearer <token>`: a Vercel OIDC token when
 `PW_API_AUTH=oidc`, or one minted by `paperwatch api-token --live` when it is `hmac`. A request
 whose `Host` is not loopback or `PW_API_PUBLIC_HOST` gets 400, any request carrying an `Origin`
-gets 403, and a body over 16 KB gets 413. The served app publishes no `/docs`, `/redoc` or
-`/openapi.json`; the committed contract is the client's reference. `docs/learn/15` explains the
-gate and what each status code means.
+gets 403, and a body over 16 KB gets 413. The served app also serves `/docs`, `/redoc` and
+`/openapi.json`, all behind the same credential, so anyone without a token gets 401. Swagger UI
+cannot attach the bearer token from a browser, so the committed contract is the client's
+reference. `docs/learn/15` explains the gate and what each status code means.
 
 | Route | Purpose |
 |---|---|

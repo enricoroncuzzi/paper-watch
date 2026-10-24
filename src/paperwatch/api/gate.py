@@ -103,9 +103,26 @@ class ApiGate:
         self._max_body_bytes = max_body_bytes
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http":
-            # No websocket or lifespan route exists; only the HTTP gate is this gate's business.
+        if scope["type"] == "lifespan":
+            # Startup and shutdown carry no request and no credential.
             await self._app(scope, receive, send)
+            return
+        if scope["type"] == "websocket":
+            # Fail closed. No websocket route exists today, and one added later must not be open
+            # to anyone who can reach the tunnel. The bearer token is the guard; an Origin check
+            # would also refuse a browser, which cannot set the header on a WebSocket anyway.
+            headers = Headers(scope=scope)
+            token = _bearer(headers.get("authorization"))
+            principal = (
+                await anyio.to_thread.run_sync(self._verifier.verify, token) if token else None
+            )
+            if principal is None or _host_name(headers.get("host", "")) not in self._allowed_hosts:
+                await send({"type": "websocket.close", "code": 1008})
+                return
+            scope.setdefault("state", {})["principal"] = principal
+            await self._app(scope, receive, send)
+            return
+        if scope["type"] != "http":
             return
 
         headers = Headers(scope=scope)
@@ -175,8 +192,9 @@ class ApiGate:
         detail: str,
         reason: str,
     ) -> None:
-        # The reason code only: never the header, the token or the host.
-        log.info("api_request_refused", reason=reason, status=status)
+        # The reason code only: never the header, the token or the host. Debug, so an
+        # unauthenticated flood does not write a journal line per request on the shared host.
+        log.debug("api_request_refused", reason=reason, status=status)
         extra = {"WWW-Authenticate": "Bearer"} if status == 401 else None
         await JSONResponse({"detail": detail}, status_code=status, headers=extra)(
             scope, receive, send

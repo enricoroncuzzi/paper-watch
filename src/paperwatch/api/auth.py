@@ -37,6 +37,9 @@ from paperwatch.config import (
 log = structlog.get_logger()
 
 JWKS_FETCH_TIMEOUT_S = 5.0
+# A fetch that failed is retried sooner than a successful one: a transient error on the first
+# request after a restart must not lock the page out for the full key-rotation window.
+JWKS_NEGATIVE_CACHE_S = 30.0
 # A shared secret shorter than this is a guess away from being forged; the API refuses to start
 # with one rather than pretending it is configured.
 HMAC_SECRET_MIN_CHARS = 32
@@ -62,8 +65,10 @@ class JwksCache:
     """Vercel's signing keys, fetched on first use and on an unknown key id at most once a window.
 
     A key id is chosen by the caller, so a flood of made-up ids would otherwise be a free
-    amplification against Vercel's endpoint. A failed fetch is remembered like a successful one:
-    the window is what bounds requests, not the fetch's outcome.
+    amplification against Vercel's endpoint. The window is claimed before the fetch and the fetch
+    itself runs outside the lock, so one slow request never blocks the others; while it runs, a
+    second caller is treated as "no key yet" and refused rather than queued. A failed fetch is
+    remembered for a shorter window than a successful one.
     """
 
     def __init__(
@@ -72,40 +77,49 @@ class JwksCache:
         fetch: Callable[[str], dict[str, Any]],
         clock: Callable[[], float],
         refetch_min_s: float = JWKS_REFETCH_MIN_S,
+        negative_s: float = JWKS_NEGATIVE_CACHE_S,
     ) -> None:
         self._url = url
         self._fetch = fetch
         self._clock = clock
         self._refetch_min_s = refetch_min_s
+        self._negative_s = negative_s
         self._lock = threading.Lock()
         self._keys: dict[str, PyJWK] = {}
         self._attempted_at: float | None = None
+        self._failed = False
 
     def key(self, kid: str) -> PyJWK | None:
         with self._lock:
             if self._attempted_at is None:
-                self._load()
-            key = self._keys.get(kid)
-            if key is not None:
-                return key
-            # An unknown key id may mean a rotation, so one refetch is allowed per window.
-            assert self._attempted_at is not None  # set by the load above
-            if self._clock() - self._attempted_at >= self._refetch_min_s:
-                self._load()
-                return self._keys.get(kid)
-            return None
+                should_fetch = True
+            else:
+                key = self._keys.get(kid)
+                if key is not None:
+                    return key
+                # An unknown key id may mean a rotation, so one refetch is allowed per window.
+                window = self._negative_s if self._failed else self._refetch_min_s
+                should_fetch = self._clock() - self._attempted_at >= window
+                if not should_fetch:
+                    return None
+            # Claim the window before releasing the lock: a hundred concurrent callers must start
+            # at most one fetch, and the fetch itself must not hold the lock.
+            self._attempted_at = self._clock()
+        key_set = self._fetch_keys()
+        with self._lock:
+            self._failed = key_set is None
+            if key_set is not None:
+                self._keys = key_set
+            return self._keys.get(kid)
 
-    def _load(self) -> None:
-        # Stamped before the fetch: a fetch that hangs or fails still used up the window, which is
-        # what keeps a broken key endpoint from being retried once per request.
-        self._attempted_at = self._clock()
+    def _fetch_keys(self) -> dict[str, PyJWK] | None:
         try:
             key_set = PyJWKSet.from_dict(self._fetch(self._url))
         except Exception as exc:  # noqa: BLE001 - any fetch failure means "no key", never a crash
             # Only the type: the URL and a provider body are not for the log.
             log.warning("jwks_fetch_failed", error_type=type(exc).__name__)
-            return
-        self._keys = {key.key_id: key for key in key_set.keys if key.key_id}
+            return None
+        return {key.key_id: key for key in key_set.keys if key.key_id}
 
 
 class OidcVerifier:
@@ -179,7 +193,14 @@ class OidcVerifier:
         got: Any = None
         with contextlib.suppress(jwt.PyJWTError):
             got = jwt.decode(token, options={"verify_signature": False}).get(claim)
-        log.warning("token_claim_mismatch", claim=claim, expected=expected, got=got)
+        # Both values are Vercel's, but a token's aud/sub is caller-influenced and unbounded, so
+        # the log line is clipped and kept at info.
+        log.info(
+            "token_claim_mismatch",
+            claim=claim,
+            expected=str(expected)[:80],
+            got=str(got)[:120],
+        )
 
 
 class HmacVerifier:

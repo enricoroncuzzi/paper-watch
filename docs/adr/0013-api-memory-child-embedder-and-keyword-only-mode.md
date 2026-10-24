@@ -10,7 +10,7 @@ Accepted
 
 With the embedding model resident, the API held 380 to 520 MB all day on a machine with about
 1.3 GB available, next to an ingestion that peaks at 706.8 MB. Freeing the model inside the
-process (dropping the reference and collecting) did not return the pages in the lab, so an
+process (dropping the reference and collecting) did not return the pages in the measurements, so an
 in-process cache cannot promise the ingestion its memory back. The two cannot both fit.
 
 The lab also ruled out two systemd relationships. `Conflicts=` between the API and the ingestion
@@ -53,7 +53,7 @@ provided the reader is told.
   agent has its own 150M outside the slice.
 - **Cold start is hidden, and measured.** Prewarm runs before the first model call, so the 0.8 s
   spawn-to-first-vector measured on the Mac (warm cache, 2026-10-24) sits under the chat model's
-  first token. The server acceptance run records the same number (D2/D5 of the plan).
+  first token. The live acceptance run records the same number.
 
 ## Consequences
 
@@ -64,6 +64,6 @@ provided the reader is told.
   half, not the answer.
 - The shared slice is 1100M: if the measured peak of either side grows past it, one of them is
   OOM-killed rather than the machine swapping. That is deliberate and visible in the journal, and
-  the server measurements (D2, D8) are the check.
+  the server measurement and the overlap rehearsal are the check.
 - The API needs `/proc` for the memory signals; on a machine without it the gate reports hybrid,
   and the memory caps are the only guard.

@@ -1,8 +1,10 @@
 """The chat_calls table and the daily call cap it backs."""
 
+import threading
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from langchain_core.messages import AIMessage
 from sqlalchemy import Engine, delete, func, select
 from sqlalchemy.orm import Session
 
@@ -33,7 +35,7 @@ def test_daily_cap_blocks_before_the_call(db_session: Session) -> None:
     record(repo, MIDNIGHT + timedelta(hours=2))
     guard = CallGuard(repo, Ledger(100), 2, lambda: MIDNIGHT + timedelta(hours=3))
     with pytest.raises(DailyCapReached):
-        guard.before_call()
+        guard.before_call("openrouter")
     assert db_session.scalar(select(func.count()).select_from(ChatCall)) == 2
 
 
@@ -42,7 +44,11 @@ def test_cap_resets_at_utc_midnight(db_session: Session) -> None:
     record(repo, MIDNIGHT + timedelta(hours=1))
     record(repo, MIDNIGHT + timedelta(hours=2))
     tomorrow = MIDNIGHT + timedelta(days=1, seconds=1)
-    CallGuard(repo, Ledger(100), 2, lambda: tomorrow).before_call()
+    guard = CallGuard(repo, Ledger(100), 2, lambda: tomorrow)
+    call_id, calls_today = repo.reserve_chat_call(at=tomorrow, provider="openrouter", cap=2)
+    assert call_id is not None and calls_today == 1
+    # The same guard and clock are what production uses.
+    guard.before_call("openrouter")
 
 
 def test_chat_call_log_survives_a_rolled_back_request_session(engine: Engine) -> None:
@@ -94,6 +100,92 @@ def test_chat_call_log_returns_every_connection_to_the_pool(engine: Engine) -> N
         assert engine.pool.checkedout() == before
     finally:
         # The row is committed, so it outlives the test.
+        with factory() as cleanup:
+            cleanup.execute(delete(ChatCall).where(ChatCall.at == at))
+            cleanup.commit()
+
+
+def test_two_concurrent_reservations_at_799_give_exactly_one_success(engine: Engine) -> None:
+    # Captain's requirement (6): the count and the insert share one transaction lock, so two
+    # answers that both see 799 cannot both reach the provider.
+    factory = make_session_factory(engine)
+    log = ChatCallLog(factory)
+    at = datetime(2026, 10, 24, 12, tzinfo=UTC)
+    with factory() as session:
+        for _ in range(799):
+            session.add(
+                ChatCall(at=at, provider="openrouter", model="m", input_tokens=0, output_tokens=0)
+            )
+        session.commit()
+    barrier = threading.Barrier(2)
+    outcomes: list[str] = []
+    lock = threading.Lock()
+
+    def attempt() -> None:
+        barrier.wait()
+        try:
+            CallGuard(log, Ledger(10_000), 800, lambda: at).before_call("openrouter")
+        except DailyCapReached:
+            with lock:
+                outcomes.append("refused")
+            return
+        with lock:
+            outcomes.append("reserved")
+
+    try:
+        threads = [threading.Thread(target=attempt) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=20)
+        assert sorted(outcomes) == ["refused", "reserved"]
+        with factory() as session:
+            assert session.scalar(select(func.count()).select_from(ChatCall)) == 800
+    finally:
+        with factory() as cleanup:
+            cleanup.execute(delete(ChatCall).where(ChatCall.at == at))
+            cleanup.commit()
+
+
+def test_a_failed_call_keeps_its_reserved_row(engine: Engine) -> None:
+    factory = make_session_factory(engine)
+    log = ChatCallLog(factory)
+    at = datetime(2026, 10, 24, 13, tzinfo=UTC)
+    call_id, _ = log.reserve_chat_call(at=at, provider="openrouter", cap=10)
+    assert call_id is not None
+    try:
+        CallGuard(log, Ledger(100), 10, lambda: at).after_failure("openrouter", call_id)
+        with factory() as session:
+            row = session.get_one(ChatCall, call_id)
+            assert (row.model, row.input_tokens, row.output_tokens) == ("failed", 0, 0)
+    finally:
+        with factory() as cleanup:
+            cleanup.execute(delete(ChatCall).where(ChatCall.at == at))
+            cleanup.commit()
+
+
+def test_after_call_fills_the_reserved_row(engine: Engine) -> None:
+    factory = make_session_factory(engine)
+    log = ChatCallLog(factory)
+    at = datetime(2026, 10, 24, 14, tzinfo=UTC)
+    call_id, _ = log.reserve_chat_call(at=at, provider="openrouter", cap=10)
+    assert call_id is not None
+    message = AIMessage(
+        "x",
+        usage_metadata={"input_tokens": 5, "output_tokens": 3, "total_tokens": 8},
+        response_metadata={"model_name": "vendor/model:free"},
+    )
+    try:
+        CallGuard(log, Ledger(1000), 10, lambda: at).after_call("openrouter", message, call_id)
+        with factory() as session:
+            row = session.get_one(ChatCall, call_id)
+            assert (row.model, row.input_tokens, row.output_tokens) == (
+                "vendor/model:free",
+                5,
+                3,
+            )
+            assert session.scalar(select(func.count()).select_from(ChatCall)) == 1
+    finally:
         with factory() as cleanup:
             cleanup.execute(delete(ChatCall).where(ChatCall.at == at))
             cleanup.commit()

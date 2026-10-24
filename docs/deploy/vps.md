@@ -439,6 +439,9 @@ GRANT SELECT ON ALL TABLES IN SCHEMA public TO paperwatch_ro;
 GRANT SELECT ON ALL TABLES IN SCHEMA public TO paperwatch_api;
 GRANT INSERT ON chat_calls TO paperwatch_api;
 GRANT USAGE ON SEQUENCE chat_calls_id_seq TO paperwatch_api;
+-- The API reserves the row before the provider call and completes it after. Column level, so it
+-- can never move the row to another day or provider.
+GRANT UPDATE (model, input_tokens, output_tokens) ON chat_calls TO paperwatch_api;
 
 -- Tables later migrations create are readable by both roles. A later table the API must write is
 -- granted by that migration itself (src/paperwatch/store/grants.py), so the captain has no
@@ -539,9 +542,9 @@ while an ingestion is running.
 
 ## 15. The API
 
-The API is a long-lived user unit on `127.0.0.1:8000`, publishes no docs routes, and refuses every
-request but `GET /healthz` without its credential (`docs/learn/15`). The tunnel in section 16 is
-the only way in.
+The API is a long-lived user unit on `127.0.0.1:8000` and refuses every request but
+`GET /healthz` without its credential (`docs/learn/15`); `/docs`, `/redoc` and `/openapi.json` are
+served behind the same credential. The tunnel in section 16 is the only way in.
 
 Write its env file, separate from the ingestion's because it connects as a different role and
 needs a chat key the ingestion does not. The here-document is quoted so `$` stays literal:
@@ -588,8 +591,8 @@ systemctl --user enable --now paperwatch-api
 
 `paperwatch-api.service` caps the API at `MemoryMax=700M` with no swap, raises its OOM score to
 900, and joins `paperwatch.slice` (`MemoryMax=1100M`), which the ingestion joins through the one
-drop-in line. There is deliberately no `Conflicts=`, `Requires=` or `After=` between them: the lab
-measured that `Conflicts=` stops the ingestion, and the slice, not a unit relationship, is what
+drop-in line. There is deliberately no `Conflicts=`, `Requires=` or `After=` between them: the measurements
+showed that `Conflicts=` stops the ingestion, and the slice, not a unit relationship, is what
 makes the kernel pick the API when both need the memory (ADR 0013). The unit runs
 `uv run --frozen --no-dev paperwatch serve --live --host 127.0.0.1 --port 8000` from
 `/home/paperwatch/paper-watch`.
@@ -627,8 +630,10 @@ systemctl --user enable --now paperwatch-tunnel
 
 The unit starts `tailscaled --tun=userspace-networking` with its socket and state under
 `~/.local/state/tailscale`, capped at `MemoryMax=150M` and outside `paperwatch.slice`: a tunnel bug
-must not spend the API's or the ingestion's memory. Join the tailnet once with a tagged, one-shot
-auth key from the Tailscale admin console (never commit it, and revoke it afterwards):
+must not spend the API's or the ingestion's memory. Join the tailnet once with a tagged auth key from the Tailscale admin console. Prefer giving the
+key to the client through the `TS_AUTHKEY` environment variable if the installed version supports
+it (check `tailscale up --help`); if it only takes `--auth-key`, the key is on that one command
+line, so make it a one-shot key and revoke it afterwards. Never commit it:
 
 ```bash
 tailscale --socket="$HOME/.local/state/tailscale/tailscaled.sock" \

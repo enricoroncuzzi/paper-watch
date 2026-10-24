@@ -195,13 +195,16 @@ def test_the_health_route_is_the_one_route_without_a_credential() -> None:
     assert client.post("/echo", content=b"{}").status_code == 401
 
 
-def test_docs_routes_are_gone() -> None:
-    # Served only to an authenticated request would still publish the contract to anyone who can
-    # mint a token; the served app simply has no docs or OpenAPI routes (the contract is committed
-    # separately).
-    client = TestClient(create_app(_deps()), base_url="http://localhost", headers=_auth())
+def test_docs_routes_need_the_credential() -> None:
+    # The captain's requirement: served, not removed, and only to an authenticated request. The
+    # committed contract remains the client's reference because Swagger UI cannot attach the
+    # bearer token from a browser.
+    app = create_app(_deps())
+    authed = TestClient(app, base_url="http://localhost", headers=_auth())
+    anonymous = TestClient(app, base_url="http://localhost")
     for path in ("/docs", "/redoc", "/openapi.json"):
-        assert client.get(path).status_code == 404, path
+        assert authed.get(path).status_code == 200, path
+        assert anonymous.get(path).status_code == 401, path
 
 
 def test_a_health_probe_through_the_tunnel_still_needs_the_public_host() -> None:
@@ -250,10 +253,15 @@ class _HybridMode:
 
 
 class _Store:
-    def record_chat_call(self, **kwargs: Any) -> None:
+    def reserve_chat_call(self, *, at: datetime, provider: str, cap: int) -> tuple[int, int]:
         raise AssertionError("no chat call in a gate test")
 
-    def chat_calls_since(self, at: datetime) -> int:
+    def fill_chat_call(
+        self, call_id: int, *, model: str, input_tokens: int, output_tokens: int
+    ) -> None:
+        raise AssertionError("no chat call in a gate test")
+
+    def fail_chat_call(self, call_id: int) -> None:
         raise AssertionError("no chat call in a gate test")
 
 
@@ -262,7 +270,7 @@ def _deps() -> AgentDeps:
         session_factory=lambda: None,  # type: ignore[arg-type,return-value]
         embedder=FakeEmbedder(),
         models=[],
-        settings=Settings(),
+        settings=Settings(_env_file=None),
         clock=lambda: NOW,
         chat_calls=_Store(),
         profile_names=frozenset(),
@@ -299,3 +307,100 @@ def test_the_gate_is_asgi_so_streaming_is_untouched() -> None:
 
     assert not issubclass(ApiGate, BaseHTTPMiddleware)
     assert isinstance(_gated(), ApiGate)
+
+
+@pytest.mark.parametrize("path", ["/healthz", "/healthz/", "/healthzx"])
+@pytest.mark.parametrize("method", ["get", "post", "head"])
+def test_only_get_healthz_is_public(path: str, method: str) -> None:
+    # The exemption is an exact path and GET: a POST, a trailing slash or a prefix must not slip
+    # through as a health check (mutants G2/G3).
+    response = getattr(_client(), method)(path)
+    if path == "/healthz" and method == "get":
+        assert response.status_code == 200
+    else:
+        assert response.status_code == 401, (path, method)
+
+
+def test_a_bearer_scheme_is_required() -> None:
+    # "Basic good" carries the accepted token but the wrong scheme; only Bearer is read (G5).
+    response = _client().get("/", headers={"Authorization": f"Basic {GOOD}"})
+    assert response.status_code == 401
+
+
+def test_an_oversized_content_length_is_refused_before_the_body_is_read() -> None:
+    # G9: the header leg on its own. The receive channel fails the test if touched, which the
+    # stream leg cannot prove when the app reads the body.
+    gate = _gated()
+    read = False
+
+    async def receive() -> dict[str, Any]:
+        nonlocal read
+        read = True
+        raise AssertionError("an oversized declared body must be refused without reading it")
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": "POST",
+        "path": "/echo",
+        "raw_path": b"/echo",
+        "query_string": b"",
+        "headers": [
+            (b"host", b"localhost"),
+            (b"authorization", f"Bearer {GOOD}".encode()),
+            (b"content-type", b"application/json"),
+            (b"content-length", str(API_MAX_BODY_BYTES + 1).encode()),
+        ],
+        "server": ("localhost", 80),
+        "client": ("testclient", 1),
+        "scheme": "http",
+        "root_path": "",
+    }
+    sent: list[dict[str, Any]] = []
+
+    async def send(message: dict[str, Any]) -> None:
+        sent.append(message)
+
+    import asyncio
+
+    asyncio.run(gate(scope, receive, send))
+    assert not read
+    assert next(m for m in sent if m["type"] == "http.response.start")["status"] == 413
+
+
+def test_the_body_cap_boundary() -> None:
+    # 16 KB is allowed and one byte more is not (G11).
+    response = _client().post(
+        "/echo",
+        headers={**_auth(), "Content-Type": "application/json"},
+        content=b"x" * API_MAX_BODY_BYTES,
+    )
+    assert response.status_code == 200 and response.json() == {"size": API_MAX_BODY_BYTES}
+    over = _client().post(
+        "/echo",
+        headers={**_auth(), "Content-Type": "application/json"},
+        content=b"x" * (API_MAX_BODY_BYTES + 1),
+    )
+    assert over.status_code == 413
+
+
+def test_a_websocket_scope_needs_the_credential() -> None:
+    # Fail closed: a route added later must not be reachable without the token just because the
+    # gate only guarded HTTP (S6).
+    from starlette.routing import WebSocketRoute
+    from starlette.websockets import WebSocketDisconnect
+
+    async def echo(websocket: Any) -> None:
+        await websocket.accept()
+        await websocket.send_text("open")
+        await websocket.close()
+
+    app = Starlette(routes=[WebSocketRoute("/ws", echo)])
+    # TestClient's websocket handshake always writes Host: testserver, whatever the base URL.
+    gated = ApiGate(app, verifier=StubVerifier(), allowed_hosts=LOOPBACK_HOSTS | {"testserver"})
+    client = TestClient(gated, base_url="http://localhost")
+    with pytest.raises(WebSocketDisconnect), client.websocket_connect("/ws"):
+        pass
+    with client.websocket_connect("/ws", headers=_auth()) as socket:
+        assert socket.receive_text() == "open"

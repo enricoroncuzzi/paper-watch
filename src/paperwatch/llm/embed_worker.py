@@ -47,10 +47,14 @@ def serve(embedder: Embedder, inp: TextIO, out: TextIO) -> None:
         out.flush()
 
 
-def main() -> None:
-    # A Mac has no /proc, and a sandboxed process may not write it; both are fine.
+def raise_oom_score(path: Path = OOM_SCORE_ADJ_PATH) -> None:
+    """Volunteer this process to the OOM killer. A Mac has no /proc; a sandbox may refuse."""
     with contextlib.suppress(OSError):
-        OOM_SCORE_ADJ_PATH.write_text(OOM_SCORE_ADJ_MAX)
+        path.write_text(OOM_SCORE_ADJ_MAX)
+
+
+def main() -> None:
+    raise_oom_score()
     settings = get_settings()
     embedder = LocalEmbedder(make_local_model(settings), settings.local_embedding_batch)
     serve(embedder, sys.stdin, sys.stdout)

@@ -7,13 +7,12 @@ answers, and `crash` exits on the first request. The `__oom__` probe reports the
 `oom_score_adj`, which is how the Linux-only test proves the child volunteers to the OOM killer.
 """
 
-import contextlib
 import os
 import sys
 import time
 from pathlib import Path
 
-from paperwatch.llm.embed_worker import OOM_SCORE_ADJ_MAX, OOM_SCORE_ADJ_PATH, serve
+from paperwatch.llm.embed_worker import raise_oom_score, serve
 from paperwatch.llm.embedder import FakeEmbedder
 
 
@@ -38,9 +37,8 @@ class ModeAwareEmbedder:
 
 
 def main() -> None:
-    # The real `main()` does this first too; the Linux-only OOM test reads the child's value back.
-    with contextlib.suppress(OSError):
-        OOM_SCORE_ADJ_PATH.write_text(OOM_SCORE_ADJ_MAX)
+    # The real `main()` does this first; the Linux-only OOM test reads the child's value back.
+    raise_oom_score()
     serve(ModeAwareEmbedder(), sys.stdin, sys.stdout)
 
 

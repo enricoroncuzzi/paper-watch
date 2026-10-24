@@ -17,8 +17,8 @@ for the API.
 A tunnel makes a loopback service reachable from the internet without opening a port, which also
 means anyone who learns the name can knock. Three shapes were on the table: publish through a
 proxy that needs root (Caddy), use a hosted tunnel with a static domain (ngrok free), or join the
-machine to a tailnet and publish one port through Funnel (Tailscale userspace). The tunnel report
-measured the userspace path, and it is the only one that needs neither root nor a TUN device.
+machine to a tailnet and publish one port through Funnel (Tailscale userspace). The deployment measurements
+chose the userspace path, and it is the only one that needs neither root nor a TUN device.
 
 For the credential, the page's server (not the browser) is the only caller. Vercel signs a token
 for code running in one production deployment, and the API can verify it against Vercel's
@@ -45,9 +45,11 @@ Vercel project exists.
   credential (401, one body for every reason, the body never read first), `Host` allow-list (400),
   any `Origin` (403), JSON content type on `POST` (415), 16 KB body cap by header and by counted
   bytes (413). `GET /healthz` is the one route without a credential: a liveness probe must answer
-  when nothing else does, and that route touches neither the database nor a model. The served app
-  registers no `/docs`, `/redoc` or `/openapi.json`; the committed contract
-  (`docs/api/openapi.json`) is the client's reference.
+  when nothing else does, and that route touches neither the database nor a model. `/docs`,
+  `/redoc` and `/openapi.json` are served only to an authenticated request, as the captain asked,
+  not removed; the gate is in front of them like every other route. The committed contract
+  (`docs/api/openapi.json`) stays the client's reference because Swagger UI cannot attach the
+  header from a browser.
 - **Limits:** `/ask` is limited per client to 6 requests a minute, 100 a UTC day and 2 concurrent
   answers (`api/limits.py`), refused as 429 with `Retry-After` before any model call. An answer
   ends at 120 s with a `deadline` error, and `: ping` keeps a silent stream alive.
@@ -63,5 +65,5 @@ Vercel project exists.
   body cap lives only in the gate. A Caddy fallback would need `request_body max_size 16KB` too.
 - The Vercel project (and its three OIDC values) is created by the captain; until then the HMAC
   mode is how the tunnel is rehearsed. A leaked HMAC token is valid for at most 60 s and once.
-- Firstmate deploys and verifies live; builders stop at merged code, units, migrations and the
-  runbook (section 15 of `docs/deploy/vps.md`).
+- The deployment step reads live; builders stop at merged code, units, migrations and the runbook
+  (section 15 of `docs/deploy/vps.md`).

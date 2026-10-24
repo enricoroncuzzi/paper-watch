@@ -128,8 +128,8 @@ class SearchModeGate:
             # Only the type: a driver error's text can hold a host detail.
             log.warning("search_mode_read_failed", error_type=type(exc).__name__)
             return ModeDecision("text_only", "database")
-        # The age is checked here as well as in the query so a stale row fetched by a caller's
-        # fake session, or by a database with a skewed clock, cannot pin the mode forever.
+        # The age is checked here so a stale row, or one fetched by a test's fake session, cannot
+        # pin the mode forever; the query itself only asks for the newest running row.
         if started_at is not None and started_at > now.astimezone(UTC) - MAIN_PASS_MAX_AGE:
             return ModeDecision("text_only", "ingestion", started_at)
 

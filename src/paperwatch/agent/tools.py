@@ -209,11 +209,19 @@ def make_tools(
             with _database_work(session, tool):
                 yield session
             return
-        short = session_factory()
         try:
+            short = session_factory()
             # The tools only read, so the database enforces it per session: a tool added later
             # cannot write even if its code tries. It must be the transaction's first statement.
             short.execute(text("SET TRANSACTION READ ONLY"))
+        except SQLAlchemyError as exc:
+            # A pool timeout or a connect failure must reach the model as a tool message, not as a
+            # raw OperationalError whose repr ends up in the prompt.
+            log.error("tool_database_error", tool=tool, error=str(exc))
+            raise ToolException(
+                f"{tool} failed on a database error; try the same call again."
+            ) from exc
+        try:
             with _database_work(short, tool):
                 yield short
         finally:
@@ -222,8 +230,11 @@ def make_tools(
             short.rollback()
             short.close()
 
+    child_failed = False
+
     def choose() -> tuple[Embedder | None, bool]:
-        if embedder is None:
+        nonlocal child_failed
+        if embedder is None or child_failed:
             return None, True
         if mode is not None and mode() == "text_only":
             return None, True
@@ -235,6 +246,7 @@ def make_tools(
         profiles: list[str] | None = None,
         since: date | None = None,
     ) -> str:
+        nonlocal child_failed
         # A small model can send a blank query, a stray NUL or a lone surrogate: the last two
         # would reach Postgres as a DataError or a UTF-8 failure, and the blank query trips
         # hybrid_search's own ValueError, so all three are handled here and come back as a message.
@@ -259,6 +271,9 @@ def make_tools(
                     # tool error the model can retry, never a crash that ends the answer.
                     raise ToolException("search failed; try the same call again.") from None
                 # A dead or timed-out child costs this search its semantic half, not the answer.
+                # The rest of the answer stays keyword-only: another search would only wait for
+                # the same cold start to fail again.
+                child_failed = True
                 text_only = True
                 hits = hybrid_search(
                     active,

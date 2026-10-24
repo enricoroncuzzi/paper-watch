@@ -108,15 +108,46 @@ class FixedMode:
 
 
 class MemoryChatCalls:
-    """The `ChatCallStore` the API tests need: a count in memory, never a database row.
+    """The `ChatCallStore` the API tests need: rows in memory, never a database row.
 
     The tests below share one database session, and `run_question` marks it read-only, so a real
     `ChatCallLog` (which commits on its own session) has no place here. The production store is
-    covered by `tests/integration/test_chat_calls.py`.
+    covered by `tests/integration/test_chat_calls.py`. Reservation is modelled as the real one:
+    a row exists before the provider is asked and is completed or marked failed after.
     """
 
     def __init__(self) -> None:
-        self.rows: list[tuple[datetime, str]] = []
+        self.rows: list[dict[str, Any]] = []
+        self._next = 0
+
+    def reserve_chat_call(self, *, at: datetime, provider: str, cap: int) -> tuple[int | None, int]:
+        calls_today = self.chat_calls_since(at.replace(hour=0, minute=0, second=0, microsecond=0))
+        if calls_today >= cap:
+            return None, calls_today
+        self._next += 1
+        self.rows.append(
+            {
+                "id": self._next,
+                "at": at,
+                "provider": provider,
+                "model": "reserved",
+                "input_tokens": 0,
+                "output_tokens": 0,
+            }
+        )
+        return self._next, calls_today + 1
+
+    def fill_chat_call(
+        self, call_id: int, *, model: str, input_tokens: int, output_tokens: int
+    ) -> None:
+        for row in self.rows:
+            if row["id"] == call_id:
+                row.update(model=model, input_tokens=input_tokens, output_tokens=output_tokens)
+
+    def fail_chat_call(self, call_id: int) -> None:
+        for row in self.rows:
+            if row["id"] == call_id:
+                row["model"] = "failed"
 
     def record_chat_call(
         self,
@@ -127,14 +158,24 @@ class MemoryChatCalls:
         input_tokens: int,
         output_tokens: int,
     ) -> None:
-        self.rows.append((at, model))
+        self._next += 1
+        self.rows.append(
+            {
+                "id": self._next,
+                "at": at,
+                "provider": provider,
+                "model": model,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+            }
+        )
 
     def chat_calls_since(self, at: datetime) -> int:
-        return sum(1 for call_at, _ in self.rows if call_at >= at)
+        return sum(1 for row in self.rows if row["at"] >= at)
 
     @property
     def models(self) -> list[str]:
-        return [model for _, model in self.rows]
+        return [str(row["model"]) for row in self.rows]
 
 
 def scripted(*steps: AIMessage | Exception) -> list[ChatModel]:
@@ -163,7 +204,7 @@ def deps(
         session_factory=lambda: db_session,  # type: ignore[arg-type,return-value]
         embedder=embedder or FakeEmbedder(),
         models=models,
-        settings=Settings(**settings),  # type: ignore[arg-type]
+        settings=Settings(_env_file=None, **settings),  # type: ignore[arg-type]
         clock=lambda: NOW,
         chat_calls=store or MemoryChatCalls(),
         profile_names=PROFILES,
@@ -797,9 +838,9 @@ def test_the_abort_writes_its_usage_row_before_the_session_is_released(
     order: list[str] = []
 
     class OrderedStore(MemoryChatCalls):
-        def record_chat_call(self, **kwargs: Any) -> None:
+        def fill_chat_call(self, call_id: int, **kwargs: Any) -> None:
             order.append("usage")
-            super().record_chat_call(**kwargs)
+            super().fill_chat_call(call_id, **kwargs)
 
     class OrderedSession:
         def __init__(self, inner: Session) -> None:
@@ -1015,7 +1056,10 @@ def test_live_deps_wires_a_usage_log_on_its_own_engine(
     monkeypatch.setattr(api, "make_embedder", lambda settings, ledger: FakeEmbedder())
     monkeypatch.setattr(api, "make_chat_models", lambda settings: [])
     settings = Settings(  # type: ignore[arg-type]
-        openrouter_api_key="sk-test", api_auth="hmac", api_hmac_secret=TEST_SECRET
+        _env_file=None,
+        openrouter_api_key="sk-test",
+        api_auth="hmac",
+        api_hmac_secret=TEST_SECRET,
     )
     app_deps = api.live_deps(settings)
     assert isinstance(app_deps.chat_calls, ChatCallLog)
@@ -1155,7 +1199,7 @@ def _dummy_deps() -> AgentDeps:
         session_factory=lambda: None,  # type: ignore[arg-type,return-value]
         embedder=FakeEmbedder(),
         models=[],
-        settings=Settings(),
+        settings=Settings(_env_file=None),
         clock=lambda: NOW,
         chat_calls=MemoryChatCalls(),
         profile_names=PROFILES,
@@ -1307,7 +1351,9 @@ def test_daily_cap_streams_matching_sources_then_the_error(
     # A cap of 1 with one call already recorded is the same state as a spent cap; the settings
     # refuse 0 because a server with no model calls would be a misconfiguration, not a limit.
     store = MemoryChatCalls()
-    store.rows.append((NOW, UNKNOWN_MODEL))
+    store.record_chat_call(
+        at=NOW, provider="openrouter", model=UNKNOWN_MODEL, input_tokens=0, output_tokens=0
+    )
     response = ask(
         deps(db_session, scripted(AIMessage(ANSWER)), store=store, chat_max_calls_per_day=1),
         {"question": "coding agents"},
@@ -1527,3 +1573,179 @@ def test_a_disconnect_before_the_stream_starts_releases_the_slot() -> None:
 
     asyncio.run(response(scope, receive, send))
     assert released == [1]
+
+
+def test_the_stream_uses_the_configured_heartbeat_and_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The constants and the arguments `_stream` hands the pacer are what a live answer gets; a
+    # changed constant or a hardcoded value in `_stream` would silently disable the page's
+    # watchdog or Vercel's limit.
+    seen: dict[str, Any] = {}
+
+    def fake_paced(events: Any, **kwargs: Any) -> Any:
+        seen.update(kwargs)
+        return iter(())
+
+    monkeypatch.setattr(api, "paced", fake_paced)
+    assert (api.SSE_HEARTBEAT_S, api.ANSWER_DEADLINE_S) == (15, 120)
+    stream = api._stream(_dummy_deps(), api.AskRequest(question="q"), threading.Event())
+    assert list(stream) == []
+    assert seen["heartbeat_s"] == api.SSE_HEARTBEAT_S
+    assert seen["deadline_s"] == api.ANSWER_DEADLINE_S
+    assert seen["heartbeat"]() == ": ping\n\n"
+    assert '"code": "deadline"' in seen["deadline_error"]()
+
+
+def test_run_question_gives_each_tool_its_own_read_only_session(
+    db_session: Session, engine: Engine
+) -> None:
+    # The production wiring: with a read factory, run_question passes no long session to the
+    # tools, so each search opens and closes its own read-only connection.
+    factory = make_session_factory(engine)
+    log: list[str] = []
+
+    class Spy:
+        def __init__(self, inner: Session) -> None:
+            self._inner = inner
+
+        def execute(self, statement: Any, *args: Any, **kwargs: Any) -> Any:
+            if "SET TRANSACTION READ ONLY" in str(statement):
+                log.append("read-only")
+            return self._inner.execute(statement, *args, **kwargs)
+
+        def rollback(self) -> None:
+            self._inner.rollback()
+
+        def close(self) -> None:
+            log.append("close")
+            self._inner.close()
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._inner, name)
+
+    def read_factory() -> Spy:
+        log.append("open")
+        return Spy(factory())
+
+    model = ScriptedChatModel(
+        script=[
+            AIMessage(
+                "", tool_calls=[{"name": "search_corpus", "args": {"query": "one"}, "id": "c1"}]
+            ),
+            AIMessage(
+                "", tool_calls=[{"name": "search_corpus", "args": {"query": "two"}, "id": "c2"}]
+            ),
+            AIMessage(ANSWER),
+        ]
+    )
+    app_deps = deps(db_session, [ChatModel("openrouter", model)])
+    app_deps.read_session_factory = read_factory  # type: ignore[assignment]
+    list(run_question(app_deps, "q", Filters()))
+    assert log == ["open", "read-only", "close", "open", "read-only", "close"]
+
+    # The session the toolkit opens cannot write, which is the database's enforcement, not the
+    # tool's promise.
+    with factory() as probe:
+        probe.execute(text("SET TRANSACTION READ ONLY"))
+        with pytest.raises(SQLAlchemyError):
+            probe.execute(text("CREATE TABLE probe_should_fail (a int)"))
+        probe.rollback()
+
+
+def test_the_cap_fallback_search_is_read_only(db_session: Session, engine: Engine) -> None:
+    # The fallback runs when the daily cap refuses the answer; it is still a read and its session
+    # must say so (mutant R3).
+    factory = make_session_factory(engine)
+    log: list[str] = []
+
+    class Spy:
+        def __init__(self, inner: Session) -> None:
+            self._inner = inner
+
+        def execute(self, statement: Any, *args: Any, **kwargs: Any) -> Any:
+            log.append(str(statement))
+            return self._inner.execute(statement, *args, **kwargs)
+
+        def rollback(self) -> None:
+            self._inner.rollback()
+
+        def close(self) -> None:
+            self._inner.close()
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._inner, name)
+
+    app_deps = deps(db_session, scripted(AIMessage(ANSWER)))
+    app_deps.read_session_factory = lambda: Spy(factory())  # type: ignore[assignment]
+    store = MemoryChatCalls()
+    store.record_chat_call(
+        at=NOW, provider="openrouter", model=UNKNOWN_MODEL, input_tokens=0, output_tokens=0
+    )
+    app_deps.chat_calls = store
+    app_deps.settings = Settings(_env_file=None, chat_max_calls_per_day=1)
+    received = list(run_question(app_deps, "q", Filters()))
+    assert [type(event) for event in received][-1] is not None
+    assert any("SET TRANSACTION READ ONLY" in statement for statement in log)
+
+
+def test_live_deps_wires_the_child_stop_and_the_read_pool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # P8/P9/R4: the production wiring, not a hand-written lambda, must make the child stop when
+    # the mode turns keyword-only and give the tools a read pool.
+    class Gate:
+        mode = "hybrid"
+
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        def current(self) -> ModeDecision:
+            return ModeDecision(self.mode, "ok")  # type: ignore[arg-type]
+
+    gate = Gate()
+    monkeypatch.setattr(api, "SearchModeGate", lambda *args, **kwargs: gate)
+    monkeypatch.setattr(api, "make_chat_models", lambda settings: [])
+    settings = Settings(  # type: ignore[arg-type]
+        _env_file=None,
+        openrouter_api_key="sk-test",
+        api_auth="hmac",
+        api_hmac_secret=TEST_SECRET,
+    )
+    app_deps = api.live_deps(settings)
+    assert app_deps.read_session_factory is not None
+    assert isinstance(app_deps.embedder, WorkerEmbedder)
+    assert app_deps.embedder._should_stop() is False  # type: ignore[attr-defined]
+    gate.mode = "text_only"
+    assert app_deps.embedder._should_stop() is True  # type: ignore[attr-defined]
+
+
+def test_a_text_only_answer_never_starts_the_model(db_session: Session) -> None:
+    # P10/E2: a keyword-only answer must not prewarm or embed; the child's memory belongs to the
+    # ingestion for that answer.
+    order: list[str] = []
+    worker = _RecordingWorker(order)
+    decision = ModeDecision("text_only", "ingestion", NOW - timedelta(minutes=5))
+    ask(
+        deps(
+            db_session,
+            scripted(AIMessage(ANSWER)),
+            embedder=worker,
+            search_mode=FixedMode(decision),
+        ),
+        {"question": "q"},
+    )
+    assert order == []
+
+
+def test_the_contract_describes_the_gate(db_session: Session) -> None:
+    # Slice 3 generates its client from this document, so the gate's statuses and the bearer
+    # scheme have to be in it, not only in docs/learn/15.
+    spec = create_app(deps(db_session, [])).openapi()
+    scheme = spec["components"]["securitySchemes"]["VercelOidcOrHmac"]
+    assert (scheme["type"], scheme["scheme"], scheme["bearerFormat"]) == ("http", "bearer", "JWT")
+    ask = spec["paths"]["/ask"]["post"]
+    assert {"400", "401", "403", "413", "415", "429"} <= set(ask["responses"])
+    assert ask["security"] == [{"VercelOidcOrHmac": []}]
+    assert spec["paths"]["/healthz"]["get"].get("security") is None
+    assert spec["paths"]["/status"]["get"]["security"] == [{"VercelOidcOrHmac": []}]

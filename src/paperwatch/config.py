@@ -120,6 +120,11 @@ CHAT_CALL_MODEL_MAX_CHARS = 128
 # below still override both by name.
 CHAT_MAX_TOKENS_PER_ANSWER = 60_000
 CHAT_MAX_CALLS_PER_DAY = 800
+# The single-key advisory lock that serialises the daily-cap check and its insert across the API
+# and the CLI. Two answers reading "799 calls" at the same instant would both pass the cap and both
+# reach the provider, so the count and the reservation happen under one transaction lock. The value
+# is ASCII "PAWCHAT!", arbitrary but fixed.
+CHAT_CALLS_LOCK_KEY = 0x5041_5743_4841_5421
 
 # Connection budget for `paperwatch serve` (one local user, a few tabs at most). One answer holds
 # a pooled connection for its whole life, which can be minutes while the model writes, so the pool

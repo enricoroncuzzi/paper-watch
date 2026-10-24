@@ -137,3 +137,21 @@ def test_a_producer_error_reaches_the_consumer() -> None:
     assert next(generator) == "one\n\n"
     with pytest.raises(RuntimeError, match="the graph broke"):
         next(generator)
+
+
+def test_closing_the_consumer_waits_for_the_producer() -> None:
+    # N5: close joins the producer. The producer takes 100 ms to stop after the cancel, so a
+    # missing join returns before `stopped` is set.
+    cancel, stopped = threading.Event(), threading.Event()
+
+    def events() -> Iterator[str]:
+        yield "start\n\n"
+        while not cancel.is_set():
+            time.sleep(0.002)
+        time.sleep(0.1)
+        stopped.set()
+
+    generator = _paced(events(), Clock(), cancel)
+    assert next(generator) == "start\n\n"
+    generator.close()
+    assert stopped.is_set()

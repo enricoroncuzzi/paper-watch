@@ -26,6 +26,11 @@ MemorySwapMax=0
 # The API side volunteers to the OOM killer (the child raises its own score to 1000 too), so when
 # the slice is exhausted the API dies before the ingestion, which is the morning that matters.
 OOMScoreAdjust=900
+# When the kernel OOM-kills a process in this unit's cgroup (the child embedder, by design),
+# systemd's default OOMPolicy=stop would stop the whole API and cut every open answer. Continue
+# leaves the unit running; if the parent itself is the victim, its main process exits on the
+# signal and Restart=on-failure still brings it back.
+OOMPolicy=continue
 TasksMax=128
 # A crash restarts in three seconds; a clean `systemctl --user stop` is not a failure and stays
 # stopped.

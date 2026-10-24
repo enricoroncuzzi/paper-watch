@@ -3,7 +3,7 @@
 # mapping itself is tailscaled state, set once by the runbook, not by this unit.
 [Unit]
 Description=Paper Watch tunnel (Tailscale userspace)
-Documentation=https://github.com/enricoroncuzzi/paperwatch/blob/main/docs/deploy/vps.md
+Documentation=https://github.com/enricoroncuzzi/paper-watch/blob/main/docs/deploy/vps.md
 # No relationship to the API: a tunnel restart must not stop or delay an answer.
 [Service]
 Type=simple

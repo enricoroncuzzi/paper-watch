@@ -45,10 +45,15 @@ NOW = datetime(2026, 10, 16, 12, tzinfo=UTC)
 
 
 class _Store:
-    def record_chat_call(self, **kwargs: Any) -> None:
+    def reserve_chat_call(self, *, at: datetime, provider: str, cap: int) -> tuple[int, int]:
         raise AssertionError("the acceptance check makes no chat call")
 
-    def chat_calls_since(self, at: datetime) -> int:
+    def fill_chat_call(
+        self, call_id: int, *, model: str, input_tokens: int, output_tokens: int
+    ) -> None:
+        raise AssertionError("the acceptance check makes no chat call")
+
+    def fail_chat_call(self, call_id: int) -> None:
         raise AssertionError("the acceptance check makes no chat call")
 
 
@@ -63,7 +68,7 @@ def _deps(engine: Engine) -> AgentDeps:
         session_factory=factory,
         embedder=FakeEmbedder(),
         models=[],
-        settings=Settings(),
+        settings=Settings(_env_file=None),
         clock=lambda: now(),
         chat_calls=_Store(),
         profile_names=frozenset(),

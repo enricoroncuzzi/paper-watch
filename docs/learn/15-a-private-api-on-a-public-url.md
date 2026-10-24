@@ -63,14 +63,16 @@ exits 2 naming `PW_API_HMAC_SECRET`. Two credentials never run at once; the sett
 | 403 | The request carried an `Origin` header. | Call the API from server code, not from a browser. |
 | 413 | The body is over 16 KB, by header or as it streams in. | Send less; the largest legitimate body is a 2,000 character points-of-view box. |
 | 415 | A `POST` without `content-type: application/json`. | Set the header. |
-| 429 | The per-client limit (Task 27) refused the request. | Wait for `Retry-After` seconds. |
+| 429 | The per-client limit refused the request. | Wait for `Retry-After` seconds. |
 
 The body of every refusal is `{"detail": "<short reason>"}`. Nothing in it names a header value, a
 key or a host, and the log line carries a reason code only.
 
 ## What this does not do
 
-The gate does not rate-limit (that is `api/limits.py`, keyed on the token's subject), does not
-decide which routes exist (FastAPI's router still answers 405, the app serves no `/docs`,
-`/redoc` or `/openapi.json`), and does not protect the database: the API's Postgres role is
-read-only apart from what `docs/deploy/vps.md` grants it.
+The gate does not rate-limit (that is `api/limits.py`, one counter per process for the one
+credentialled caller), does not decide which routes exist (FastAPI's router still answers 405),
+and does not protect the database: the API's Postgres role is read-only apart from what
+`docs/deploy/vps.md` grants it. `/docs`, `/redoc` and `/openapi.json` are served, not removed; the
+gate puts the same credential in front of them, which is why a browser without the header gets
+401.

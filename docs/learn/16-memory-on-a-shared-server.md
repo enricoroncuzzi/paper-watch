@@ -92,7 +92,7 @@ None of these ends the answer: a reduced answer with a notice is the design, not
 
 The child is bounded by the API unit (`MemoryMax=700M`, `MemorySwapMax=0`), which is bounded by
 the shared `paperwatch.slice` (`MemoryMax=1100M`) that the ingestion joins with one drop-in line.
-The two unit files and the numbers, with the lab evidence, are `docs/deploy/vps.md` section 15 and
+The two unit files and the numbers, with the measurements behind them, are `docs/deploy/vps.md` section 15 and
 ADR 0013. `docs/learn/15` covers the credential in front of all of this.
 
 ## What a test can see

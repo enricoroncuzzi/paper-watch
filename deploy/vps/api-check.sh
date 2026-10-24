@@ -19,16 +19,20 @@ set -u
 
 BASE_URL=${1:-}
 FAILS=0
-TMP=${TMPDIR:-/tmp}/paperwatch-api-check.$$
-BODY=$TMP.body
-BODY_A=$TMP.a
-BODY_B=$TMP.b
-BODY_C=$TMP.c
+TMP=$(umask 077; mktemp -d "${TMPDIR:-/tmp}/paperwatch-api-check.XXXXXX") || {
+    printf 'FAIL: cannot create a private temporary directory\n' >&2
+    exit 2
+}
+BODY=$TMP/body
+BODY_A=$TMP/a
+BODY_B=$TMP/b
+BODY_C=$TMP/c
 TOKEN=
 CURL=
+HEADER=
 
 cleanup() {
-    rm -f "$BODY" "$BODY_A" "$BODY_B" "$BODY_C" "$TMP.body20k"
+    rm -rf "$TMP"
 }
 trap cleanup EXIT HUP INT TERM
 
@@ -87,13 +91,21 @@ call() {
     if [ -n "$_type" ]; then
         set -- "$@" -H "Content-Type: $_type"
     fi
+    HEADER=
     if [ "$_auth" = "1" ]; then
         # Minted after the previous call, so an HMAC token is never reused.
         if ! new_token; then
             printf '000'
             return 0
         fi
-        set -- "$@" -H "Authorization: Bearer $TOKEN"
+        # The token goes in a 0600 file, never on curl's argv: on a shared host another account's
+        # ps could read the argv, and an OIDC token is reusable until it expires.
+        HEADER=$(umask 077; mktemp "$TMP/header.XXXXXX") || {
+            printf '000'
+            return 0
+        }
+        printf 'Authorization: Bearer %s\n' "$TOKEN" >"$HEADER"
+        set -- "$@" -H "@$HEADER"
     fi
     if [ -n "$_origin" ]; then
         set -- "$@" -H "Origin: $_origin"
@@ -104,7 +116,9 @@ call() {
     if [ -n "$_body" ]; then
         set -- "$@" --data-binary "$_body"
     fi
-    "$CURL" "$@" "$BASE_URL$_path" 2>/dev/null
+    _code=$("$CURL" "$@" "$BASE_URL$_path" 2>/dev/null)
+    [ -n "$HEADER" ] && rm -f "$HEADER"
+    printf '%s' "$_code"
 }
 
 expect() {
@@ -146,7 +160,7 @@ else
         "$(call GET /status '' '' 1 'https://example.org' '')"
     expect "a non-JSON POST is refused" 415 \
         "$(call POST /ask 'x' text/plain 1 '' '')"
-    BIG=$TMP.body20k
+    BIG=$TMP/body20k
     head -c 20000 /dev/zero | tr '\0' 'x' >"$BIG"
     # A leading @ makes curl read the body from the file instead of sending its path.
     expect "a body over 16 KB is refused" 413 \

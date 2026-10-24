@@ -26,8 +26,9 @@ from typing import Any, Literal
 
 import anyio
 import structlog
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Security
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.security import HTTPBearer
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import text
 from sqlalchemy.exc import TimeoutError as PoolTimeout
@@ -149,10 +150,7 @@ class AgentDeps:
     # gate with them, so no code path can serve a route without one.
     verifier: Verifier
     allowed_hosts: frozenset[str]
-    # `/readyz` queries the database through this factory. In production it is the usage engine,
-    # not the answer pool: with every answer connection held by a live answer, a healthy database
-    # would otherwise answer 503, which an orchestrator reads as "restart me".
-    # The per-client limit in front of every model-spending request (Task 27).
+    # The per-client limit in front of every model-spending request.
     limiter: RequestLimiter
     # The search mode: a running main pass or memory pressure switches answers to keyword-only.
     search_mode: SearchModeGate
@@ -160,6 +158,9 @@ class AgentDeps:
     # holds no connection while it waits for the model. Unset in tests and the CLI, where the
     # tools use the caller's already read-only session.
     read_session_factory: Callable[[], Session] | None = None
+    # `/readyz` queries the database through this factory. In production it is the usage engine,
+    # not the answer pool: with every answer connection held by a live answer, a healthy database
+    # would otherwise answer 503, which an orchestrator reads as "restart me".
     ready_session_factory: Callable[[], Session] | None = None
 
 
@@ -309,6 +310,19 @@ class AnswerData(BaseModel):
     flags: list[FlagData]
 
 
+class Refusal(BaseModel):
+    """The body of every gate refusal except 429, as `docs/learn/15` lists them."""
+
+    detail: str
+
+
+class RateLimited(BaseModel):
+    """A 429: the per-client limit refused the request before the stream started."""
+
+    detail: Literal["rate_limited", "busy"]
+    retry_after_s: int
+
+
 class ErrorData(BaseModel):
     code: Literal["daily_cap", "budget", "model_unavailable", "internal", "deadline"]
     message: str
@@ -340,6 +354,37 @@ class StreamItem(BaseModel):
 
 # The daily cap's fallback search: enough to fill a reading sheet, and one query.
 CAP_FALLBACK_K = 8
+
+# The gate's refusals, declared on every gated route so slice 3's generated client knows them.
+# The real decision is `api/gate.py`; these models only describe its bodies.
+_GATE_RESPONSES: dict[int | str, dict[str, Any]] = {
+    400: {
+        "model": Refusal,
+        "description": "The Host is not allowed, or the Content-Length is bad.",
+    },
+    401: {
+        "model": Refusal,
+        "description": "The credential is missing or invalid; `WWW-Authenticate: Bearer`.",
+    },
+    403: {"model": Refusal, "description": "The request carries an Origin header."},
+}
+_ASK_GATE_RESPONSES: dict[int | str, dict[str, Any]] = {
+    **_GATE_RESPONSES,
+    413: {"model": Refusal, "description": "The body is over 16 KB, by header or by stream."},
+    415: {"model": Refusal, "description": "A POST without application/json."},
+    429: {
+        "model": RateLimited,
+        "description": "The per-client limit refused the request; also sends Retry-After.",
+    },
+}
+# The bearer scheme is documentation here: the gate verifies the token before FastAPI runs, and
+# `auto_error=False` keeps this dependency from rejecting anything on its own.
+_BEARER = HTTPBearer(
+    auto_error=False,
+    scheme_name="VercelOidcOrHmac",
+    bearerFormat="JWT",
+    description="A Vercel OIDC token, or an HMAC token from `paperwatch api-token --live`.",
+)
 
 # The schema of one parsed server-sent event, in the OpenAPI 3.1 form FastAPI's native SSE
 # response emits: `event` names the frame and `data` is a JSON string whose own schema is the
@@ -839,12 +884,9 @@ def create_app(deps: AgentDeps) -> FastAPI:
         title="Paper Watch API",
         version=API_VERSION,
         summary="Ask questions about the stored AI-research corpus and stream cited answers.",
-        # The served app publishes no docs and no schema: the credential gate would otherwise
-        # decide who may read them, and the committed docs/api/openapi.json is the contract a
-        # client builds from. `create_app(...).openapi()` still builds the document in process.
-        docs_url=None,
-        redoc_url=None,
-        openapi_url=None,
+        # The captain's requirement: docs and the schema are served only to an authenticated
+        # request, not removed. The gate is in front of every route, so these three inherit it;
+        # the committed docs/api/openapi.json remains the client's reference.
     )
     # Every request, including the routes FastAPI adds itself, meets the gate first. Adding it here
     # rather than in `serve` means a test, a script or a future caller cannot build an open app.
@@ -874,7 +916,7 @@ def create_app(deps: AgentDeps) -> FastAPI:
         # async, so a liveness probe never queues behind a sync route waiting for a thread.
         return {"status": "ok"}
 
-    @app.get("/readyz")
+    @app.get("/readyz", dependencies=[Security(_BEARER)], responses=_GATE_RESPONSES)
     async def readyz(request: Request) -> JSONResponse:
         """Readiness: an answer needs the database, so readiness means one query succeeds."""
         limiter = request.app.state.ready_limiter
@@ -906,7 +948,12 @@ def create_app(deps: AgentDeps) -> FastAPI:
             limiter.release()
         return JSONResponse(content={"status": "ready"})
 
-    @app.get("/status", response_model=StatusData)
+    @app.get(
+        "/status",
+        response_model=StatusData,
+        dependencies=[Security(_BEARER)],
+        responses=_GATE_RESPONSES,
+    )
     async def status() -> StatusData:
         """The search mode the page reads on load: hybrid, or keyword-only and why."""
         # In a worker thread: the gate reads the run table, and a paused database must not block
@@ -918,7 +965,8 @@ def create_app(deps: AgentDeps) -> FastAPI:
         "/ask",
         response_class=_EventStream,
         response_model=StreamItem,
-        responses=_ASK_RESPONSES,
+        dependencies=[Security(_BEARER)],
+        responses={**_ASK_RESPONSES, **_ASK_GATE_RESPONSES},
     )
     async def ask(body: AskRequest) -> Response:
         """Answer one question as server-sent events, one `itemSchema` event per frame."""

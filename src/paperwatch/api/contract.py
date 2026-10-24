@@ -34,10 +34,15 @@ CONTRACT_PATH = REPO_ROOT / "docs" / "api" / "openapi.json"
 class _NoCalls:
     """The `ChatCallStore` stub: building the document never asks about a call."""
 
-    def record_chat_call(self, **kwargs: Any) -> None:
+    def reserve_chat_call(self, *, at: datetime, provider: str, cap: int) -> tuple[int | None, int]:
         raise AssertionError("the contract build makes no chat call")
 
-    def chat_calls_since(self, at: datetime) -> int:
+    def fill_chat_call(
+        self, call_id: int, *, model: str, input_tokens: int, output_tokens: int
+    ) -> None:
+        raise AssertionError("the contract build makes no chat call")
+
+    def fail_chat_call(self, call_id: int) -> None:
         raise AssertionError("the contract build makes no chat call")
 
 

@@ -138,12 +138,19 @@ def test_each_unit_refuses_to_gain_privileges(unit: Path) -> None:
 
 def test_the_api_unit_never_names_the_ingestion() -> None:
     # The lab found that Conflicts= stops the ingestion, and any ordering would couple the API to
-    # a run that must finish. The only shared bound is the slice (ADR 0013).
-    section = "\n".join(_service_section(API_UNIT))
+    # a run that must finish. The only shared bound is the slice (ADR 0013). The keys live in
+    # [Unit], so the whole file is scanned, not only [Service].
+    lines = [
+        line
+        for line in API_UNIT.read_text().splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
     for key in ("Conflicts=", "Requires=", "BindsTo=", "PartOf=", "After=", "Wants="):
-        assert key not in section, f"the API unit must not use {key}"
-    assert "paperwatch-ingest" not in section
-    assert "MemoryHigh=" not in section, "MemoryHigh without swap stalls (lab evidence)"
+        assert not any(line.startswith(key) for line in lines), f"the API unit must not use {key}"
+    assert not any("paperwatch-ingest" in line for line in lines)
+    assert not any(line.startswith("MemoryHigh=") for line in lines), (
+        "MemoryHigh without swap stalls (lab evidence)"
+    )
 
 
 def test_the_api_unit_caps_memory_and_volunteers_for_the_oom_killer() -> None:
@@ -152,6 +159,8 @@ def test_the_api_unit_caps_memory_and_volunteers_for_the_oom_killer() -> None:
     assert "MemoryMax=700M" in section
     assert "MemorySwapMax=0" in section
     assert "OOMScoreAdjust=900" in section
+    # A child OOM kill must leave the API answering: systemd's default would stop the whole unit.
+    assert "OOMPolicy=continue" in section
     assert "Restart=on-failure" in section
 
 

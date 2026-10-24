@@ -42,8 +42,43 @@
                 "schema": {}
               }
             }
+          },
+          "400": {
+            "description": "The Host is not allowed, or the Content-Length is bad.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The credential is missing or invalid; `WWW-Authenticate: Bearer`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request carries an Origin header.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
           }
-        }
+        },
+        "security": [
+          {
+            "VercelOidcOrHmac": []
+          }
+        ]
       }
     },
     "/status": {
@@ -61,8 +96,43 @@
                 }
               }
             }
+          },
+          "400": {
+            "description": "The Host is not allowed, or the Content-Length is bad.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The credential is missing or invalid; `WWW-Authenticate: Bearer`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request carries an Origin header.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
           }
-        }
+        },
+        "security": [
+          {
+            "VercelOidcOrHmac": []
+          }
+        ]
       }
     },
     "/ask": {
@@ -138,6 +208,66 @@
               }
             }
           },
+          "400": {
+            "description": "The Host is not allowed, or the Content-Length is bad.",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The credential is missing or invalid; `WWW-Authenticate: Bearer`.",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request carries an Origin header.",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The body is over 16 KB, by header or by stream.",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "A POST without application/json.",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The per-client limit refused the request; also sends Retry-After.",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/RateLimited"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -148,7 +278,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "VercelOidcOrHmac": []
+          }
+        ]
       }
     }
   },
@@ -388,6 +523,43 @@
         "title": "NoticeData",
         "description": "The `notice` event: the answer runs in a reduced mode and says so."
       },
+      "RateLimited": {
+        "properties": {
+          "detail": {
+            "type": "string",
+            "enum": [
+              "rate_limited",
+              "busy"
+            ],
+            "title": "Detail"
+          },
+          "retry_after_s": {
+            "type": "integer",
+            "title": "Retry After S"
+          }
+        },
+        "type": "object",
+        "required": [
+          "detail",
+          "retry_after_s"
+        ],
+        "title": "RateLimited",
+        "description": "A 429: the per-client limit refused the request before the stream started."
+      },
+      "Refusal": {
+        "properties": {
+          "detail": {
+            "type": "string",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "required": [
+          "detail"
+        ],
+        "title": "Refusal",
+        "description": "The body of every gate refusal except 429, as `docs/learn/15` lists them."
+      },
       "SourceData": {
         "properties": {
           "id": {
@@ -575,6 +747,14 @@
           "type"
         ],
         "title": "ValidationError"
+      }
+    },
+    "securitySchemes": {
+      "VercelOidcOrHmac": {
+        "type": "http",
+        "description": "A Vercel OIDC token, or an HMAC token from `paperwatch api-token --live`.",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
       }
     }
   }

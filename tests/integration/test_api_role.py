@@ -49,16 +49,37 @@ def test_the_api_role_writes_only_what_it_is_granted(engine: Engine) -> None:
         # valid and reaches the table and sequence the API needs today.
         conn.exec_driver_sql(grant_api_writes(["chat_calls"], sequences=["chat_calls_id_seq"]))
 
-    # The cap's own row is the API's one write today, and its id comes from the sequence.
+    # The cap's own row is the API's one write today, and its id comes from the sequence. The
+    # reservation is inserted first and completed by a column-level UPDATE, as the guard does.
     with engine.connect() as conn:
         conn.execute(text("SET ROLE paperwatch_api"))
-        conn.execute(
+        call_id = conn.scalar(
             text(
                 "INSERT INTO chat_calls (at, provider, model, input_tokens, output_tokens) "
-                "VALUES (now(), 'check', 'check', 0, 0)"
+                "VALUES (now(), 'check', 'reserved', 0, 0) RETURNING id"
             )
         )
+        conn.execute(
+            text(
+                "UPDATE chat_calls SET model = 'check', input_tokens = 1, output_tokens = 2 "
+                "WHERE id = :id"
+            ),
+            {"id": call_id},
+        )
         assert conn.scalar(text("SELECT count(*) FROM chat_calls")) >= 1
+        conn.rollback()
+
+    # Column level: the API can complete a reservation but cannot move it to another day.
+    with engine.connect() as conn:
+        conn.execute(text("SET ROLE paperwatch_api"))
+        call_id = conn.scalar(
+            text(
+                "INSERT INTO chat_calls (at, provider, model, input_tokens, output_tokens) "
+                "VALUES (now(), 'check', 'reserved', 0, 0) RETURNING id"
+            )
+        )
+        with pytest.raises(SQLAlchemyError):
+            conn.execute(text("UPDATE chat_calls SET at = now() WHERE id = :id"), {"id": call_id})
         conn.rollback()
 
     # The corpus and the run history stay read-only for the API: a bug or a compromised token
@@ -66,6 +87,7 @@ def test_the_api_role_writes_only_what_it_is_granted(engine: Engine) -> None:
     for statement in (
         "UPDATE items SET title = 'rewritten'",
         "DELETE FROM runs",
+        "DELETE FROM chat_calls",
     ):
         with engine.connect() as conn:
             conn.execute(text("SET ROLE paperwatch_api"))
@@ -84,3 +106,10 @@ def test_the_grant_helper_skips_a_missing_role() -> None:
     assert "GRANT UPDATE ON items_summary TO paperwatch_api;" in statement
     assert "GRANT USAGE ON SEQUENCE items_summary_id_seq TO paperwatch_api;" in statement
     assert Path(GUIDE).exists()  # the document is the source this module reads
+
+
+def test_the_grant_helper_never_emits_an_empty_grant() -> None:
+    # A migration that only needs an UPDATE grant must not produce `GRANT INSERT ON  TO ...`.
+    statement = grant_api_writes(update=["chat_calls"])
+    assert "GRANT INSERT" not in statement
+    assert "GRANT UPDATE ON chat_calls TO paperwatch_api;" in statement

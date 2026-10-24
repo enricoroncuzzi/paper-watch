@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from paperwatch.config import Settings
 from paperwatch.llm.embed_worker import serve
 from paperwatch.llm.embedder import (
     FakeEmbedder,
@@ -162,3 +163,26 @@ def test_a_failing_stop_check_keeps_the_reaper_alive(
     worker.embed(["hello"])
     worker.reap_once()  # must not raise
     assert worker.alive()
+
+
+def test_raise_oom_score_writes_the_highest_value(tmp_path: Path) -> None:
+    # The write itself, against a file instead of /proc, so it is testable on every platform.
+    from paperwatch.llm.embed_worker import raise_oom_score
+
+    target = tmp_path / "oom_score_adj"
+    raise_oom_score(target)
+    assert target.read_text() == "1000"
+
+
+def test_main_raises_the_oom_score_before_serving(monkeypatch: pytest.MonkeyPatch) -> None:
+    # E1: the call in `main`, not just the helper, is what a real child relies on.
+    from paperwatch.llm import embed_worker
+
+    order: list[str] = []
+    monkeypatch.setattr(embed_worker, "raise_oom_score", lambda: order.append("oom"))
+    monkeypatch.setattr(embed_worker, "get_settings", lambda: Settings(_env_file=None))
+    monkeypatch.setattr(embed_worker, "make_local_model", lambda settings: object())
+    monkeypatch.setattr(embed_worker, "LocalEmbedder", lambda model, batch: object())
+    monkeypatch.setattr(embed_worker, "serve", lambda *args: order.append("serve"))
+    embed_worker.main()
+    assert order == ["oom", "serve"]

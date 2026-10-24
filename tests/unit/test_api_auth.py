@@ -8,6 +8,7 @@ import base64
 import hashlib
 import hmac
 import json
+import threading
 import time
 from typing import Any
 
@@ -120,6 +121,7 @@ def test_a_production_token_is_accepted() -> None:
         "alg_none",
         "hmac_with_public_key",
         "other_key",
+        "future_iat",
         "not_a_jwt",
     ],
 )
@@ -150,6 +152,8 @@ def test_oidc_refuses(case: str) -> None:
     elif case == "other_key":
         other, _, _ = _key()
         token = _token(other)
+    elif case == "future_iat":
+        token = _token(private, iat=int(NOW) + TOKEN_LEEWAY_S + 1)
     else:
         token = "not-a-jwt"  # noqa: S105 - not a token at all
     assert verifier.verify(token) is None
@@ -321,7 +325,7 @@ def test_a_missing_hmac_secret_is_not_a_fallback_for_oidc(build_settings: Any) -
     )
     assert isinstance(make_verifier(settings), OidcVerifier)
     with pytest.raises(ApiAuthNotConfigured):
-        make_verifier(Settings(api_auth="hmac", api_hmac_secret=""))
+        make_verifier(Settings(_env_file=None, api_auth="hmac", api_hmac_secret=""))
 
 
 def test_time_is_read_from_the_injected_clock() -> None:
@@ -355,3 +359,46 @@ def test_time_is_not_wall_clock_in_the_round_trip() -> None:
     clock = Clock(now=time.time() + 10_000)
     verifier = HmacVerifier(secret, clock)
     assert verifier.verify(mint_hmac_token(secret, "operator", clock.now)) is not None
+
+
+def test_a_slow_key_fetch_does_not_block_another_request() -> None:
+    # N1: the fetch runs outside the cache lock. A second caller while the fetch is in flight is
+    # refused quickly ("no key yet"), not queued behind a network round trip.
+    _, _, jwk = _key()
+    clock = Clock()
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow(url: str) -> dict[str, Any]:
+        started.set()
+        release.wait(timeout=5)
+        return {"keys": [jwk]}
+
+    cache = JwksCache("https://keys.example/jwks", slow, clock)
+    worker = threading.Thread(target=cache.key, args=(KID,))
+    worker.start()
+    assert started.wait(1)
+    began = time.monotonic()
+    assert cache.key("another-kid") is None
+    assert time.monotonic() - began < 0.5
+    release.set()
+    worker.join(timeout=5)
+
+
+def test_a_failed_key_fetch_is_retried_sooner_than_a_rotation() -> None:
+    # N2: a transient failure on the first request must not lock the page out for five minutes.
+    _, _, jwk = _key()
+    clock = Clock()
+    calls = {"n": 0}
+
+    def flaky(url: str) -> dict[str, Any]:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("the key endpoint blinked")
+        return {"keys": [jwk]}
+
+    cache = JwksCache("https://keys.example/jwks", flaky, clock)
+    assert cache.key(KID) is None
+    clock.now += 31
+    assert cache.key(KID) is not None
+    assert calls["n"] == 2
