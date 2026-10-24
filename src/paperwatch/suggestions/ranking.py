@@ -10,6 +10,7 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
+from functools import lru_cache
 from math import log10, sqrt
 from typing import Literal
 from uuid import UUID
@@ -196,11 +197,18 @@ def _components(
     }
 
 
+@lru_cache(maxsize=4)
+def _folded_names(names: frozenset[str]) -> frozenset[str]:
+    # Hugging Face reports an organisation as a display name whose capitalisation varies
+    # ("NVIDIA" one day, "Nvidia" the next), so the list is compared case-folded.
+    return frozenset(name.casefold() for name in names)
+
+
 def _recognised(candidate: Candidate, config: SuggestionsConfig) -> bool:
-    names = config.recognisable_names
-    if candidate.org is not None and candidate.org in names:
+    names = _folded_names(config.recognisable_names)
+    if candidate.org is not None and candidate.org.strip().casefold() in names:
         return True
-    return any(author in names for author in candidate.authors)
+    return any(author.strip().casefold() in names for author in candidate.authors)
 
 
 def _shareability(candidate: Candidate, config: SuggestionsConfig) -> float:

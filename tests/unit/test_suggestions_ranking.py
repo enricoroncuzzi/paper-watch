@@ -348,3 +348,20 @@ def test_equal_scores_order_by_source_and_external_id() -> None:
 
     assert [s.candidate.external_id for s in ranking.picks] == ["a", "b", "a"]
     assert [s.candidate.source for s in ranking.picks] == ["arxiv", "arxiv", "biorxiv"]
+
+
+def test_a_well_known_organisation_earns_the_shareability_credit() -> None:
+    # The organisation is Hugging Face's display name, and its capitalisation varies, so the match
+    # ignores case; a lab outside the list earns nothing for its name.
+    known = cand(external_id="a", org="nvidia")
+    unknown = cand(external_id="b", org="MirroS")
+    known_by_author = cand(external_id="c", authors=("Hugging Face",))
+
+    ranking = _rank([known, unknown, known_by_author])
+
+    shares = {
+        scored.candidate.external_id: scored.components["shareability"] for scored in ranking.picks
+    }
+    assert shares["a"] == pytest.approx(0.4)
+    assert shares["c"] == pytest.approx(0.4)
+    assert shares["b"] == 0.0

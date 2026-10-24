@@ -91,3 +91,16 @@ recognisable_names:
   - Ant Group
   - Ling Team
   - Xiaomi LLM-Core Team
+  # Well-known organisations whose papers reach the corpus through the Hugging Face listing rather
+  # than a feed: the item's organisation is Hugging Face's display name for it, and the match
+  # ignores case, so an entry matches however Hugging Face spells it that day.
+  - Meta
+  - Anthropic
+  - NVIDIA
+  - Apple
+  - Microsoft
+  - Google
+  - Google Research
+  - Hugging Face
+  - Allen Institute for AI
+  - Stanford University
