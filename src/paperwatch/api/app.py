@@ -54,6 +54,7 @@ from paperwatch.api.auth import Principal, Verifier
 from paperwatch.api.gate import ApiGate
 from paperwatch.api.limits import Admitted, Refused, RequestLimiter
 from paperwatch.api.pacing import paced
+from paperwatch.api.routes.runs import make_runs_router
 from paperwatch.api.search_mode import SearchModeGate
 from paperwatch.config import (
     ANSWER_DEADLINE_S,
@@ -91,7 +92,7 @@ log = structlog.get_logger()
 
 # The API contract's own version, not the package version: release-please bumps the package on
 # every release, and the committed docs/api/openapi.json must change only when the API does.
-API_VERSION = "0.2"
+API_VERSION = "0.3"
 
 # The fixed text of the `internal` event: the client gets something it can show, and the detail
 # (which could carry a provider body or stored text) stays in the server log.
@@ -897,6 +898,12 @@ def create_app(deps: AgentDeps) -> FastAPI:
     # The readiness gate lives on the app so a test can replace it, and so two apps never share
     # one limiter (a limiter belongs to one event loop's concurrency budget).
     app.state.ready_limiter = anyio.CapacityLimiter(READY_CONCURRENCY)
+    # The page's read routes take their own short session per request, so a page load never holds
+    # a connection the answer pool needs. Tests and the CLI have no separate read factory, and
+    # their single session is the read one.
+    app.include_router(
+        make_runs_router(deps.read_session_factory or deps.session_factory, deps.search_mode)
+    )
 
     # FastAPI types the SSE media type with the `StreamItem` envelope, which exists only to
     # register the payload models. Post-processing swaps in the shape a client parses and drops

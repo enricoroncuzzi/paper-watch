@@ -500,6 +500,21 @@ class Repository:
         run.finished_at = at
         self._s.flush()
 
+    def run(self, run_id: uuid.UUID) -> Run | None:
+        return self._s.get(Run, run_id)
+
+    def recent_runs(self, limit: int) -> list[Run]:
+        """The newest runs by start time, for `/runs` and the today strip."""
+        return list(self._s.scalars(select(Run).order_by(Run.started_at.desc()).limit(limit)).all())
+
+    def run_dead_letters(self, run_id: uuid.UUID) -> list[DeadLetter]:
+        """This run's letters, resolved ones included: a resolved letter still happened."""
+        return list(
+            self._s.scalars(
+                select(DeadLetter).where(DeadLetter.run_id == run_id).order_by(DeadLetter.id)
+            ).all()
+        )
+
     def cursor(self, key: str) -> datetime | None:
         return self._s.scalar(select(SourceCursor.window_end).where(SourceCursor.key == key))
 

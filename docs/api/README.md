@@ -15,7 +15,25 @@ reference. `docs/learn/15` explains the gate and what each status code means.
 | `GET /healthz` | Liveness: the process is up. Never touches the database. The one route without a token. |
 | `GET /readyz` | Readiness: one `SELECT 1` against Postgres succeeds, else 503. |
 | `GET /status` | The search mode: `{"mode", "reason", "since"}`, where mode is `hybrid` or `text_only` and reason is `ok`, `ingestion`, `memory` or `database`. |
+| `GET /today` | The today strip: `{"run": RunSummary or null, "search": {"mode", "reason", "since"}}`, the newest run by `started_at` and the search mode in the same call. |
+| `GET /runs?limit=10` | `{"runs": [RunSummary]}`, newest `started_at` first; `limit` is 1 to 50. |
+| `GET /runs/{run_id}` | One `RunDetail` (a summary plus `window_start`, `window_end` and `dead_letters`), or 404. |
 | `POST /ask` | One question, streamed as server-sent events. |
+
+## Runs and the today strip
+
+`RunSummary` is `{id, started_at, finished_at, status, healthy, problems, warnings, counts, tokens,
+followup}`. `counts` always carries the same nine keys (`fetched`, `fetched_arxiv`, `stored`,
+`new`, `irrelevant`, `failed`, `admitted_late`, `followup_passes`, `s2_refused`), a key the run
+never counted being `0`. `healthy` is `null` when a run closed without a verdict, which is what
+the next run's `fail_open_runs` leaves behind for a crashed one: the page shows that as unknown,
+not as unhealthy. `followup` is `{pass, of, next_at, pending_s2}` while the run waits between
+follow-up passes and `null` otherwise (including once the loop has ended). `RunDetail` adds the
+window and `dead_letters: [{source, ref, error, attempts, created_at, resolved_at}]`, with `ref`
+and `error` clipped to 500 characters. All timestamps are UTC ISO 8601.
+
+These three routes open one short read-only session per request and are safe to poll: they never
+touch a model and never count against the answer limits.
 
 ## Limits
 
