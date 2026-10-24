@@ -1749,22 +1749,26 @@ def test_the_cap_fallback_search_is_read_only(db_session: Session, engine: Engin
     assert any("SET TRANSACTION READ ONLY" in statement for statement in log)
 
 
-def test_live_deps_wires_the_child_stop_and_the_read_pool(
+def test_live_deps_wires_the_child_stop_the_read_pool_and_the_child_memory(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # P8/P9/R4: the production wiring, not a hand-written lambda, must make the child stop when
-    # the mode turns keyword-only and give the tools a read pool.
+    # P8/P9/R4/P11: the production wiring, not a hand-written lambda, must make the child stop when
+    # the mode turns keyword-only, give the tools a read pool, and let the gate count the memory a
+    # live child holds so it does not kill its own child on a machine that is only busy with it.
     class Gate:
         mode = "hybrid"
-
-        def __init__(self, *args: Any, **kwargs: Any) -> None:
-            pass
 
         def current(self) -> ModeDecision:
             return ModeDecision(self.mode, "ok")  # type: ignore[arg-type]
 
     gate = Gate()
-    monkeypatch.setattr(api, "SearchModeGate", lambda *args, **kwargs: gate)
+    captured: dict[str, Any] = {}
+
+    def make_gate(*args: Any, **kwargs: Any) -> Gate:
+        captured.update(kwargs)
+        return gate
+
+    monkeypatch.setattr(api, "SearchModeGate", make_gate)
     monkeypatch.setattr(api, "make_chat_models", lambda settings: [])
     settings = Settings(  # type: ignore[arg-type]
         _env_file=None,
@@ -1778,6 +1782,12 @@ def test_live_deps_wires_the_child_stop_and_the_read_pool(
     assert app_deps.embedder._should_stop() is False  # type: ignore[attr-defined]
     gate.mode = "text_only"
     assert app_deps.embedder._should_stop() is True  # type: ignore[attr-defined]
+    read_child_rss = captured["read_child_rss"]
+    # No child is alive here, so the gate counts nothing; with one alive it is that child's own
+    # memory the callable must answer.
+    assert read_child_rss() is None
+    monkeypatch.setattr(app_deps.embedder, "child_rss_mb", lambda: 220.0)
+    assert read_child_rss() == 220.0
 
 
 def test_a_text_only_answer_never_starts_the_model(db_session: Session) -> None:
