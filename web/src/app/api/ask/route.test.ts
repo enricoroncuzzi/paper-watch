@@ -150,16 +150,37 @@ describe("the ask proxy", () => {
     expect(response.status).toBe(400);
   });
 
-  it("forwards only the question and the item", async () => {
+  it("forwards the thread and the filter, and no unknown field", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response("data: {}\n\n", { headers: { "content-type": "text/event-stream" } }),
     );
     vi.stubGlobal("fetch", fetchMock);
     const response = await POST(
-      askRequest({ question: "q", thread_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", tiers: [1] }),
+      askRequest({
+        question: "q",
+        thread_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        tiers: ["peer_reviewed"],
+        surprise: "not ours",
+      }),
     );
     expect(response.status).toBe(200);
     const init = fetchMock.mock.calls[0]![1] as RequestInit;
-    expect(JSON.parse(init.body as string)).toEqual({ question: "q" });
+    expect(JSON.parse(init.body as string)).toEqual({
+      question: "q",
+      thread_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      tiers: ["peer_reviewed"],
+    });
+  });
+
+  it("refuses a thread id that is not a UUID with 400", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    const response = await POST(askRequest({ question: "q", thread_id: "not-an-id" }));
+    expect(response.status).toBe(400);
+  });
+
+  it("refuses a tier the API does not know with 400", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    const response = await POST(askRequest({ question: "q", tiers: ["rumour"] }));
+    expect(response.status).toBe(400);
   });
 });

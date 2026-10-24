@@ -13,22 +13,27 @@ export function AnswerText({
   streaming,
   checked,
   numbers,
+  anchorPrefix = "",
+  testId = "answer",
 }: {
   text: string;
   streaming: boolean;
   checked: boolean;
   numbers: Map<string, number>;
+  // A conversation renders several answers, so their footnote anchors must not collide.
+  anchorPrefix?: string;
+  testId?: string;
 }) {
   if (!text) return null;
   const paragraphs = text.split(/\n{2,}/);
   return (
     <div
-      data-testid="answer"
+      data-testid={testId}
       className="max-w-[34rem] font-serif text-[19px] leading-[1.66] tracking-[-0.003em] text-ink"
     >
       {paragraphs.map((paragraph, index) => (
         <p key={index} className="mb-3.5">
-          {checked ? renderReferences(paragraph, numbers) : paragraph}
+          {checked ? renderReferences(paragraph, numbers, anchorPrefix) : paragraph}
           {streaming && index === paragraphs.length - 1 ? (
             <span
               data-testid="caret"
@@ -42,7 +47,11 @@ export function AnswerText({
   );
 }
 
-function renderReferences(paragraph: string, numbers: Map<string, number>): React.ReactNode[] {
+function renderReferences(
+  paragraph: string,
+  numbers: Map<string, number>,
+  anchorPrefix: string,
+): React.ReactNode[] {
   return paragraph.split(REFERENCE).map((piece, index) => {
     const match = ONE_REFERENCE.exec(piece);
     if (!match) return <Fragment key={index}>{piece}</Fragment>;
@@ -52,7 +61,10 @@ function renderReferences(paragraph: string, numbers: Map<string, number>): Reac
     if (number === undefined) return <Fragment key={index}>{piece}</Fragment>;
     return (
       <sup key={index} className="px-px text-[0.62em] font-semibold leading-none text-accent-text">
-        <a href={`#fn-${alias}`} className="border-b border-transparent hover:border-current">
+        <a
+          href={`#${anchorPrefix}fn-${alias}`}
+          className="border-b border-transparent hover:border-current"
+        >
           {number}
         </a>
       </sup>

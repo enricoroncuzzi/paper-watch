@@ -8,13 +8,18 @@ import type { SourceRef } from "@/lib/use-ask";
 export function Sources({
   sources,
   numbers,
+  anchorPrefix = "",
+  testId = "sources",
 }: {
   sources: SourceRef[];
   numbers: Map<string, number>;
+  // A conversation renders several source lists, so their footnote anchors must not collide.
+  anchorPrefix?: string;
+  testId?: string;
 }) {
   if (sources.length === 0) return null;
   return (
-    <div data-testid="sources" className="mt-5 max-w-[38rem] border-t border-rule pt-3">
+    <div data-testid={testId} className="mt-5 max-w-[38rem] border-t border-rule pt-3">
       <h4 className="mb-2 text-[9.5px] uppercase tracking-[0.13em] text-ink-3">Sources</h4>
       <ol className="flex flex-col gap-2">
         {sources.map((source, index) => {
@@ -23,7 +28,7 @@ export function Sources({
           return (
             <li
               key={source.id}
-              id={`fn-${source.id}`}
+              id={`${anchorPrefix}fn-${source.id}`}
               className="grid grid-cols-[20px_1fr] gap-2.5 text-[11.5px] leading-[1.45] text-ink-2"
             >
               <span className="pt-0.5 text-right font-mono text-[10px] text-accent-text">

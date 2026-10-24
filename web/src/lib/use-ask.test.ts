@@ -28,10 +28,25 @@ function frame(event: string, data: unknown): string {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 }
 
+/** A response whose body read fails when the request is aborted, as a real fetch's does. */
+function abortsOnAbort(init: RequestInit, status: number): Response {
+  const signal = init.signal;
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      signal?.addEventListener("abort", () =>
+        controller.error(new DOMException("The operation was aborted.", "AbortError")),
+      );
+    },
+  });
+  return new Response(body, { status });
+}
+
 function controllerFor(body: ReadableStream<Uint8Array>, status = 200) {
   const fetchImpl = vi.fn().mockResolvedValue(new Response(body, { status }));
   return { fetchImpl, controller: new AskController({ fetchImpl, watchdogMs: 45_000 }) };
 }
+
+const THREAD = "55555555-5555-4555-8555-555555555555";
 
 const ANSWER = {
   text: "Coding agents are measured on real repository bugs [S1].",
@@ -52,7 +67,12 @@ const ANSWER = {
 
 describe("the ask reducer", () => {
   it("replaces the streamed text with the checked answer", () => {
-    let state: AskState = askReducer(INITIAL_ASK_STATE, { type: "start", question: "q" });
+    let state: AskState = askReducer(INITIAL_ASK_STATE, {
+      type: "start",
+      question: "q",
+      at: "2026-11-04T09:00:00Z",
+      threadId: null,
+    });
     state = askReducer(state, { type: "event", event: "token", data: { text: "draft words" } });
     expect(state.text).toBe("draft words");
     state = askReducer(state, { type: "event", event: "answer", data: ANSWER });
@@ -62,7 +82,12 @@ describe("the ask reducer", () => {
   });
 
   it("keeps one entry per source alias", () => {
-    let state: AskState = askReducer(INITIAL_ASK_STATE, { type: "start", question: "q" });
+    let state: AskState = askReducer(INITIAL_ASK_STATE, {
+      type: "start",
+      question: "q",
+      at: "2026-11-04T09:00:00Z",
+      threadId: null,
+    });
     const source = ANSWER.citations[0]!;
     state = askReducer(state, { type: "event", event: "source", data: source });
     state = askReducer(state, { type: "event", event: "source", data: source });
@@ -207,6 +232,88 @@ describe("the ask controller", () => {
     await secondRun;
   });
 
+  it("a superseded 503 whose body read is aborted leaves the newer request streaming", async () => {
+    // `response.json().catch(() => ({}))` swallows the abort and used to fall through to the error
+    // branch, which wrote "error" on the request that had just replaced this one.
+    const second = controllable();
+    const fetchImpl = vi
+      .fn()
+      .mockImplementationOnce((_url: string, init: RequestInit) =>
+        Promise.resolve(abortsOnAbort(init, 503)),
+      )
+      .mockResolvedValueOnce(new Response(second.body));
+    const controller = new AskController({ fetchImpl, watchdogMs: 45_000 });
+
+    const firstRun = controller.ask("first");
+    await vi.advanceTimersByTimeAsync(0);
+    const secondRun = controller.ask("second");
+    await vi.advanceTimersByTimeAsync(0);
+    await firstRun;
+    expect(controller.getState().status).toBe("streaming");
+    expect(controller.getState().question).toBe("second");
+
+    second.push(frame("answer", ANSWER));
+    second.close();
+    await secondRun;
+    expect(controller.getState().status).toBe("done");
+  });
+
+  it("a superseded stream that ends leaves the newer request streaming", async () => {
+    // The aborted request's stream can still end (a queued frame, a proxy flush). Its `dropped`
+    // dispatch must not land on the request that replaced it.
+    const first = controllable();
+    const second = controllable();
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(first.body))
+      .mockResolvedValueOnce(new Response(second.body));
+    const controller = new AskController({ fetchImpl, watchdogMs: 45_000 });
+
+    const firstRun = controller.ask("first");
+    await vi.advanceTimersByTimeAsync(0);
+    const secondRun = controller.ask("second");
+    await vi.advanceTimersByTimeAsync(0);
+    first.close();
+    await firstRun;
+    expect(controller.getState().status).toBe("streaming");
+    expect(controller.getState().question).toBe("second");
+
+    second.push(frame("token", { text: "the newer answer" }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(controller.getState().text).toBe("the newer answer");
+    second.close();
+    await secondRun;
+  });
+
+  it("a superseded response that arrives late does not touch the newer request", async () => {
+    // Response headers can arrive after the newer ask aborted this one.
+    let resolveFirst!: (response: Response) => void;
+    const firstResponse = new Promise<Response>((resolve) => {
+      resolveFirst = resolve;
+    });
+    const second = controllable();
+    const fetchImpl = vi
+      .fn()
+      .mockImplementationOnce(() => firstResponse)
+      .mockResolvedValueOnce(new Response(second.body));
+    const controller = new AskController({ fetchImpl, watchdogMs: 45_000 });
+
+    const firstRun = controller.ask("first");
+    await vi.advanceTimersByTimeAsync(0);
+    const secondRun = controller.ask("second");
+    await vi.advanceTimersByTimeAsync(0);
+    resolveFirst(Response.json({ kind: "rate_limited" }, { status: 429 }));
+    await vi.advanceTimersByTimeAsync(0);
+    await firstRun;
+    expect(controller.getState().status).toBe("streaming");
+    expect(controller.getState().error).toBeNull();
+
+    second.push(frame("answer", ANSWER));
+    second.close();
+    await secondRun;
+    expect(controller.getState().status).toBe("done");
+  });
+
   it("a finished answer leaves no watchdog timer behind", async () => {
     const stream = controllable();
     const { controller } = controllerFor(stream.body);
@@ -255,7 +362,9 @@ describe("the ask controller", () => {
   it("sends the item id when a card opened the sheet", async () => {
     const stream = controllable();
     const { fetchImpl, controller } = controllerFor(stream.body);
-    const run = controller.ask("what did they measure?", "33333333-3333-4333-8333-333333333301");
+    const run = controller.ask("what did they measure?", {
+      itemId: "33333333-3333-4333-8333-333333333301",
+    });
     await vi.advanceTimersByTimeAsync(0);
     const init = fetchImpl.mock.calls[0]![1] as RequestInit;
     // The API registers this item as S1 before the graph starts, so only the id travels.
@@ -298,5 +407,178 @@ describe("the ask controller", () => {
     expect(controller.getState().status).toBe("error");
     expect(error?.code).toBe("rate_limited");
     expect(error?.retryAfterS).toBe(12);
+  });
+});
+
+function turn(n: number, question: string, answer: unknown = ANSWER) {
+  return {
+    n,
+    question,
+    answer,
+    search_mode: "hybrid",
+    created_at: `2026-11-04T0${n}:00:00Z`,
+  };
+}
+
+/** A fetch that answers by path, so one test can drive both the stream and the thread read. */
+function routedFetch(routes: Record<string, () => Response | Promise<Response>>) {
+  return vi.fn(async (url: string | URL | Request) => {
+    const path = String(url);
+    const handler = routes[path];
+    if (!handler) throw new Error(`unexpected fetch: ${path}`);
+    return handler();
+  });
+}
+
+describe("the ask controller with threads", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it("a follow-up sends the thread id the first answer created", async () => {
+    const first = controllable();
+    const second = controllable();
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(first.body))
+      .mockResolvedValueOnce(new Response(second.body));
+    const controller = new AskController({ fetchImpl, watchdogMs: 45_000 });
+
+    const firstRun = controller.ask("q1");
+    await vi.advanceTimersByTimeAsync(0);
+    first.push(frame("answer", ANSWER));
+    first.push(frame("thread", { id: THREAD, turn: 1 }));
+    first.close();
+    await firstRun;
+    expect(controller.getState().threadId).toBe(THREAD);
+    expect(controller.getState().turnCount).toBe(1);
+
+    const secondRun = controller.ask("q2");
+    await vi.advanceTimersByTimeAsync(0);
+    const init = fetchImpl.mock.calls[1]![1] as RequestInit;
+    expect(JSON.parse(String(init.body))).toEqual({ question: "q2", thread_id: THREAD });
+    second.close();
+    await secondRun;
+  });
+
+  it("a follow-up keeps the finished turn above it", async () => {
+    const fetchImpl = vi.fn();
+    const controller = new AskController({ fetchImpl, watchdogMs: 45_000 });
+    const first = controllable();
+    fetchImpl.mockResolvedValueOnce(new Response(first.body));
+    const firstRun = controller.ask("q1");
+    await vi.advanceTimersByTimeAsync(0);
+    first.push(frame("answer", ANSWER));
+    first.push(frame("thread", { id: THREAD, turn: 1 }));
+    first.close();
+    await firstRun;
+
+    const second = controllable();
+    fetchImpl.mockResolvedValueOnce(new Response(second.body));
+    const secondRun = controller.ask("q2");
+    await vi.advanceTimersByTimeAsync(0);
+    const state = controller.getState();
+    expect(state.turns).toHaveLength(1);
+    expect(state.turns[0]).toMatchObject({ n: 1, question: "q1", answer: ANSWER });
+    expect(state.question).toBe("q2");
+    expect(state.threadId).toBe(THREAD);
+    second.close();
+    await secondRun;
+  });
+
+  it("the peer-reviewed chip sends the filter as tiers", async () => {
+    const stream = controllable();
+    const { fetchImpl, controller } = controllerFor(stream.body);
+    const run = controller.ask("how do they measure it?", {
+      threadId: THREAD,
+      tiers: ["peer_reviewed"],
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const init = fetchImpl.mock.calls[0]![1] as RequestInit;
+    expect(JSON.parse(String(init.body))).toEqual({
+      question: "how do they measure it?",
+      thread_id: THREAD,
+      tiers: ["peer_reviewed"],
+    });
+    stream.close();
+    await run;
+  });
+
+  it("opening a recent thread shows its last turn and keeps the earlier ones above it", async () => {
+    const detail = {
+      id: THREAD,
+      title: "q1",
+      turns: [turn(1, "q1"), turn(2, "q2"), turn(3, "q3")],
+    };
+    const fetchImpl = routedFetch({ [`/api/threads/${THREAD}`]: () => Response.json(detail) });
+    const controller = new AskController({ fetchImpl, watchdogMs: 45_000 });
+    await controller.openThread(THREAD);
+    const state = controller.getState();
+    expect(state.threadId).toBe(THREAD);
+    expect(state.turnCount).toBe(3);
+    expect(state.turns.map((one) => one.n)).toEqual([1, 2]);
+    expect(state.question).toBe("q3");
+    expect(state.status).toBe("done");
+    expect(state.answer).toEqual(ANSWER);
+  });
+
+  it("recovering adopts the answer the server finished after the stream died", async () => {
+    // The follow-up's stream died on the phone, but the server kept going and stored the turn:
+    // the re-fetch is what turns the interrupted state back into an answer.
+    let turns = [turn(1, "q1")];
+    const fetchImpl = routedFetch({
+      [`/api/threads/${THREAD}`]: () => Response.json({ id: THREAD, title: "q1", turns }),
+    });
+    const controller = new AskController({ fetchImpl, watchdogMs: 45_000 });
+    await controller.openThread(THREAD);
+
+    const stalled = controllable();
+    fetchImpl.mockImplementationOnce(async () => new Response(stalled.body));
+    const run = controller.ask("q2");
+    await vi.advanceTimersByTimeAsync(0);
+    turns = [...turns, turn(2, "q2")];
+    await controller.recover();
+    stalled.close();
+    await run;
+    const state = controller.getState();
+    expect(state.status).toBe("done");
+    expect(state.question).toBe("q2");
+    expect(state.answer).toEqual(ANSWER);
+    expect(state.interrupted).toBe(false);
+    expect(state.turns.map((one) => one.n)).toEqual([1]);
+  });
+
+  it("recovering marks the question interrupted when the thread has no turn for it", async () => {
+    let turns = [turn(1, "q1")];
+    const fetchImpl = routedFetch({
+      [`/api/threads/${THREAD}`]: () => Response.json({ id: THREAD, title: "q1", turns }),
+    });
+    const controller = new AskController({ fetchImpl, watchdogMs: 45_000 });
+    await controller.openThread(THREAD);
+
+    const stalled = controllable();
+    fetchImpl.mockImplementationOnce(async () => new Response(stalled.body));
+    const run = controller.ask("q2");
+    await vi.advanceTimersByTimeAsync(0);
+    await controller.recover();
+    stalled.close();
+    await run;
+    const state = controller.getState();
+    expect(state.status).toBe("dropped");
+    expect(state.interrupted).toBe(true);
+    expect(state.question).toBe("q2");
+    expect(state.turns.map((one) => one.n)).toEqual([1]);
+  });
+
+  it("recovering without a thread does nothing", async () => {
+    const fetchImpl = vi.fn();
+    const controller = new AskController({ fetchImpl, watchdogMs: 45_000 });
+    await controller.recover();
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 });

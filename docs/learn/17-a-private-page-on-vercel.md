@@ -57,6 +57,22 @@ to `unavailable`, and a timeout or refused connection also to `unavailable`. A s
 copy for its kind instead of the page failing. Reads time out at ten seconds and are never cached
 (`cache: "no-store"`): a cached run list would show yesterday's ingestion as today's.
 
+## A conversation on the page
+
+The sheet holds one thread (`web/src/lib/use-ask.ts`): the finished turns above the current one, the
+thread id the server returned with the last answer, and the current question with its stream. A
+follow-up sends that id, so the API replays the thread's last turns and keeps its source aliases, and
+the reply's footnote numbers stay per answer. Three fixed chips sit under the composer; the
+peer-reviewed one re-asks the last question with `tiers: ["peer_reviewed"]`, so a filter is not a
+model call and the chips cost nothing to invent.
+
+A dropped stream does not end the conversation. The controller asks `GET /api/threads/{id}` and
+shows what the server finished: the answer is adopted when the thread saved it, and when the thread
+has no turn for the question the sheet says the answer was interrupted and offers to ask it again.
+The same read runs when `visibilitychange` says the page is visible again, because iOS Safari freezes
+a backgrounded tab and its watchdog timer with it. Both requests go through a route handler, which
+checks the session and holds the credential like the ask proxy does.
+
 ## Stored text stays text
 
 React escapes what it renders, so a title with HTML in it is characters on the page. The one place a
@@ -72,7 +88,11 @@ a Hugging Face project page crafted to look like another site.
 `FAKE_API_PORT`, or with `PW_E2E_FAKE_API_PORT` for the suite). It accepts
 only `Authorization: Bearer e2e`, serves `fixtures/<name>.json` for the read routes, streams
 `streams/<scenario>.json` for `POST /ask`, and takes `POST /__scenario` so a Playwright test can pick
-`normal`, `empty`, `error`, `unhealthy`, `followup`, `text_only`, `slow` or `drop`. Tests run one
+`normal`, `empty`, `error`, `unhealthy`, `followup`, `text_only`, `slow`, `drop` or `thread_drop`.
+It keeps the conversations a test created: a finished answer appends a turn and the stream ends with
+the `thread` event, `GET /threads` and `GET /threads/{id}` read them back, and `keepThreads: true`
+on a scenario switch lets one test ask, then change how the next stream behaves. `GET /__last_ask`
+is the test seam for what the page sent (a follow-up's thread and the chip's filter). Tests run one
 worker, so the global scenario is safe.
 
 `tests/unit/test_web_fake_api_fixtures.py` validates every fixture against the API's pydantic

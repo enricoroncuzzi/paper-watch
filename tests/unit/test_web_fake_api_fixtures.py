@@ -19,6 +19,7 @@ from paperwatch.api.app import (
     SourceData,
     StatusData,
     StepData,
+    ThreadData,
     TokenData,
     ToolData,
 )
@@ -26,6 +27,7 @@ from paperwatch.api.responses import RateLimited, Refusal
 from paperwatch.api.routes.drafts import DraftData, DraftDetail, DraftError, DraftsData
 from paperwatch.api.routes.runs import RunDetail, RunsData, TodayData
 from paperwatch.api.routes.suggestions import SuggestionsData
+from paperwatch.api.routes.threads import ThreadDetailData
 
 WEB = Path(__file__).resolve().parents[2] / "web"
 FIXTURES = WEB / "fake-api" / "fixtures"
@@ -53,6 +55,7 @@ FIXTURE_MODELS: dict[str, type[BaseModel]] = {
     "draft-flagged": DraftData,
     "draft-refused": DraftError,
     "draft-capped": DraftError,
+    "thread": ThreadDetailData,
 }
 
 EVENT_MODELS: dict[str, type[BaseModel]] = {
@@ -62,6 +65,7 @@ EVENT_MODELS: dict[str, type[BaseModel]] = {
     "token": TokenData,
     "notice": NoticeData,
     "answer": AnswerData,
+    "thread": ThreadData,
     "error": ErrorData,
 }
 
