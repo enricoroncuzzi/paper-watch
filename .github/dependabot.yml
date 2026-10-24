@@ -21,6 +21,17 @@ updates:
       minor-and-patch:
         update-types: ["minor", "patch"]
         exclude-patterns: ["publicsuffixlist"]
+  # Keep the page's npm dependencies current; same week-long cooldown, because a compromised
+  # release is usually yanked within days.
+  - package-ecosystem: "npm"
+    directory: "/web"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    groups:
+      minor-and-patch:
+        update-types: ["minor", "patch"]
   # Keep the SHA-pinned actions in .github/workflows current; each update
   # rewrites the SHA and its version comment together.
   - package-ecosystem: "github-actions"

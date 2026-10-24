@@ -1,0 +1,150 @@
+@import "tailwindcss";
+
+/* The mockup's tokens, copied verbatim from concept-b-variant-2.html (Butter & Graphite), so the
+   page and the approved reference cannot drift. Light is the default; the dark set also applies
+   through the media query only when no explicit theme is set. */
+:root {
+  --serif: var(--font-newsreader), ui-serif, Georgia, serif;
+  --sans: var(--font-inter), system-ui, -apple-system, sans-serif;
+  --mono: var(--font-jetbrains-mono), ui-monospace, monospace;
+  --measure: 35rem;
+}
+
+html[data-theme="light"] {
+  --paper: #f6f5ef;
+  --card: #ffffff;
+  --card-2: #edece1;
+  --ink: #15170f;
+  --ink-2: #4c5145;
+  --ink-3: #63695c;
+  --rule: #dfded1;
+  --rule-2: #c6c5b4;
+  --accent: #dfd23f;
+  --accent-2: #d0c233;
+  --accent-soft: #f6f2c4;
+  --accent-ink: #1a1b0e;
+  --accent-text: #6b6208;
+  --ok: #1d5a35;
+  --ok-soft: #e4eee4;
+  --warn: #6b4700;
+  --warn-soft: #f6ead0;
+  --bad: #8c2718;
+  --bad-soft: #f7dfd7;
+  --mark: #efe58a;
+  --shadow: 0 1px 2px rgba(30, 32, 20, 0.06), 0 26px 52px -34px rgba(30, 32, 20, 0.45);
+}
+
+html[data-theme="dark"] {
+  --paper: #12140f;
+  --card: #191c15;
+  --card-2: #20241b;
+  --ink: #f0efe2;
+  --ink-2: #babdac;
+  --ink-3: #919687;
+  --rule: #2c3026;
+  --rule-2: #40463a;
+  --accent: #e9de4e;
+  --accent-2: #f2e96a;
+  --accent-soft: #2a2a15;
+  --accent-ink: #14160f;
+  --accent-text: #e9de4e;
+  --ok: #8fd5a9;
+  --ok-soft: #16261c;
+  --warn: #e5bf72;
+  --warn-soft: #2a2113;
+  --bad: #f0917c;
+  --bad-soft: #2e1a15;
+  --mark: #4a4312;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.5), 0 30px 60px -34px rgba(0, 0, 0, 0.9);
+}
+
+@media (prefers-color-scheme: dark) {
+  html:not([data-theme]) {
+    --paper: #12140f;
+    --card: #191c15;
+    --card-2: #20241b;
+    --ink: #f0efe2;
+    --ink-2: #babdac;
+    --ink-3: #919687;
+    --rule: #2c3026;
+    --rule-2: #40463a;
+    --accent: #e9de4e;
+    --accent-2: #f2e96a;
+    --accent-soft: #2a2a15;
+    --accent-ink: #14160f;
+    --accent-text: #e9de4e;
+    --ok: #8fd5a9;
+    --ok-soft: #16261c;
+    --warn: #e5bf72;
+    --warn-soft: #2a2113;
+    --bad: #f0917c;
+    --bad-soft: #2e1a15;
+    --mark: #4a4312;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.5), 0 30px 60px -34px rgba(0, 0, 0, 0.9);
+  }
+}
+
+/* Tailwind utilities read the same variables, so a token change moves both the CSS and the
+   utilities that use it. */
+@theme inline {
+  --color-paper: var(--paper);
+  --color-card: var(--card);
+  --color-card-2: var(--card-2);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+  --color-rule: var(--rule);
+  --color-rule-2: var(--rule-2);
+  --color-accent: var(--accent);
+  --color-accent-2: var(--accent-2);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-ink: var(--accent-ink);
+  --color-accent-text: var(--accent-text);
+  --color-ok: var(--ok);
+  --color-ok-soft: var(--ok-soft);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+  --color-bad: var(--bad);
+  --color-bad-soft: var(--bad-soft);
+  --font-serif: var(--serif);
+  --font-sans: var(--sans);
+  --font-mono: var(--mono);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+}
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font: 15px/1.6 var(--sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: var(--mark);
+  color: var(--ink);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: 3px;
+  border-radius: 2px;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}

@@ -40,6 +40,11 @@ the standing rules.
   released; `auth.py` verifies the Vercel OIDC or HMAC token, `limits.py` bounds requests,
   `pacing.py` adds heartbeats and the deadline, `search_mode.py` decides hybrid or keyword-only and
   `contract.py` rewrites `docs/api/openapi.json` (`uv run python -m paperwatch.api.contract`).
+  The page's read routes (`/today`, `/runs`, `/runs/{id}`) are in `api/routes/runs.py`.
+- `web/` is the Next.js page and the only caller of the API: server components and route handlers
+  check the GitHub session themselves (`web/src/auth.ts`), the API's address and token live only on
+  the server (`web/src/lib/api.ts`, `api-token.ts`), and `web/fake-api/` is the fixture server every
+  page test runs against (`docs/learn/17`).
 - `evals/` holds the retrieval eval (`retrieval_eval.py`: recall@k, MRR, nDCG@k over the
   deterministic fake embedder) and the relevance eval (`relevance_eval.py`: classifier
   calibration and held-out scores), each with a committed baseline.
@@ -84,14 +89,18 @@ the standing rules.
 - `uv run pytest` runs the unit and integration tests. Docker must be running: the integration
   tests start a `pgvector/pgvector:0.8.7-pg16` container through testcontainers
   (`tests/conftest.py`).
+- The page's gates run in `web/`: `npm test` (Vitest), `npm run e2e` (Playwright, Chromium and
+  WebKit against `web/fake-api/`), `npm run lint`, `npm run typecheck` and `npm run build`. After an
+  API change, `npm run gen:api` regenerates `web/src/lib/api-types.ts` in the same commit.
 - `uv run pytest -m model --no-cov` runs the real-model tests; they load the local embedding
   model (about 180 MB, downloaded once).
 - Lint and type checks are `uv run ruff check .`, `uv run ruff format --check .` and
   `uv run mypy`. `uv run pre-commit install` adds ruff, gitleaks, hygiene checks, actionlint
   and zizmor to every commit.
 - `.github/workflows/ci.yml` runs `lint` (ruff), `typecheck` (mypy), `test` (pytest), `eval`
-  (`paperwatch eval` against a pgvector service container), `security` (pip-audit and gitleaks)
-  and `workflow-lint` (actionlint and zizmor) on every pull request and on push to `main`.
+  (`paperwatch eval` against a pgvector service container), `security` (pip-audit and gitleaks),
+  `workflow-lint` (actionlint and zizmor) and `web` (the page's npm gates and Playwright) on every
+  pull request and on push to `main`.
   `codeql.yml` adds code scanning; `model-evals.yml` runs the `model` tests on model-affecting
   paths, weekly and by hand; `release-please.yml` maintains the release PR.
 - Local database: `docker compose up -d db`, then `uv run alembic upgrade head`. The

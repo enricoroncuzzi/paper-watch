@@ -1,0 +1,23 @@
+[
+  {
+    "event": "source",
+    "data": {
+      "id": "S1",
+      "item_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "title": "SWE-bench Verified: coding agents on real repository bugs",
+      "url": "https://arxiv.org/abs/2601.00001",
+      "tier": "peer_reviewed",
+      "basis": "venue"
+    },
+    "delay_ms": 80
+  },
+  {
+    "event": "error",
+    "data": {
+      "code": "daily_cap",
+      "message": "The daily model limit is spent.",
+      "retry_at": "2026-10-25T00:00:00Z"
+    },
+    "delay_ms": 120
+  }
+]

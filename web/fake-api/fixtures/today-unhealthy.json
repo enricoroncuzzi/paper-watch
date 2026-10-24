@@ -1,0 +1,25 @@
+{
+  "run": {
+    "id": "22222222-2222-4222-8222-222222222222",
+    "started_at": "2026-10-24T04:00:00Z",
+    "finished_at": "2026-10-24T04:05:40Z",
+    "status": "partial",
+    "healthy": false,
+    "problems": ["arxiv fetched 0 items", "3 items failed"],
+    "warnings": ["feed missed once, retried next run: https://example.org/feed"],
+    "counts": {
+      "fetched": 12,
+      "fetched_arxiv": 0,
+      "stored": 6,
+      "new": 2,
+      "irrelevant": 3,
+      "failed": 3,
+      "admitted_late": 0,
+      "followup_passes": 0,
+      "s2_refused": 0
+    },
+    "tokens": 1204,
+    "followup": null
+  },
+  "search": { "mode": "hybrid", "reason": "ok", "since": null }
+}
