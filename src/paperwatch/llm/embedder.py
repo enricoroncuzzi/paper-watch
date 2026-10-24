@@ -57,6 +57,28 @@ REAPER_INTERVAL_S = 2.0
 KILL_TIMEOUT_S = 5.0
 
 
+def _read_status(pid: int) -> str | None:
+    # /proc exists on the Linux server only; elsewhere the child reports no figure.
+    try:
+        with open(f"/proc/{pid}/status", encoding="ascii") as status:
+            return status.read()
+    except OSError:
+        return None
+
+
+def rss_anon_mb(status: str | None) -> float | None:
+    """The child's own anonymous memory in MB, or None when it cannot be read."""
+    if status is None:
+        return None
+    for line in status.splitlines():
+        if line.startswith("RssAnon:"):
+            try:
+                return int(line.split()[1]) / 1024
+            except (IndexError, ValueError):
+                return None
+    return None
+
+
 class Embedder(Protocol):
     def embed(self, texts: list[str]) -> list[list[float]]: ...
 
@@ -93,6 +115,7 @@ class WorkerEmbedder:
         query_max_bytes: int = QUERY_EMBED_MAX_BYTES,
         should_stop: Callable[[], bool] = lambda: False,
         clock: Callable[[], float] = time.monotonic,
+        read_status: Callable[[int], str | None] = _read_status,
     ) -> None:
         self._command = list(command)
         self._idle_s = idle_s
@@ -100,6 +123,7 @@ class WorkerEmbedder:
         self._query_max_bytes = query_max_bytes
         self._should_stop = should_stop
         self._clock = clock
+        self._read_status = read_status
         self._state = threading.Lock()
         self._io = threading.Lock()
         self._process: subprocess.Popen[str] | None = None
@@ -205,20 +229,33 @@ class WorkerEmbedder:
 
     def alive(self) -> bool:
         with self._state:
-            process = self._process
-            if process is not None and process.poll() is not None:
-                self._process = None
-                return False
-            return process is not None
+            return self._live_locked() is not None
+
+    def child_rss_mb(self) -> float | None:
+        """The live child's own anonymous memory: what an exit would give back.
+
+        None when no child is alive or its status cannot be read, so the gate counts nothing it
+        cannot see; RssFile is left out because that page cache is already reclaimable.
+        """
+        with self._state:
+            process = self._live_locked()
+            if process is None:
+                return None
+            # Read while the lock is held: a reaped child's pid can be reused, and the figure has
+            # to be this child's memory, not a stranger's.
+            return rss_anon_mb(self._read_status(process.pid))
 
     def _alive_locked(self) -> bool:
+        return self._live_locked() is not None
+
+    def _live_locked(self) -> subprocess.Popen[str] | None:
         process = self._process
         if process is None:
-            return False
+            return None
         if process.poll() is not None:
             self._process = None
-            return False
-        return True
+            return None
+        return process
 
     def _spawn(self) -> subprocess.Popen[str] | None:
         with self._state:
