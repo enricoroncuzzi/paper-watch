@@ -65,11 +65,10 @@ def paced(
                 cancel.set()
                 yield deadline_error()
                 return
-            # Wake at the next heartbeat or the deadline, whichever is first, and no later than
-            # the poll interval so a cancel arrives promptly.
-            next_due = min(started + deadline_s, last_frame + heartbeat_s)
+            # A short poll: the loop reads the injected clock for the heartbeat and the deadline,
+            # so a plain timeout is enough. Two answers at most, so the wake-ups are negligible.
             try:
-                item = frames.get(timeout=max(0.0, min(POLL_S, next_due - now)))
+                item = frames.get(timeout=POLL_S)
             except queue.Empty:
                 item = _EMPTY
             if item is _DONE:

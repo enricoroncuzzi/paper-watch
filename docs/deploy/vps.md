@@ -450,6 +450,13 @@ ALTER DEFAULT PRIVILEGES FOR ROLE paperwatch IN SCHEMA public
   GRANT SELECT ON TABLES TO paperwatch_ro, paperwatch_api;
 ```
 
+After the grants, this must print `t`: the API can complete a reservation only with the column
+privilege, and without it every answer calls the provider and then fails to update its row.
+
+```sql
+SELECT has_column_privilege('paperwatch_api', 'chat_calls', 'model', 'UPDATE');
+```
+
 The admin creates the two non-owner roles once, with LOGIN but no password, before the grants
 above (peer authentication is what lets them in):
 

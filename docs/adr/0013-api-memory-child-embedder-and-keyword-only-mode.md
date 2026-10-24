@@ -13,7 +13,7 @@ With the embedding model resident, the API held 380 to 520 MB all day on a machi
 process (dropping the reference and collecting) did not return the pages in the measurements, so an
 in-process cache cannot promise the ingestion its memory back. The two cannot both fit.
 
-The lab also ruled out two systemd relationships. `Conflicts=` between the API and the ingestion
+The measurements also ruled out two systemd relationships. `Conflicts=` between the API and the ingestion
 stops the ingestion, which is the one outcome the deployment cannot accept; `MemoryHigh=` on the
 API without swap stalls it instead of killing it. What works is one shared ceiling with no swap:
 under pressure the cgroup OOM killer picks a process, and with the API side's higher OOM score it

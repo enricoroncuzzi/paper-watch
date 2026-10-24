@@ -2,8 +2,8 @@
 # Install into ~/.config/systemd/user/ and follow docs/deploy/vps.md section 15.
 [Unit]
 Description=Paper Watch API
-Documentation=https://github.com/enricoroncuzzi/paperwatch/blob/main/docs/deploy/vps.md
-# No ordering or relationship to the ingestion, ever. The lab found that Conflicts= stops the
+Documentation=https://github.com/enricoroncuzzi/paper-watch/blob/main/docs/deploy/vps.md
+# No ordering or relationship to the ingestion, ever. The measurements showed that Conflicts= stops the
 # ingestion, and the API must give way to the run, not disturb it (ADR 0013); the shared slice is
 # the only bound between them.
 [Service]
@@ -20,7 +20,7 @@ EnvironmentFile=/home/paperwatch/.config/paperwatch/api.env
 Slice=paperwatch.slice
 # With its child embedder the API measured under 520 MB; 700M leaves room for the parent, the
 # child and one burst. MemorySwapMax=0 is the important half: without it a runaway keeps running in
-# the shared swap instead of being OOM-killed, which is the failure mode the lab recorded.
+# the shared swap instead of being OOM-killed, which is the failure mode the measurements recorded.
 MemoryMax=700M
 MemorySwapMax=0
 # The API side volunteers to the OOM killer (the child raises its own score to 1000 too), so when
