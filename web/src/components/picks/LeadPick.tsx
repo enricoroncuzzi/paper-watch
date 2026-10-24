@@ -33,7 +33,7 @@ export function LeadPick({
           </>
         ) : null}
         <span className="ml-auto normal-case tracking-normal">
-          <DismissButton onDismiss={() => onDismiss(card.item_id)} />
+          <DismissButton title={card.title} onDismiss={() => onDismiss(card.item_id)} />
         </span>
       </div>
 

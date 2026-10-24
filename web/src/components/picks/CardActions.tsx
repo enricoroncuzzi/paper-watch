@@ -27,6 +27,11 @@ export function ReadOriginal({ card }: { card: SuggestionCard }) {
       target="_blank"
       rel="noreferrer noopener"
       onClick={() => recordOpened(card.item_id)}
+      // A middle click opens the paper too, and must count as an opening like the left one.
+      onAuxClick={(event) => {
+        if (event.button === 1) recordOpened(card.item_id);
+      }}
+      aria-label={`Read the original: ${card.title}`}
       className={OUTLINE}
     >
       Read the original
@@ -52,6 +57,7 @@ export function AskAbout({ card }: { card: SuggestionCard }) {
     <button
       type="button"
       onClick={() => askAbout({ id: card.item_id, title: card.title })}
+      aria-label={`Ask about it: ${card.title}`}
       className={PRIMARY}
     >
       Ask about it

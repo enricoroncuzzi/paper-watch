@@ -149,8 +149,6 @@ def _rate(candidate: Candidate, now: datetime) -> float:
     # Upvotes gained per day over the momentum window. Measured from the observed baseline, never
     # from the item's whole life: snapshots are written only on change, so a paper that stopped
     # gaining upvotes must score 0 instead of keeping its early average.
-    if candidate.source == LAB_POST_SOURCE:
-        return LAB_POST_MOMENTUM
     current = candidate.upvote_series[-1][1] if candidate.upvote_series else candidate.hf_upvotes
     if current is None:
         return 0.0

@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from math import log10
 from uuid import UUID, uuid4
 
 import pytest
@@ -9,7 +10,15 @@ import pytest
 from paperwatch.config import PROFILES_PATH, SUGGESTIONS_PATH
 from paperwatch.domain import AdmissionBasis, Profile, Tier, load_profiles
 from paperwatch.suggestions.config import WEIGHT_NAMES, Weights, load_suggestions
-from paperwatch.suggestions.ranking import Candidate, Ranking, rank
+from paperwatch.suggestions.ranking import (
+    Candidate,
+    Ranking,
+    Scored,
+    _rate,
+    _with_a_lab_post,
+    credibility,
+    rank,
+)
 
 NOW = datetime(2026, 11, 2, 9, tzinfo=UTC)
 CFG = load_suggestions(SUGGESTIONS_PATH)
@@ -365,3 +374,98 @@ def test_a_well_known_organisation_earns_the_shareability_credit() -> None:
     assert shares["a"] == pytest.approx(0.4)
     assert shares["c"] == pytest.approx(0.4)
     assert shares["b"] == 0.0
+
+
+def test_the_fallback_rate_is_upvotes_per_day_since_listing_plus_one() -> None:
+    # The plan's exact fallback: a paper first listed inside the window has no observing run
+    # before it, so its whole life is the window, and "+1" keeps the first day finite.
+    listed_today = cand(published_at=NOW - DAY, hf_upvotes=30, hf_listed_at=NOW - DAY)
+    listed_earlier = cand(published_at=NOW - 5 * DAY, hf_upvotes=30, hf_listed_at=NOW - 5 * DAY)
+
+    assert _rate(listed_today, NOW) == pytest.approx(30 / 2)
+    assert _rate(listed_earlier, NOW) == pytest.approx(30 / 6)
+
+
+def test_the_rate_reads_the_newest_snapshot_rather_than_the_stored_column() -> None:
+    # The column is the lifetime maximum; the series is what the runs actually saw.
+    changed = cand(
+        hf_upvotes=10,
+        upvote_series=((NOW - 2 * DAY, 40), (NOW - DAY, 60)),
+        upvote_baseline=(NOW - 3 * DAY, 0),
+    )
+
+    assert _rate(changed, NOW) == pytest.approx(60 / 3)
+
+
+def test_credibility_follows_the_evidence_a_reader_can_check() -> None:
+    assert credibility(Tier.PEER_REVIEWED, AdmissionBasis.VENUE, CFG) == 1.0
+    assert credibility(Tier.VETTED_PREPRINT, AdmissionBasis.CITATIONS, CFG) == 0.8
+    assert credibility(Tier.VETTED_PREPRINT, AdmissionBasis.HF_UPVOTES, CFG) == 0.8
+    assert credibility(Tier.LAB_BLOG, AdmissionBasis.FEED, CFG) == 0.7
+    assert credibility(Tier.VETTED_PREPRINT, AdmissionBasis.LAB_AUTHOR, CFG) == 0.6
+
+
+def test_a_pick_grade_lab_post_takes_the_lowest_pick_not_the_lead() -> None:
+    # The swap happens after MMR, so the test hands it the picks MMR chose: the post must take the
+    # weakest slot and leave the lead alone, not headline the list.
+    highest = cand(external_id="hi")
+    middle = cand(external_id="mid")
+    lowest = cand(external_id="low")
+    post = lab_post(external_id="post", profile="ml-architectures", relevance=0.51)
+    picks = [
+        Scored(highest, 0.9, {}, "pick"),
+        Scored(middle, 0.8, {}, "pick"),
+        Scored(lowest, 0.7, {}, "pick"),
+    ]
+    merged = [*picks, Scored(post, 0.4, {}, "pick")]
+
+    result = _with_a_lab_post(picks, merged, CFG)
+
+    assert result[0].candidate.item_id == highest.item_id
+    assert result[1].candidate.item_id == middle.item_id
+    assert result[2].candidate.item_id == post.item_id
+
+
+def test_mmr_picks_the_least_similar_item_over_a_higher_scored_neighbour() -> None:
+    # The top paper and the runner-up point the same way; the third says something else and is
+    # picked second, because a list of five near-identical papers is not five suggestions.
+    top = cand(external_id="top", relevance=0.99, embedding=(1.0, 0.0))
+    similar = cand(external_id="similar", relevance=0.98, embedding=(0.75, 0.661438))
+    different = cand(external_id="different", relevance=0.90, embedding=(0.0, 1.0))
+
+    ranking = _rank([top, similar, different])
+
+    assert [scored.candidate.external_id for scored in ranking.picks][:2] == ["top", "different"]
+
+
+def test_each_component_is_the_value_the_plan_defines() -> None:
+    profile = PROFILES["agentic-engineering"]
+    stars = 9999
+    scored = cand(
+        external_id="a",
+        published_at=NOW - 5 * DAY,
+        relevance=0.93,
+        org="OpenAI",
+        github_repo="https://github.com/example/repo",
+        github_stars=stars,
+        hf_upvotes=30,
+        hf_listed_at=NOW - DAY,
+    )
+
+    components = _rank([scored]).picks[0].components
+
+    assert components["momentum"] == 1.0  # the only item in the pool, and it gained upvotes
+    assert components["recency"] == pytest.approx(0.5 ** (5 / CFG.half_life_days.paper))
+    star_term = min(1.0, log10(1 + stars) / log10(1 + CFG.stars_full_at))
+    assert components["shareability"] == pytest.approx(0.4 + 0.4 + 0.2 * star_term)
+    cleared = (0.93 - profile.relevance_threshold) / (1 - profile.relevance_threshold)
+    assert components["topic_fit"] == pytest.approx(cleared * profile.weight)
+
+
+def test_a_lab_post_uses_its_own_half_life_and_a_flat_momentum() -> None:
+    post = lab_post(published_at=NOW - 4 * DAY, embedding=(0.0, 1.0))
+
+    components = _rank([post]).picks[0].components
+
+    assert components["momentum"] == 0.5
+    assert components["recency"] == pytest.approx(0.5 ** (4 / CFG.half_life_days.lab_post))

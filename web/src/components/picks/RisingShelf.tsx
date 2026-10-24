@@ -23,9 +23,8 @@ function RisingCard({
 }) {
   const signal = signalFor(card);
   // The stored location a reader can recognise: an arXiv id, the repository, or the lab's name.
-  const where =
-    arxivLabel(card.url) ??
-    (card.github_repo ? `github.com/${card.github_repo}` : (card.venue ?? card.org ?? "stored item"));
+  // The stored value as it is: a repository URL is what the ingestion saved, not a bare slug.
+  const where = arxivLabel(card.url) ?? card.github_repo ?? card.venue ?? card.org ?? "stored item";
   return (
     <div
       data-testid="rising-card"
@@ -56,7 +55,7 @@ function RisingCard({
         <div className="flex flex-wrap items-center gap-1.5">
           <ReadOriginal card={card} />
           <AskAbout card={card} />
-          <DismissButton onDismiss={() => onDismiss(card.item_id)} />
+          <DismissButton title={card.title} onDismiss={() => onDismiss(card.item_id)} />
         </div>
       </div>
     </div>

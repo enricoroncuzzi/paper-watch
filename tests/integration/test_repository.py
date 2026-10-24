@@ -752,3 +752,71 @@ def test_suggestion_candidates_baseline_skips_runs_that_did_not_read_the_listing
     assert candidate.upvote_baseline == (now - timedelta(days=5), 100)
     assert candidate.upvote_series[-1] == (now - timedelta(days=2), 180)
     assert candidate.text_chars == len(ITEM.text)
+
+
+def test_the_momentum_baseline_is_stamped_with_the_observing_run(db_session: Session) -> None:
+    # Snapshots are written only on change, so the newest one before the window can be much older
+    # than the run that read the listing. The rate divides by the run's time: 60 upvotes over the
+    # three days since that run, not over the ten days since the count last moved.
+    now = datetime(2026, 11, 2, 9, tzinfo=UTC)
+    repo = Repository(db_session)
+    item_id = repo.upsert_item(
+        dataclasses.replace(ITEM, published_at=now - timedelta(days=10)),
+        Tier.VETTED_PREPRINT,
+        "agentic-engineering",
+        0.9,
+        Signals(hf_upvotes=100),
+        VEC,
+    )
+    run_at = now - timedelta(days=3)
+    run_id = repo.start_run(run_at, run_at + timedelta(minutes=3), at=run_at)
+    repo.finish_run(run_id, "succeeded", {"hf_listing_stored": 1}, 0, at=run_at)
+    db_session.add_all(
+        [
+            SignalSnapshot(
+                item_id=item_id,
+                observed_at=now - timedelta(days=10),
+                hf_upvotes=100,
+                citation_count=0,
+            ),
+            SignalSnapshot(
+                item_id=item_id,
+                observed_at=now - timedelta(days=1),
+                hf_upvotes=160,
+                citation_count=0,
+            ),
+        ]
+    )
+    db_session.flush()
+
+    [candidate] = repo.suggestion_candidates(now=now, max_age=timedelta(days=90), momentum_days=3)
+
+    assert candidate.upvote_baseline == (run_at, 100)
+
+
+def test_a_feed_item_takes_its_lab_name_from_the_author(db_session: Session) -> None:
+    # A lab post's only attribution is its author, which the feed client sets to the lab's name;
+    # the venue stays empty so the facts row says n/a instead of inventing one.
+    now = datetime(2026, 11, 2, 9, tzinfo=UTC)
+    repo = Repository(db_session)
+    item_id = repo.upsert_item(
+        dataclasses.replace(
+            ITEM,
+            source="feed",
+            external_id="https://example.test/feed/1",
+            authors=("LangChain",),
+            url="https://example.test/feed/1",
+        ),
+        Tier.LAB_BLOG,
+        "agentic-engineering",
+        0.9,
+        Signals(),
+        VEC,
+    )
+    db_session.flush()
+
+    [candidate] = repo.suggestion_candidates(now=now, max_age=timedelta(days=90), momentum_days=3)
+
+    assert candidate.item_id == item_id
+    assert candidate.org == "LangChain"
+    assert candidate.venue is None

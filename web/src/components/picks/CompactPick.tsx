@@ -47,7 +47,7 @@ export function CompactPick({
           <AskAbout card={card} />
         </div>
         <div className="flex justify-end">
-          <DismissButton onDismiss={() => onDismiss(card.item_id)} />
+          <DismissButton title={card.title} onDismiss={() => onDismiss(card.item_id)} />
         </div>
       </div>
     </article>

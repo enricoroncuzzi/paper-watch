@@ -22,7 +22,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from paperwatch.api.responses import BEARER, GATE_RESPONSES, Refusal
-from paperwatch.api.summary_queue import SummaryQueue
+from paperwatch.api.summary_queue import SummaryQueue, needs_summary
 from paperwatch.domain import Profile
 from paperwatch.store.models import ItemSummary
 from paperwatch.store.repository import (
@@ -149,20 +149,37 @@ class SuggestionService:
             # The excerpt of a card with no summary yet is the abstract's own sentences, so the
             # route needs the text of exactly the cards it is about to show.
             sources = repo.summary_sources(ids)
+            # A summary written from other text, by another model or under an older prompt is
+            # about a card that no longer exists: the reader sees "pending" and a fresh one, never
+            # a checked summary describing the previous abstract.
+            stale = {
+                item_id
+                for item_id in ids
+                if item_id in sources
+                and needs_summary(
+                    summaries.get(item_id),
+                    title=sources[item_id][0],
+                    text=sources[item_id][1],
+                    model=self._queue.model_id,
+                )
+            }
+            servable = {item_id: row for item_id, row in summaries.items() if item_id not in stale}
             shown = repo.last_shown(ids, since=now - timedelta(seconds=SHOWN_THROTTLE_S))
             picks = [
-                _card(item, summaries, sources, cached.generated_at)
+                _card(item, servable, sources, cached.generated_at)
                 for item in cached.ranking.picks
                 if item.candidate.item_id in sources
             ]
             rising = [
-                _card(item, summaries, sources, cached.generated_at)
+                _card(item, servable, sources, cached.generated_at)
                 for item in cached.ranking.rising
                 if item.candidate.item_id in sources
             ]
             self._record_shown(repo, cached, scored, shown, now)
             session.commit()
-        self._queue.submit([entry.item_id for entry in (*picks, *rising)])
+        # Only a card that needs a summary costs a queue slot; a page refresh with eight checked
+        # cards must not open eight sessions to find out nothing is left to do.
+        self._queue.submit([entry.item_id for entry in (*picks, *rising) if entry.item_id in stale])
         return SuggestionsData(
             generated_at=cached.generated_at,
             list_version=cached.list_version,

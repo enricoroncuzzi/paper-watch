@@ -8,6 +8,7 @@ abstract's own first sentences instead: a model failure must never put an invent
 """
 
 import hashlib
+import html
 import json
 import re
 import unicodedata
@@ -35,6 +36,8 @@ INTERPRETATION_FIELDS = ("why", "catch")
 # The one sentence a catch may be when the source states no limitation.
 NOT_STATED = "Not stated in the abstract."
 MAX_FIELD_WORDS = 35
+# A quote shorter than this backs nothing a reader can check; it is a single word repeated.
+MIN_QUOTE_CHARS = 20
 MAX_TOTAL_WORDS = 110
 EXCERPT_SENTENCES = 2
 EXCERPT_MAX_WORDS = 60
@@ -106,10 +109,14 @@ def check_summary(raw: Mapping[str, Any], *, title: str, text: str) -> list[str]
         field = fields[name]
         body = _normalise(field["text"])
         quote = field.get("quote")
-        if name in QUOTED_FIELDS and not quote:
+        if quote:
+            folded_quote = _normalise(quote)
+            if name in QUOTED_FIELDS and len(folded_quote) < MIN_QUOTE_CHARS:
+                failed.append(f"quote_too_short:{name}")
+            elif folded_quote not in source:
+                failed.append(f"quote_not_in_text:{name}")
+        elif name in QUOTED_FIELDS:
             failed.append(f"quote_missing:{name}")
-        elif quote and _normalise(quote) not in source:
-            failed.append(f"quote_not_in_text:{name}")
         failed += [f"number:{name}:{n}" for n in sorted(_numbers(body) - source_numbers)]
         failed += [f"name:{name}:{t}" for t in _unknown_names(field["text"], source)]
         failed += [
@@ -284,9 +291,10 @@ def _parse(content: str) -> Mapping[str, Any] | None:
 
 
 def _normalise(value: str) -> str:
-    # Both sides of every comparison go through this: NFKC folds look-alike characters, the
-    # translation table folds curly quotes and dashes to ASCII, whitespace collapses, case folds.
-    folded = unicodedata.normalize("NFKC", value).translate(_TRANSLATION)
+    # Both sides of every comparison go through this. The model reads the source HTML-escaped, so
+    # "R&D" reaches it as "R&amp;D" and comes back that way: unescaping both sides makes a faithful
+    # quote match instead of failing the card for a character the prompt introduced.
+    folded = unicodedata.normalize("NFKC", html.unescape(value)).translate(_TRANSLATION)
     return " ".join(folded.split()).casefold()
 
 
@@ -303,7 +311,9 @@ def _unknown_names(text: str, source: str) -> list[str]:
             token = raw_token.rstrip(".'")
             if not token or not _name_like(token, first=index == 0):
                 continue
-            if _normalise(token) not in source:
+            # A whole word, not a substring: an invented "Bert" must not pass because the source
+            # happens to contain "Albert".
+            if re.search(rf"(?<!\w){re.escape(_normalise(token))}(?!\w)", source) is None:
                 unknown.append(token)
     return unknown
 

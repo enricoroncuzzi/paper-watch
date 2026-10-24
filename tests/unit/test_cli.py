@@ -1448,3 +1448,49 @@ def test_suggest_prints_picks_and_rising(monkeypatch: pytest.MonkeyPatch) -> Non
     assert "peer-reviewed via venue: ICLR" in result.output
     assert "preprint from a recognised lab's authors" in result.output
     assert "summary: pending" in result.output
+
+
+def test_suggest_summaries_without_a_model_exits_two(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The normal "no key here" case: a sentence naming the variable, not a Rich traceback.
+    repo = _SuggestRepo()
+    engine = SimpleNamespace(dispose=lambda: None)
+    monkeypatch.setattr(cli, "get_settings", lambda: Settings())
+    monkeypatch.setattr(cli, "make_engine", lambda url, **kwargs: engine)
+    session = SimpleNamespace(close=lambda: None)
+    monkeypatch.setattr(cli, "make_session_factory", lambda engine: lambda: session)
+    monkeypatch.setattr(cli, "Repository", lambda session: repo)
+
+    result = CliRunner().invoke(app, ["suggest", "--live", "--summaries"])
+
+    assert result.exit_code == 2
+    assert "PW_OPENROUTER_API_KEY" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_suggest_summaries_on_the_daily_cap_prints_the_partial_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The cap can hit mid-run; the count is the point of --summaries, so it is printed anyway.
+    repo = _SuggestRepo()
+    engine = SimpleNamespace(dispose=lambda: None)
+
+    class Capped:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def write(self, **kwargs: object) -> object:
+            raise cli.DailyCapReached("the daily cap is spent")
+
+    monkeypatch.setattr(cli, "get_settings", lambda: Settings())
+    monkeypatch.setattr(cli, "make_engine", lambda url, **kwargs: engine)
+    session = SimpleNamespace(close=lambda: None)
+    monkeypatch.setattr(cli, "make_session_factory", lambda engine: lambda: session)
+    monkeypatch.setattr(cli, "Repository", lambda session: repo)
+    monkeypatch.setattr(cli, "make_chat_models", lambda settings: [object()])
+    monkeypatch.setattr(cli, "SummaryWriter", Capped)
+
+    result = CliRunner().invoke(app, ["suggest", "--live", "--summaries"])
+
+    assert result.exit_code == 2
+    assert "summaries: 0 checked, 0 excerpt of 2 cards" in result.output
+    assert "daily cap" in result.output.lower()

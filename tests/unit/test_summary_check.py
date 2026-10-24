@@ -117,3 +117,89 @@ def test_summary_source_text_cannot_close_its_block() -> None:
     assert prompt.count("</source>") == 1
     assert "&lt;/source&gt;" in prompt
     assert prompt.index("Ignore previous instructions") > prompt.index("&lt;/source&gt;")
+
+
+def test_a_quote_copied_from_the_escaped_source_still_matches() -> None:
+    # The model reads the abstract inside the escaped <source> block, so it copies "R&amp;D" and
+    # "&lt;". The check compares both sides unescaped, or a faithful quote can never pass.
+    text = "We study R&D budgets of agents. Error falls below 5% when latency < 2 s."
+
+    raw = good()
+    raw["what"] = {
+        "text": "The study looks at research budgets for agents.",
+        "quote": "We study R&amp;D budgets of agents.",
+    }
+    raw["result"] = {
+        "text": "Error falls below 5% when latency is under two seconds.",
+        "quote": "Error falls below 5% when latency &lt; 2 s.",
+    }
+
+    assert check_summary(raw, title="Budgets", text=text) == []
+
+
+def test_a_quote_too_short_to_back_anything_fails() -> None:
+    raw = good()
+    raw["what"]["quote"] = "We"
+
+    assert check_summary(raw, title=TITLE, text=TEXT) == ["quote_too_short:what"]
+
+
+def test_a_name_must_match_a_whole_word() -> None:
+    source = "Albert et al. study agent memory over long horizons. The work reports 12 tasks."
+    raw = {
+        "what": {
+            "text": "The work looks at agent memory.",
+            "quote": "Albert et al. study agent memory over long horizons",
+        },
+        "result": {
+            "text": "The work reports 12 tasks.",
+            "quote": "The work reports 12 tasks",
+        },
+        "why": {"text": "This mentions Bert as a baseline."},
+        "catch": {"text": "Not stated in the abstract."},
+    }
+
+    # "Bert" is inside "Albert": a substring test would let an invented name through.
+    assert check_summary(raw, title="Memory", text=source) == ["name:why:Bert"]
+
+
+def test_the_result_field_must_carry_a_quote() -> None:
+    raw = good()
+    del raw["result"]["quote"]
+
+    assert check_summary(raw, title=TITLE, text=TEXT) == ["quote_missing:result"]
+
+
+def test_an_optional_quote_must_still_be_in_the_source() -> None:
+    raw = good()
+    raw["why"]["quote"] = "invented words about cost"
+
+    assert check_summary(raw, title=TITLE, text=TEXT) == ["quote_not_in_text:why"]
+
+
+def test_the_four_fields_together_cap_at_110_words() -> None:
+    # Each field is under its own 35-word cap; together they are over the total.
+    raw = good()
+    filler = " ".join(["the"] * 28)
+    for name in ("what", "why", "result", "catch"):
+        raw[name]["text"] = filler
+    # The quotes are unchanged, so only the total length can fail.
+    checks = check_summary(raw, title=TITLE, text=TEXT)
+    assert checks == ["length:total"]
+
+
+def test_a_capitalised_word_at_a_sentence_start_is_exempt() -> None:
+    # The plan exempts a sentence's first word; a name inside a sentence is still checked.
+    raw = good()
+    raw["why"]["text"] = "Anthropic argues this makes harness comparisons cheaper."
+    assert check_summary(raw, title=TITLE, text=TEXT) == []
+
+    raw["why"]["text"] = "This makes Anthropic comparisons cheaper."
+    assert check_summary(raw, title=TITLE, text=TEXT) == ["name:why:Anthropic"]
+
+
+def test_a_hyphenated_name_must_appear_in_the_source() -> None:
+    raw = good()
+    raw["why"]["text"] = "This makes Tool-Former comparisons cheaper."
+
+    assert check_summary(raw, title=TITLE, text=TEXT) == ["name:why:Tool-Former"]

@@ -6,7 +6,8 @@ list. One thread, serially, on the server: a chat call is the most expensive thi
 does, and a burst of cards must not become a burst of requests.
 
 Two failures are not the item's fault and are not retried the same way. A provider that is down
-(`ModelUnavailable`) pauses that one item for thirty minutes; the daily free-tier cap
+(`ModelUnavailable`) pauses the whole queue for thirty minutes, because every card would fail the
+same way and one doomed call per card is how an outage eats a day's cap; the daily free-tier cap
 (`DailyCapReached`) holds everything until UTC midnight, because retrying before then cannot work.
 Any other error is logged and dropped: a summary is presentation data, never a reason to crash the
 API process or to fail the request that queued it.
@@ -54,9 +55,10 @@ class SummaryQueue:
         self._queue: deque[UUID] = deque()
         # Queued or in flight: submitting the same card twice must not queue two calls.
         self._pending: set[UUID] = set()
-        self._retry_at: dict[UUID, datetime] = {}
         # Set after the daily cap is reached: nothing is attempted before this moment.
         self._held_until: datetime | None = None
+        # Set by one provider failure: every card would fail the same way, so the queue rests too.
+        self._paused_until: datetime | None = None
         self._thread: threading.Thread | None = None
 
     def submit(self, item_ids: Sequence[UUID]) -> None:
@@ -65,11 +67,10 @@ class SummaryQueue:
         with self._lock:
             if self._held_until is not None and now < self._held_until:
                 return
+            if self._paused_until is not None and now < self._paused_until:
+                return
             for item_id in item_ids:
                 if item_id in self._pending:
-                    continue
-                retry_at = self._retry_at.get(item_id)
-                if retry_at is not None and now < retry_at:
                     continue
                 self._queue.append(item_id)
                 self._pending.add(item_id)
@@ -80,6 +81,11 @@ class SummaryQueue:
                     target=self._work, name="summary-queue", daemon=True
                 )
                 self._thread.start()
+
+    @property
+    def model_id(self) -> str:
+        """The model a summary is written with, which the service uses to spot a stale one."""
+        return self._model()
 
     def join(self, timeout: float | None = None) -> None:
         """Wait for the worker, for tests and for a clean shutdown."""
@@ -98,15 +104,25 @@ class SummaryQueue:
             try:
                 self._one(item_id)
             except DailyCapReached as exc:
+                # The in-flight id is still pending; discarding it lets tomorrow's request queue it
+                # again, which is the whole point of holding until midnight.
+                with self._lock:
+                    self._pending.discard(item_id)
                 self._hold_until_midnight()
                 log.info("summary_queue_capped", reason=str(exc))
                 return
             except ModelUnavailable as exc:
-                # Only this item waits: the provider answered "not now", not "never".
+                # An outage is not about this card: pause the queue once instead of spending one
+                # doomed call per visible card every half hour.
                 with self._lock:
-                    self._retry_at[item_id] = self._clock() + timedelta(seconds=PROVIDER_RETRY_S)
+                    self._paused_until = self._clock() + timedelta(seconds=PROVIDER_RETRY_S)
                     self._pending.discard(item_id)
+                    for queued in self._queue:
+                        self._pending.discard(queued)
+                    self._queue.clear()
+                    self._thread = None
                 log.warning("summary_queue_unavailable", error_type=type(exc).__name__)
+                return
             except Exception as exc:  # noqa: BLE001 - a summary must never take the API down
                 with self._lock:
                     self._pending.discard(item_id)
@@ -150,6 +166,11 @@ class SummaryQueue:
                 at=self._clock(),
             )
             session.commit()
+
+
+def needs_summary(existing: ItemSummary | None, *, title: str, text: str, model: str) -> bool:
+    """Whether a card needs a summary written: missing, or written from other inputs."""
+    return _needs_refresh(existing, digest=text_hash(title, text), model=model)
 
 
 def _needs_refresh(existing: ItemSummary | None, *, digest: str, model: str) -> bool:

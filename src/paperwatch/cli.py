@@ -57,6 +57,7 @@ from paperwatch.llm.chat import (
     ChatModel,
     ChatNotConfigured,
     DailyCapReached,
+    ModelUnavailable,
     make_chat_models,
 )
 from paperwatch.llm.classifier import Classifier, make_classifier
@@ -451,14 +452,17 @@ def suggest(
     engine = make_engine(s.database_url)
     session = make_session_factory(engine)()
     writer: SummaryWriter | None = None
-    if summaries:
-        usage_engine = make_engine(s.database_url, pool_size=USAGE_POOL_SIZE, max_overflow=0)
-        usage = ChatCallLog(make_session_factory(usage_engine))
-        writer = SummaryWriter(
-            make_chat_models(s),
-            lambda: _suggestion_guard(usage, s),
-        )
+    # Counted as the loop goes, so a cap or an outage mid-run still reports what was written.
+    checked = excerpts = 0
+    rows: list[Any] = []
     try:
+        if summaries:
+            usage_engine = make_engine(s.database_url, pool_size=USAGE_POOL_SIZE, max_overflow=0)
+            usage = ChatCallLog(make_session_factory(usage_engine))
+            writer = SummaryWriter(
+                make_chat_models(s),
+                lambda: _suggestion_guard(usage, s),
+            )
         repo = Repository(session)
         candidates = repo.suggestion_candidates(
             now=now,
@@ -481,7 +485,6 @@ def suggest(
         ids = [entry.candidate.item_id for entry in rows]
         sources = repo.summary_sources(ids)
         stored = repo.summaries(ids)
-        checked = excerpts = 0
         for lane, entries in (("pick", ranking.picks), ("rising", ranking.rising)):
             for position, entry in enumerate(entries, start=1):
                 item_id = entry.candidate.item_id
@@ -506,6 +509,18 @@ def suggest(
                 typer.echo(_suggestion_lines(position, lane, entry, status))
         if writer is not None:
             typer.echo(f"summaries: {checked} checked, {excerpts} excerpt of {len(rows)} cards")
+    except ChatNotConfigured as exc:
+        # A missing key is a setup error with the variable's name, not a traceback from the
+        # provider chain, exactly like `ask`.
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(2) from exc
+    except (DailyCapReached, BudgetExceeded, ModelUnavailable) as exc:
+        # The checked share is the reason this command exists: report the partial count before
+        # the limit that stopped it, so a capped run still says something about the cards.
+        if writer is not None:
+            typer.echo(f"summaries: {checked} checked, {excerpts} excerpt of {len(rows)} cards")
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(2) from exc
     finally:
         session.close()
         engine.dispose()

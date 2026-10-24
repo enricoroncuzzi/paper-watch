@@ -48,6 +48,7 @@ from paperwatch.agent.graph import (
     build_agent,
     stream_answer,
 )
+from paperwatch.agent.prompts import source_block
 from paperwatch.agent.sources import SourceRef, SourceRegistry
 from paperwatch.agent.tools import SearchLog, make_tools
 from paperwatch.api.auth import Principal, Verifier
@@ -490,8 +491,15 @@ def run_question(
             with closing(opener()) as reader:
                 detail = Repository(reader).admitted_details([item_id]).get(item_id)
             if detail is not None:
-                registry.register(detail)
-                question = f"The reader is asking about S1.\n{question}"
+                ref = registry.register(detail)
+                # The registry alias alone proves the model may cite the item, not that it has read
+                # it: the same escaped block a tool returns goes into the prompt, so an answer
+                # about S1 rests on the stored text rather than on the alias.
+                question = (
+                    f"The reader is asking about {ref.alias}. "
+                    "Its stored record is in the block below.\n"
+                    f"{source_block(detail.title, detail.text)}\n{question}"
+                )
         tools = make_tools(
             session,
             deps.embedder,

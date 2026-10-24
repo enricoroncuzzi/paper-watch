@@ -34,11 +34,11 @@ from paperwatch.config import (
     Settings,
 )
 from paperwatch.domain import AdmissionBasis, Signals, SourceItem, Tier, load_profiles
-from paperwatch.llm.chat import CallGuard, ChatModel, ScriptedChatModel
+from paperwatch.llm.chat import CallGuard, ChatModel, ModelUnavailable, ScriptedChatModel
 from paperwatch.llm.embedder import FakeEmbedder
 from paperwatch.llm.ledger import Ledger
 from paperwatch.retrieval.hybrid import Filters
-from paperwatch.store.models import Item, ItemSummary, SuggestionEvent
+from paperwatch.store.models import Item, ItemSummary, SignalSnapshot, SuggestionEvent
 from paperwatch.store.repository import Repository
 from paperwatch.suggestions.config import load_suggestions
 from paperwatch.suggestions.summary import SummaryWriter, text_hash
@@ -89,6 +89,8 @@ def _raw(**overrides: Any) -> dict[str, Any]:
 
 class NoQueue:
     """Stands in for the summary queue: records what the route asked for, starts no thread."""
+
+    model_id = "test-model"
 
     def __init__(self) -> None:
         self.submitted: list[UUID] = []
@@ -314,26 +316,47 @@ def test_rising_cards_carry_the_note_and_their_basis(db_session: Session) -> Non
     )
 
 
-def queue_for(db_session: Session, script: list[Any], *, refuse: bool = False) -> SummaryQueue:
-    class Store:
-        def reserve_chat_call(
-            self, *, at: datetime, provider: str, cap: int
-        ) -> tuple[int | None, int]:
-            return (None, cap) if refuse else (1, 1)
+class Refusal:
+    """A switch the cap tests flip without rebuilding the queue."""
 
-        def fill_chat_call(
-            self, call_id: int, *, model: str, input_tokens: int, output_tokens: int
-        ) -> None:
-            return None
+    def __init__(self, refuse: bool) -> None:
+        self.refuse = refuse
 
-        def fail_chat_call(self, call_id: int) -> None:
-            return None
 
+class Store:
+    def __init__(self, refusal: Refusal) -> None:
+        self.refusal = refusal
+
+    def reserve_chat_call(self, *, at: datetime, provider: str, cap: int) -> tuple[int | None, int]:
+        return (None, cap) if self.refusal.refuse else (1, 1)
+
+    def fill_chat_call(
+        self, call_id: int, *, model: str, input_tokens: int, output_tokens: int
+    ) -> None:
+        return None
+
+    def fail_chat_call(self, call_id: int) -> None:
+        return None
+
+
+def queue_for(
+    db_session: Session,
+    script: list[Any],
+    *,
+    refuse: bool | Refusal = False,
+    clock: Any = None,
+) -> SummaryQueue:
+    refusal = refuse if isinstance(refuse, Refusal) else Refusal(refuse)
     writer = SummaryWriter(
         [ChatModel("openrouter", ScriptedChatModel(script=script))],
-        lambda: CallGuard(Store(), Ledger(10_000), 10, lambda: NOW),  # type: ignore[arg-type]
+        lambda: CallGuard(Store(refusal), Ledger(10_000), 10, lambda: NOW),  # type: ignore[arg-type]
     )
-    return SummaryQueue(lambda: writer, lambda: db_session, lambda: NOW, lambda: "test-model")
+    return SummaryQueue(
+        lambda: writer,
+        lambda: db_session,
+        clock or (lambda: NOW),
+        lambda: "test-model",
+    )
 
 
 def test_a_changed_abstract_regenerates_its_summary(db_session: Session) -> None:
@@ -403,6 +426,11 @@ def test_asking_about_an_item_registers_it_as_s1(db_session: Session) -> None:
     # The model was asked about S1 before any tool ran, and it could cite it.
     asked = "\n".join(str(message.content) for message in model.seen[0])
     assert "The reader is asking about S1." in asked
+    # The item itself travels in the escaped block, so the model can answer from it and not from
+    # an alias it has never seen.
+    assert "<source>" in asked
+    assert TITLE in asked
+    assert "41 tasks" in asked
     answer = next(event for event in events if isinstance(event, AnswerEvent))
     assert [citation.alias for citation in answer.answer.citations] == ["S1"]
     assert answer.answer.citations[0].item_id == item_id
@@ -426,3 +454,145 @@ def checked_summary() -> Any:
         lambda: CallGuard(NoChatCalls(), Ledger(10_000), 10, lambda: NOW),  # type: ignore[arg-type]
     )
     return writer.write(title=TITLE, text=TEXT)
+
+
+def test_the_card_label_measures_momentum_from_the_observing_run(db_session: Session) -> None:
+    # The snapshot is older than the run: snapshots are written only on change, so the label must
+    # count from the run that last read the listing, not from when the count last moved.
+    queue = NoQueue()
+    item_id = seed_item(
+        db_session,
+        "swe",
+        tier=Tier.VETTED_PREPRINT,
+        basis=AdmissionBasis.HF_UPVOTES,
+        hf_upvotes=160,
+    )
+    repo = Repository(db_session)
+    run_at = NOW - timedelta(days=3)
+    run_id = repo.start_run(run_at, run_at + timedelta(minutes=3), at=run_at)
+    repo.finish_run(run_id, "succeeded", {"hf_listing_stored": 1}, 0, at=run_at)
+    db_session.add_all(
+        [
+            SignalSnapshot(
+                item_id=item_id,
+                observed_at=NOW - timedelta(days=10),
+                hf_upvotes=100,
+                citation_count=0,
+            ),
+            SignalSnapshot(
+                item_id=item_id,
+                observed_at=NOW - timedelta(days=1),
+                hf_upvotes=160,
+                citation_count=0,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    body = client(db_session, queue).get("/suggestions").json()
+
+    card = next(entry for entry in body["picks"] if entry["item_id"] == str(item_id))
+    assert card["momentum_label"] == "+60 upvotes in 3 days"
+
+
+def test_the_item_that_hit_the_cap_is_summarised_the_next_day(db_session: Session) -> None:
+    item_id = seed_item(db_session, "swe")
+    clock = SimpleClock(NOW)
+    refusal = Refusal(True)
+    summary_queue = queue_for(
+        db_session, [AIMessage(content=json.dumps(_raw()))], refuse=refusal, clock=clock
+    )
+
+    summary_queue.submit([item_id])
+    summary_queue.join(timeout=10)
+    assert db_session.get(ItemSummary, item_id) is None
+
+    # The cap resets at UTC midnight; the same queue must pick the item up again.
+    refusal.refuse = False
+    clock.now = NOW + timedelta(days=1)
+    summary_queue.submit([item_id])
+    summary_queue.join(timeout=10)
+
+    row = db_session.get(ItemSummary, item_id)
+    assert row is not None
+    assert row.status == "checked"
+
+
+def test_one_provider_outage_pauses_the_whole_queue(db_session: Session) -> None:
+    # An outage is not the item's fault: every visible card would fail the same way, so the queue
+    # pauses once instead of spending one doomed call per card.
+    first = seed_item(db_session, "swe")
+    second = seed_item(db_session, "survey", title=SURVEY_TITLE, text=SURVEY)
+
+    class Down:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def write(self, *, title: str, text: str) -> object:
+            self.calls += 1
+            raise ModelUnavailable("no provider answered")
+
+    writer = Down()
+    summary_queue = SummaryQueue(
+        lambda: writer,  # type: ignore[arg-type]
+        lambda: db_session,
+        lambda: NOW,
+        lambda: "test-model",
+    )
+
+    summary_queue.submit([first, second])
+    summary_queue.join(timeout=10)
+
+    assert writer.calls == 1
+
+
+class RecordingQueue:
+    """Stands in for the queue while a test reads what the route decided to submit."""
+
+    model_id = "test-model"
+
+    def __init__(self) -> None:
+        self.submitted: list[UUID] = []
+
+    def submit(self, item_ids: Any) -> None:
+        self.submitted.extend(item_ids)
+
+
+class SimpleClock:
+    def __init__(self, now: datetime) -> None:
+        self.now = now
+
+    def __call__(self) -> datetime:
+        return self.now
+
+
+def test_only_a_missing_or_stale_summary_is_queued_and_served_as_pending(
+    db_session: Session,
+) -> None:
+    queue = RecordingQueue()
+    fresh_id = seed_item(db_session, "swe")
+    stale_id = seed_item(db_session, "survey", title=SURVEY_TITLE, text=SURVEY)
+    repo = Repository(db_session)
+    repo.upsert_summary(
+        fresh_id,
+        checked_summary(),
+        text_hash=text_hash(TITLE, TEXT),
+        model="test-model",
+        at=NOW,
+    )
+    repo.upsert_summary(
+        stale_id,
+        checked_summary(),
+        text_hash="an-old-abstract",
+        model="test-model",
+        at=NOW,
+    )
+    db_session.commit()
+
+    body = client(db_session, queue).get("/suggestions").json()
+
+    cards = {card["item_id"]: card for card in (*body["picks"], *body["rising"])}
+    assert cards[str(fresh_id)]["summary"]["status"] == "checked"
+    # The stale summary describes text that has been replaced: the card says one is on its way.
+    assert cards[str(stale_id)]["summary"]["status"] == "pending"
+    assert queue.submitted == [stale_id]

@@ -31,6 +31,10 @@ test("the lead pick and four compact picks render with their facts", async ({ pa
   // A value the item never had prints n/a rather than an empty cell.
   await expect(lead).toContainText("Hugging Face");
   await expect(picks.getByTestId("compact-pick")).toHaveCount(4);
+  // Seven cards share the same actions, so each one names the item it acts on.
+  await expect(lead.getByRole("button", { name: `Not for me: ${LEAD_TITLE}` })).toBeVisible();
+  await expect(lead.getByRole("link", { name: `Read the original: ${LEAD_TITLE}` })).toBeVisible();
+  await expect(lead.getByRole("button", { name: `Ask about it: ${LEAD_TITLE}` })).toBeVisible();
   // A reader never sees a database enum: every tier and basis is printed as words.
   const text = await picks.innerText();
   for (const raw of ["peer_reviewed", "vetted_preprint", "lab_blog", "hf_upvotes", "lab_post", "lab_author"]) {
@@ -73,7 +77,7 @@ test("dismissing removes the card and posts the event", async ({ page }) => {
   const posted = page.waitForRequest(
     (request) => /\/api\/suggestions\/.+\/events$/.test(request.url()) && request.method() === "POST",
   );
-  await picks.getByTestId("lead-pick").getByRole("button", { name: "Not for me" }).click();
+  await picks.getByTestId("lead-pick").getByRole("button", { name: /^Not for me/ }).click();
   expect((await posted).postDataJSON()).toEqual({ event: "dismissed" });
 
   // The card goes at once, and the next pick takes the lead slot.
@@ -93,6 +97,13 @@ test("read the original opens the stored url in a new tab", async ({ page }) => 
   expect(await link.getAttribute("href")).toBe("https://arxiv.org/abs/2610.04412");
   expect(await link.getAttribute("target")).toBe("_blank");
 
+  // A middle click opens the paper too, so it counts as an opening as well.
+  const middle = page.waitForRequest(
+    (request) => /\/api\/suggestions\/.+\/events$/.test(request.url()) && request.method() === "POST",
+  );
+  await link.click({ button: "middle" });
+  expect((await middle).postDataJSON()).toEqual({ event: "opened" });
+
   const beacon = page.waitForRequest(
     (request) => /\/api\/suggestions\/.+\/events$/.test(request.url()) && request.method() === "POST",
   );
@@ -103,7 +114,7 @@ test("read the original opens the stored url in a new tab", async ({ page }) => 
 
 test("ask about it opens the sheet with the item", async ({ page }) => {
   const picks = page.getByTestId("picks-section");
-  await picks.getByTestId("lead-pick").getByRole("button", { name: "Ask about it" }).click();
+  await picks.getByTestId("lead-pick").getByRole("button", { name: /^Ask about it/ }).click();
 
   const sheet = page.getByRole("dialog");
   await expect(sheet).toBeVisible();
@@ -129,7 +140,7 @@ test("rising shows the not yet independently vetted note", async ({ page }) => {
   await expect(rising.getByTestId("rising-card")).toHaveCount(3);
   await expect(rising).toContainText("+380 upvotes in 1 day");
   await expect(rising).toContainText("Sparse Attention With a Learned Sketch");
-  await expect(rising.getByRole("button", { name: "Ask about it" }).first()).toBeVisible();
+  await expect(rising.getByRole("button", { name: /^Ask about it/ }).first()).toBeVisible();
 });
 
 test("a javascript link is never rendered as a link", async ({ page, request }) => {

@@ -821,7 +821,10 @@ class Repository:
                 relevance=item.relevance,
                 published_at=item.published_at,
                 authors=tuple(item.authors or ()),
-                org=item.hf_org,
+                # A lab post's only attribution is its author, which the feed client sets to the
+                # lab's own name; Hugging Face has no organisation for it.
+                org=item.hf_org
+                or (item.authors[0] if item.source == "feed" and item.authors else None),
                 github_repo=item.github_repo,
                 github_stars=item.github_stars,
                 project_page=item.project_page,
@@ -871,7 +874,10 @@ class Repository:
                 SignalSnapshot.id.desc(),
             )
         ):
-            baselines[snapshot.item_id] = (snapshot.observed_at, snapshot.hf_upvotes or 0)
+            # The run's own time, not the snapshot's: snapshots are written only on change, so a
+            # paper's newest one can be days older than the run that read the listing, and the
+            # gap it would add is time nobody looked (ADR 0014).
+            baselines[snapshot.item_id] = (run_at, snapshot.hf_upvotes or 0)
         return baselines
 
     def excluded_items(self) -> frozenset[uuid.UUID]:
