@@ -8,7 +8,7 @@ fake, so the whole test and eval suite runs offline against a real Postgres + pg
 
 | Unit | Purpose | Depends on |
 |---|---|---|
-| `sources/*` | One client per source, owning pacing and retries (arXiv harvests OAI-PMH datestamp days); every request goes through one shared client that caps each body, bounds each request by a wall-clock deadline and follows a redirect only under its own policy (ADR 0010); arXiv and the feeds return normalised `SourceItem`s, Hugging Face and Semantic Scholar return quality signals for arXiv ids | HTTP only |
+| `sources/*` | One client per source, owning pacing and retries (arXiv harvests OAI-PMH datestamp days); every request goes through one shared client that caps each body, bounds each request by a wall-clock deadline and follows a redirect only under its own policy (ADR 0010); arXiv and the feeds return normalised `SourceItem`s, Hugging Face returns an `HfPaper` per arXiv id (upvotes plus the listing extras) and Semantic Scholar returns venue and citation signals | HTTP only |
 | `ingest` | Window, dedupe, classify, admit, embed, upsert; writes run records and a health verdict | sources, store, llm |
 | `store` | Schema, Alembic migrations, repository; the only module that writes SQL | Postgres |
 | `retrieval` | Hybrid search (pgvector + Postgres full-text, fused with reciprocal rank fusion), filters | store |
@@ -38,9 +38,13 @@ run then dedupes against the store, classifies each new item once with the embed
 classifier, admits it by tier and quality signal, embeds the admitted text locally, and upserts it
 idempotently; the unique `(source, external_id)` key makes a replay insert nothing. After
 fetching, the run re-checks the evidence of candidate and vetted-preprint papers whose age makes
-them due and promotes them if it improved, then writes a run row with counts, tokens and a health
-verdict, advances each feed's cursor only when it fully succeeded and the arXiv cursor after each
-completed day, and releases the lock.
+them due and promotes them if it improved. The same Hugging Face listing carries more than
+upvotes, so after admission the run stores each listed paper's GitHub repo and stars, project
+page, comment count, organisation and listing time on the item, and appends a `signal_snapshots`
+row with the numbers (upvotes, comments, stars, citations) whenever they changed since that item's
+latest snapshot; a failure there is a warning, never an item's failed admission. It then writes a
+run row with counts, tokens and a health verdict, advances each feed's cursor only when it fully
+succeeded and the arXiv cursor after each completed day, and releases the lock.
 A source outage stops that source for the run, is recorded as a dead letter over the whole missed
 window, and makes the run `partial` without stopping the others; for a lab feed only a second miss
 in a row does, because the first miss is a health warning and the next run retries the same window,

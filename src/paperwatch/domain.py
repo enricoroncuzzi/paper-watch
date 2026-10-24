@@ -63,6 +63,23 @@ class Signals:
 
 
 @dataclass(frozen=True)
+class HfPaper:
+    """One paper as the Hugging Face daily listing describes it, merged across a window.
+
+    Lives here rather than in the source client so the store can consume the extras without
+    importing the HTTP client (review round 1, 2026-10-23).
+    """
+
+    upvotes: int
+    comments: int | None = None
+    github_repo: str | None = None
+    github_stars: int | None = None
+    project_page: str | None = None
+    organization: str | None = None
+    listed_at: datetime | None = None
+
+
+@dataclass(frozen=True)
 class Classification:
     """Result of the LLM relevance classifier: which profile and how strongly."""
 
