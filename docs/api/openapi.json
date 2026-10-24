@@ -10,6 +10,11 @@
       "get": {
         "summary": "Runs",
         "operationId": "runs_runs_get",
+        "security": [
+          {
+            "VercelOidcOrHmac": []
+          }
+        ],
         "parameters": [
           {
             "name": "limit",
@@ -35,6 +40,36 @@
               }
             }
           },
+          "400": {
+            "description": "The Host is not allowed, or the Content-Length is bad.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The credential is missing or invalid; `WWW-Authenticate: Bearer`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request carries an Origin header.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -52,6 +87,11 @@
       "get": {
         "summary": "Run Detail",
         "operationId": "run_detail_runs__run_id__get",
+        "security": [
+          {
+            "VercelOidcOrHmac": []
+          }
+        ],
         "parameters": [
           {
             "name": "run_id",
@@ -71,6 +111,36 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/RunDetail"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The Host is not allowed, or the Content-Length is bad.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The credential is missing or invalid; `WWW-Authenticate: Bearer`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request carries an Origin header.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
                 }
               }
             }
@@ -102,8 +172,43 @@
                 }
               }
             }
+          },
+          "400": {
+            "description": "The Host is not allowed, or the Content-Length is bad.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The credential is missing or invalid; `WWW-Authenticate: Bearer`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request carries an Origin header.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
           }
-        }
+        },
+        "security": [
+          {
+            "VercelOidcOrHmac": []
+          }
+        ]
       }
     },
     "/healthz": {

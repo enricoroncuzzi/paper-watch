@@ -13,10 +13,11 @@ from datetime import datetime
 from typing import Annotated, Literal, Protocol
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Security
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy.orm import Session
 
+from paperwatch.api.responses import BEARER, GATE_RESPONSES
 from paperwatch.api.search_mode import ModeDecision
 from paperwatch.store.models import DeadLetter, Run
 from paperwatch.store.repository import Repository
@@ -170,14 +171,24 @@ def make_runs_router(session_factory: Callable[[], Session], search_mode: ModeGa
     """Build the router with the read factory and the mode gate, so the app owns both."""
     router = APIRouter()
 
-    @router.get("/runs", response_model=RunsData)
+    @router.get(
+        "/runs",
+        response_model=RunsData,
+        responses=GATE_RESPONSES,
+        dependencies=[Security(BEARER)],
+    )
     def runs(
         limit: Annotated[int, Query(ge=1, le=RUNS_MAX_LIMIT)] = RUNS_DEFAULT_LIMIT,
     ) -> RunsData:
         with session_factory() as session:
             return RunsData(runs=[_summary(run) for run in Repository(session).recent_runs(limit)])
 
-    @router.get("/runs/{run_id}", response_model=RunDetail)
+    @router.get(
+        "/runs/{run_id}",
+        response_model=RunDetail,
+        responses=GATE_RESPONSES,
+        dependencies=[Security(BEARER)],
+    )
     def run_detail(run_id: UUID) -> RunDetail:
         with session_factory() as session:
             repo = Repository(session)
@@ -192,7 +203,12 @@ def make_runs_router(session_factory: Callable[[], Session], search_mode: ModeGa
                 dead_letters=[_letter(letter) for letter in repo.run_dead_letters(run_id)],
             )
 
-    @router.get("/today", response_model=TodayData)
+    @router.get(
+        "/today",
+        response_model=TodayData,
+        responses=GATE_RESPONSES,
+        dependencies=[Security(BEARER)],
+    )
     def today() -> TodayData:
         # The mode gate reads /proc and the run table with its own cache, so a page load pays for
         # it once and not per section.
