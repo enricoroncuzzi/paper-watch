@@ -63,6 +63,28 @@ describe("apiGet", () => {
     expect(await apiGet("/runs")).toEqual({ ok: false, kind: "unavailable" });
   });
 
+  it("aborts a read after ten seconds", async () => {
+    vi.useFakeTimers();
+    let captured: AbortSignal | undefined;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((_url: string, init: RequestInit) => {
+        captured = init.signal as AbortSignal;
+        return new Promise<Response>((_resolve, reject) => {
+          captured!.addEventListener("abort", () =>
+            reject(new DOMException("aborted", "AbortError")),
+          );
+        });
+      }),
+    );
+
+    const result = apiGet("/runs");
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(await result).toEqual({ ok: false, kind: "unavailable" });
+    expect(captured?.aborted).toBe(true);
+    vi.useRealTimers();
+  });
+
   it("treats a missing credential as unauthorized, not as a crash", async () => {
     vi.stubEnv("PW_API_AUTH", "hmac");
     vi.stubEnv("PW_API_HMAC_SECRET", "");

@@ -35,5 +35,54 @@ describe("the auth config", () => {
     expect(isAllowedGithubProfile({ id: 4242, login: "someone-else" }, OWNER_ID)).toBe(true);
     expect(isAllowedGithubProfile({ login: "owner" }, OWNER_ID)).toBe(false);
     expect(isAllowedGithubProfile({ id: 4242 }, undefined)).toBe(false);
+    // A prefix or a substring is not the id: 14242 and 42 must both be refused.
+    expect(isAllowedGithubProfile({ id: 14242 }, OWNER_ID)).toBe(false);
+    expect(isAllowedGithubProfile({ id: 42 }, OWNER_ID)).toBe(false);
+  });
+
+  it("the sign-in callback refuses every profile but the owner", async () => {
+    const config = buildAuthConfig({ PW_E2E_SESSION: "1", ALLOWED_GITHUB_ID: OWNER_ID });
+    const signIn = config.callbacks!.signIn!;
+
+    expect(signIn({ profile: { id: 4242, login: "owner" } } as never)).toBe(true);
+    expect(signIn({ profile: { id: 9999, login: "owner" } } as never)).toBe(false);
+    expect(signIn({ profile: { id: 14242, login: "owner" } } as never)).toBe(false);
+    // No profile is the credentials provider: allowed only when the e2e flag allows it.
+    expect(signIn({ profile: undefined } as never)).toBe(true);
+    const production = buildAuthConfig({ ALLOWED_GITHUB_ID: OWNER_ID });
+    expect(production.callbacks!.signIn!({ profile: undefined } as never)).toBe(false);
+  });
+
+  it("the jwt stores the numeric id, never the login", async () => {
+    const config = buildAuthConfig({ PW_E2E_SESSION: "1", ALLOWED_GITHUB_ID: OWNER_ID });
+    const jwt = config.callbacks!.jwt!;
+
+    const fromGithub = await jwt({
+      token: {},
+      profile: { id: 4242, login: "renamed-owner" },
+      user: { id: "9999" },
+      account: null,
+      isNewUser: false,
+      trigger: "signIn",
+    } as never);
+    expect(fromGithub!.githubId).toBe("4242");
+
+    // The credentials provider has no profile; the e2e user's id is used, and only with the flag.
+    const fromE2e = await jwt({
+      token: {},
+      profile: undefined,
+      user: { id: "4242" },
+      account: null,
+      isNewUser: false,
+      trigger: "signIn",
+    } as never);
+    expect(fromE2e!.githubId).toBe("4242");
+
+    const session = await config.callbacks!.session!({
+      session: { user: {}, expires: "" },
+      token: { githubId: "4242" },
+      user: { id: "4242" },
+    } as never);
+    expect((session as { githubId?: string }).githubId).toBe("4242");
   });
 });

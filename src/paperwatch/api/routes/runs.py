@@ -14,7 +14,7 @@ from typing import Annotated, Literal, Protocol
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy.orm import Session
 
 from paperwatch.api.search_mode import ModeDecision
@@ -123,14 +123,19 @@ def _followup(health: dict[str, object] | None) -> FollowupState | None:
         return None
     pending = record.get("pending")
     pending_s2 = pending.get("s2") if isinstance(pending, dict) else None
-    return FollowupState.model_validate(
-        {
-            "pass": record.get("pass"),
-            "of": record.get("of"),
-            "next_at": record.get("next_at"),
-            "pending_s2": pending_s2,
-        }
-    )
+    try:
+        return FollowupState.model_validate(
+            {
+                "pass": record.get("pass"),
+                "of": record.get("of"),
+                "next_at": record.get("next_at"),
+                "pending_s2": pending_s2,
+            }
+        )
+    except ValidationError:
+        # A health record written by an older or broken run must not 500 the whole run list; the
+        # strip simply shows no waiting pass.
+        return None
 
 
 def _summary(run: Run) -> RunSummary:

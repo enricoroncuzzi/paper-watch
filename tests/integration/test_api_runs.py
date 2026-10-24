@@ -72,11 +72,8 @@ class AuthedClient(TestClient):
         return super().request(method, url, headers=headers, **kwargs)
 
 
-def client(
-    db_session: Session,
-    mode: ModeDecision | None = None,
-) -> AuthedClient:
-    deps = AgentDeps(
+def app_deps(db_session: Session, mode: ModeDecision | None = None) -> AgentDeps:
+    return AgentDeps(
         session_factory=lambda: db_session,  # type: ignore[arg-type,return-value]
         embedder=FakeEmbedder(),
         models=[],
@@ -94,8 +91,11 @@ def client(
         ),
         search_mode=FixedMode(mode or ModeDecision("hybrid", "ok")),  # type: ignore[arg-type]
     )
+
+
+def client(db_session: Session, mode: ModeDecision | None = None) -> AuthedClient:
     # localhost, not TestClient's default testserver, so the host allow-list accepts the request.
-    return AuthedClient(create_app(deps), base_url="http://localhost")
+    return AuthedClient(create_app(app_deps(db_session, mode)), base_url="http://localhost")
 
 
 def finished_run(
@@ -186,7 +186,9 @@ def test_run_detail_lists_its_dead_letters(db_session: Session) -> None:
     repo = Repository(db_session)
     run_id = finished_run(db_session, health={"healthy": True, "problems": [], "warnings": []})
     long_error = "boom " * 200
+    long_ref = "ref-" + "x" * 600
     repo.add_dead_letter(run_id, "feed", "https://example.org/feed", long_error)
+    repo.add_dead_letter(run_id, "feed", long_ref, "short error")
     repo.add_dead_letter(run_id, "arxiv", "2601.00001", "timeout")
     # `add_dead_letter` returns nothing, so the resolved letter is found by its ref.
     resolved = db_session.scalar(select(DeadLetter.id).where(DeadLetter.ref == "2601.00001"))
@@ -199,13 +201,18 @@ def test_run_detail_lists_its_dead_letters(db_session: Session) -> None:
     assert detail["id"] == str(run_id)
     assert detail["window_start"] is not None
     assert detail["window_end"] is not None
-    letters = {letter["source"]: letter for letter in detail["dead_letters"]}
-    assert set(letters) == {"feed", "arxiv"}
+    letters = {letter["ref"]: letter for letter in detail["dead_letters"]}
+    assert len(letters) == 3
+    assert letters["https://example.org/feed"]["source"] == "feed"
+    assert letters["2601.00001"]["source"] == "arxiv"
     # A provider message can be a whole page of HTML; the page shows a line, so the route clips.
-    assert len(letters["feed"]["error"]) == 500
-    assert letters["feed"]["attempts"] == 1
-    assert letters["arxiv"]["resolved_at"] is not None
-    assert letters["arxiv"]["error"] == "timeout"
+    assert len(letters["https://example.org/feed"]["error"]) == 500
+    assert letters["https://example.org/feed"]["attempts"] == 1
+    # `ref` is clipped like `error`: a stored id can be a whole URL.
+    clipped = ("ref-" + "x" * 600)[:500]
+    assert letters[clipped]["ref"] == clipped
+    assert letters["2601.00001"]["resolved_at"] is not None
+    assert letters["2601.00001"]["error"] == "timeout"
 
 
 def test_an_unknown_run_is_404(db_session: Session) -> None:
@@ -248,6 +255,30 @@ def test_a_failed_run_closed_by_the_next_reads_healthy_null(db_session: Session)
     assert body["run"]["healthy"] is None
     assert body["run"]["problems"] == []
     assert body["run"]["warnings"] == []
+
+
+def test_a_malformed_follow_up_reads_as_none(db_session: Session) -> None:
+    # A bad health record must not 500 the whole list: the strip just shows no waiting pass.
+    finished_run(
+        db_session,
+        health={
+            "healthy": True,
+            "problems": [],
+            "warnings": [],
+            "followup": {"pass": "three", "of": 40},
+        },
+    )
+
+    assert client(db_session).get("/runs").json()["runs"][0]["followup"] is None
+
+
+def test_runs_and_today_need_a_credential(db_session: Session) -> None:
+    # The gate covers every route; these two must not be an exception the page can lean on.
+    plain = TestClient(create_app(app_deps(db_session)), base_url="http://localhost")
+
+    assert plain.get("/runs").status_code == 401
+    assert plain.get("/today").status_code == 401
+    assert plain.get(f"/runs/{uuid.uuid4()}").status_code == 401
 
 
 def test_limit_is_bounded(db_session: Session) -> None:

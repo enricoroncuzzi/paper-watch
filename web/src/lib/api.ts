@@ -47,6 +47,9 @@ async function call<T>(
     // A missing or misconfigured credential is the same state to the page as a refused one.
     return { ok: false, kind: "unauthorized" };
   }
+  // An explicit controller rather than `AbortSignal.timeout`: a test can advance its clock.
+  const timeout = new AbortController();
+  const timer = setTimeout(() => timeout.abort(), options.timeoutMs);
   try {
     const response = await fetch(new URL(path, base), {
       method,
@@ -56,7 +59,7 @@ async function call<T>(
       },
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
       cache: "no-store",
-      signal: AbortSignal.timeout(options.timeoutMs),
+      signal: timeout.signal,
     });
     if (!response.ok) {
       return { ok: false, kind: kindFor(response.status), retryAfterS: retryAfter(response) };
@@ -65,6 +68,8 @@ async function call<T>(
   } catch {
     // A timeout, a refused connection and a body that is not JSON all read as "unreachable".
     return { ok: false, kind: "unavailable" };
+  } finally {
+    clearTimeout(timer);
   }
 }
 
