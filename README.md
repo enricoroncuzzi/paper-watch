@@ -13,7 +13,7 @@ It is also a deliberate learning project: every technology it uses has a load-be
 code and a short lesson in [`docs/learn/`](docs/learn/).
 
 Status: M0 to M2 are done, the daily ingestion has run on a shared VPS since 2026-10-22, and
-M3 is in progress: the API is ready to be public (credential gate, limits, its own user unit
+M3 is in progress: the API is built to be public (credential gate, limits, its own user unit
 behind a tunnel) and the page follows ([`docs/deploy/vps.md`](docs/deploy/vps.md)).
 
 ## Quickstart

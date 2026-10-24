@@ -5,10 +5,10 @@ it: how many answers one caller may start at all, so an authenticated loop canno
 and leave nothing for a real question. The two scarce things are the 800 provider calls a day and
 the memory one open answer holds, so both are bounded here.
 
-Keyed on the credential's subject by the caller (`/ask` uses the verified `Principal`); the limiter
-itself only counts what the process admitted, which is enough for one API process with one
-operator. In-memory on purpose: a restart is rare, and a limiter that outlived the process would
-need a table the API role can write.
+One counter for the whole process: the credential pins exactly one caller (one Vercel project and
+environment, or the operator's HMAC token), so per process is per client. A second allowed
+subject would need a counter per subject. In-memory on purpose: a restart is rare, and a limiter
+that outlived the process would need a table the API role can write.
 """
 
 import math

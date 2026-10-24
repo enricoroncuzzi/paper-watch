@@ -32,7 +32,7 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import text
 from sqlalchemy.exc import TimeoutError as PoolTimeout
 from sqlalchemy.orm import Session, sessionmaker
-from starlette.types import Receive, Send
+from starlette.types import Receive, Scope, Send
 
 import paperwatch
 from paperwatch.agent.citations import NO_SUPPORT, CheckedAnswer
@@ -807,14 +807,22 @@ class _ClosingStream(StreamingResponse):
         await super().listen_for_disconnect(receive)
         self._cancel.set()
 
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            # A hang-up can cancel the response before `stream_response` starts, so the limiter's
+            # slot is freed here: the outermost path, which every ending passes through. The
+            # release is idempotent per grant, so a double call cannot free a slot twice.
+            if self._release is not None:
+                self._release()
+
     async def stream_response(self, send: Send) -> None:
         try:
             await super().stream_response(send)
         finally:
             with anyio.CancelScope(shield=True):
                 await anyio.to_thread.run_sync(self._events.close)
-                if self._release is not None:
-                    self._release()
 
 
 def _select_one(session_factory: Callable[[], Session]) -> None:

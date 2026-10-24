@@ -1487,3 +1487,43 @@ def test_a_running_child_is_stopped_when_the_mode_turns_keyword_only() -> None:
 
 
 FAKE_WORKER = Path(__file__).resolve().parents[1] / "helpers" / "fake_embed_worker.py"
+
+
+def test_a_disconnect_before_the_stream_starts_releases_the_slot() -> None:
+    # Starlette can cancel the response before `stream_response` runs, so release cannot live only
+    # there: a caller that hangs up at once would otherwise hold a slot until the process restarts.
+    released: list[int] = []
+    cancel = threading.Event()
+
+    def events() -> Any:
+        yield "event: token\ndata: {}\n\n"
+
+    response = api._ClosingStream(
+        events(),
+        cancel,
+        release=lambda: released.append(1),
+        media_type="text/event-stream",
+    )
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": "GET",
+        "path": "/ask",
+        "raw_path": b"/ask",
+        "query_string": b"",
+        "headers": [],
+        "server": ("localhost", 80),
+        "client": ("testclient", 1),
+        "scheme": "http",
+        "root_path": "",
+    }
+
+    async def receive() -> dict[str, Any]:
+        return {"type": "http.disconnect"}
+
+    async def send(message: dict[str, Any]) -> None:
+        return None
+
+    asyncio.run(response(scope, receive, send))
+    assert released == [1]
