@@ -7,7 +7,7 @@ import { AnswerText } from "@/components/ask/AnswerText";
 import { Sources } from "@/components/ask/Sources";
 import { Trace } from "@/components/ask/Trace";
 import { formatRome } from "@/lib/format";
-import { useAsk, type AskError, type SourceRef } from "@/lib/use-ask";
+import { footnoteNumbers, useAsk, type AskError, type SourceRef } from "@/lib/use-ask";
 
 function errorCopy(error: AskError): string {
   switch (error.code) {
@@ -69,6 +69,7 @@ export function AskSheet({
   const textarea = useRef<HTMLTextAreaElement>(null);
 
   const streaming = state.status === "streaming";
+  const numbers = footnoteNumbers(state.answer?.citations ?? []);
   // A dropped stream has no server payload: the client's own watchdog is the error.
   const shownError: AskError | null =
     state.error ??
@@ -178,14 +179,37 @@ export function AskSheet({
                 ) : null}
               </div>
             ) : (
-              <AnswerText
-                text={state.text}
-                streaming={streaming}
-                checked={state.answer !== null}
-              />
+              <>
+                {state.answer && (!state.answer.supported || state.answer.flags.length > 0) ? (
+                  <div
+                    data-testid="check-note"
+                    className="mb-4 max-w-[38rem] border border-warn/40 bg-warn-soft px-3.5 py-2.5"
+                  >
+                    <p className="text-[12.5px] font-medium text-warn">
+                      Some sentences are not backed by a retrieved source.
+                    </p>
+                    {state.answer.flags.map((flag, index) => (
+                      <p
+                        key={`${flag.kind}-${index}`}
+                        className="mt-1 text-[11.5px] leading-[1.5] text-ink-2"
+                      >
+                        <span className="font-mono text-[10px] text-ink-3">
+                          {flag.kind.replaceAll("_", " ")}
+                        </span>{" "}
+                        · {flag.sentence} {flag.detail}
+                      </p>
+                    ))}
+                  </div>
+                ) : null}
+                <AnswerText
+                  text={state.text}
+                  streaming={streaming}
+                  checked={state.answer !== null}
+                  numbers={numbers}
+                />
+                <Sources sources={state.answer?.citations ?? state.sources} numbers={numbers} />
+              </>
             )}
-
-            <Sources sources={state.answer?.citations ?? state.sources} />
           </div>
 
           <footer className="flex-none border-t border-rule bg-card px-5 pb-[max(13px,env(safe-area-inset-bottom))] pt-3 sm:px-6">

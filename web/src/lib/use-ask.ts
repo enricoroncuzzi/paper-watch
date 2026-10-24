@@ -60,6 +60,15 @@ export type AskState = {
   error: AskError | null;
 };
 
+/**
+ * Footnote positions by source alias. The API's `citations` hold only the sources the answer
+ * cites, in first-cited order, so the number a reader sees is the position in that list, not the
+ * alias number: an answer citing [S2] then [S1] has footnotes 1 and 2.
+ */
+export function footnoteNumbers(citations: SourceRef[]): Map<string, number> {
+  return new Map(citations.map((citation, index) => [citation.id, index + 1]));
+}
+
 /** 45 s without a single received byte means the connection is gone, not thinking. */
 export const WATCHDOG_MS = 45_000;
 

@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { askReducer, AskController, INITIAL_ASK_STATE, type AskState } from "./use-ask";
+import {
+  askReducer,
+  AskController,
+  footnoteNumbers,
+  INITIAL_ASK_STATE,
+  type AskState,
+} from "./use-ask";
 
 /** A stream the test feeds by hand, the way the network would. */
 function controllable() {
@@ -61,6 +67,15 @@ describe("the ask reducer", () => {
     state = askReducer(state, { type: "event", event: "source", data: source });
     state = askReducer(state, { type: "event", event: "source", data: source });
     expect(state.sources).toHaveLength(1);
+  });
+});
+
+describe("footnote numbers", () => {
+  it("follows the citation order, not the alias number", () => {
+    // The API lists only the cited sources, in first-cited order: [S2] then [S1] means 1 and 2.
+    const numbers = footnoteNumbers([ANSWER.citations[0]!, { ...ANSWER.citations[0]!, id: "S2" }]);
+    expect(numbers.get("S1")).toBe(1);
+    expect(numbers.get("S2")).toBe(2);
   });
 });
 

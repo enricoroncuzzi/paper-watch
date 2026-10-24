@@ -5,7 +5,13 @@ import type { SourceRef } from "@/lib/use-ask";
  * The answer's sources, one footnote each. Every link comes from a stored URL that passed
  * `safeHref`; the visible text is the parsed host, so a crafted path cannot disguise the target.
  */
-export function Sources({ sources }: { sources: SourceRef[] }) {
+export function Sources({
+  sources,
+  numbers,
+}: {
+  sources: SourceRef[];
+  numbers: Map<string, number>;
+}) {
   if (sources.length === 0) return null;
   return (
     <div data-testid="sources" className="mt-5 max-w-[38rem] border-t border-rule pt-3">
@@ -21,7 +27,7 @@ export function Sources({ sources }: { sources: SourceRef[] }) {
               className="grid grid-cols-[20px_1fr] gap-2.5 text-[11.5px] leading-[1.45] text-ink-2"
             >
               <span className="pt-0.5 text-right font-mono text-[10px] text-accent-text">
-                {index + 1}
+                {numbers.get(source.id) ?? index + 1}
               </span>
               <span>
                 {href ? (

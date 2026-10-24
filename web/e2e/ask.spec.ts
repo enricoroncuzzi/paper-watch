@@ -38,6 +38,30 @@ test("asking streams tools, tokens and a checked answer", async ({ page }) => {
   await expect(sheet.getByTestId("sources")).toContainText("arxiv.org");
 });
 
+test("citation numbers follow the footnote order, not the alias", async ({ page, request }) => {
+  await setScenario(request, "citations");
+  await openSheet(page);
+  await ask(page, "What do agents measure and remember?");
+
+  const sheet = page.getByRole("dialog");
+  // The answer cites [S2] first, so its superscript is 1 and [S1] is 2.
+  await expect(sheet.getByTestId("answer").locator("sup")).toHaveText(["1", "2"]);
+  const footnotes = sheet.getByTestId("sources").locator("li");
+  await expect(footnotes.nth(0)).toContainText("Memory for long-horizon agents");
+  await expect(footnotes.nth(1)).toContainText("SWE-bench Verified");
+});
+
+test("an unchecked answer says so", async ({ page, request }) => {
+  await setScenario(request, "flagged");
+  await openSheet(page);
+  await ask(page, "Did coding agents improve 40%?");
+
+  const note = page.getByTestId("check-note");
+  await expect(note).toContainText("Some sentences are not backed by a retrieved source.");
+  await expect(note).toContainText("uncited claim");
+  await expect(note).toContainText("No retrieved source states this number.");
+});
+
 test("the daily cap shows the reset time and the matching items", async ({ page, request }) => {
   await setScenario(request, "daily_cap");
   await openSheet(page);
@@ -48,6 +72,10 @@ test("the daily cap shows the reset time and the matching items", async ({ page,
   await expect(error).toContainText("02:00 Europe/Rome");
   await expect(error).toContainText("Matching items");
   await expect(error).toContainText("SWE-bench Verified");
+  // The item is listed once, inside the error box; the footnote list stays out of an error.
+  await expect(
+    page.getByText("SWE-bench Verified: coding agents on real repository bugs"),
+  ).toHaveCount(1);
 });
 
 test("keyword-only answers show the notice", async ({ page, request }) => {

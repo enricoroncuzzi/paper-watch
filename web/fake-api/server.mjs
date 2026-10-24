@@ -23,6 +23,8 @@ const SCENARIOS = new Set([
   "followup",
   "text_only",
   "daily_cap",
+  "citations",
+  "flagged",
   "slow",
   "drop",
 ]);

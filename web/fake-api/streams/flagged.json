@@ -1,0 +1,42 @@
+[
+  { "event": "tool", "data": { "name": "search_corpus", "args": { "query": "coding agents benchmark" } }, "delay_ms": 30 },
+  {
+    "event": "source",
+    "data": {
+      "id": "S1",
+      "item_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "title": "SWE-bench Verified: coding agents on real repository bugs",
+      "url": "https://arxiv.org/abs/2601.00001",
+      "tier": "peer_reviewed",
+      "basis": "venue"
+    },
+    "delay_ms": 40
+  },
+  { "event": "token", "data": { "text": "Coding agents improved 40% on every benchmark [S1]." }, "delay_ms": 60 },
+  {
+    "event": "answer",
+    "data": {
+      "text": "Coding agents improved 40% on every benchmark [S1].",
+      "search_mode": "hybrid",
+      "supported": false,
+      "citations": [
+        {
+          "id": "S1",
+          "item_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "title": "SWE-bench Verified: coding agents on real repository bugs",
+          "url": "https://arxiv.org/abs/2601.00001",
+          "tier": "peer_reviewed",
+          "basis": "venue"
+        }
+      ],
+      "flags": [
+        {
+          "kind": "uncited_claim",
+          "sentence": "Coding agents improved 40% on every benchmark.",
+          "detail": "No retrieved source states this number."
+        }
+      ]
+    },
+    "delay_ms": 80
+  }
+]

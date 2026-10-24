@@ -1,0 +1,58 @@
+[
+  { "event": "tool", "data": { "name": "search_corpus", "args": { "query": "coding agents memory" } }, "delay_ms": 30 },
+  { "event": "step", "data": { "round": 1, "ms": 300, "new_sources": 2 }, "delay_ms": 80 },
+  {
+    "event": "source",
+    "data": {
+      "id": "S1",
+      "item_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "title": "SWE-bench Verified: coding agents on real repository bugs",
+      "url": "https://arxiv.org/abs/2601.00001",
+      "tier": "peer_reviewed",
+      "basis": "venue"
+    },
+    "delay_ms": 40
+  },
+  {
+    "event": "source",
+    "data": {
+      "id": "S2",
+      "item_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "title": "Memory for long-horizon agents",
+      "url": "https://arxiv.org/abs/2601.00002",
+      "tier": "vetted_preprint",
+      "basis": "hf_upvotes"
+    },
+    "delay_ms": 40
+  },
+  { "event": "token", "data": { "text": "Two results matter " }, "delay_ms": 60 },
+  { "event": "token", "data": { "text": "[S2] and [S1]." }, "delay_ms": 60 },
+  {
+    "event": "answer",
+    "data": {
+      "text": "Two results matter [S2] and [S1].",
+      "search_mode": "hybrid",
+      "supported": true,
+      "citations": [
+        {
+          "id": "S2",
+          "item_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          "title": "Memory for long-horizon agents",
+          "url": "https://arxiv.org/abs/2601.00002",
+          "tier": "vetted_preprint",
+          "basis": "hf_upvotes"
+        },
+        {
+          "id": "S1",
+          "item_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "title": "SWE-bench Verified: coding agents on real repository bugs",
+          "url": "https://arxiv.org/abs/2601.00001",
+          "tier": "peer_reviewed",
+          "basis": "venue"
+        }
+      ],
+      "flags": []
+    },
+    "delay_ms": 80
+  }
+]
