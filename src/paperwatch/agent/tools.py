@@ -151,8 +151,8 @@ def item_block(ref: SourceRef, detail: ItemDetail) -> str:
     """
     text = detail.text[:GET_ITEM_MAX_CHARS]
     if len(detail.text) > GET_ITEM_MAX_CHARS:
-        # An ellipsis tells the model the text continues; an item field has no other bound.
-        text += "..."
+        # The marker says in words that the text continues; an item field has no other bound.
+        text += "\n[text truncated]"
     return _block(ref, detail.title, text, _meta(detail))
 
 
@@ -335,10 +335,7 @@ def make_tools(
     def get_item(source_id: str) -> str:
         with lock, session_scope("get_item") as active:
             ref, detail = registered(active, source_id)
-            text = detail.text[:GET_ITEM_MAX_CHARS]
-            if len(detail.text) > GET_ITEM_MAX_CHARS:
-                text += "\n[text truncated]"
-            return _block(ref, detail.title, text, _meta(detail))
+            return item_block(ref, detail)
 
     def compare(source_ids: list[str]) -> str:
         # A repeated alias is still one source, so dedupe before counting the 2-4 range.
