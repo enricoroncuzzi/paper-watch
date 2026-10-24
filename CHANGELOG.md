@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.7.1...paperwatch-v0.8.0) (2026-10-24)
+
+
+### Features
+
+* make the API ready to be public ([#43](https://github.com/enricoroncuzzi/paper-watch/issues/43)) ([1289e24](https://github.com/enricoroncuzzi/paper-watch/commit/1289e2489b6facfd3fa3dd22384f4733381cae70))
+
 ## [0.7.1](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.7.0...paperwatch-v0.7.1) (2026-10-24)
 
 
