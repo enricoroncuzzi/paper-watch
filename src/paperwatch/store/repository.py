@@ -755,28 +755,3 @@ class ChatCallLog:
         with self._session_factory() as session:
             Repository(session).fail_chat_call(call_id)
             session.commit()
-
-    def record_chat_call(
-        self,
-        *,
-        at: datetime,
-        provider: str,
-        model: str,
-        input_tokens: int,
-        output_tokens: int,
-    ) -> None:
-        # Its own transaction, committed before returning: this is the whole point of the class.
-        with self._session_factory() as session:
-            Repository(session).record_chat_call(
-                at=at,
-                provider=provider,
-                model=model,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-            )
-            session.commit()
-
-    def chat_calls_since(self, at: datetime) -> int:
-        # A read-only session is enough, and closing it releases the connection at once.
-        with self._session_factory() as session:
-            return Repository(session).chat_calls_since(at)

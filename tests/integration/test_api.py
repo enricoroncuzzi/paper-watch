@@ -1290,9 +1290,10 @@ def test_all_three_tools_work_in_a_read_only_transaction(
     at = datetime(2026, 10, 16, 5, tzinfo=UTC)
     factory = make_session_factory(engine)
     try:
-        ChatCallLog(factory).record_chat_call(
-            at=at, provider="openrouter", model="m", input_tokens=1, output_tokens=2
-        )
+        log = ChatCallLog(factory)
+        call_id, _ = log.reserve_chat_call(at=at, provider="openrouter", cap=10)
+        assert call_id is not None
+        log.fill_chat_call(call_id, model="m", input_tokens=1, output_tokens=2)
     finally:
         with factory() as cleanup:
             cleanup.execute(delete(ChatCall).where(ChatCall.at == at))

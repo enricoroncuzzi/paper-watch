@@ -61,9 +61,9 @@ def test_chat_call_log_survives_a_rolled_back_request_session(engine: Engine) ->
     log = ChatCallLog(factory)
     at = datetime(2026, 10, 16, 3, tzinfo=UTC)
     try:
-        log.record_chat_call(
-            at=at, provider="openrouter", model="m", input_tokens=1, output_tokens=2
-        )
+        call_id, _ = log.reserve_chat_call(at=at, provider="openrouter", cap=10)
+        assert call_id is not None
+        log.fill_chat_call(call_id, model="m", input_tokens=1, output_tokens=2)
         # A separate request session that rolls back must not take the usage row with it.
         with factory() as doomed:
             doomed.add(
@@ -73,8 +73,9 @@ def test_chat_call_log_survives_a_rolled_back_request_session(engine: Engine) ->
             doomed.rollback()
         # A fresh session sees the committed row, and only that one.
         with factory() as fresh:
-            assert log.chat_calls_since(MIDNIGHT) == 1
             assert fresh.scalar(select(func.count()).select_from(ChatCall)) == 1
+            row = fresh.get_one(ChatCall, call_id)
+            assert (row.model, row.input_tokens, row.output_tokens) == ("m", 1, 2)
     finally:
         # The row is committed, so it outlives the test: remove it or later runs count it.
         with factory() as cleanup:
@@ -93,11 +94,10 @@ def test_chat_call_log_returns_every_connection_to_the_pool(engine: Engine) -> N
     # not be able to fail this one (review N2).
     before = engine.pool.checkedout()
     try:
-        log.chat_calls_since(MIDNIGHT)
+        call_id, _ = log.reserve_chat_call(at=at, provider="openrouter", cap=10)
+        assert call_id is not None
         assert engine.pool.checkedout() == before
-        log.record_chat_call(
-            at=at, provider="openrouter", model="m", input_tokens=1, output_tokens=1
-        )
+        log.fill_chat_call(call_id, model="m", input_tokens=1, output_tokens=1)
         assert engine.pool.checkedout() == before
     finally:
         # The row is committed, so it outlives the test.
