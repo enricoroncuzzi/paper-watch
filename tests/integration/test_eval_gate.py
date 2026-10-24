@@ -1,6 +1,7 @@
 """The offline retrieval eval: metrics, per-kind and per-branch reporting, the gate, the floor."""
 
 import json
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -9,6 +10,8 @@ from sqlalchemy import false, func, select
 from sqlalchemy.orm import Session
 
 from evals.retrieval_eval import GATED, DatabaseNotEmpty, evaluate, gate
+from paperwatch import cli
+from paperwatch.config import Settings
 from paperwatch.domain import SourceItem
 from paperwatch.llm.embedder import FakeEmbedder
 from paperwatch.retrieval import hybrid
@@ -60,16 +63,38 @@ KEYS = {
 }
 
 
-def test_metrics_in_range_and_gate_passes(db_session: Session) -> None:
-    m = evaluate(db_session, FakeEmbedder(), CORPUS, QUESTIONS, k=5)
+@pytest.fixture
+def eval_session(db_url: str, monkeypatch: pytest.MonkeyPatch) -> Iterator[Session]:
+    """A migrated, empty database of its own for this test, dropped afterwards.
+
+    The vector branch is an approximate HNSW scan, and the session-wide test database still holds
+    the index entries of every earlier test's rolled-back or deleted rows. Those entries change
+    which tied distances the scan reaches, so the pinned metrics can only hold on the fresh
+    database `paperwatch eval` always runs on. `tests/integration/test_check_script.py` runs
+    before this file and alone makes the gate fail there, so the fixture is not a formality.
+    """
+    monkeypatch.setattr(cli, "get_settings", lambda: Settings(database_url=db_url))
+    with cli._throwaway_database() as session:
+        yield session
+
+
+def test_the_eval_runs_on_its_own_database(eval_session: Session) -> None:
+    # The pinned values depend on the fixture above: a shared database makes them test-order
+    # dependent. This asserts the contract directly, where the metric flake would only show it
+    # the times the earlier tests happened to move the index enough.
+    assert eval_session.scalar(select(func.current_database())).startswith("paperwatch_eval_")
+
+
+def test_metrics_in_range_and_gate_passes(eval_session: Session) -> None:
+    m = evaluate(eval_session, FakeEmbedder(), CORPUS, QUESTIONS, k=5)
     assert set(m) == KEYS
     # Every metric is a rate except the informational tie count.
     assert all(0.0 <= v <= 1.0 for name, v in m.items() if name != "fused_ties_in_top_k")
     assert gate(m, json.loads(BASELINE.read_text())) == []
 
 
-def test_metrics_are_pinned_to_the_committed_values(db_session: Session) -> None:
-    m = evaluate(db_session, FakeEmbedder(), CORPUS, QUESTIONS, k=5)
+def test_metrics_are_pinned_to_the_committed_values(eval_session: Session) -> None:
+    m = evaluate(eval_session, FakeEmbedder(), CORPUS, QUESTIONS, k=5)
     baseline = json.loads(BASELINE.read_text())
     # Two-sided and tight: the fake embedder and the data are deterministic on a fresh database,
     # so the committed values can be pinned exactly. This kills a metric accumulated with the
@@ -93,7 +118,7 @@ def test_baseline_is_not_below_m1() -> None:
 
 
 def test_worst_first_text_order_fails_the_gate(
-    db_session: Session, monkeypatch: pytest.MonkeyPatch
+    eval_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def worst_first(query: str, filters: Filters, limit: int) -> object:
         # The stub uses the production OR query, so it still exercises the real branch; the
@@ -109,13 +134,13 @@ def test_worst_first_text_order_fails_the_gate(
         )
 
     monkeypatch.setattr(hybrid, "text_query", worst_first)
-    m = evaluate(db_session, FakeEmbedder(), CORPUS, QUESTIONS, k=5)
+    m = evaluate(eval_session, FakeEmbedder(), CORPUS, QUESTIONS, k=5)
     assert m["mrr:text_only:exact_name"] < 16 / 18
     assert gate(m, json.loads(BASELINE.read_text())) != []
 
 
 def test_broken_text_branch_fails_the_gate(
-    db_session: Session, monkeypatch: pytest.MonkeyPatch
+    eval_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # The blocker from the Task 11 review: with the text branch broken, the gate must fail. The
     # patched function is the module attribute both `hybrid_search` and `evaluate` read, so the
@@ -123,7 +148,7 @@ def test_broken_text_branch_fails_the_gate(
     monkeypatch.setattr(
         hybrid, "text_query", lambda *args, **kwargs: select(Item.id).where(false())
     )
-    m = evaluate(db_session, FakeEmbedder(), CORPUS, QUESTIONS, k=5)
+    m = evaluate(eval_session, FakeEmbedder(), CORPUS, QUESTIONS, k=5)
     assert m["recall_at_k:text_only:exact_name"] == 0.0
     assert gate(m, json.loads(BASELINE.read_text())) != []
 
@@ -134,9 +159,9 @@ def test_gate_flags_regression() -> None:
     assert gate(metrics, baseline) == ["recall_at_k dropped from 0.800 to 0.500"]
 
 
-def test_non_empty_database_is_refused(db_session: Session) -> None:
+def test_non_empty_database_is_refused(eval_session: Session) -> None:
     # A real item would compete with the eval corpus in the ranking, so the eval refuses it.
-    Repository(db_session).record_classified(
+    Repository(eval_session).record_classified(
         SourceItem(
             "arxiv",
             "2510.99999",
@@ -151,4 +176,4 @@ def test_non_empty_database_is_refused(db_session: Session) -> None:
         0.9,
     )
     with pytest.raises(DatabaseNotEmpty, match="empty database"):
-        evaluate(db_session, FakeEmbedder(), CORPUS, QUESTIONS, k=5)
+        evaluate(eval_session, FakeEmbedder(), CORPUS, QUESTIONS, k=5)
