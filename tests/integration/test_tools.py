@@ -5,6 +5,7 @@ import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime
+from typing import Any
 from uuid import UUID
 
 import pytest
@@ -671,3 +672,101 @@ def test_parallel_read_tools_keep_their_output(db_session: Session, seed_items: 
     finally:
         sys.setswitchinterval(interval)
     assert all("<source" in out for out in outs), [o for o in outs if "<source" not in o]
+
+
+def test_a_text_only_search_says_so_and_is_logged(db_session: Session, seed_items: Seed) -> None:
+    # The model is told the search was keyword-only, so it can lean on exact names, and the log
+    # lets the answer label itself.
+    from paperwatch.agent.prompts import TEXT_ONLY_NOTE
+    from paperwatch.agent.tools import SearchLog
+
+    seed_items(AGENT_ROWS)
+    log = SearchLog()
+    tools = tools_for(db_session, SourceRegistry(), mode=lambda: "text_only", search_log=log)
+    out = tools["search_corpus"].invoke({"query": "SWE-bench coding agents"})
+    assert out.startswith(TEXT_ONLY_NOTE)
+    assert log.text_only is True
+    assert "<source" in out
+
+
+def test_a_dead_child_falls_back_to_keyword_only_for_that_search(
+    db_session: Session, seed_items: Seed
+) -> None:
+    # A crashed embedding child must not fail the answer: the search runs by keyword and says so,
+    # instead of the model getting a tool error.
+    from paperwatch.agent.prompts import TEXT_ONLY_NOTE
+    from paperwatch.agent.tools import SearchLog
+    from paperwatch.llm.embedder import EmbedderUnavailable
+
+    seed_items(AGENT_ROWS)
+    log = SearchLog()
+
+    class Dead(FakeEmbedder):
+        def embed(self, texts: list[str]) -> list[list[float]]:
+            raise EmbedderUnavailable("the worker is gone")
+
+    tools = dict(
+        (t.name, t)
+        for t in make_tools(db_session, Dead(), SourceRegistry(), search_log=log)  # type: ignore[arg-type]
+    )
+    out = tools["search_corpus"].invoke({"query": "SWE-bench coding agents"})
+    assert out.startswith(TEXT_ONLY_NOTE)
+    assert log.text_only is True
+
+
+def test_each_tool_call_opens_and_closes_its_own_read_only_session(engine: Engine) -> None:
+    # The captain's slice 2 requirement (4): a tool holds a short read-only session, not the
+    # answer's one for its whole life, so an idle answer costs no database connection.
+    from paperwatch.agent.tools import make_tools
+
+    events: list[tuple[str, str]] = []
+    factory = make_session_factory(engine)
+
+    class Spy:
+        def __init__(self, inner: Session, tag: int) -> None:
+            self._inner = inner
+            self._tag = tag
+
+        def execute(self, statement: object, *args: object, **kwargs: object) -> object:
+            events.append(("execute", str(statement)))
+            return self._inner.execute(statement, *args, **kwargs)  # type: ignore[arg-type]
+
+        def rollback(self) -> None:
+            self._inner.rollback()
+
+        def close(self) -> None:
+            events.append(("close", str(self._tag)))
+            self._inner.close()
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._inner, name)
+
+    opened: list[int] = []
+
+    def session() -> Spy:
+        opened.append(len(opened))
+        events.append(("open", str(opened[-1])))
+        return Spy(factory(), len(opened) - 1)
+
+    tools = {
+        tool.name: tool
+        for tool in make_tools(  # type: ignore[arg-type]
+            None, FakeEmbedder(), SourceRegistry(), session_factory=session
+        )
+    }
+    tools["search_corpus"].invoke({"query": "agents"})
+    tools["search_corpus"].invoke({"query": "agents again"})
+    opens = [index for index, event in enumerate(events) if event[0] == "open"]
+    closes = [index for index, event in enumerate(events) if event[0] == "close"]
+    assert len(opens) == len(closes) == 2
+    assert closes[0] < opens[1], "the first session must be closed before the second opens"
+    # The read-only statement is the first thing each short session runs, before any query.
+    first_statements: dict[int, str] = {}
+    current = -1
+    for kind, payload in events:
+        if kind == "open":
+            current = int(payload)
+        elif kind == "execute" and current not in first_statements:
+            first_statements[current] = payload
+    assert set(first_statements) == {0, 1}
+    assert all("SET TRANSACTION READ ONLY" in statement for statement in first_statements.values())

@@ -74,12 +74,17 @@ it.
 
 ## One question
 
-`paperwatch ask "QUESTION" --live` and `POST /ask` run the same path. `run_question` opens one
-database session, marks it `SET TRANSACTION READ ONLY` (the tools only read, so a bug cannot write
-to the corpus), and builds this answer's `SourceRegistry`, token ledger and `CallGuard`. Then the
-LangGraph graph loops between the chat model and the three read-only tools: `search_corpus` runs
-the hybrid retrieval above with tier/profile/date filters, `get_item` opens one admitted item and
-`compare_items` shows two to four of them. A tool registers each item it returns and hands the
+`paperwatch ask "QUESTION" --live` and `POST /ask` run the same path. `run_question` first asks
+`SearchModeGate` for the search mode: a main-pass row in `runs` younger than three hours, or
+`MemAvailable` below 800 MB, or PSI `some avg10` above 5.0, switches this answer to keyword-only;
+the page is sent a `notice` and the answer carries `search_mode: text_only`. On the API, each tool
+call then opens its own short `SET TRANSACTION READ ONLY` session and closes it when the tool
+returns, so an answer waiting for the model holds no database connection; the CLI keeps one
+read-only session. Either way the answer builds its own `SourceRegistry`, token ledger and
+`CallGuard`, and the LangGraph graph loops between the chat model and the three read-only tools:
+`search_corpus` runs the hybrid retrieval above with tier/profile/date filters (the text branch
+alone in keyword-only mode), `get_item` opens one admitted item and `compare_items` shows two to
+four of them. A tool registers each item it returns and hands the
 model a short alias (`S1`, `S2`, ...), so a citation can only point at an item a tool actually
 returned during this answer. Source text reaches the model only inside delimited `<source>` blocks
 with markup escaped.
@@ -90,13 +95,20 @@ has. Every model attempt passes the `CallGuard` first, which checks the daily `c
 charges the per-answer token ledger after the call; a failed provider attempt is recorded too, and
 the next configured model (Groq, when configured) answers.
 
+The embedding model is not in the API process: `WorkerEmbedder` starts
+`python -m paperwatch.llm.embed_worker` when a hybrid answer arrives (prewarmed while the chat
+model thinks), sends one clipped query per search, and lets the child exit after ten idle minutes,
+never while an answer is open. When the ingestion needs the memory the gate turns text-only and
+the reaper stops the child (`docs/learn/16`).
+
 The graph ends in a deterministic `check` node: `check_answer` compares every cited alias with the
 registry, flags claims without a citation and tier mislabels, masks an unknown alias as `[?]`, and
 returns the fixed no-support message when nothing valid is cited. `run_question` then yields that
 `AnswerEvent` last and releases the session. The API formats the events as server-sent events
-(`tool`, `token`, `answer`, `error`); the CLI prints the tokens, then the checked text under a rule
-when it differs from what was streamed, then the sources and any flags. Only the `answer` event is
-authoritative, and everything it carries is rendered as plain text with every link taken from
-`Citation.url`. Errors become `error` events (`daily_cap`, `budget`, `model_unavailable`,
-`internal`) rather than tracebacks, and the provider's own error text never reaches a client or the
-log.
+(`tool`, `step`, `source`, `token`, `notice`, `answer`, `error`), pacing them with a `: ping`
+comment every 15 s of silence and a 120 s deadline; the CLI prints the tokens, then the checked
+text under a rule when it differs from what was streamed, then the sources and any flags. Only the
+`answer` event is authoritative, and everything it carries is rendered as plain text with every
+link taken from `Citation.url`. Errors become `error` events (`daily_cap`, `budget`,
+`model_unavailable`, `internal`, `deadline`) rather than tracebacks, and the provider's own error
+text never reaches a client or the log.

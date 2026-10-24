@@ -21,6 +21,7 @@ from paperwatch.api.app import AgentDeps, create_app
 from paperwatch.api.auth import Principal
 from paperwatch.api.gate import ApiGate, _host_name
 from paperwatch.api.limits import RequestLimiter
+from paperwatch.api.search_mode import ModeDecision
 from paperwatch.config import (
     API_MAX_BODY_BYTES,
     CONCURRENT_ANSWERS,
@@ -243,6 +244,11 @@ def test_a_loopback_server_refuses_a_foreign_host() -> None:
         assert client.get("/healthz", headers={"Host": host}).status_code == 400, host
 
 
+class _HybridMode:
+    def current(self) -> ModeDecision:
+        return ModeDecision("hybrid", "ok")
+
+
 class _Store:
     def record_chat_call(self, **kwargs: Any) -> None:
         raise AssertionError("no chat call in a gate test")
@@ -268,6 +274,7 @@ def _deps() -> AgentDeps:
             concurrent=CONCURRENT_ANSWERS,
             clock=lambda: NOW,
         ),
+        search_mode=_HybridMode(),
     )
 
 

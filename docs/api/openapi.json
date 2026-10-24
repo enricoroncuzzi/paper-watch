@@ -46,6 +46,25 @@
         }
       }
     },
+    "/status": {
+      "get": {
+        "summary": "Status",
+        "description": "The search mode the page reads on load: hybrid, or keyword-only and why.",
+        "operationId": "status_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusData"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/ask": {
       "post": {
         "summary": "Ask",
@@ -408,6 +427,47 @@
         ],
         "title": "SourceData",
         "description": "The `source` event: a source a tool just returned, in alias order."
+      },
+      "StatusData": {
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "hybrid",
+              "text_only"
+            ],
+            "title": "Mode"
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "ingestion",
+              "memory",
+              "database"
+            ],
+            "title": "Reason"
+          },
+          "since": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Since"
+          }
+        },
+        "type": "object",
+        "required": [
+          "mode",
+          "reason"
+        ],
+        "title": "StatusData",
+        "description": "`GET /status`: the search mode the page reads on load."
       },
       "StepData": {
         "properties": {

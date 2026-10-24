@@ -471,3 +471,16 @@ def test_a_query_term_matches_a_document_with_the_same_stem(
     admitted(db_session, "x", body, "p1", datetime(2026, 10, 1, tzinfo=UTC))
     db_session.flush()
     assert len(list(db_session.scalars(text_query(query, Filters(), 10)))) == 1
+
+
+def test_text_only_search_returns_the_text_branch_ranking(db_session: Session) -> None:
+    # With no embedder the vector branch is skipped; the fused order is the text branch's own,
+    # because one branch's shared ranks are already the ranking.
+    seed(db_session)
+    query = "SWE-bench agents harness"
+    expected = [
+        external_id(db_session, item_id)
+        for item_id in db_session.scalars(text_query(query, Filters(), 50))
+    ]
+    hits = hybrid_search(db_session, None, query, k=3)
+    assert [hit.url.rsplit("/", 1)[1] for hit in hits] == expected[:3]

@@ -13,6 +13,7 @@ gate and what each status code means.
 |---|---|
 | `GET /healthz` | Liveness: the process is up. Never touches the database. The one route without a token. |
 | `GET /readyz` | Readiness: one `SELECT 1` against Postgres succeeds, else 503. |
+| `GET /status` | The search mode: `{"mode", "reason", "since"}`, where mode is `hybrid` or `text_only` and reason is `ok`, `ingestion`, `memory` or `database`. |
 | `POST /ask` | One question, streamed as server-sent events. |
 
 ## Limits
@@ -26,6 +27,11 @@ when its stream ends, however it ends.
 
 An answer that runs for 120 seconds ends with an `error` event whose code is `deadline`; the server
 also cancels the model call, so the answer stops rather than finishing invisibly.
+
+While the daily ingestion runs, or while the machine is short of memory, `GET /status` reports
+`text_only`: each answer starts with a `notice`, its searches run on the full-text branch alone,
+and its `answer.search_mode` is `text_only`. The page shows the notice and treats citations the
+same way; nothing else about the stream changes.
 
 ## The event stream
 

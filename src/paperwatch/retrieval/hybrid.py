@@ -142,7 +142,7 @@ def set_search_settings(session: Session, candidates: int) -> None:
 
 def hybrid_search(
     session: Session,
-    embedder: Embedder,
+    embedder: Embedder | None,
     query: str,
     k: int = 10,
     filters: Filters = _NO_FILTERS,
@@ -160,11 +160,12 @@ def hybrid_search(
     # An HNSW scan returns at most hnsw.ef_search rows and applies other filters after the
     # scan, so a large or filtered candidate set would under-fill; this sets it wide enough.
     set_search_settings(session, candidates)
-    qvec = embedder.embed([query])[0]
-    # Each branch returns the id, the score and the stable key. `shared_ranks` gives tied scores
-    # one rank each, so the fusion never sees the arbitrary order the index or the text sort
-    # returned equal rows in, and the stable key rides along for the equal-score sort below.
-    vec_rows = list(session.execute(vector_query(qvec, filters, candidates)))
+    # `None` is the keyword-only branch: while the ingestion needs the memory there is no model to
+    # embed with, so the text branch's own ranks are the ranking.
+    vec_rows: list[Any] = []
+    if embedder is not None:
+        qvec = embedder.embed([query])[0]
+        vec_rows = list(session.execute(vector_query(qvec, filters, candidates)))
     txt_rows = list(session.execute(text_query(query, filters, candidates)))
     scores: dict[uuid.UUID, float] = {}
     for branch_rows in (vec_rows, txt_rows):

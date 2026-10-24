@@ -17,8 +17,8 @@ import math
 import threading
 import time
 import traceback
-from collections.abc import Callable, Generator
-from contextlib import closing
+from collections.abc import Callable, Generator, Iterator
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -48,11 +48,12 @@ from paperwatch.agent.graph import (
     stream_answer,
 )
 from paperwatch.agent.sources import SourceRef, SourceRegistry
-from paperwatch.agent.tools import make_tools
+from paperwatch.agent.tools import SearchLog, make_tools
 from paperwatch.api.auth import Verifier, make_verifier
 from paperwatch.api.gate import ApiGate
 from paperwatch.api.limits import Admitted, Refused, RequestLimiter
 from paperwatch.api.pacing import paced
+from paperwatch.api.search_mode import SearchModeGate
 from paperwatch.config import (
     ANSWER_DEADLINE_S,
     ANSWER_POOL_OVERFLOW,
@@ -61,6 +62,7 @@ from paperwatch.config import (
     CONCURRENT_ANSWERS,
     LOOPBACK_HOSTS,
     PROFILES_PATH,
+    READ_POOL_SIZE,
     READY_CONCURRENCY,
     READY_TIMEOUT_S,
     REQUESTS_PER_DAY,
@@ -78,7 +80,7 @@ from paperwatch.llm.chat import (
     ModelUnavailable,
     make_chat_models,
 )
-from paperwatch.llm.embedder import Embedder, make_embedder
+from paperwatch.llm.embedder import Embedder, WorkerEmbedder, make_embedder
 from paperwatch.llm.ledger import BudgetExceeded, Ledger
 from paperwatch.retrieval.hybrid import Filters, hybrid_search
 from paperwatch.store.db import make_engine, make_session_factory
@@ -102,6 +104,19 @@ DEADLINE_MESSAGE = "the answer took too long; ask again"
 # The SSE comment line, not a named event: it carries no data, and a client's watchdog resets on
 # any received bytes.
 HEARTBEAT_FRAME = ": ping\n\n"
+# The notice a keyword-only answer starts with, so the page can explain the reduced search.
+TEXT_ONLY_MESSAGE = (
+    "Semantic search is paused while the corpus updates, so this answer uses keyword search."
+)
+
+
+@dataclass(frozen=True)
+class NoticeEvent:
+    """A mode notice sent before the answer: currently only `text_only`."""
+
+    code: Literal["text_only"]
+    message: str
+
 
 # The package's own directory, so `_failure_site` can tell the application's frames from a
 # library's by location. A checkout in a directory called `paperwatch` used to match every frame.
@@ -139,6 +154,12 @@ class AgentDeps:
     # would otherwise answer 503, which an orchestrator reads as "restart me".
     # The per-client limit in front of every model-spending request (Task 27).
     limiter: RequestLimiter
+    # The search mode: a running main pass or memory pressure switches answers to keyword-only.
+    search_mode: SearchModeGate
+    # The API opens one short read-only session per tool call through this factory, so an answer
+    # holds no connection while it waits for the model. Unset in tests and the CLI, where the
+    # tools use the caller's already read-only session.
+    read_session_factory: Callable[[], Session] | None = None
     ready_session_factory: Callable[[], Session] | None = None
 
 
@@ -162,6 +183,23 @@ def live_deps(settings: Settings) -> AgentDeps:
         max_overflow=0,
         pool_timeout=ANSWER_POOL_TIMEOUT_S,
     )
+    # The tools' own pool: a connection per tool call, so the answer pool's long-lived
+    # connections are not the API's normal state.
+    read_engine = make_engine(
+        settings.database_url,
+        pool_size=READ_POOL_SIZE,
+        max_overflow=0,
+        pool_timeout=ANSWER_POOL_TIMEOUT_S,
+    )
+    read_factory = make_session_factory(read_engine)
+    search_mode = SearchModeGate(read_factory, clock=lambda: datetime.now(UTC))
+    # The model lives in a child process and exits when idle or when the ingestion needs the memory
+    # (ADR 0013). Azure embeddings are the kept Azure proof, not the deployment: they run in
+    # process because there is no local model to release.
+    if settings.embedding_provider == "azure":
+        embedder: Embedder = make_embedder(settings, Ledger(settings.max_tokens_per_run))
+    else:
+        embedder = WorkerEmbedder(should_stop=lambda: search_mode.current().mode == "text_only")
     profiles = load_profiles(PROFILES_PATH)
     usage_factory = make_session_factory(usage_engine)
     # The tunnel's own host name is added to the loopback ones; unset means loopback only, and the
@@ -170,9 +208,7 @@ def live_deps(settings: Settings) -> AgentDeps:
     allowed_hosts = LOOPBACK_HOSTS | ({public_host} if public_host else set())
     return AgentDeps(
         session_factory=factory,
-        # Local embeddings need no token budget of their own; the ledger is here because
-        # `make_embedder` takes one, and it charges nothing on the local path.
-        embedder=make_embedder(settings, Ledger(settings.max_tokens_per_run)),
+        embedder=embedder,
         models=models,
         settings=settings,
         clock=lambda: datetime.now(UTC),
@@ -186,6 +222,8 @@ def live_deps(settings: Settings) -> AgentDeps:
             concurrent=CONCURRENT_ANSWERS,
             clock=lambda: datetime.now(UTC),
         ),
+        search_mode=search_mode,
+        read_session_factory=read_factory,
         ready_session_factory=usage_factory,
     )
 
@@ -277,6 +315,14 @@ class ErrorData(BaseModel):
     retry_at: datetime | None = None
 
 
+class StatusData(BaseModel):
+    """`GET /status`: the search mode the page reads on load."""
+
+    mode: Literal["hybrid", "text_only"]
+    reason: Literal["ok", "ingestion", "memory", "database"]
+    since: datetime | None = None
+
+
 class StreamItem(BaseModel):
     """Registration of the payload models, not the shape of the wire.
 
@@ -331,7 +377,8 @@ def run_question(
     question: str,
     filters: Filters,
     cancel: threading.Event | None = None,
-) -> Generator[AgentEvent | ErrorEvent, None, None]:
+    search_log: SearchLog | None = None,
+) -> Generator[AgentEvent | ErrorEvent | NoticeEvent, None, None]:
     """Drive one answer, yielding its events and closing its database session whatever happens.
 
     A new `SourceRegistry`, ledger and tool set is built per call: aliases and spending belong to
@@ -341,31 +388,55 @@ def run_question(
     token, and the round after a running tool is never sent. The API's response sets it the moment
     its disconnect listener fires; a caller that can be interrupted from outside (the CLI's
     Ctrl-C) passes its own event.
+
+    `search_log` records whether a search ran by keyword only, so the answer can carry
+    `search_mode`; the API passes the one its stream will read.
     """
     session: Session | None = None
     stream: Generator[AgentEvent, None, None] | None = None
     cancel = cancel if cancel is not None else threading.Event()
+    search_log = search_log if search_log is not None else SearchLog()
     # Created before the graph so the cap fallback below can see what the answer had already found.
     registry = SourceRegistry()
     try:
-        session = deps.session_factory()
-        # The tools only read, so the database enforces it: a bug, or a tool added later, cannot
-        # write to the corpus during an answer. SET TRANSACTION has to be the transaction's first
-        # statement, which is why nothing runs before it on this fresh session.
-        session.execute(text("SET TRANSACTION READ ONLY"))
+        decision = deps.search_mode.current()
+        if decision.mode == "text_only":
+            # The answer still runs; the page is told why its search is keyword-only.
+            search_log.text_only = True
+            yield NoticeEvent("text_only", TEXT_ONLY_MESSAGE)
+        # With a read factory the tools open one short read-only session per call and the answer
+        # holds no connection; without one (CLI, tests) it uses this session, made read-only once.
+        if deps.read_session_factory is None:
+            session = deps.session_factory()
+            # The tools only read, so the database enforces it: a bug, or a tool added later,
+            # cannot write to the corpus during an answer. SET TRANSACTION has to be the
+            # transaction's first statement, which is why nothing runs before it here.
+            session.execute(text("SET TRANSACTION READ ONLY"))
         guard = CallGuard(
             deps.chat_calls,
             Ledger(deps.settings.chat_max_tokens_per_answer),
             deps.settings.chat_max_calls_per_day,
             deps.clock,
         )
-        tools = make_tools(session, deps.embedder, registry, base_filters=filters)
+        tools = make_tools(
+            session,
+            deps.embedder,
+            registry,
+            base_filters=filters,
+            mode=lambda: deps.search_mode.current().mode,
+            search_log=search_log,
+            session_factory=deps.read_session_factory,
+        )
         graph = build_agent(deps.models, tools, registry, guard, cancel)
-        stream = stream_answer(graph, question, cancel, registry)
-        # Not `yield from`: closing a generator suspended in a yield-from closes the sub-generator
-        # before this frame can set the flag, and the flag has to be set first.
-        for event in stream:  # noqa: UP028 - a yield-from would close the stream before the flag
-            yield event
+        # The mode is read again per search, so an ingestion starting mid-answer switches the
+        # next search; the prewarm and the open-answer window only matter for a hybrid answer.
+        hybrid = decision.mode == "hybrid"
+        with _answer_window(deps.embedder, hybrid=hybrid):
+            stream = stream_answer(graph, question, cancel, registry)
+            # Not `yield from`: closing a generator suspended in a yield-from closes the
+            # sub-generator before this frame can set the flag, so the flag is set first.
+            for event in stream:  # noqa: UP028 - yield-from would close before the flag is set
+                yield event
     except AnswerAborted:
         # The consumer left (see `AnswerAborted`): there is nobody to report to. The `finally`
         # below still releases the session, and `ChatCallLog` has already committed any usage row.
@@ -373,7 +444,8 @@ def run_question(
     except DailyCapReached as exc:
         # The sheet stays useful: one search still runs, so the reader sees candidate sources
         # beside the message about the reset time (section 15's call).
-        yield from _cap_fallback(deps, session, question, filters, registry)
+        embedder = deps.embedder if deps.search_mode.current().mode == "hybrid" else None
+        yield from _cap_fallback(deps, session, embedder, question, filters, registry)
         yield ErrorEvent("daily_cap", str(exc), retry_at=_next_midnight(deps.clock()))
     except BudgetExceeded as exc:
         yield ErrorEvent("budget", str(exc))
@@ -412,15 +484,47 @@ def run_question(
                 session.close()
 
 
+@contextmanager
+def _answer_window(embedder: Embedder, *, hybrid: bool) -> Iterator[None]:
+    """Prewarm the model while the chat call thinks, and keep it alive until the answer ends."""
+    if not hybrid:
+        yield
+        return
+    prewarm = getattr(embedder, "prewarm", None)
+    if callable(prewarm):
+        prewarm()
+    opener = getattr(embedder, "answer_open", None)
+    if callable(opener):
+        with opener():
+            yield
+    else:
+        yield
+
+
 def _next_midnight(now: datetime) -> datetime:
     """The UTC midnight when the free tier's daily call count starts again."""
     today = now.astimezone(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
     return today + timedelta(days=1)
 
 
+@contextmanager
+def _read_scope(deps: AgentDeps, session: Session | None) -> Iterator[Session | None]:
+    if deps.read_session_factory is None:
+        yield session
+        return
+    short = deps.read_session_factory()
+    try:
+        short.execute(text("SET TRANSACTION READ ONLY"))
+        yield short
+    finally:
+        short.rollback()
+        short.close()
+
+
 def _cap_fallback(
     deps: AgentDeps,
     session: Session | None,
+    embedder: Embedder | None,
     question: str,
     filters: Filters,
     registry: SourceRegistry,
@@ -430,12 +534,17 @@ def _cap_fallback(
     A failure here is logged by type and skipped: the cap error is what the client needs, and a
     search that cannot run must not replace it with a traceback.
     """
-    if session is None or registry.all():
+    if registry.all():
         return
     try:
-        hits = hybrid_search(session, deps.embedder, question, k=CAP_FALLBACK_K, filters=filters)
-        details = Repository(session).admitted_details([hit.item_id for hit in hits])
-        refs = [registry.register(details[hit.item_id]) for hit in hits if hit.item_id in details]
+        with _read_scope(deps, session) as active:
+            if active is None:
+                return
+            hits = hybrid_search(active, embedder, question, k=CAP_FALLBACK_K, filters=filters)
+            details = Repository(active).admitted_details([hit.item_id for hit in hits])
+            refs = [
+                registry.register(details[hit.item_id]) for hit in hits if hit.item_id in details
+            ]
     except Exception as exc:  # noqa: BLE001 - the cap error must still reach the client
         log.warning("cap_fallback_search_failed", error_type=type(exc).__name__)
         return
@@ -568,7 +677,7 @@ def _source_payload(ref: SourceRef) -> SourceData:
     )
 
 
-def _answer_payload(answer: CheckedAnswer) -> AnswerData:
+def _answer_payload(answer: CheckedAnswer, search_log: SearchLog) -> AnswerData:
     flags = answer.flags
     if answer.text == NO_SUPPORT:
         # The fixed message replaces the model's text, so the flags describe words the reader
@@ -580,6 +689,7 @@ def _answer_payload(answer: CheckedAnswer) -> AnswerData:
         flags = ()
     return AnswerData(
         text=answer.text,
+        search_mode="text_only" if search_log.text_only else "hybrid",
         supported=answer.supported,
         citations=[
             CitationData(
@@ -625,12 +735,19 @@ def _stream(
 def _answer_frames(
     deps: AgentDeps, body: AskRequest, cancel: threading.Event
 ) -> Generator[str, None, None]:
+    # One log per answer: the tools mark it when a search runs by keyword only, and the answer
+    # event reads it so `search_mode` describes what actually produced the answer.
+    search_log = SearchLog()
     # closing() releases the database session as soon as this generator is closed (a client
     # disconnect) instead of waiting for garbage collection. The cancel event is the response's,
     # so the flag is set the moment the client leaves, not when this generator is closed.
-    with closing(run_question(deps, body.question, _filters(body), cancel)) as events:
+    with closing(run_question(deps, body.question, _filters(body), cancel, search_log)) as events:
         for event in events:
-            if isinstance(event, ToolEvent):
+            if isinstance(event, NoticeEvent):
+                yield _sse(
+                    "notice", NoticeData(code=event.code, message=event.message).model_dump()
+                )
+            elif isinstance(event, ToolEvent):
                 yield _sse(
                     "tool", ToolData(name=event.name, args=_json_safe(event.args)).model_dump()
                 )
@@ -646,7 +763,7 @@ def _answer_frames(
             elif isinstance(event, TokenEvent):
                 yield _sse("token", TokenData(text=event.text).model_dump())
             elif isinstance(event, AnswerEvent):
-                yield _sse("answer", _answer_payload(event.answer).model_dump())
+                yield _sse("answer", _answer_payload(event.answer, search_log).model_dump())
             else:
                 yield _sse(
                     "error",
@@ -780,6 +897,12 @@ def create_app(deps: AgentDeps) -> FastAPI:
         finally:
             limiter.release()
         return JSONResponse(content={"status": "ready"})
+
+    @app.get("/status", response_model=StatusData)
+    async def status() -> StatusData:
+        """The search mode the page reads on load: hybrid, or keyword-only and why."""
+        decision = deps.search_mode.current()
+        return StatusData(mode=decision.mode, reason=decision.reason, since=decision.since)
 
     @app.post(
         "/ask",

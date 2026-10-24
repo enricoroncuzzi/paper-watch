@@ -149,6 +149,27 @@ CONCURRENT_ANSWERS = 2
 ANSWER_DEADLINE_S = 120
 SSE_HEARTBEAT_S = 15
 
+# The embedding model in a child process (Task 28). With the model resident the API held 380-520 MB
+# all day next to an ingestion that peaks near 707 MB, and freeing it in process gave nothing back
+# to the kernel; exiting is the one release that always works. It exits after ten idle minutes,
+# never while an answer is open, and one question is clipped to 600 bytes because that is a query,
+# not a document.
+EMBED_WORKER_IDLE_S = 600
+EMBED_WORKER_TIMEOUT_S = 8.0
+QUERY_EMBED_MAX_BYTES = 600
+# The search mode is re-read at most this often, so a minute of answers does not query the run
+# table and /proc on every tool call. The ingestion's memory pressure can hit within that window;
+# the memory caps, not this cache, are the hard guarantee.
+SEARCH_MODE_CACHE_S = 2.0
+SEARCH_MODE_MIN_AVAILABLE_MB = 800
+SEARCH_MODE_MAX_PSI_SOME_AVG10 = 5.0
+# A row still marked running after this long is a killed run, not a pass to wait out; it is the
+# morning check's own stale-row limit.
+MAIN_PASS_MAX_AGE = timedelta(hours=3)
+# The API's read-only pool for one tool call: one per concurrent answer plus slack, because the
+# session is closed as soon as the tool returns.
+READ_POOL_SIZE = 4
+
 # The request gate (Task 26). 16 KB is far above the largest request the API takes (a points of
 # view box is capped at 2,000 characters), so a bigger body is a client bug or an attack.
 API_MAX_BODY_BYTES = 16_384

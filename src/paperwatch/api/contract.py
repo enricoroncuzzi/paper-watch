@@ -16,6 +16,7 @@ from typing import Any
 from paperwatch.api.app import AgentDeps, create_app
 from paperwatch.api.auth import HmacVerifier
 from paperwatch.api.limits import RequestLimiter
+from paperwatch.api.search_mode import SearchModeGate
 from paperwatch.config import (
     CONCURRENT_ANSWERS,
     LOOPBACK_HOSTS,
@@ -40,6 +41,19 @@ class _NoCalls:
         raise AssertionError("the contract build makes no chat call")
 
 
+class _NoRun:
+    """A session whose one query finds no running pass, so the gate stays hybrid."""
+
+    def __enter__(self) -> "_NoRun":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        return None
+
+    def scalar(self, statement: Any) -> None:
+        return None
+
+
 def build_contract() -> dict[str, Any]:
     """The OpenAPI document for the served app, built with stub dependencies."""
     deps = AgentDeps(
@@ -57,6 +71,12 @@ def build_contract() -> dict[str, Any]:
             per_day=REQUESTS_PER_DAY,
             concurrent=CONCURRENT_ANSWERS,
             clock=lambda: datetime.now(UTC),
+        ),
+        search_mode=SearchModeGate(
+            lambda: _NoRun(),  # type: ignore[arg-type,return-value]
+            clock=lambda: datetime.now(UTC),
+            read_meminfo=lambda: None,
+            read_psi=lambda: None,
         ),
     )
     return create_app(deps).openapi()

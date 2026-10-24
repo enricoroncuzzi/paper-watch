@@ -24,6 +24,14 @@ FINAL_ROUND_NOTE = (
     "You have used all tool calls for this question. Answer now from the sources you already have."
 )
 
+# Prepended to a search result while the semantic branch is paused (Task 28). It is tool output,
+# not a prompt, so `prompt_sha` does not change: the model's instructions are the same, and a QA
+# recording made before this note still replays under the same prompt.
+TEXT_ONLY_NOTE = (
+    "Semantic search is paused while the corpus updates. "
+    "Exact names and distinctive terms work best."
+)
+
 
 def prompt_sha() -> str:
     """A fingerprint of the prompts a QA recording was made with.

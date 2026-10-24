@@ -47,6 +47,7 @@ from paperwatch.api.app import (
 )
 from paperwatch.api.auth import HmacVerifier, mint_hmac_token
 from paperwatch.api.limits import Admitted, RequestLimiter
+from paperwatch.api.search_mode import ModeDecision
 from paperwatch.config import (
     ANSWER_POOL_OVERFLOW,
     ANSWER_POOL_SIZE,
@@ -61,7 +62,7 @@ from paperwatch.config import (
 )
 from paperwatch.domain import load_profiles
 from paperwatch.llm.chat import ChatModel, ScriptedChatModel
-from paperwatch.llm.embedder import FakeEmbedder
+from paperwatch.llm.embedder import FakeEmbedder, WorkerEmbedder
 from paperwatch.retrieval.hybrid import Filters
 from paperwatch.store.db import make_engine, make_session_factory
 from paperwatch.store.models import ChatCall
@@ -94,6 +95,16 @@ class AuthedClient(TestClient):
 def client(app: Any) -> AuthedClient:
     # localhost, not TestClient's default testserver, so the host allow-list accepts the request.
     return AuthedClient(app, base_url="http://localhost")
+
+
+class FixedMode:
+    """A search-mode gate with one answer, so an API test does not need a database or /proc."""
+
+    def __init__(self, decision: ModeDecision) -> None:
+        self.decision = decision
+
+    def current(self) -> ModeDecision:
+        return self.decision
 
 
 class MemoryChatCalls:
@@ -142,13 +153,15 @@ def deps(
     db_session: Session,
     models: list[ChatModel],
     store: MemoryChatCalls | None = None,
+    embedder: Any = None,
+    search_mode: Any = None,
     **settings: object,
 ) -> AgentDeps:
     # Every request reuses the test session so seeded rows are visible. run_question closes it;
     # with the fixture's savepoint join, the outer test transaction still rolls back.
     return AgentDeps(
         session_factory=lambda: db_session,  # type: ignore[arg-type,return-value]
-        embedder=FakeEmbedder(),
+        embedder=embedder or FakeEmbedder(),
         models=models,
         settings=Settings(**settings),  # type: ignore[arg-type]
         clock=lambda: NOW,
@@ -162,6 +175,7 @@ def deps(
             concurrent=CONCURRENT_ANSWERS,
             clock=lambda: NOW,
         ),
+        search_mode=search_mode or FixedMode(ModeDecision("hybrid", "ok")),
     )
 
 
@@ -321,7 +335,13 @@ def test_the_question_is_stripped_before_it_reaches_the_agent(
 ) -> None:
     seen: list[str] = []
 
-    def record(deps_: AgentDeps, question: str, filters: Filters, cancel: Any = None) -> Any:
+    def record(
+        deps_: AgentDeps,
+        question: str,
+        filters: Filters,
+        cancel: Any = None,
+        search_log: Any = None,
+    ) -> Any:
         seen.append(question)
         yield AnswerEvent(CheckedAnswer(NO_SUPPORT, (), (), False))
 
@@ -335,7 +355,13 @@ def test_request_filters_reach_the_answer(
 ) -> None:
     seen: list[Filters] = []
 
-    def record(deps_: AgentDeps, question: str, filters: Filters, cancel: Any = None) -> Any:
+    def record(
+        deps_: AgentDeps,
+        question: str,
+        filters: Filters,
+        cancel: Any = None,
+        search_log: Any = None,
+    ) -> Any:
         seen.append(filters)
         yield AnswerEvent(CheckedAnswer(NO_SUPPORT, (), (), False))
 
@@ -585,7 +611,13 @@ def test_closing_the_sse_stream_closes_the_answer(
     created: list[Any] = []
     handed: list[Any] = []
 
-    def answer(deps: AgentDeps, question: str, filters: Filters, cancel: Any = None) -> Any:
+    def answer(
+        deps: AgentDeps,
+        question: str,
+        filters: Filters,
+        cancel: Any = None,
+        search_log: Any = None,
+    ) -> Any:
         def events() -> Any:
             try:
                 yield ToolEvent("search_corpus", {"query": "x"})
@@ -1135,6 +1167,7 @@ def _dummy_deps() -> AgentDeps:
             concurrent=CONCURRENT_ANSWERS,
             clock=lambda: NOW,
         ),
+        search_mode=FixedMode(ModeDecision("hybrid", "ok")),
     )
 
 
@@ -1340,3 +1373,117 @@ def test_every_streamed_event_has_a_payload_model(db_session: Session, seed_item
         for ref in STREAM_ITEM_SCHEMA["properties"]["data"]["contentSchema"]["anyOf"]
     }
     assert referenced == {model.__name__ for model in models.values()}
+
+
+def test_status_reports_the_mode(db_session: Session) -> None:
+    # The page reads this on load, so it needs the mode, the reason and when an ingestion started.
+    since = NOW - timedelta(minutes=20)
+    decision = ModeDecision("text_only", "ingestion", since)
+    response = client(create_app(deps(db_session, [], search_mode=FixedMode(decision)))).get(
+        "/status"
+    )
+    assert response.status_code == 200
+    assert response.json() == {
+        "mode": "text_only",
+        "reason": "ingestion",
+        "since": since.isoformat().replace("+00:00", "Z"),
+    }
+
+
+def test_text_only_answers_send_a_notice_and_label_the_answer(db_session: Session) -> None:
+    # The page shows the notice before the first token, and the answer itself says which mode
+    # produced it, so a reduced answer is never mistaken for a hybrid one.
+    decision = ModeDecision("text_only", "ingestion", NOW - timedelta(minutes=5))
+    response = ask(
+        deps(db_session, scripted(AIMessage(ANSWER)), search_mode=FixedMode(decision)),
+        {"question": "q"},
+    )
+    received = events(response.text)
+    assert received[0][0] == "notice"
+    assert received[0][1]["code"] == "text_only"
+    answer = next(data for name, data in received if name == "answer")
+    assert answer["search_mode"] == "text_only"
+
+
+class _OrderModel(ScriptedChatModel):
+    """A scripted model that adds its calls to a shared order log."""
+
+    # `Any`, not `list[str]`: pydantic copies a validated list, and the test reads its own object.
+    order: Any
+
+    def _next(self, messages: Any, kwargs: Any) -> AIMessage:
+        self.order.append("model")
+        return super()._next(messages, kwargs)
+
+
+class _RecordingWorker(WorkerEmbedder):
+    """A WorkerEmbedder that records the prewarm and the answer window without spawning a child."""
+
+    def __init__(self, order: list[str]) -> None:
+        super().__init__()
+        self.order = order
+
+    def prewarm(self) -> None:
+        self.order.append("prewarm")
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        self.order.append("embed")
+        return FakeEmbedder().embed(texts)
+
+    @contextlib.contextmanager
+    def answer_open(self) -> Any:
+        self.order.append("open")
+        yield
+        self.order.append("closed")
+
+
+def test_hybrid_answers_prewarm_before_the_first_model_call(db_session: Session) -> None:
+    # Starting the child while the model thinks hides the model load; prewarming after the first
+    # token would not.
+    order: list[str] = []
+    worker = _RecordingWorker(order)
+    model = _OrderModel(script=[AIMessage(ANSWER)], order=order)
+    ask(deps(db_session, [ChatModel("openrouter", model)], embedder=worker), {"question": "q"})
+    assert order[0] == "prewarm"
+    assert order.index("prewarm") < order.index("model")
+    assert "open" in order and "closed" in order
+
+
+def test_a_running_child_is_stopped_when_the_mode_turns_keyword_only() -> None:
+    # While the ingestion needs the memory the child exits at the next reap, so the API gives the
+    # memory back instead of waiting for the ten idle minutes.
+    from paperwatch.api.search_mode import SearchModeGate
+
+    class _NoRun:
+        def __enter__(self) -> "_NoRun":
+            return self
+
+        def __exit__(self, *args: object) -> bool:
+            return False
+
+        def scalar(self, statement: Any) -> None:
+            return None
+
+    state = {"mode": "hybrid"}
+    gate = SearchModeGate(
+        lambda: _NoRun(),  # type: ignore[arg-type,return-value]
+        clock=lambda: NOW,
+        read_meminfo=lambda: None,
+        read_psi=lambda: None,
+    )
+    worker = WorkerEmbedder(
+        [sys.executable, str(FAKE_WORKER)], should_stop=lambda: state["mode"] == "text_only"
+    )
+    try:
+        worker.embed(["hello"])
+        assert worker.alive()
+        state["mode"] = "text_only"
+        worker.reap_once()
+        assert not worker.alive()
+    finally:
+        worker.stop()
+    # The gate itself is exactly what `should_stop` asks; this asserts the two agree.
+    assert gate.current().mode == "hybrid"
+
+
+FAKE_WORKER = Path(__file__).resolve().parents[1] / "helpers" / "fake_embed_worker.py"
