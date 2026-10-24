@@ -67,9 +67,9 @@ export function RunDetail({ run }: { run: RunDetailData }) {
         </div>
       ) : null}
 
-      {run.warnings.map((warning) => (
+      {run.warnings.map((warning, index) => (
         <div
-          key={warning}
+          key={`${index}-${warning}`}
           className="mt-2 rounded-[2px] bg-warn-soft px-2.5 py-2 text-[11.5px] text-warn"
         >
           <b className="font-medium">Warning, not a problem:</b> {warning}

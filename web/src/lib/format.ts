@@ -28,6 +28,27 @@ export function compactTokens(tokens: number): string {
   return String(tokens);
 }
 
+/**
+ * "Today", "Yesterday" or the date, in Rome. The strip shows the newest run whatever its date, so
+ * after a missed ingestion it must not still say "Today": the label is the reader's only cue.
+ */
+export function runDayLabel(startedAt: string, now: Date = new Date()): string {
+  const dayOf = (date: Date) =>
+    new Intl.DateTimeFormat("en-CA", {
+      timeZone: ROME,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(date);
+  const runDay = dayOf(new Date(startedAt));
+  if (runDay === dayOf(now)) return "Today";
+  if (runDay === dayOf(new Date(now.getTime() - 24 * 60 * 60 * 1000))) return "Yesterday";
+  return formatDay(startedAt);
+}
+
+/** The schedule the ingestion unit runs on, kept next to the page's copy of it. */
+export const RUN_SCHEDULE_LABEL = "daily 06:00 Europe/Rome · one run at a time";
+
 /** The feeds are whatever was fetched that arXiv was not; the counts carry no feeds key. */
 export function feedCount(counts: RunCounts): number {
   return Math.max(0, (counts.fetched ?? 0) - (counts.fetched_arxiv ?? 0));

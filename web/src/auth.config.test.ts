@@ -23,6 +23,12 @@ describe("the auth config", () => {
     expect(buildAuthConfig({ ALLOWED_GITHUB_ID: OWNER_ID }).providers).toHaveLength(1);
   });
 
+  it("sends sign-in errors to the styled page and keeps the session to a week", () => {
+    const config = buildAuthConfig({ ALLOWED_GITHUB_ID: OWNER_ID });
+    expect(config.pages?.error).toBe("/signin");
+    expect(config.session?.maxAge).toBe(7 * 24 * 60 * 60);
+  });
+
   it("sign-in accepts only the allowed numeric id", () => {
     // The login is the same and the id is not: a renamed or recycled login must not sign in.
     expect(isAllowedGithubProfile({ id: 9999, login: "owner" }, OWNER_ID)).toBe(false);

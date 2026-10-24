@@ -11,9 +11,14 @@ import type { RunDetailData } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
+// A route id that is not a UUID can only be a bad link: the API would answer 422, which reads as a
+// server error, so the page says "nothing here" without asking.
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export default async function RunPage({ params }: { params: Promise<{ id: string }> }) {
   const session = await requireOwner();
   const { id } = await params;
+  if (!UUID.test(id)) notFound();
   const result = await apiGet<RunDetailData>(`/runs/${encodeURIComponent(id)}`);
   if (!result.ok && result.kind === "not_found") notFound();
 

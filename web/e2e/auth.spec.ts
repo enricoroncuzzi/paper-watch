@@ -19,6 +19,14 @@ test("the e2e session signs in and reaches the page", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "Runs" })).toBeVisible();
 });
 
+test("a refused account lands on the styled sign-in page", async ({ page }) => {
+  await page.goto("/signin?error=AccessDenied");
+  await expect(page.getByTestId("signin-refused")).toContainText(
+    "That GitHub account is not the owner of this page.",
+  );
+  await expect(page.getByRole("button", { name: "Sign in with GitHub" })).toBeVisible();
+});
+
 test("an api route without a session is 401", async ({ request }) => {
   const response = await request.post("/api/ask", { data: { question: "anything" } });
   expect(response.status()).toBe(401);

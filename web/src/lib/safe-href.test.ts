@@ -24,6 +24,11 @@ describe("safeHref", () => {
     expect(safeHref(undefined)).toBeUndefined();
   });
 
+  it("returns the parser's normalised href", () => {
+    // A tab or newline inside a stored URL is dropped by the parser, not passed to the browser.
+    expect(safeHref("https://example.org\t/abs")).toBe("https://example.org/abs");
+  });
+
   it("refuses an invisible format character and an impossible port", () => {
     // A zero-width space and a bidi override are what a hostile stored URL uses to lie.
     expect(safeHref("https://example.org/\u200babs")).toBeUndefined();

@@ -11,7 +11,13 @@ async function signInAsTestOwner() {
   await signIn(E2E_PROVIDER_ID, { redirectTo: "/" });
 }
 
-export default function SignInPage() {
+export default async function SignInPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ error?: string }>;
+}) {
+  // Auth.js sends a refused sign-in here (pages.error) instead of its own unstyled page.
+  const { error } = await searchParams;
   // The test button is rendered only where the provider exists; the provider itself is the gate.
   const testOwner = e2eSessionAllowed(process.env);
   return (
@@ -22,6 +28,14 @@ export default function SignInPage() {
         A private reading room for the AI-research corpus. Sign in with the one GitHub account this
         page belongs to.
       </p>
+      {error ? (
+        <p
+          data-testid="signin-refused"
+          className="mt-5 max-w-[30rem] border border-bad/40 bg-bad-soft px-3.5 py-2.5 text-[12.5px] leading-[1.55] text-ink"
+        >
+          That GitHub account is not the owner of this page. Sign in with the account it belongs to.
+        </p>
+      ) : null}
       <form action={signInWithGithub} className="mt-8">
         <button
           type="submit"

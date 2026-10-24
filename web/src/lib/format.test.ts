@@ -6,6 +6,7 @@ import {
   followupLine,
   formatDay,
   formatRome,
+  runDayLabel,
   stripStatus,
   verdict,
 } from "./format";
@@ -67,6 +68,15 @@ describe("formatting", () => {
     expect(stripStatus(run({ warnings: ["a feed was quiet"] }))).toBe("warn");
     expect(stripStatus(run({ healthy: null }))).toBe("warn");
     expect(stripStatus(run({ healthy: false, problems: ["x"] }))).toBe("bad");
+  });
+
+  it("labels a run from an earlier day", () => {
+    const now = new Date("2026-10-24T09:00:00Z");
+    expect(runDayLabel("2026-10-24T04:00:00Z", now)).toBe("Today");
+    expect(runDayLabel("2026-10-23T04:00:00Z", now)).toBe("Yesterday");
+    expect(runDayLabel("2026-10-21T04:00:00Z", now)).toBe("21 Oct");
+    // 23:30 UTC on the 23rd is already the 24th in Rome, so it is today's run.
+    expect(runDayLabel("2026-10-23T23:30:00Z", now)).toBe("Today");
   });
 
   it("writes the waiting follow-up line", () => {

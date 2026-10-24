@@ -1,4 +1,4 @@
-import { followupLine, formatRome, stripStatus, verdict } from "@/lib/format";
+import { followupLine, formatRome, runDayLabel, stripStatus, verdict } from "@/lib/format";
 import type { TodayData } from "@/lib/types";
 
 const DOT_COLOR = { ok: "bg-ok shadow-[0_0_0_3px_var(--ok-soft)]", warn: "bg-warn shadow-[0_0_0_3px_var(--warn-soft)]", bad: "bg-bad shadow-[0_0_0_3px_var(--bad-soft)]" };
@@ -36,7 +36,13 @@ export function TodayStrip({ today }: { today: TodayData }) {
       data-testid="today-strip"
       className="flex flex-wrap items-center gap-x-2.5 gap-y-1 border-b border-rule py-2.5 text-[12px] text-ink-2"
     >
-      <span className="text-[9.5px] uppercase tracking-[0.14em] text-ink-3">Today</span>
+      <span
+        className={`text-[9.5px] uppercase tracking-[0.14em] ${
+          runDayLabel(run.started_at) === "Today" ? "text-ink-3" : "text-warn"
+        }`}
+      >
+        {runDayLabel(run.started_at)}
+      </span>
       <span aria-hidden="true" className={`h-1.5 w-1.5 rounded-full ${DOT_COLOR[status]}`} />
       <b className="font-medium text-ink">{formatRome(run.started_at)}</b>
       <span className="text-[10.5px] text-ink-3">Europe/Rome</span>

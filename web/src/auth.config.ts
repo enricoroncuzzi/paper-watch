@@ -47,8 +47,10 @@ export function buildAuthConfig(env: Env): NextAuthConfig {
 
   return {
     providers,
-    session: { strategy: "jwt" },
-    pages: { signIn: "/signin" },
+    // One owner on one page: a week is long enough to stay signed in and short enough that a
+    // stolen cookie ages out. Errors land on the styled sign-in page, not Auth.js's default page.
+    session: { strategy: "jwt", maxAge: 7 * 24 * 60 * 60 },
+    pages: { signIn: "/signin", error: "/signin" },
     callbacks: {
       signIn({ profile }) {
         if (!profile) return e2eAllowed;

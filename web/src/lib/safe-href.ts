@@ -16,13 +16,9 @@ export function safeHref(url: string | null | undefined): string | undefined {
     return undefined;
   }
   if (!ALLOWED_PROTOCOLS.has(parsed.protocol)) return undefined;
-  // A port outside 1-65535 makes URL throw in current runtimes, but a stored string is checked
-  // here rather than trusted to the parser version.
-  if (parsed.port) {
-    const port = Number(parsed.port);
-    if (!Number.isInteger(port) || port < 1 || port > 65535) return undefined;
-  }
-  return url;
+  // `URL` itself refuses a port outside 1-65535, and its `href` normalises the tabs and newlines a
+  // stored string can carry before the browser navigates to it.
+  return parsed.href;
 }
 
 /** The text to show for a stored URL: its host, so a misleading path is not what the reader sees. */

@@ -16,7 +16,9 @@ function currentTheme(): Theme {
 export function ThemeToggle() {
   function toggle() {
     const next = NEXT_THEME[currentTheme()];
-    document.cookie = `pw-theme=${next}; path=/; max-age=31536000; samesite=lax`;
+    // Secure on the real site; localhost is plain HTTP, where a Secure cookie is refused.
+    const secure = window.location.protocol === "https:" ? "; secure" : "";
+    document.cookie = `pw-theme=${next}; path=/; max-age=31536000; samesite=lax${secure}`;
     if (next === "system") {
       delete document.documentElement.dataset.theme;
     } else {

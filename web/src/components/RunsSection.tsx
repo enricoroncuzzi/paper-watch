@@ -1,14 +1,14 @@
 import Link from "next/link";
 
 import { EmptyState } from "@/components/SectionState";
-import { compactTokens, feedCount, formatDay, verdict } from "@/lib/format";
+import { compactTokens, feedCount, formatDay, RUN_SCHEDULE_LABEL, verdict } from "@/lib/format";
 import type { RunSummary } from "@/lib/types";
 
 const VERDICT_STYLE = { healthy: "text-ok", unhealthy: "text-bad", unknown: "text-warn" };
 
 function Cell({ label, value }: { label: string; value: string }) {
   return (
-    <div className="border-b border-r border-rule px-3 py-2.5 last:border-r-0 sm:border-b-0">
+    <div className="bg-card px-3 py-2.5">
       <span className="mb-1 block text-[9px] uppercase tracking-[0.13em] text-ink-3">{label}</span>
       <span
         className={`font-serif text-[24px] leading-none tracking-[-0.02em] ${
@@ -35,7 +35,7 @@ export function RunsSection({ runs }: { runs: RunSummary[] }) {
         <h2 id="runs-title" className="font-serif text-[24px] font-normal tracking-[-0.01em]">
           Runs
         </h2>
-        <span className="text-[11px] text-ink-3">daily 06:00 Europe/Rome · one run at a time</span>
+        <span className="text-[11px] text-ink-3">{RUN_SCHEDULE_LABEL}</span>
       </div>
       {!latest ? (
         <EmptyState
@@ -45,7 +45,7 @@ export function RunsSection({ runs }: { runs: RunSummary[] }) {
         />
       ) : (
         <>
-          <div className="mt-3 grid grid-cols-3 border border-rule bg-card sm:grid-cols-6">
+          <div className="mt-3 grid grid-cols-3 gap-px border border-rule bg-rule sm:grid-cols-6">
             <Cell label="arxiv" value={String(latest.counts.fetched_arxiv)} />
             <Cell label="feeds" value={String(feedCount(latest.counts))} />
             <Cell label="stored" value={String(latest.counts.stored)} />
@@ -53,9 +53,9 @@ export function RunsSection({ runs }: { runs: RunSummary[] }) {
             <Cell label="failed" value={String(latest.counts.failed)} />
             <Cell label="tokens" value={compactTokens(latest.tokens)} />
           </div>
-          {latest.warnings.map((warning) => (
+          {latest.warnings.map((warning, index) => (
             <div
-              key={warning}
+              key={`${index}-${warning}`}
               className="mt-2.5 flex items-start gap-2 rounded-[2px] bg-warn-soft px-2.5 py-2 text-[11.5px] text-warn"
             >
               <svg
