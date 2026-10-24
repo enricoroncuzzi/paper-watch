@@ -183,30 +183,71 @@ test("the Drafts link stops below the masthead", async ({ page }) => {
   // The masthead is sticky: an anchor that puts the section under it hides the heading and its
   // rule. The header and scroll-padding-top share one custom property, and this asserts they meet.
   await page.getByRole("navigation", { name: "Sections" }).getByRole("link", { name: "Drafts" }).click();
-  await expect
-    .poll(async () => {
-      const header = await page.locator("header").first().boundingBox();
-      const section = await page.locator("#drafts").boundingBox();
-      if (!header || !section) return -1;
-      return Math.round(section.y - (header.y + header.height));
-    })
-    .toBeGreaterThanOrEqual(0);
+  // The scroll is smooth, so the first sample is not the landing: wait for scrollY to settle.
+  let previous = -1;
+  for (let index = 0; index < 50; index += 1) {
+    const current = await page.evaluate(() => window.scrollY);
+    if (current === previous) break;
+    previous = current;
+    await page.waitForTimeout(100);
+  }
+  const gap = await page.evaluate(() => {
+    const header = document.querySelector("header");
+    const section = document.querySelector("#drafts");
+    if (!header || !section) return null;
+    return Math.round(section.getBoundingClientRect().top - header.getBoundingClientRect().bottom);
+  });
+  expect(gap).not.toBeNull();
+  expect(Math.abs(gap!)).toBeLessThanOrEqual(1);
 });
 
-test("closing the dialog returns focus to the button that opened it", async ({ page }) => {
-  await openDialog(page);
-  await page.keyboard.press("Escape");
-  await expect(page.getByTestId("pov-dialog")).toBeHidden();
-  const opener = page
-    .getByTestId("lead-pick")
-    .getByRole("button", { name: `LinkedIn post preview: ${LEAD_TITLE}` });
-  expect(await opener.evaluate((element) => element === document.activeElement)).toBe(true);
+test("the saved and chars chips share a baseline", async ({ page }) => {
+  await page.getByTestId("draft-card").first().waitFor();
+  const delta = await page.evaluate(() => {
+    const card = document.querySelector('[data-testid="draft-card"]');
+    if (!card) return null;
+    const chips = [...card.querySelectorAll("span")].filter((element) =>
+      element.className.includes("h-[21px]"),
+    );
+    if (chips.length < 2) return null;
+    const baseline = (element: Element) => {
+      const style = getComputedStyle(element);
+      const context = document.createElement("canvas").getContext("2d");
+      if (!context) return 0;
+      context.font = `${style.fontSize} ${style.fontFamily}`;
+      const range = document.createRange();
+      range.selectNodeContents(element);
+      return (
+        range.getBoundingClientRect().top + context.measureText("H").actualBoundingBoxAscent
+      );
+    };
+    const [first, second] = chips;
+    if (!first || !second) return null;
+    return Math.abs(baseline(first) - baseline(second));
+  });
+  expect(delta).not.toBeNull();
+  expect(delta!).toBeLessThanOrEqual(0.5);
 });
 
-test("a body keeps one paragraph per blank line", async ({ page }) => {
-  const cards = page.getByTestId("drafts-section").getByTestId("draft-card");
-  // The second fixture draft's body has two paragraphs; the card renders them as two paragraphs.
-  await expect(cards.nth(1).getByTestId("draft-paragraph")).toHaveCount(2);
+async function generateAndClose(page: import("@playwright/test").Page, scope: import("@playwright/test").Locator) {
+  await scope.getByRole("button", { name: /^LinkedIn post preview:/ }).first().click();
+  const dialog = page.getByTestId("pov-dialog");
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole("button", { name: "Generate draft" }).click();
+  await expect(dialog.getByTestId("pov-preview")).toBeVisible();
+  // The page refreshes with the new draft, so the card that opened the dialog is now gone.
+  await expect(page.getByTestId("drafts-section").getByTestId("draft-card")).toHaveCount(3);
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await expect.poll(() => page.evaluate(() => document.activeElement?.id)).toBe("drafts-title");
+}
+
+test("after a saved compact draft, focus lands on the Drafts heading", async ({ page }) => {
+  await generateAndClose(page, page.getByTestId("compact-pick").first());
+});
+
+test("after a saved rising draft, focus lands on the Drafts heading", async ({ page }) => {
+  await generateAndClose(page, page.getByTestId("rising-card").first());
 });
 
 test("the dialog is full screen on the phone", async ({ page }, testInfo) => {

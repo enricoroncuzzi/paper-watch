@@ -17,8 +17,9 @@ const PREVIEW_CHARS = 220;
 
 const SMALL =
   "inline-flex h-11 items-center rounded-[2px] border border-rule-2 px-2.5 text-[11.5px] font-medium text-ink hover:border-ink hover:bg-card sm:h-7";
-// The two chips differ only in font; the sans one is nudged 0.5 px down so their baselines meet.
-const CHIP = "inline-flex h-[21px] items-center rounded-[2px] border border-rule px-2 text-[10.5px] leading-none text-ink-2";
+// Both chips use the one font: the mockup's mixed mono/sans pair put their baselines 0.75 px
+// apart in Chromium, and a font is the only nudge that holds in every engine.
+const CHIP = "inline-flex h-[21px] items-center rounded-[2px] border border-rule px-2 font-mono text-[10.5px] leading-none text-ink-2";
 
 function headline(draft: Draft): string {
   // "saved today 12:41" reads as one label; a date keeps its capital ("saved Oct 21 12:41").
@@ -38,6 +39,7 @@ export function DraftCard({ draft }: { draft: Draft }) {
   const [detail, setDetail] = useState<DraftDetail | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
+  const [detailFailed, setDetailFailed] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const text = linkedinText(draft);
@@ -56,11 +58,13 @@ export function DraftCard({ draft }: { draft: Draft }) {
       const response = await fetch(`/api/drafts/${draft.id}`, { cache: "no-store" });
       if (!response.ok) {
         const body = await response.json().catch(() => null);
+        setDetailFailed(true);
         setError(draftFailureMessage(response.status, body));
         return;
       }
       setDetail((await response.json()) as DraftDetail);
     } catch {
+      setDetailFailed(true);
       setError("The point of view could not be loaded. Try again.");
     } finally {
       setLoadingDetail(false);
@@ -97,8 +101,8 @@ export function DraftCard({ draft }: { draft: Draft }) {
         <span className="text-[12px] text-ink-2">
           From <b className="font-medium text-ink">{draft.item_title}</b>
         </span>
-        <span className={`${CHIP} font-mono`}>saved {headline(draft)}</span>
-        <span className={`${CHIP} pt-[0.5px]`}>{draft.chars.toLocaleString("en-GB")} chars</span>
+        <span className={CHIP}>saved {headline(draft)}</span>
+        <span className={CHIP}>{draft.chars.toLocaleString("en-GB")} chars</span>
         {draft.regenerated_from ? <span className={CHIP}>Regenerated</span> : null}
         <div className="ml-auto flex flex-wrap items-center gap-1.5">
           <CopyButton text={text} title={draft.item_title} />
@@ -132,7 +136,13 @@ export function DraftCard({ draft }: { draft: Draft }) {
             className="mb-2.5 whitespace-pre-line font-serif text-[17.5px] leading-[1.62] text-ink"
           >
             {paragraph}
-            {!open && preview.truncated && index === paragraphs.length - 1 ? "..." : ""}
+            {/* A cut at a full stop needs no marker; the Open button already says there is more. */}
+            {!open &&
+            preview.truncated &&
+            index === paragraphs.length - 1 &&
+            !/[.!?]$/.test(paragraph)
+              ? "..."
+              : ""}
           </p>
         ))}
         {draft.hashtags.length > 0 ? (
@@ -150,6 +160,8 @@ export function DraftCard({ draft }: { draft: Draft }) {
             </p>
             {loadingDetail && !detail ? (
               <p className="text-[12px] text-ink-3">Loading...</p>
+            ) : detailFailed ? (
+              <p className="text-[12px] text-ink-3">Could not load the point of view.</p>
             ) : (
               <p className="whitespace-pre-line border-l-2 border-accent pl-3 font-serif text-[15px] leading-[1.55] text-ink-2">
                 {detail?.pov || "No point of view was written for this draft."}

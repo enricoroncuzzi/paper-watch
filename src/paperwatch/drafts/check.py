@@ -62,45 +62,62 @@ _URL = re.compile(
     re.IGNORECASE,
 )
 _FIRST_PERSON = re.compile(
-    r"\b(?:i|i'm|i've|i'd|i'll|my|mine|we|we're|we've|we'd|we'll|our|ours|us)\b"
+    r"\b(?:i|i'm|i've|i'd|i'll|my|mine|we|we're|we've|we'd|we'll|our|ours)\b"
 )
-# The experiences a draft may not invent. Each stem's own forms are matched, so a draft that says
-# "built" is allowed only by a point of view that says "build" or "built".
+# "us" is a first person only in lower case: "A US lab" is a country, not the owner.
+_LOWER_US = re.compile(r"\bus\b")
+# A first-person subject standing right before the verb it supports: "I", "we", their
+# contractions, or a possessive with its noun ("my team", "our traces").
+_SUBJECT = re.compile(
+    r"\b(?:(?P<pronoun>i|we)(?:'ve|'d|'m|'re|'ll)?|"
+    r"(?P<possessive>my|our)\s+(?P<noun>\w+))(?![a-z0-9])"
+)
+# The experiences a draft may not invent: each stem's forms for the draft side, and its simple
+# present for telling a present claim from a past one.
 _EXPERIENCE_VERBS: tuple[tuple[str, re.Pattern[str], re.Pattern[str]], ...] = tuple(
-    (stem, re.compile(rf"\b(?:{forms})\b"), re.compile(rf"\b(?:{asserted})\b"))
-    for stem, forms, asserted in (
-        ("build", "build|builds|building|built", "built"),
-        ("test", "test|tests|tested|testing", "tested"),
-        ("try", "try|tries|tried|trying", "tried"),
-        ("use", "use|uses|used|using", "used"),
-        # "run" is its own participle, so the perfect form is spelled out; the simple past is "ran".
-        ("run", "run|runs|ran|running", "ran|(?:have|has|had|'ve) run"),
-        ("ship", "ship|ships|shipped|shipping", "shipped"),
-        ("deploy", "deploy|deploys|deployed|deploying", "deployed"),
-        ("implement", "implement|implements|implemented|implementing", "implemented"),
-        ("benchmark", "benchmark|benchmarks|benchmarked|benchmarking", "benchmarked"),
-        ("evaluate", "evaluate|evaluates|evaluated|evaluating", "evaluated"),
-        ("measure", "measure|measures|measured|measuring", "measured"),
-        ("train", "train|trains|training|trained", "trained"),
-        ("reproduce", "reproduce|reproduces|reproducing|reproduced", "reproduced"),
-        ("replicate", "replicate|replicates|replicating|replicated", "replicated"),
+    (stem, re.compile(rf"\b(?:{forms})\b"), re.compile(rf"\b(?:{present})\b"))
+    for stem, forms, present in (
+        ("build", "build|builds|building|built", "build|builds"),
+        ("test", "test|tests|tested|testing", "test|tests"),
+        ("try", "try|tries|tried|trying", "try|tries"),
+        ("use", "use|uses|used|using", "use|uses"),
+        ("run", "run|runs|ran|running", "run|runs"),
+        ("ship", "ship|ships|shipped|shipping", "ship|ships"),
+        ("deploy", "deploy|deploys|deployed|deploying", "deploy|deploys"),
+        ("implement", "implement|implements|implemented|implementing", "implement|implements"),
+        ("benchmark", "benchmark|benchmarks|benchmarked|benchmarking", "benchmark|benchmarks"),
+        ("evaluate", "evaluate|evaluates|evaluated|evaluating", "evaluate|evaluates"),
+        ("measure", "measure|measures|measured|measuring", "measure|measures"),
+        ("train", "train|trains|training|trained", "train|trains"),
+        ("reproduce", "reproduce|reproduces|reproducing|reproduced", "reproduce|reproduces"),
+        ("replicate", "replicate|replicates|replicating|replicated", "replicate|replicates"),
         (
             "fine-tune",
             "fine-tune|fine-tunes|fine-tuning|fine-tuned|fine tuned",
-            "fine-tuned|fine tuned",
+            "fine-tune|fine-tunes|fine tune|fine tunes",
         ),
-        ("adopt", "adopt|adopts|adopting|adopted", "adopted"),
-        ("integrate", "integrate|integrates|integrating|integrated", "integrated"),
-        ("develop", "develop|develops|developing|developed", "developed"),
-        ("launch", "launch|launches|launching|launched", "launched"),
-        ("write", "write|writes|writing|wrote|written", "wrote|written"),
+        ("adopt", "adopt|adopts|adopting|adopted", "adopt|adopts"),
+        ("integrate", "integrate|integrates|integrating|integrated", "integrate|integrates"),
+        ("develop", "develop|develops|developing|developed", "develop|develops"),
+        ("launch", "launch|launches|launching|launched", "launch|launches"),
+        ("write", "write|writes|writing|wrote|written", "write|writes"),
     )
 )
-# A point of view that only intends, negates or doubts an experience does not license a claim that
-# it already happened. One marker anywhere in the sentence is enough to withhold support.
+_VERB_BY_STEM = {stem: (loose, present) for stem, loose, present in _EXPERIENCE_VERBS}
+# A clause that only intends, negates or doubts an experience does not license a claim that it
+# already happened. Checked per clause, so one clause's marker cannot withhold another's support.
 _INTENT_OR_NEGATION = re.compile(
-    r"\b(?:not|never|would|will|want to|plan to|going to|might|could|should|hope to|if|yet)\b|n't"
+    r"\b(?:not|never|would|will|want to|plan to|going to|might|could|should|hope to|if|yet|"
+    r"no|none|nothing|nobody|without|unless|whether|wish|may|maybe|perhaps|ought)\b"
+    r"|n't|'ll|'d have"
 )
+# The words a verb may be separated from its subject by: hyphens stay in one token, so a
+# "fine-tuned" is one form.
+_VERB_WORD = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+# The clause boundaries that keep a marker local. "and"/"but" join clauses and a full stop ends
+# one, so "I built a harness and want to test it" supports the build.
+_CLAUSE_SPLIT = re.compile(r"[\n;,.]|\bbut\b|\band\b")
+
 # A verb that turns a sentence into a report of someone else's claim.
 _ATTRIBUTION_VERB = re.compile(
     r"\b(?:reports?|reported|says?|said|claims?|claimed|announces?|announced|writes?|wrote|"
@@ -110,6 +127,27 @@ _ATTRIBUTION_VERB = re.compile(
 _ATTRIBUTION_CUE = re.compile(
     r"\b(?:reports?|reported|says?|said|claims?|claimed|announces?|announced|writes?|wrote|"
     r"describes?|described|according to|the authors|preprints?)\b"
+)
+# Words that do not name a lab on their own. "AI" stays out: it is a name in config/feeds.yaml,
+# and a word-boundary match already keeps it from matching "said".
+_LAB_STOP_WORDS = frozenset(
+    {
+        "the",
+        "of",
+        "and",
+        "for",
+        "inc",
+        "ltd",
+        "llc",
+        "corp",
+        "corporation",
+        "company",
+        "group",
+        "team",
+        "research",
+        "labs",
+        "lab",
+    }
 )
 _EARLY = re.compile(r"\bearly\b")
 _NOT_YET_REVIEWED = re.compile(
@@ -169,7 +207,7 @@ def check_draft(draft: DraftText, source: DraftSource, *, pov: str) -> DraftChec
     _check_numbers(body_text, evidence, counts, found)
     _check_quotes(text, folded_store, folded_pov, counts, found)
     _check_links(draft, text, source, folded_pov, counts, found)
-    _check_first_person(text, folded_pov, counts, found)
+    _check_first_person(text, pov, counts, found)
     _check_attribution(text, source, counts, found)
     _check_preprint_numbers(body_text, source, counts, found)
     _check_early_notice(text, source, counts, found)
@@ -291,22 +329,26 @@ def _check_links(
 
 def _check_first_person(
     text: str,
-    folded_pov: str,
+    pov: str,
     counts: dict[FlagKind, list[int]],
     found: dict[FlagKind, list[DraftFlag]],
 ) -> None:
-    pov_sentences = [_normalise(sentence) for sentence in _SENTENCE.split(folded_pov)]
+    clauses = _pov_clauses(pov)
     for sentence in _sentences(text):
         folded = _normalise(sentence)
-        if _FIRST_PERSON.search(folded) is None:
+        if not _has_first_person(sentence, folded):
             continue
-        stems = [
-            stem for stem, loose, _asserted in _EXPERIENCE_VERBS if loose.search(folded) is not None
-        ]
-        if not stems:
+        verbs = _draft_verbs(folded)
+        if not verbs:
             continue
         counts["first_person"][0] += 1
-        unsupported = [stem for stem in stems if not _pov_supports(stem, pov_sentences)]
+        subject = _first_subject(folded)
+        unsupported = [
+            stem
+            for stem, present in verbs.items()
+            if subject is None
+            or not _pov_supports(stem, clauses, subject=subject, draft_present=present)
+        ]
         if not unsupported:
             counts["first_person"][1] += 1
             continue
@@ -320,6 +362,37 @@ def _check_first_person(
         )
 
 
+def _has_first_person(sentence: str, folded: str) -> bool:
+    # "us" counts only in lower case: "A US lab" is a country, not the owner.
+    return _FIRST_PERSON.search(folded) is not None or _LOWER_US.search(sentence) is not None
+
+
+def _draft_verbs(folded: str) -> dict[str, bool]:
+    """Each experience stem's first form in a sentence, and whether it is a simple present."""
+    forms: dict[str, bool] = {}
+    for stem, loose, present in _EXPERIENCE_VERBS:
+        match = loose.search(folded)
+        if match is None:
+            continue
+        before = folded[: match.start()].split()
+        perfect = bool(before) and before[-1] in ("have", "has", "had")
+        forms[stem] = present.fullmatch(match.group(0)) is not None and not perfect
+    return forms
+
+
+def _first_subject(folded: str) -> tuple[str, str | None] | None:
+    match = _SUBJECT.search(folded)
+    if match is None:
+        return None
+    if match.group("pronoun"):
+        return ("pronoun", None)
+    return ("possessive", match.group("noun"))
+
+
+def _pov_clauses(pov: str) -> list[str]:
+    return [_normalise(part) for part in _CLAUSE_SPLIT.split(pov) if part.strip()]
+
+
 def _check_attribution(
     text: str,
     source: DraftSource,
@@ -328,17 +401,26 @@ def _check_attribution(
 ) -> None:
     if source.tier != "lab_blog":
         return
-    if not source.org:
+    if not source.org or not source.org.strip():
         # Nothing to check against: a lab post without a stored organisation cannot be held to a
         # name, and inventing the requirement would flag every such draft.
         return
     counts["attribution"][0] = 1
-    # The first token names the lab: "LangChain Team" is still "LangChain reports ...", and a
-    # word-boundary match keeps "AI" from being found inside "said".
-    name = _normalise(source.org).split()[0]
+    # Any non-stop-word token of the label names the lab: "Google DeepMind" accepts "DeepMind
+    # reports", and "OpenAI, Inc." accepts "OpenAI reports". Punctuation is not part of a name,
+    # and a word boundary keeps "AI" from being found inside "said".
+    names = [
+        token
+        for token in re.findall(r"[a-z0-9]+", _normalise(source.org))
+        if token not in _LAB_STOP_WORDS
+    ]
+    if not names:
+        return
     for sentence in _sentences(text):
         folded = _normalise(sentence)
-        named = re.search(rf"(?<!\w){re.escape(name)}(?!\w)", folded) is not None
+        named = any(
+            re.search(rf"(?<!\w){re.escape(name)}(?!\w)", folded) is not None for name in names
+        )
         if named and _ATTRIBUTION_VERB.search(folded) is not None:
             counts["attribution"][1] = 1
             return
@@ -481,16 +563,43 @@ def _links(text: str) -> list[str]:
     ]
 
 
-def _pov_supports(stem: str, pov_sentences: list[str]) -> bool:
-    # Only a point-of-view sentence that makes the claim in the past licenses it: it needs a
-    # first-person word, a past or perfect form of the stem, and no negation or intention marker.
-    asserted = {name: pattern for name, _loose, pattern in _EXPERIENCE_VERBS}[stem]
-    return any(
-        _FIRST_PERSON.search(candidate) is not None
-        and _INTENT_OR_NEGATION.search(candidate) is None
-        and asserted.search(candidate) is not None
-        for candidate in pov_sentences
-    )
+def _pov_supports(
+    stem: str,
+    clauses: list[str],
+    *,
+    subject: tuple[str, str | None],
+    draft_present: bool,
+) -> bool:
+    """Whether a point-of-view clause makes this claim itself, with the same subject and tense."""
+    loose, present = _VERB_BY_STEM[stem]
+    for clause in clauses:
+        if _INTENT_OR_NEGATION.search(clause) is not None or clause.rstrip().endswith("?"):
+            continue
+        for match in _SUBJECT.finditer(clause):
+            if not _same_subject(match, subject):
+                continue
+            words = _VERB_WORD.findall(clause[match.end() :])
+            for skip in range(3):
+                if skip >= len(words):
+                    break
+                form = words[skip]
+                if loose.fullmatch(form) is None:
+                    continue
+                # "used to" is a habit, not an experience.
+                if form == "used" and words[skip + 1 : skip + 2] == ["to"]:
+                    continue
+                perfect = any(word in ("have", "has", "had") for word in words[:skip])
+                is_present = present.fullmatch(form) is not None and not perfect
+                if is_present == draft_present:
+                    return True
+    return False
+
+
+def _same_subject(match: re.Match[str], subject: tuple[str, str | None]) -> bool:
+    kind, noun = subject
+    if match.group("pronoun"):
+        return kind == "pronoun"
+    return kind == "possessive" and match.group("noun") == noun
 
 
 def _url_key(url: str) -> str:

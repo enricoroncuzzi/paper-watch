@@ -123,7 +123,13 @@ export function PovDialog({
             // Focus returns to whatever opened the dialog, so a keyboard user does not restart at
             // the top of the page.
             event.preventDefault();
-            returnFocus?.focus();
+            if (returnFocus?.isConnected) {
+              returnFocus.focus();
+              return;
+            }
+            // A saved draft takes its item off the page, so the opener no longer exists: the
+            // Drafts heading is the next useful place for a keyboard or screen-reader reader.
+            document.getElementById("drafts-title")?.focus();
           }}
           className="fixed inset-0 z-[95] flex h-[100dvh] w-full flex-col overflow-hidden border border-rule bg-card shadow-[var(--shadow)] sm:inset-auto sm:left-1/2 sm:top-1/2 sm:max-h-[min(86dvh,760px)] sm:w-[min(660px,94vw)] sm:-translate-x-1/2 sm:-translate-y-1/2"
         >

@@ -794,3 +794,28 @@ def test_the_real_draft_chain_denies_data_collection_and_logs_nothing(
     assert phrase in json.dumps(body)
     captured = json.dumps(logs, default=str) + caplog.text
     assert phrase not in captured
+
+
+def test_a_regenerate_with_too_little_text_spends_no_limiter_slot(db_session: Session) -> None:
+    item_id = seed_item(db_session)
+    first = client(db_session, draft_service(db_session, [scripted()])).post(
+        "/drafts", json={"item_id": str(item_id)}
+    )
+    row = db_session.get_one(Item, item_id)
+    row.text = "Too short to draft from now."
+    db_session.commit()
+
+    # A fresh limiter with one slot: the 422 must not spend it.
+    limiter = RequestLimiter(
+        per_minute=1,
+        per_day=REQUESTS_PER_DAY,
+        concurrent=CONCURRENT_ANSWERS,
+        clock=Clock(),
+    )
+    model = scripted()
+    api = client(db_session, draft_service(db_session, [model], limiter=limiter))
+    assert api.post(f"/drafts/{first.json()['id']}/regenerate", json={}).status_code == 422
+
+    good = seed_item(db_session, "good")
+    assert api.post("/drafts", json={"item_id": str(good)}).status_code == 201
+    assert len(model.model.seen) == 1

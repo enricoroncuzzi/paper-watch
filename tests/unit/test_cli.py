@@ -1647,3 +1647,10 @@ def test_draft_refuses_an_unknown_item(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert result.exit_code == 2
     assert "no admitted item" in result.output
+
+
+def test_draft_rejects_a_language_with_a_newline() -> None:
+    # The CLI shares the route's validator: a language is a code, never a second prompt line.
+    result = CliRunner().invoke(app, ["draft", str(uuid4()), "--language", "en\nx", "--live"])
+    assert result.exit_code == 2
+    assert "language must be a language code" in result.output

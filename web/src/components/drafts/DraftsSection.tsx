@@ -20,7 +20,9 @@ export function DraftsSection({ drafts }: { drafts: Draft[] }) {
         </span>
         <h2
           id="drafts-title"
-          className="font-serif text-[24px] font-normal tracking-[-0.01em] sm:text-[27px]"
+          // Focus lands here after a saved draft removed the button that opened the dialog.
+          tabIndex={-1}
+          className="font-serif text-[24px] font-normal tracking-[-0.01em] outline-none sm:text-[27px]"
         >
           Drafts
         </h2>
