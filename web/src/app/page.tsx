@@ -2,6 +2,7 @@ import { Suspense } from "react";
 
 import { requireOwner } from "@/auth";
 import { Footer } from "@/components/Footer";
+import { AskPill } from "@/components/ask/AskPill";
 import { Masthead } from "@/components/Masthead";
 import { RunsSection } from "@/components/RunsSection";
 import { ErrorState, LoadingState } from "@/components/SectionState";
@@ -45,6 +46,7 @@ export default async function Home() {
         <RunsSectionData />
       </Suspense>
       <Footer />
+      <AskPill />
     </main>
   );
 }

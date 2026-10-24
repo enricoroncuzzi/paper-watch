@@ -1,0 +1,117 @@
+import { expect, test, type Page } from "@playwright/test";
+
+import { setScenario, signIn } from "./helpers";
+
+// Ask, end to end against the fake API: the pill, the sheet, the streamed trace and answer, the
+// citation superscripts, every error state and the phone layout.
+
+async function openSheet(page: Page): Promise<void> {
+  await page.getByRole("button", { name: /Ask the corpus/ }).click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+}
+
+async function ask(page: Page, question: string): Promise<void> {
+  const sheet = page.getByRole("dialog");
+  await sheet.getByRole("textbox", { name: "Your question" }).fill(question);
+  await sheet.getByRole("button", { name: "Send the question" }).click();
+  await expect(sheet.getByTestId("asked-question")).toHaveText(question);
+}
+
+test.beforeEach(async ({ page, request }) => {
+  await setScenario(request, "normal");
+  await signIn(page);
+});
+
+test("asking streams tools, tokens and a checked answer", async ({ page }) => {
+  await openSheet(page);
+  await ask(page, "What do coding agents measure?");
+
+  const sheet = page.getByRole("dialog");
+  await expect(sheet.getByTestId("trace")).toContainText("search_corpus");
+  await expect(sheet.getByTestId("answer")).toContainText(
+    "Coding agents are measured on real repository bugs",
+  );
+  // A citation becomes a superscript only in the checked answer.
+  await expect(sheet.getByTestId("answer").locator("sup")).toHaveCount(1);
+  await expect(sheet.getByTestId("sources")).toContainText("SWE-bench Verified");
+  await expect(sheet.getByTestId("sources")).toContainText("peer_reviewed");
+  await expect(sheet.getByTestId("sources")).toContainText("arxiv.org");
+});
+
+test("the daily cap shows the reset time and the matching items", async ({ page, request }) => {
+  await setScenario(request, "daily_cap");
+  await openSheet(page);
+  await ask(page, "What do coding agents measure?");
+
+  const error = page.getByTestId("ask-error");
+  await expect(error).toContainText("The daily model limit is spent.");
+  await expect(error).toContainText("02:00 Europe/Rome");
+  await expect(error).toContainText("Matching items");
+  await expect(error).toContainText("SWE-bench Verified");
+});
+
+test("keyword-only answers show the notice", async ({ page, request }) => {
+  await setScenario(request, "text_only");
+  await openSheet(page);
+  await ask(page, "What do agents remember?");
+
+  await expect(page.getByTestId("notice")).toContainText(
+    "Semantic search is paused while the corpus updates",
+  );
+  await expect(page.getByTestId("answer")).toContainText("Long-horizon agents plan better");
+});
+
+test("a dropped stream shows connection lost", async ({ page, request }) => {
+  await setScenario(request, "drop");
+  await openSheet(page);
+  await ask(page, "What do coding agents measure?");
+
+  await expect(page.getByTestId("ask-error")).toContainText("The connection dropped. Ask again.");
+});
+
+test("a slow answer keeps the caret while heartbeats arrive", async ({ page, request }) => {
+  await setScenario(request, "slow");
+  await openSheet(page);
+  await ask(page, "What do coding agents measure?");
+
+  const sheet = page.getByRole("dialog");
+  await expect(sheet.getByTestId("caret")).toBeVisible();
+  // Still streaming: the citation is literal text in the draft, not a link yet.
+  await expect(sheet.getByTestId("answer").locator("sup")).toHaveCount(0);
+
+  // The answer arrives after the heartbeats: the caret goes and the superscript appears.
+  await expect(sheet.getByTestId("answer").locator("sup")).toHaveCount(1, { timeout: 15_000 });
+  await expect(sheet.getByTestId("caret")).toHaveCount(0);
+});
+
+test("command enter opens the sheet and sends", async ({ page }) => {
+  await page.keyboard.press("ControlOrMeta+Enter");
+  const sheet = page.getByRole("dialog");
+  await expect(sheet).toBeVisible();
+  await sheet.getByRole("textbox", { name: "Your question" }).fill("What do coding agents measure?");
+  await page.keyboard.press("ControlOrMeta+Enter");
+  await expect(sheet.getByTestId("answer")).toContainText("Coding agents are measured");
+});
+
+test("the sheet is full screen on the phone and the composer sits above the safe area", async ({
+  page,
+}, testInfo) => {
+  test.skip(!testInfo.project.name.includes("iphone"), "checked on the iPhone project");
+  await openSheet(page);
+  await ask(page, "What do coding agents measure?");
+
+  const viewport = page.viewportSize();
+  expect(viewport).not.toBeNull();
+  const sheet = await page.getByRole("dialog").boundingBox();
+  expect(sheet).not.toBeNull();
+  expect(sheet!.width).toBeGreaterThanOrEqual(viewport!.width - 1);
+  expect(sheet!.height).toBeGreaterThanOrEqual(viewport!.height - 1);
+
+  const composer = page.getByTestId("composer");
+  await expect(composer).toHaveCSS("font-size", "16px");
+  const box = await composer.boundingBox();
+  expect(box).not.toBeNull();
+  // Above the safe area and inside the screen: the composer is the last thing above the home bar.
+  expect(box!.y + box!.height).toBeLessThanOrEqual(viewport!.height);
+  expect(box!.y + box!.height).toBeGreaterThanOrEqual(viewport!.height - 160);
+});

@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 
 import { requireOwner } from "@/auth";
 import { Footer } from "@/components/Footer";
+import { AskPill } from "@/components/ask/AskPill";
 import { Masthead } from "@/components/Masthead";
 import { RunDetail } from "@/components/RunDetail";
 import { ErrorState } from "@/components/SectionState";
@@ -25,6 +26,7 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
         <ErrorState kind={result.kind} testId="run-error" detail="GET /runs/{id}" />
       )}
       <Footer />
+      <AskPill />
     </main>
   );
 }

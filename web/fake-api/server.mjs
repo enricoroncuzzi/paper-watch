@@ -22,6 +22,7 @@ const SCENARIOS = new Set([
   "unhealthy",
   "followup",
   "text_only",
+  "daily_cap",
   "slow",
   "drop",
 ]);
