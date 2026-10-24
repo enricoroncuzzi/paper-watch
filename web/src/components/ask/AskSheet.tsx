@@ -79,10 +79,14 @@ export function AskSheet({
     const question = draft.trim();
     if (!question || streaming) return;
     setAskedAt(new Date().toISOString());
-    // The draft stays in the composer until the answer is checked, so an error or a drop leaves
-    // the question where the reader typed it; only a finished answer clears it.
+    // The composer empties at send time, so it never repeats the question shown above the answer,
+    // and whatever the reader types while the answer streams is theirs to keep. A failed ask puts
+    // the question back, but only when nothing else has been typed since.
+    setDraft("");
     const status = await ask(question);
-    if (status === "done") setDraft("");
+    if (status === "error" || status === "dropped") {
+      setDraft((current) => (current === "" ? question : current));
+    }
   }
 
   function onKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {

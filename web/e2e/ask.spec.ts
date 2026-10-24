@@ -107,6 +107,34 @@ test("a rate-limited ask shows the wait", async ({ page, request }) => {
   );
 });
 
+test("the composer is empty while streaming and keeps what the reader types", async ({
+  page,
+  request,
+}) => {
+  await setScenario(request, "slow");
+  await openSheet(page);
+  await ask(page, "What do coding agents measure?");
+
+  const composer = page.getByTestId("composer");
+  // Sent, not yet answered: the composer holds nothing while the slow stream runs.
+  await expect(composer).toHaveValue("");
+
+  const typed = "A different follow-up I am typing";
+  await composer.fill(typed);
+  await expect(page.getByTestId("answer").locator("sup")).toHaveCount(1, { timeout: 15_000 });
+  // The finished answer must not wipe what the reader typed while it streamed.
+  await expect(composer).toHaveValue(typed);
+});
+
+test("a failed ask puts the question back in the composer", async ({ page, request }) => {
+  await setScenario(request, "refused");
+  await openSheet(page);
+  await ask(page, "What do coding agents measure?");
+
+  await expect(page.getByTestId("ask-error")).toContainText("Too many questions right now");
+  await expect(page.getByTestId("composer")).toHaveValue("What do coding agents measure?");
+});
+
 test("a slow answer keeps the caret while heartbeats arrive", async ({ page, request }) => {
   await setScenario(request, "slow");
   await openSheet(page);
