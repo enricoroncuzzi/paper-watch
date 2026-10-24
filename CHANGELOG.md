@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.9.0](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.8.0...paperwatch-v0.9.0) (2026-10-24)
+
+
+### Features
+
+* **web:** add the private page on Vercel with sign-in, today strip, Runs and Ask ([#45](https://github.com/enricoroncuzzi/paper-watch/issues/45)) ([f925b94](https://github.com/enricoroncuzzi/paper-watch/commit/f925b94031e449736d13a6540a6bf76ebb4df130))
+
+
+### Bug Fixes
+
+* let the memory gate count the model child it would free ([#53](https://github.com/enricoroncuzzi/paper-watch/issues/53)) ([8c56e57](https://github.com/enricoroncuzzi/paper-watch/commit/8c56e575f2bde107a4fe4ad2e5a453bcc7c2f41f))
+
 ## [0.8.0](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.7.1...paperwatch-v0.8.0) (2026-10-24)
 
 
