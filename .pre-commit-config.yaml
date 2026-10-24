@@ -2,7 +2,7 @@
 repos:
   # Lint (auto-fixing what it can) and format Python.
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.17.0
+    rev: v0.17.1
     hooks: [{id: ruff-check, args: [--fix]}, {id: ruff-format}]
   # Blocks commits that contain secrets such as API keys.
   - repo: https://github.com/gitleaks/gitleaks
