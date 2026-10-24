@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.1](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.10.0...paperwatch-v0.10.1) (2026-10-24)
+
+
+### Bug Fixes
+
+* match summary superlatives as whole words ([#61](https://github.com/enricoroncuzzi/paper-watch/issues/61)) ([af42527](https://github.com/enricoroncuzzi/paper-watch/commit/af425273aaa26a7f01cd08b4a5c90ab4f59bbde6))
+
 ## [0.10.0](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.9.2...paperwatch-v0.10.0) (2026-10-24)
 
 
