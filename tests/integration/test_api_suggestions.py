@@ -437,6 +437,24 @@ def test_asking_about_an_item_registers_it_as_s1(db_session: Session) -> None:
     assert answer.answer.citations[0].item_id == item_id
 
 
+def test_the_ask_route_forwards_item_id_to_the_answer(db_session: Session) -> None:
+    item_id = seed_item(db_session, "swe")
+    model = ScriptedChatModel(script=[AIMessage(content="It is a 41-task benchmark [S1].")])
+    api = client(db_session, NoQueue(), models=[ChatModel("openrouter", model)])
+
+    response = api.post("/ask", json={"question": "What does it measure?", "item_id": str(item_id)})
+
+    assert response.status_code == 200
+    # Over HTTP too, the model sees the item before any tool runs, and the answer cites it as S1.
+    asked = "\n".join(str(message.content) for message in model.seen[0])
+    assert "The reader is asking about S1." in asked
+    assert TITLE in asked
+    frames = [block for block in response.text.split("\n\n") if block.startswith("event: answer")]
+    [answer] = [json.loads(frame.split("data: ", 1)[1]) for frame in frames]
+    assert answer["supported"] is True
+    assert [(c["id"], c["item_id"]) for c in answer["citations"]] == [("S1", str(item_id))]
+
+
 def test_asking_about_a_non_admitted_item_is_422(db_session: Session) -> None:
     api = client(db_session, NoQueue())
 

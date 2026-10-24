@@ -831,7 +831,10 @@ def _answer_frames(
     # closing() releases the database session as soon as this generator is closed (a client
     # disconnect) instead of waiting for garbage collection. The cancel event is the response's,
     # so the flag is set the moment the client leaves, not when this generator is closed.
-    with closing(run_question(deps, body.question, _filters(body), cancel, search_log)) as events:
+    events = run_question(
+        deps, body.question, _filters(body), cancel, search_log, item_id=body.item_id
+    )
+    with closing(events):
         for event in events:
             if isinstance(event, NoticeEvent):
                 yield _sse(
