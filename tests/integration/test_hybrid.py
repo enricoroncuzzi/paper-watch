@@ -1,4 +1,5 @@
 import math
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -22,6 +23,18 @@ from paperwatch.store.repository import Repository
 
 pytestmark = pytest.mark.integration
 E = FakeEmbedder()
+
+
+@pytest.fixture(autouse=True)
+def _vacuum_items(engine: Engine) -> Iterator[None]:
+    # Every test in this module inserts items and rolls them back, so the shared container's HNSW
+    # index collects dead tuples across the whole session. An index scan capped at ef_search rows
+    # can then return none of a test's fresh rows, which made the vector-rank assertions flaky.
+    # VACUUM reclaims them; it must run outside the test's own transaction, which is why this is
+    # an autouse fixture that only depends on the engine.
+    with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+        conn.execute(text("VACUUM (ANALYZE) items"))
+    yield
 
 
 def seed(session: Session) -> None:
