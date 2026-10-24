@@ -402,5 +402,17 @@ def test_a_websocket_scope_needs_the_credential() -> None:
     client = TestClient(gated, base_url="http://localhost")
     with pytest.raises(WebSocketDisconnect), client.websocket_connect("/ws"):
         pass
+    with (
+        pytest.raises(WebSocketDisconnect),
+        client.websocket_connect("/ws", headers={"Authorization": "Bearer bad"}),
+    ):
+        pass
+    # A good token is not enough if the host is not allowed.
+    foreign = TestClient(
+        ApiGate(app, verifier=StubVerifier(), allowed_hosts=LOOPBACK_HOSTS),
+        base_url="http://localhost",
+    )
+    with pytest.raises(WebSocketDisconnect), foreign.websocket_connect("/ws", headers=_auth()):
+        pass
     with client.websocket_connect("/ws", headers=_auth()) as socket:
         assert socket.receive_text() == "open"

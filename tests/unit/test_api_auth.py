@@ -159,6 +159,20 @@ def test_oidc_refuses(case: str) -> None:
     assert verifier.verify(token) is None
 
 
+def test_a_claim_mismatch_log_is_clipped() -> None:
+    # The claim is caller-influenced and unbounded; the log line must not carry all of it (A20).
+    from structlog.testing import capture_logs
+
+    private, _, jwk = _key()
+    verifier = _verifier(private, jwk)
+    token = _token(private, aud="a" * 500)
+    with capture_logs() as logs:
+        assert verifier.verify(token) is None
+    [entry] = [entry for entry in logs if entry["event"] == "token_claim_mismatch"]
+    assert entry["claim"] == "aud"
+    assert len(entry["got"]) <= 120
+
+
 def test_leeway_accepts_thirty_seconds_of_clock_skew() -> None:
     private, _, jwk = _key()
     verifier = _verifier(private, jwk)

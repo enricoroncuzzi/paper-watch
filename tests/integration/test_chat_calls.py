@@ -5,8 +5,7 @@ from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 from langchain_core.messages import AIMessage
-from sqlalchemy import text
-from sqlalchemy import Engine, delete, func, select
+from sqlalchemy import Engine, delete, func, select, text
 from sqlalchemy.orm import Session
 
 from paperwatch.config import CHAT_CALLS_LOCK_KEY

@@ -1575,6 +1575,33 @@ def test_a_disconnect_before_the_stream_starts_releases_the_slot() -> None:
     assert released == [1]
 
 
+def test_the_cap_fallback_in_text_only_mode_does_not_start_the_model(
+    db_session: Session,
+) -> None:
+    # P14: a spent cap during an ingestion must not embed (and so start the child) for the
+    # fallback search.
+    order: list[str] = []
+    worker = _RecordingWorker(order)
+    store = MemoryChatCalls()
+    store.record_chat_call(
+        at=NOW, provider="openrouter", model=UNKNOWN_MODEL, input_tokens=0, output_tokens=0
+    )
+    decision = ModeDecision("text_only", "ingestion", NOW - timedelta(minutes=5))
+    response = ask(
+        deps(
+            db_session,
+            scripted(AIMessage(ANSWER)),
+            store=store,
+            embedder=worker,
+            search_mode=FixedMode(decision),
+            chat_max_calls_per_day=1,
+        ),
+        {"question": "q"},
+    )
+    assert events(response.text)[-1][1]["code"] == "daily_cap"
+    assert order == []
+
+
 def test_the_stream_uses_the_configured_heartbeat_and_deadline(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1685,7 +1712,8 @@ def test_the_cap_fallback_search_is_read_only(db_session: Session, engine: Engin
     app_deps.chat_calls = store
     app_deps.settings = Settings(_env_file=None, chat_max_calls_per_day=1)
     received = list(run_question(app_deps, "q", Filters()))
-    assert [type(event) for event in received][-1] is not None
+    assert isinstance(received[-1], api.ErrorEvent)
+    assert received[-1].code == "daily_cap"
     assert any("SET TRANSACTION READ ONLY" in statement for statement in log)
 
 

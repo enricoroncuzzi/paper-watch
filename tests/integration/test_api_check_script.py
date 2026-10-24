@@ -8,6 +8,7 @@ ungated app is a plain FastAPI app with its default docs routes, which the scrip
 import contextlib
 import os
 import shlex
+import shutil
 import socket
 import subprocess
 import sys
@@ -172,3 +173,62 @@ def test_api_check_fails_when_docs_are_open() -> None:
     assert result.returncode == 1
     assert "FAIL: docs need a credential" in result.stdout
     assert "all checks passed" not in result.stdout
+
+
+def test_api_check_never_puts_the_token_on_curl_argv(engine: Engine, tmp_path: Path) -> None:
+    # K1-K4: the token must travel in a 0600 header file, never in argv, and the private temp
+    # directory (with the header file) must be gone when the script exits.
+    real_curl = shutil.which("curl")
+    assert real_curl is not None
+    log = tmp_path / "curl.log"
+    stub = tmp_path / "bin"
+    stub.mkdir()
+    (stub / "systemctl").write_text("#!/bin/sh\nexit 1\n")
+    (stub / "systemctl").chmod(0o755)
+    wrapper = stub / "curl"
+    wrapper.write_text(
+        "#!/bin/sh\n"
+        f"printf 'ARGV %s\\n' \"$*\" >> {shlex.quote(str(log))}\n"
+        "live=$(find \"$TMPDIR\" -name 'header.*' 2>/dev/null | wc -l | tr -d ' ')\n"
+        f"printf 'LIVE %s\\n' \"$live\" >> {shlex.quote(str(log))}\n"
+        "for arg do\n"
+        '  case "$arg" in\n'
+        "    @*)\n"
+        "      file=${arg#@}\n"
+        "      mode=$(python3 -c 'import os,stat,sys;print(oct(stat.S_IMODE(os.stat(sys.argv[1]).st_mode)))' \"$file\")\n"
+        f'      printf \'HEADER %s %s\\n\' "$mode" "$(cat "$file")" >> {shlex.quote(str(log))}\n'
+        "      ;;\n"
+        "  esac\n"
+        "done\n"
+        f'exec {shlex.quote(real_curl)} "$@"\n'
+    )
+    wrapper.chmod(0o755)
+    mint = tmp_path / "mint.py"
+    mint.write_text(
+        "import time\n"
+        "from paperwatch.api.auth import mint_hmac_token\n"
+        f"print(mint_hmac_token({SECRET!r}, 'check', time.time()))\n"
+    )
+    command = f"{shlex.quote(sys.executable)} {shlex.quote(str(mint))}"
+    tmpdir = tmp_path / "tmp"
+    tmpdir.mkdir()
+    env = {
+        **os.environ,
+        "PW_CHECK_TOKEN_CMD": command,
+        "PATH": f"{stub}{os.pathsep}{os.environ.get('PATH', '')}",
+        "TMPDIR": str(tmpdir),
+    }
+    env.pop("PW_CHECK_TOKEN", None)
+    with _served(create_app(_deps(engine))) as base:
+        result = _run(base, env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    lines = log.read_text().splitlines()
+    argv = [line for line in lines if line.startswith("ARGV ")]
+    # The 20 KB body is also an @file argument; only the Authorization line is a header.
+    headers = [line for line in lines if line.startswith("HEADER ") and "Authorization:" in line]
+    assert headers, "the curl stub saw no header file"
+    assert all(line.startswith("HEADER 0o600 ") for line in headers)
+    assert not any("Bearer" in line for line in argv)
+    live = [int(line.split()[1]) for line in lines if line.startswith("LIVE ")]
+    assert live and max(live) <= 1, "a header file outlived its request"
+    assert list(tmpdir.iterdir()) == [], "the private temp directory outlived the check"
