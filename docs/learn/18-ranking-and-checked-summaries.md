@@ -64,3 +64,43 @@ chosen`, with `lambda` at 0.7, so a list of five variations on one idea becomes 
 others. A per-profile quota of three stops one topic filling the page, and if no lab post survived
 all of that, the highest-scoring pick-grade one replaces the lowest pick. Ties break by
 `(source, external_id)`, never by database id, so a replay is reproducible.
+
+## A summary a model writes reads as true whether or not it is
+
+So the model must hand back, for the claims that matter, the exact sentence it took them from, and
+code checks that sentence is in the stored text, that every number and name it used is there too,
+and that it did not add a superlative. Opinions are allowed only in fields the page labels as
+interpretation. When the checks fail twice, the card shows the abstract's own first sentences
+instead: an honest excerpt beats a fluent invention.
+
+`src/paperwatch/suggestions/prompts.py` holds the prompt and its version (`s1`), and the source goes
+into the same escaped `<source>` block the agent's tools use (`agent/prompts.py` `source_block`), so
+an abstract containing `</source>` and "ignore previous instructions" is data here too.
+
+`check_summary` in `src/paperwatch/suggestions/summary.py` returns the names of the checks that
+failed, and an empty list means the summary is checked. Every comparison normalises both sides
+first: NFKC, curly quotes and dashes folded to ASCII, whitespace collapsed, case folded. Then:
+
+- **Shape.** All four fields, each with a non-empty `text`; `what` and `result` also carry a `quote`.
+- **Quotes.** A quote must be a substring of the stored text, word for word. This is the check that
+  makes the other three meaningful: a model that cannot copy a sentence has not read the source.
+- **Numbers.** Every number in every field (`41%`, `1,000`, `3.1`) must appear in the title or the
+  text, compared without spaces or thousands separators. A number is the easiest thing for a model
+  to drift on, and the most costly for a reader to trust wrongly.
+- **Names.** Every name-like token must appear too: anything with a digit (`GPT-5`), a capital
+  inside the word (`OpenAI`), a hyphen between letters, or a capital where a sentence does not
+  require one. That is a heuristic, not a parser, and it is deliberately over-eager: a false
+  positive costs one retry, a missed invented benchmark costs the reader's trust.
+- **Superlatives.** `state-of-the-art`, `breakthrough`, `first` and four more may only be used when
+  the source uses them; a claim of novelty is the sentence a reader would quote back at us.
+- **Length.** One sentence of at most 35 words per field, at most 110 words in total: the card is a
+  30-second read, and a summary that needs more is an excerpt with extra steps.
+
+`why` and `catch` are the interpretation fields: they need no quote and are labelled as
+interpretation wherever they are shown, and the catch may be exactly "Not stated in the abstract."
+A failed check earns exactly one retry whose message names the failed checks, so the model learns
+what code rejected instead of being told to "be careful". A second failure, or unparseable JSON
+twice, stores `status="excerpt"` with the abstract's first two sentences (at most 60 words) and the
+failed check names, so a reviewer can see the rate and the reason rather than a silent fallback. A
+`DailyCapReached`, `BudgetExceeded` or `ModelUnavailable` is not a check failure: it propagates, and
+the queue that asked for the summary decides when to retry.

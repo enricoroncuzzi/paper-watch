@@ -5,6 +5,7 @@ its eval result, not through an environment variable a deployment could silently
 """
 
 import hashlib
+import html
 
 SYSTEM_PROMPT = """You answer questions about a private corpus of AI research papers and lab
 blog posts.
@@ -31,6 +32,20 @@ TEXT_ONLY_NOTE = (
     "Semantic search is paused while the corpus updates. "
     "Exact names and distinctive terms work best."
 )
+
+
+def source_block(title: str, text: str, *, head: str = "<source>", meta: str | None = None) -> str:
+    """One escaped `<source>` block: the only shape stored text is ever shown to a model in.
+
+    Stored text is untrusted data. Escaping `&`, `<` and `>` keeps it from closing this block or
+    opening another, and the model is told that everything inside is data. The agent's tools and
+    the summary writer share this, so no future caller has to remember the rule.
+    """
+    lines = [head, html.escape(title, quote=False)]
+    if meta is not None:
+        lines.append(html.escape(meta, quote=False))
+    lines += [html.escape(text, quote=False), "</source>"]
+    return "\n".join(lines)
 
 
 def prompt_sha() -> str:
