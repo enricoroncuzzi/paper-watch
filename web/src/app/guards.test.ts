@@ -37,13 +37,15 @@ const RUN_ID = "11111111-1111-4111-8111-111111111111";
 describe("the per-page owner guard", () => {
   it("the home page refuses an anonymous render", async () => {
     await expect(Home()).rejects.toThrow("NEXT_REDIRECT:/signin");
-    expect(requireOwner).toHaveBeenCalled();
+    expect(requireOwner).toHaveBeenCalledTimes(1);
   });
 
   it("the run page refuses an anonymous render", async () => {
     await expect(RunPage({ params: Promise.resolve({ id: RUN_ID }) })).rejects.toThrow(
       "NEXT_REDIRECT:/signin",
     );
-    expect(requireOwner).toHaveBeenCalledTimes(2);
+    // Vitest 5 clears mock calls before each test, so this count covers this render alone: the run
+    // page must call the guard exactly once, not lean on another test having called it before.
+    expect(requireOwner).toHaveBeenCalledTimes(1);
   });
 });
