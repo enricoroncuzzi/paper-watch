@@ -1,6 +1,6 @@
 import { defineConfig, devices } from "@playwright/test";
 
-import { API_URL, BASE_URL, FAKE_API_PORT, PORT, REUSE_EXISTING_SERVER } from "./e2e/servers";
+import { API_URL, BASE_URL, FAKE_API_PORT, PORT } from "./e2e/servers";
 
 // The e2e suite runs against the fake API only: it never reaches the real server, holds no key
 // and calls no model. One worker, because the fake API keeps a single global scenario.
@@ -30,16 +30,16 @@ export default defineConfig({
     {
       command: "node fake-api/server.mjs",
       url: `${API_URL}/healthz`,
-      // Off unless asked for: a fixed port may hold another checkout's build, and a run that
-      // attached to it would report the wrong code as green.
-      reuseExistingServer: REUSE_EXISTING_SERVER,
+      // A fixed port may hold another checkout's build, and a run that attached to it would report
+      // the wrong code as green.
+      reuseExistingServer: false,
       env: { FAKE_API_PORT: String(FAKE_API_PORT) },
       stdout: "pipe",
     },
     {
       command: SERVER_COMMAND,
       url: `${BASE_URL}/signin`,
-      reuseExistingServer: REUSE_EXISTING_SERVER,
+      reuseExistingServer: false,
       timeout: 300_000,
       // The test-only session and the fake API are the only credentials a test has.
       env: {
