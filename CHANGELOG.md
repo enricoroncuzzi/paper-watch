@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.7.0...paperwatch-v0.7.1) (2026-10-24)
+
+
+### Bug Fixes
+
+* mark runs that stored the Hugging Face listing ([#41](https://github.com/enricoroncuzzi/paper-watch/issues/41)) ([e917ea9](https://github.com/enricoroncuzzi/paper-watch/commit/e917ea9223d4a0b574c5af6cced7a35ad4635062))
+
 ## [0.7.0](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.6.6...paperwatch-v0.7.0) (2026-10-24)
 
 
