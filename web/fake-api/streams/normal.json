@@ -1,0 +1,38 @@
+[
+  { "event": "tool", "data": { "name": "search_corpus", "args": { "query": "coding agents evaluation" } }, "delay_ms": 40 },
+  { "event": "step", "data": { "round": 1, "ms": 412, "new_sources": 1 }, "delay_ms": 120 },
+  {
+    "event": "source",
+    "data": {
+      "id": "S1",
+      "item_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "title": "SWE-bench Verified: coding agents on real repository bugs",
+      "url": "https://arxiv.org/abs/2601.00001",
+      "tier": "peer_reviewed",
+      "basis": "venue"
+    },
+    "delay_ms": 60
+  },
+  { "event": "token", "data": { "text": "Coding agents are measured " }, "delay_ms": 90 },
+  { "event": "token", "data": { "text": "on real repository bugs [S1]." }, "delay_ms": 90 },
+  {
+    "event": "answer",
+    "data": {
+      "text": "Coding agents are measured on real repository bugs [S1].",
+      "search_mode": "hybrid",
+      "supported": true,
+      "citations": [
+        {
+          "id": "S1",
+          "item_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "title": "SWE-bench Verified: coding agents on real repository bugs",
+          "url": "https://arxiv.org/abs/2601.00001",
+          "tier": "peer_reviewed",
+          "basis": "venue"
+        }
+      ],
+      "flags": []
+    },
+    "delay_ms": 120
+  }
+]

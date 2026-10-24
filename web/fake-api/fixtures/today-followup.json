@@ -1,0 +1,30 @@
+{
+  "run": {
+    "id": "33333333-3333-4333-8333-333333333333",
+    "started_at": "2026-10-24T04:00:00Z",
+    "finished_at": "2026-10-24T06:40:00Z",
+    "status": "partial",
+    "healthy": true,
+    "problems": [],
+    "warnings": ["s2 refused, follow-up passes still running"],
+    "counts": {
+      "fetched": 38,
+      "fetched_arxiv": 30,
+      "stored": 8,
+      "new": 3,
+      "irrelevant": 18,
+      "failed": 0,
+      "admitted_late": 0,
+      "followup_passes": 3,
+      "s2_refused": 12
+    },
+    "tokens": 640,
+    "followup": {
+      "pass": 3,
+      "of": 40,
+      "next_at": "2026-10-24T08:30:00Z",
+      "pending_s2": 12
+    }
+  },
+  "search": { "mode": "hybrid", "reason": "ok", "since": null }
+}

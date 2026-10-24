@@ -1,0 +1,121 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import { apiGet } from "./api";
+
+function respond(status: number, body: unknown, headers: Record<string, string> = {}) {
+  return new Response(JSON.stringify(body), { status, headers });
+}
+
+describe("apiGet", () => {
+  beforeEach(() => {
+    // The e2e credential is the one a unit test can mint without Vercel or a secret.
+    vi.stubEnv("PW_API_URL", "http://api.test");
+    vi.stubEnv("PW_API_AUTH", "e2e");
+    vi.stubEnv("PW_E2E_SESSION", "1");
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  it("returns the parsed body and sends the bearer token", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(respond(200, { runs: [] }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await apiGet<{ runs: unknown[] }>("/runs");
+
+    expect(result).toEqual({ ok: true, data: { runs: [] } });
+    const [, init] = fetchMock.mock.calls[0]!;
+    expect(init.headers.authorization).toBe("Bearer e2e");
+    expect(init.cache).toBe("no-store");
+  });
+
+  it("maps 401, 429, 503 and 404 to section errors", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(respond(401, { detail: "unauthorized" })));
+    expect(await apiGet("/runs")).toEqual({ ok: false, kind: "unauthorized" });
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(respond(429, { detail: "rate_limited" }, { "retry-after": "12" })),
+    );
+    expect(await apiGet("/runs")).toEqual({ ok: false, kind: "rate_limited", retryAfterS: 12 });
+
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(respond(503, { status: "unavailable" })));
+    expect(await apiGet("/runs")).toEqual({ ok: false, kind: "unavailable" });
+
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(respond(404, { detail: "not found" })));
+    expect(await apiGet("/runs/1")).toEqual({ ok: false, kind: "not_found" });
+  });
+
+  it("maps a timeout and a refused connection to unavailable", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockRejectedValue(
+          new DOMException("The operation was aborted due to timeout", "TimeoutError"),
+        ),
+    );
+    expect(await apiGet("/runs")).toEqual({ ok: false, kind: "unavailable" });
+
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("fetch failed")));
+    expect(await apiGet("/runs")).toEqual({ ok: false, kind: "unavailable" });
+  });
+
+  it("maps the gate's other refusals by status", async () => {
+    const cases = [
+      [400, "error"],
+      [403, "unauthorized"],
+      [413, "error"],
+      [415, "error"],
+      [500, "unavailable"],
+      [502, "unavailable"],
+    ] as const;
+    for (const [status, kind] of cases) {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(Response.json({ detail: "refused" }, { status })),
+      );
+      expect(await apiGet("/runs")).toEqual({ ok: false, kind });
+    }
+  });
+
+  it("falls back to the body's retry_after_s when Retry-After is absent", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        Response.json({ detail: "rate_limited", retry_after_s: 12 }, { status: 429 }),
+      ),
+    );
+    expect(await apiGet("/runs")).toEqual({ ok: false, kind: "rate_limited", retryAfterS: 12 });
+  });
+
+  it("aborts a read after ten seconds", async () => {
+    vi.useFakeTimers();
+    let captured: AbortSignal | undefined;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((_url: string, init: RequestInit) => {
+        captured = init.signal as AbortSignal;
+        return new Promise<Response>((_resolve, reject) => {
+          captured!.addEventListener("abort", () =>
+            reject(new DOMException("aborted", "AbortError")),
+          );
+        });
+      }),
+    );
+
+    const result = apiGet("/runs");
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(await result).toEqual({ ok: false, kind: "unavailable" });
+    expect(captured?.aborted).toBe(true);
+    vi.useRealTimers();
+  });
+
+  it("treats a missing credential as unauthorized, not as a crash", async () => {
+    vi.stubEnv("PW_API_AUTH", "hmac");
+    vi.stubEnv("PW_API_HMAC_SECRET", "");
+    expect(await apiGet("/runs")).toEqual({ ok: false, kind: "unauthorized" });
+  });
+});

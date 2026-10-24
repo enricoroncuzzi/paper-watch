@@ -1,0 +1,92 @@
+{
+  "runs": [
+    {
+      "id": "11111111-1111-4111-8111-111111111111",
+      "started_at": "2026-10-24T04:00:00Z",
+      "finished_at": "2026-10-24T04:03:12Z",
+      "status": "succeeded",
+      "healthy": true,
+      "problems": [],
+      "warnings": [],
+      "counts": {
+        "fetched": 41,
+        "fetched_arxiv": 32,
+        "stored": 9,
+        "new": 4,
+        "irrelevant": 21,
+        "failed": 0,
+        "admitted_late": 1,
+        "followup_passes": 0,
+        "s2_refused": 0
+      },
+      "tokens": 812,
+      "followup": null
+    },
+    {
+      "id": "22222222-2222-4222-8222-222222222222",
+      "started_at": "2026-10-23T04:00:00Z",
+      "finished_at": "2026-10-23T04:05:40Z",
+      "status": "partial",
+      "healthy": false,
+      "problems": ["arxiv fetched 0 items"],
+      "warnings": [],
+      "counts": {
+        "fetched": 12,
+        "fetched_arxiv": 0,
+        "stored": 6,
+        "new": 2,
+        "irrelevant": 3,
+        "failed": 0,
+        "admitted_late": 0,
+        "followup_passes": 0,
+        "s2_refused": 0
+      },
+      "tokens": 1204,
+      "followup": null
+    },
+    {
+      "id": "33333333-3333-4333-8333-333333333333",
+      "started_at": "2026-10-22T04:00:00Z",
+      "finished_at": "2026-10-22T04:02:10Z",
+      "status": "succeeded",
+      "healthy": true,
+      "problems": [],
+      "warnings": ["feed missed once, retried next run: https://example.org/feed"],
+      "counts": {
+        "fetched": 38,
+        "fetched_arxiv": 30,
+        "stored": 8,
+        "new": 3,
+        "irrelevant": 18,
+        "failed": 0,
+        "admitted_late": 0,
+        "followup_passes": 0,
+        "s2_refused": 0
+      },
+      "tokens": 640,
+      "followup": null
+    },
+    {
+      "id": "55555555-5555-4555-8555-555555555555",
+      "started_at": "2026-10-21T04:00:00Z",
+      "finished_at": "2026-10-21T04:04:00Z",
+      "status": "failed",
+      "healthy": null,
+      "problems": [],
+      "warnings": [],
+      "counts": {
+        "fetched": 0,
+        "fetched_arxiv": 0,
+        "stored": 0,
+        "new": 0,
+        "irrelevant": 0,
+        "failed": 0,
+        "admitted_late": 0,
+        "followup_passes": 0,
+        "s2_refused": 0
+      },
+      "tokens": 0,
+      "followup": null
+    }
+  ]
+}

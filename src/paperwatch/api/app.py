@@ -28,7 +28,6 @@ import anyio
 import structlog
 from fastapi import FastAPI, HTTPException, Request, Security
 from fastapi.responses import JSONResponse, Response, StreamingResponse
-from fastapi.security import HTTPBearer
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import text
 from sqlalchemy.exc import TimeoutError as PoolTimeout
@@ -54,6 +53,12 @@ from paperwatch.api.auth import Principal, Verifier
 from paperwatch.api.gate import ApiGate
 from paperwatch.api.limits import Admitted, Refused, RequestLimiter
 from paperwatch.api.pacing import paced
+from paperwatch.api.responses import (
+    ASK_GATE_RESPONSES,
+    BEARER,
+    GATE_RESPONSES,
+)
+from paperwatch.api.routes.runs import make_runs_router
 from paperwatch.api.search_mode import SearchModeGate
 from paperwatch.config import (
     ANSWER_DEADLINE_S,
@@ -91,7 +96,7 @@ log = structlog.get_logger()
 
 # The API contract's own version, not the package version: release-please bumps the package on
 # every release, and the committed docs/api/openapi.json must change only when the API does.
-API_VERSION = "0.2"
+API_VERSION = "0.3"
 
 # The fixed text of the `internal` event: the client gets something it can show, and the detail
 # (which could carry a provider body or stored text) stays in the server log.
@@ -310,19 +315,6 @@ class AnswerData(BaseModel):
     flags: list[FlagData]
 
 
-class Refusal(BaseModel):
-    """The body of every gate refusal except 429, as `docs/learn/15` lists them."""
-
-    detail: str
-
-
-class RateLimited(BaseModel):
-    """A 429: the per-client limit refused the request before the stream started."""
-
-    detail: Literal["rate_limited", "busy"]
-    retry_after_s: int
-
-
 class ErrorData(BaseModel):
     code: Literal["daily_cap", "budget", "model_unavailable", "internal", "deadline"]
     message: str
@@ -355,36 +347,9 @@ class StreamItem(BaseModel):
 # The daily cap's fallback search: enough to fill a reading sheet, and one query.
 CAP_FALLBACK_K = 8
 
-# The gate's refusals, declared on every gated route so slice 3's generated client knows them.
-# The real decision is `api/gate.py`; these models only describe its bodies.
-_GATE_RESPONSES: dict[int | str, dict[str, Any]] = {
-    400: {
-        "model": Refusal,
-        "description": "The Host is not allowed, or the Content-Length is bad.",
-    },
-    401: {
-        "model": Refusal,
-        "description": "The credential is missing or invalid; `WWW-Authenticate: Bearer`.",
-    },
-    403: {"model": Refusal, "description": "The request carries an Origin header."},
-}
-_ASK_GATE_RESPONSES: dict[int | str, dict[str, Any]] = {
-    **_GATE_RESPONSES,
-    413: {"model": Refusal, "description": "The body is over 16 KB, by header or by stream."},
-    415: {"model": Refusal, "description": "A POST without application/json."},
-    429: {
-        "model": RateLimited,
-        "description": "The per-client limit refused the request; also sends Retry-After.",
-    },
-}
-# The bearer scheme is documentation here: the gate verifies the token before FastAPI runs, and
-# `auto_error=False` keeps this dependency from rejecting anything on its own.
-_BEARER = HTTPBearer(
-    auto_error=False,
-    scheme_name="VercelOidcOrHmac",
-    bearerFormat="JWT",
-    description="A Vercel OIDC token, or an HMAC token from `paperwatch api-token --live`.",
-)
+_GATE_RESPONSES = GATE_RESPONSES
+_ASK_GATE_RESPONSES = ASK_GATE_RESPONSES
+_BEARER = BEARER
 
 # The schema of one parsed server-sent event, in the OpenAPI 3.1 form FastAPI's native SSE
 # response emits: `event` names the frame and `data` is a JSON string whose own schema is the
@@ -897,6 +862,12 @@ def create_app(deps: AgentDeps) -> FastAPI:
     # The readiness gate lives on the app so a test can replace it, and so two apps never share
     # one limiter (a limiter belongs to one event loop's concurrency budget).
     app.state.ready_limiter = anyio.CapacityLimiter(READY_CONCURRENCY)
+    # The page's read routes take their own short session per request, so a page load never holds
+    # a connection the answer pool needs. Tests and the CLI have no separate read factory, and
+    # their single session is the read one.
+    app.include_router(
+        make_runs_router(deps.read_session_factory or deps.session_factory, deps.search_mode)
+    )
 
     # FastAPI types the SSE media type with the `StreamItem` envelope, which exists only to
     # register the payload models. Post-processing swaps in the shape a client parses and drops

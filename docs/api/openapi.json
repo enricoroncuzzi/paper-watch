@@ -3,9 +3,224 @@
   "info": {
     "title": "Paper Watch API",
     "summary": "Ask questions about the stored AI-research corpus and stream cited answers.",
-    "version": "0.2"
+    "version": "0.3"
   },
   "paths": {
+    "/runs": {
+      "get": {
+        "summary": "Runs",
+        "operationId": "runs_runs_get",
+        "security": [
+          {
+            "VercelOidcOrHmac": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 50,
+              "minimum": 1,
+              "default": 10,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunsData"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The Host is not allowed, or the Content-Length is bad.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The credential is missing or invalid; `WWW-Authenticate: Bearer`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request carries an Origin header.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/runs/{run_id}": {
+      "get": {
+        "summary": "Run Detail",
+        "operationId": "run_detail_runs__run_id__get",
+        "security": [
+          {
+            "VercelOidcOrHmac": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunDetail"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The Host is not allowed, or the Content-Length is bad.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The credential is missing or invalid; `WWW-Authenticate: Bearer`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request carries an Origin header.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No run with that id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/today": {
+      "get": {
+        "summary": "Today",
+        "operationId": "today_today_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TodayData"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The Host is not allowed, or the Content-Length is bad.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The credential is missing or invalid; `WWW-Authenticate: Bearer`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request carries an Origin header.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "VercelOidcOrHmac": []
+          }
+        ]
+      }
+    },
     "/healthz": {
       "get": {
         "summary": "Healthz",
@@ -430,6 +645,53 @@
         ],
         "title": "CitationData"
       },
+      "DeadLetterData": {
+        "properties": {
+          "source": {
+            "type": "string",
+            "title": "Source"
+          },
+          "ref": {
+            "type": "string",
+            "title": "Ref"
+          },
+          "error": {
+            "type": "string",
+            "title": "Error"
+          },
+          "attempts": {
+            "type": "integer",
+            "title": "Attempts"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "resolved_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolved At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "source",
+          "ref",
+          "error",
+          "attempts",
+          "created_at",
+          "resolved_at"
+        ],
+        "title": "DeadLetterData"
+      },
       "ErrorData": {
         "properties": {
           "code": {
@@ -489,6 +751,48 @@
           "detail"
         ],
         "title": "FlagData"
+      },
+      "FollowupState": {
+        "properties": {
+          "pass": {
+            "type": "integer",
+            "title": "Pass"
+          },
+          "of": {
+            "type": "integer",
+            "title": "Of"
+          },
+          "next_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next At"
+          },
+          "pending_s2": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pending S2"
+          }
+        },
+        "type": "object",
+        "required": [
+          "pass",
+          "of"
+        ],
+        "title": "FollowupState",
+        "description": "A run waiting between follow-up passes, as `health.followup` records it."
       },
       "HTTPValidationError": {
         "properties": {
@@ -559,6 +863,266 @@
         ],
         "title": "Refusal",
         "description": "The body of every gate refusal except 429, as `docs/learn/15` lists them."
+      },
+      "RunCounts": {
+        "properties": {
+          "fetched": {
+            "type": "integer",
+            "title": "Fetched",
+            "default": 0
+          },
+          "fetched_arxiv": {
+            "type": "integer",
+            "title": "Fetched Arxiv",
+            "default": 0
+          },
+          "stored": {
+            "type": "integer",
+            "title": "Stored",
+            "default": 0
+          },
+          "new": {
+            "type": "integer",
+            "title": "New",
+            "default": 0
+          },
+          "irrelevant": {
+            "type": "integer",
+            "title": "Irrelevant",
+            "default": 0
+          },
+          "failed": {
+            "type": "integer",
+            "title": "Failed",
+            "default": 0
+          },
+          "admitted_late": {
+            "type": "integer",
+            "title": "Admitted Late",
+            "default": 0
+          },
+          "followup_passes": {
+            "type": "integer",
+            "title": "Followup Passes",
+            "default": 0
+          },
+          "s2_refused": {
+            "type": "integer",
+            "title": "S2 Refused",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "RunCounts",
+        "description": "The counts the page reads as six cells; a key the run never counted is 0."
+      },
+      "RunDetail": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Started At"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "healthy": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Healthy"
+          },
+          "problems": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Problems"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Warnings"
+          },
+          "counts": {
+            "$ref": "#/components/schemas/RunCounts"
+          },
+          "tokens": {
+            "type": "integer",
+            "title": "Tokens"
+          },
+          "followup": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FollowupState"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "window_start": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Window Start"
+          },
+          "window_end": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Window End"
+          },
+          "dead_letters": {
+            "items": {
+              "$ref": "#/components/schemas/DeadLetterData"
+            },
+            "type": "array",
+            "title": "Dead Letters"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "started_at",
+          "finished_at",
+          "status",
+          "healthy",
+          "problems",
+          "warnings",
+          "counts",
+          "tokens",
+          "followup",
+          "window_start",
+          "window_end",
+          "dead_letters"
+        ],
+        "title": "RunDetail"
+      },
+      "RunSummary": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Started At"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "healthy": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Healthy"
+          },
+          "problems": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Problems"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Warnings"
+          },
+          "counts": {
+            "$ref": "#/components/schemas/RunCounts"
+          },
+          "tokens": {
+            "type": "integer",
+            "title": "Tokens"
+          },
+          "followup": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FollowupState"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "started_at",
+          "finished_at",
+          "status",
+          "healthy",
+          "problems",
+          "warnings",
+          "counts",
+          "tokens",
+          "followup"
+        ],
+        "title": "RunSummary"
+      },
+      "RunsData": {
+        "properties": {
+          "runs": {
+            "items": {
+              "$ref": "#/components/schemas/RunSummary"
+            },
+            "type": "array",
+            "title": "Runs"
+          }
+        },
+        "type": "object",
+        "required": [
+          "runs"
+        ],
+        "title": "RunsData"
       },
       "SourceData": {
         "properties": {
@@ -673,6 +1237,69 @@
           "lab_blog"
         ],
         "title": "Tier"
+      },
+      "TodayData": {
+        "properties": {
+          "run": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "search": {
+            "$ref": "#/components/schemas/TodaySearch"
+          }
+        },
+        "type": "object",
+        "required": [
+          "run",
+          "search"
+        ],
+        "title": "TodayData"
+      },
+      "TodaySearch": {
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "hybrid",
+              "text_only"
+            ],
+            "title": "Mode"
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "ingestion",
+              "memory",
+              "database"
+            ],
+            "title": "Reason"
+          },
+          "since": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Since"
+          }
+        },
+        "type": "object",
+        "required": [
+          "mode",
+          "reason"
+        ],
+        "title": "TodaySearch"
       },
       "TokenData": {
         "properties": {

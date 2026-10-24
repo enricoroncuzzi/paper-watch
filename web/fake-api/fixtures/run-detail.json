@@ -1,0 +1,42 @@
+{
+  "id": "11111111-1111-4111-8111-111111111111",
+  "started_at": "2026-10-24T04:00:00Z",
+  "finished_at": "2026-10-24T04:03:12Z",
+  "status": "succeeded",
+  "healthy": true,
+  "problems": [],
+  "warnings": ["feed missed once, retried next run: https://example.org/feed"],
+  "counts": {
+    "fetched": 41,
+    "fetched_arxiv": 32,
+    "stored": 9,
+    "new": 4,
+    "irrelevant": 21,
+    "failed": 0,
+    "admitted_late": 1,
+    "followup_passes": 0,
+    "s2_refused": 0
+  },
+  "tokens": 812,
+  "followup": null,
+  "window_start": "2026-10-23T04:00:00Z",
+  "window_end": "2026-10-24T04:00:00Z",
+  "dead_letters": [
+    {
+      "source": "feed",
+      "ref": "https://example.org/feed",
+      "error": "read timeout after 20 s",
+      "attempts": 2,
+      "created_at": "2026-10-24T04:01:00Z",
+      "resolved_at": "2026-10-24T04:02:00Z"
+    },
+    {
+      "source": "arxiv",
+      "ref": "2601.00001",
+      "error": "bad OAI record: missing dc:title",
+      "attempts": 1,
+      "created_at": "2026-10-24T04:01:30Z",
+      "resolved_at": null
+    }
+  ]
+}

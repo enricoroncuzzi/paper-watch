@@ -1,0 +1,25 @@
+{
+  "run": {
+    "id": "11111111-1111-4111-8111-111111111111",
+    "started_at": "2026-10-24T04:00:00Z",
+    "finished_at": "2026-10-24T04:03:12Z",
+    "status": "succeeded",
+    "healthy": true,
+    "problems": [],
+    "warnings": [],
+    "counts": {
+      "fetched": 41,
+      "fetched_arxiv": 32,
+      "stored": 9,
+      "new": 4,
+      "irrelevant": 21,
+      "failed": 0,
+      "admitted_late": 1,
+      "followup_passes": 0,
+      "s2_refused": 0
+    },
+    "tokens": 812,
+    "followup": null
+  },
+  "search": { "mode": "hybrid", "reason": "ok", "since": null }
+}

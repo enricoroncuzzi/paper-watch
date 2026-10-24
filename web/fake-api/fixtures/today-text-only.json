@@ -1,0 +1,29 @@
+{
+  "run": {
+    "id": "44444444-4444-4444-8444-444444444444",
+    "started_at": "2026-10-24T04:00:00Z",
+    "finished_at": null,
+    "status": "running",
+    "healthy": null,
+    "problems": [],
+    "warnings": [],
+    "counts": {
+      "fetched": 9,
+      "fetched_arxiv": 7,
+      "stored": 2,
+      "new": 1,
+      "irrelevant": 4,
+      "failed": 0,
+      "admitted_late": 0,
+      "followup_passes": 0,
+      "s2_refused": 0
+    },
+    "tokens": 120,
+    "followup": null
+  },
+  "search": {
+    "mode": "text_only",
+    "reason": "ingestion",
+    "since": "2026-10-24T04:00:00Z"
+  }
+}
