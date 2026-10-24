@@ -33,6 +33,13 @@ MAX_ITEM_ATTEMPTS = 3
 # paragraph, and a write the column cannot hold fails the admission and dead-letters the item, so
 # the merge clips to this width. The model and the clipping share the one number.
 ITEM_VENUE_MAX_CHARS = 256
+# The width of `items.hf_org`. Hugging Face's organisation is free text, and a write the column
+# cannot hold would cost the whole listing step for every paper, so the client clips to this width
+# and the model shares the number (review round 1).
+HF_ORG_MAX_CHARS = 256
+# The largest value an int4 column holds. A listing count beyond it is dropped like any other
+# malformed extra instead of failing the write, and the client and the store share this number.
+INT4_MAX = 2_147_483_647
 # Keyless Semantic Scholar (captain decision 2026-10-13): a paper's evidence is re-checked less
 # often as it ages. Each pair is (maximum paper age, re-check interval): daily for the first 30
 # days, weekly up to 90 days, monthly up to a year. About 0.131 x N checks a day for N papers.
