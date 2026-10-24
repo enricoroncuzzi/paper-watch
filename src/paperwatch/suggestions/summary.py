@@ -334,8 +334,9 @@ def _superlative_is_unbacked(body: str, source: str, word: str) -> bool:
     tokens = _hyphen_tokens(body, word)
     if not tokens:
         return False
-    # Acceptance is strict: the source needs the bare word, or the summary's own compound, as a
-    # whole token. A hyphen joins words, so "first-order" never backs "the first method".
+    # Acceptance is strict: the source needs the bare word, or the summary's own compound or
+    # plural, as a whole token. A hyphen joins words, so "first-order" never backs "the first
+    # method".
     if _whole(source, word):
         return False
     return not all(_whole(source, token) for token in tokens)
@@ -343,8 +344,9 @@ def _superlative_is_unbacked(body: str, source: str, word: str) -> bool:
 
 def _hyphen_tokens(normalised: str, word: str) -> set[str]:
     # The hyphenated token each use of the word sits in, so "first-order" can be looked up whole.
+    # A trailing plural is the same claim, so "breakthroughs" expands to its own whole token.
     tokens = set()
-    for match in re.finditer(rf"(?<!\w){re.escape(word)}(?!\w)", normalised):
+    for match in re.finditer(rf"(?<!\w){re.escape(word)}(?:s)?(?!\w)", normalised):
         start, end = match.span()
         while start and _TOKEN_CHAR.match(normalised[start - 1]):
             start -= 1

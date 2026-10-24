@@ -101,8 +101,10 @@ Then:
 - **Superlatives.** `state-of-the-art`, `breakthrough`, `first` and four more may only be used when
   the source uses them; a claim of novelty is the sentence a reader would quote back at us. Both
   sides match whole tokens, but asymmetrically: the summary is read loosely, so `first-ever` still
-  counts as a claim of `first`, while the source must carry the bare word, or that same hyphenated
-  token, as a whole word, so `first-order` never backs `the first method`.
+  counts as a claim of `first` and `breakthroughs` as a claim of `breakthrough`, while the source
+  must carry the bare word, or that same hyphenated or plural token, as a whole word, so
+  `first-order` never backs `the first method` and an earlier `breakthroughs` never backs a new
+  `breakthrough`.
 - **Length.** One sentence of at most 35 words per field, at most 110 words in total: the card is a
   30-second read, and a summary that needs more is an excerpt with extra steps.
 
