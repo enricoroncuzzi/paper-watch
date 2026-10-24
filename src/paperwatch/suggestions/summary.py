@@ -143,6 +143,19 @@ def excerpt(text: str) -> str:
     return joined
 
 
+def excerpt_summary(text: str, failed_checks: Sequence[str]) -> Summary:
+    """The honest fallback card: the source's own excerpt and the checks that sent it there."""
+    return Summary(
+        status="excerpt",
+        what=None,
+        result=None,
+        why=None,
+        catch=None,
+        excerpt=excerpt(text),
+        failed_checks=tuple(failed_checks),
+    )
+
+
 def text_hash(title: str, text: str) -> str:
     """The fingerprint of what a summary was written from, so a replaced abstract regenerates it."""
     return hashlib.sha256(f"{title}\n{text}".encode()).hexdigest()
@@ -187,15 +200,7 @@ class SummaryWriter:
                 return _checked(raw)
             failed = tuple(checks)
             log.info("summary_check_failed", attempt=attempt + 1, checks=list(checks))
-        return Summary(
-            status="excerpt",
-            what=None,
-            result=None,
-            why=None,
-            catch=None,
-            excerpt=excerpt(text),
-            failed_checks=failed,
-        )
+        return excerpt_summary(text, failed)
 
     def _ask(self, title: str, text: str, failed: Sequence[str]) -> Mapping[str, Any] | None:
         messages: list[BaseMessage] = [
@@ -341,6 +346,7 @@ __all__ = [
     "SummaryWriter",
     "check_summary",
     "excerpt",
+    "excerpt_summary",
     "summary_fields",
     "text_hash",
 ]

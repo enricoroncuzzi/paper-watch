@@ -9,6 +9,7 @@ from langchain_core.messages import AIMessage
 
 from paperwatch.llm.chat import CallGuard, ChatModel, DailyCapReached, ScriptedChatModel
 from paperwatch.llm.ledger import BudgetExceeded, Ledger
+from paperwatch.suggestions.prompts import SUMMARY_TEXT_MAX_CHARS
 from paperwatch.suggestions.summary import SummaryWriter
 from tests.unit.test_summary_check import TEXT, TITLE, good
 
@@ -120,6 +121,19 @@ def test_budget_exceeded_propagates() -> None:
 
     with pytest.raises(BudgetExceeded):
         summary_writer.write(title=TITLE, text=TEXT)
+
+
+def test_a_long_text_is_clipped_in_the_prompt_and_checked_against_the_whole() -> None:
+    tail = "A closing remark that only the stored text keeps. "
+    long_text = TEXT + " " + tail * (SUMMARY_TEXT_MAX_CHARS // len(tail) + 1)
+    summary_writer, model = writer([answer(good())])
+
+    summary = summary_writer.write(title=TITLE, text=long_text)
+
+    assert summary.status == "checked"
+    prompt = str(model.seen[0][-1].content)
+    assert "[text truncated]" in prompt
+    assert len(prompt) < SUMMARY_TEXT_MAX_CHARS + 1000
 
 
 def test_a_quote_read_from_the_escaped_source_is_stored_unescaped() -> None:

@@ -16,6 +16,7 @@ export const dynamic = "force-dynamic";
 
 const AskBody = z.object({
   question: z.string().trim().min(1).max(1000),
+  item_id: z.string().uuid().optional(),
 });
 
 function refused(kind: string, status: number, retryAfterS?: number): Response {

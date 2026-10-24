@@ -9,8 +9,10 @@ Two failures are not the item's fault and are not retried the same way. A provid
 (`ModelUnavailable`) pauses the whole queue for thirty minutes, because every card would fail the
 same way and one doomed call per card is how an outage eats a day's cap; the daily free-tier cap
 (`DailyCapReached`) holds everything until UTC midnight, because retrying before then cannot work.
-Any other error is logged and dropped: a summary is presentation data, never a reason to crash the
-API process or to fail the request that queued it.
+A summary over its own token budget is the item's fault and will be every time, so it is stored as
+the excerpt and not asked again until the text changes. Any other error is logged and dropped: a
+summary is presentation data, never a reason to crash the API process or to fail the request that
+queued it.
 """
 
 import threading
@@ -23,10 +25,11 @@ import structlog
 from sqlalchemy.orm import Session
 
 from paperwatch.llm.chat import DailyCapReached, ModelUnavailable
+from paperwatch.llm.ledger import BudgetExceeded
 from paperwatch.store.models import ItemSummary
 from paperwatch.store.repository import Repository
 from paperwatch.suggestions.prompts import SUMMARY_PROMPT_VERSION
-from paperwatch.suggestions.summary import SummaryWriter, text_hash
+from paperwatch.suggestions.summary import SummaryWriter, excerpt_summary, text_hash
 
 log = structlog.get_logger()
 
@@ -156,7 +159,10 @@ class SummaryQueue:
         if not _needs_refresh(existing, digest=digest, model=expected):
             return
         writer = self._writer_factory()
-        summary = writer.write(title=title, text=text)
+        try:
+            summary = writer.write(title=title, text=text)
+        except BudgetExceeded:
+            summary = excerpt_summary(text, ("budget",))
         with self._session_factory() as session:
             Repository(session).upsert_summary(
                 item_id,

@@ -10,6 +10,9 @@ from collections.abc import Sequence
 from paperwatch.agent.prompts import source_block
 
 SUMMARY_PROMPT_VERSION = "s1"
+# The same bound as the get_item tool: a feed stores a lab post whole, and an unclipped article
+# would overrun the summary's token budget on every attempt.
+SUMMARY_TEXT_MAX_CHARS = 6000
 
 SUMMARY_SYSTEM_PROMPT = """You write a 30-second summary of one AI research item for a busy reader.
 Reply with JSON only, no prose and no code fence, with exactly these four keys, each an object:
@@ -39,7 +42,10 @@ SUMMARY_RETRY_NOTE = (
 
 def summary_prompt(title: str, text: str, failed_checks: Sequence[str] = ()) -> str:
     """The user message for one summary: the instruction, the escaped source, any retry note."""
-    parts = [SUMMARY_INSTRUCTION, source_block(title, text)]
+    clipped = text[:SUMMARY_TEXT_MAX_CHARS]
+    if len(text) > SUMMARY_TEXT_MAX_CHARS:
+        clipped += "\n[text truncated]"
+    parts = [SUMMARY_INSTRUCTION, source_block(title, clipped)]
     if failed_checks:
         parts.append(SUMMARY_RETRY_NOTE.format(checks=", ".join(failed_checks)))
     return "\n\n".join(parts)

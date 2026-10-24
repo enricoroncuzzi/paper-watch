@@ -547,6 +547,37 @@ def test_one_provider_outage_pauses_the_whole_queue(db_session: Session) -> None
     assert writer.calls == 1
 
 
+def test_a_summary_over_its_budget_is_stored_as_the_excerpt(db_session: Session) -> None:
+    # The budget is per summary, so an item that overruns it once overruns it on every attempt:
+    # storing the excerpt keeps each page refresh from spending another call on it.
+    item_id = seed_item(db_session, "swe")
+    model = ScriptedChatModel(
+        script=[
+            AIMessage(
+                content=json.dumps(_raw()),
+                usage_metadata={"input_tokens": 5, "output_tokens": 5, "total_tokens": 10},
+            )
+        ]
+    )
+    writer = SummaryWriter(
+        [ChatModel("openrouter", model)],
+        lambda: CallGuard(Store(Refusal(False)), Ledger(0), 10, lambda: NOW),  # type: ignore[arg-type]
+    )
+    summary_queue = SummaryQueue(
+        lambda: writer, lambda: db_session, lambda: NOW, lambda: "test-model"
+    )
+
+    summary_queue.submit([item_id])
+    summary_queue.join(timeout=10)
+    summary_queue.submit([item_id])
+    summary_queue.join(timeout=10)
+
+    row = db_session.get_one(ItemSummary, item_id)
+    assert row.status == "excerpt"
+    assert row.text_hash == text_hash(TITLE, TEXT)
+    assert len(model.seen) == 1
+
+
 class RecordingQueue:
     """Stands in for the queue while a test reads what the route decided to submit."""
 
