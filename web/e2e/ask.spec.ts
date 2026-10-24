@@ -97,6 +97,16 @@ test("a dropped stream shows connection lost", async ({ page, request }) => {
   await expect(page.getByTestId("ask-error")).toContainText("The connection dropped. Ask again.");
 });
 
+test("a rate-limited ask shows the wait", async ({ page, request }) => {
+  await setScenario(request, "refused");
+  await openSheet(page);
+  await ask(page, "What do coding agents measure?");
+
+  await expect(page.getByTestId("ask-error")).toContainText(
+    "Too many questions right now. Try again in 30s.",
+  );
+});
+
 test("a slow answer keeps the caret while heartbeats arrive", async ({ page, request }) => {
   await setScenario(request, "slow");
   await openSheet(page);

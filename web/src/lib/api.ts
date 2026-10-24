@@ -1,5 +1,6 @@
 import "server-only";
 
+import type { components } from "@/lib/api-types";
 import { apiToken } from "@/lib/api-token";
 
 /**
@@ -32,6 +33,20 @@ function retryAfter(response: Response): number | undefined {
   return Number.isFinite(seconds) && seconds >= 0 ? seconds : undefined;
 }
 
+/** The gate's declared refusal bodies (`Refusal` for 400/401/403/413/415, `RateLimited` for 429). */
+type RefusalBody = components["schemas"]["Refusal"];
+type RateLimitedBody = components["schemas"]["RateLimited"];
+
+async function declaredRefusal(
+  response: Response,
+): Promise<RefusalBody | RateLimitedBody | null> {
+  try {
+    return (await response.json()) as RefusalBody | RateLimitedBody;
+  } catch {
+    return null;
+  }
+}
+
 async function call<T>(
   method: "GET" | "POST",
   path: string,
@@ -62,7 +77,16 @@ async function call<T>(
       signal: timeout.signal,
     });
     if (!response.ok) {
-      return { ok: false, kind: kindFor(response.status), retryAfterS: retryAfter(response) };
+      // The wait is declared in the body as `retry_after_s` and repeated in `Retry-After`; the
+      // header wins, and a body-only refusal still tells the reader when to try again.
+      const body = await declaredRefusal(response);
+      const declaredWait =
+        body && "retry_after_s" in body ? body.retry_after_s : undefined;
+      return {
+        ok: false,
+        kind: kindFor(response.status),
+        retryAfterS: retryAfter(response) ?? declaredWait,
+      };
     }
     return { ok: true, data: (await response.json()) as T };
   } catch {

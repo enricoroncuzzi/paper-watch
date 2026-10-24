@@ -261,6 +261,27 @@ export interface components {
             message: string;
         };
         /**
+         * RateLimited
+         * @description A 429: the per-client limit refused the request before the stream started.
+         */
+        RateLimited: {
+            /**
+             * Detail
+             * @enum {string}
+             */
+            detail: "rate_limited" | "busy";
+            /** Retry After S */
+            retry_after_s: number;
+        };
+        /**
+         * Refusal
+         * @description The body of every gate refusal except 429, as `docs/learn/15` lists them.
+         */
+        Refusal: {
+            /** Detail */
+            detail: string;
+        };
+        /**
          * RunCounts
          * @description The counts the page reads as six cells; a key the run never counted is 0.
          */
@@ -520,6 +541,33 @@ export interface operations {
                     "application/json": components["schemas"]["RunsData"];
                 };
             };
+            /** @description The Host is not allowed, or the Content-Length is bad. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description The credential is missing or invalid; `WWW-Authenticate: Bearer`. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description The request carries an Origin header. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
             /** @description Validation Error */
             422: {
                 headers: {
@@ -551,6 +599,33 @@ export interface operations {
                     "application/json": components["schemas"]["RunDetail"];
                 };
             };
+            /** @description The Host is not allowed, or the Content-Length is bad. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description The credential is missing or invalid; `WWW-Authenticate: Bearer`. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description The request carries an Origin header. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
             /** @description Validation Error */
             422: {
                 headers: {
@@ -578,6 +653,33 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TodayData"];
+                };
+            };
+            /** @description The Host is not allowed, or the Content-Length is bad. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description The credential is missing or invalid; `WWW-Authenticate: Bearer`. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description The request carries an Origin header. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Refusal"];
                 };
             };
         };
@@ -622,6 +724,33 @@ export interface operations {
                     "application/json": unknown;
                 };
             };
+            /** @description The Host is not allowed, or the Content-Length is bad. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description The credential is missing or invalid; `WWW-Authenticate: Bearer`. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description The request carries an Origin header. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
         };
     };
     status_status_get: {
@@ -640,6 +769,33 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["StatusData"];
+                };
+            };
+            /** @description The Host is not allowed, or the Content-Length is bad. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description The credential is missing or invalid; `WWW-Authenticate: Bearer`. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description The request carries an Origin header. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Refusal"];
                 };
             };
         };
@@ -666,6 +822,51 @@ export interface operations {
                     "text/event-stream": unknown;
                 };
             };
+            /** @description The Host is not allowed, or the Content-Length is bad. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description The credential is missing or invalid; `WWW-Authenticate: Bearer`. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description The request carries an Origin header. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description The body is over 16 KB, by header or by stream. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description A POST without application/json. */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": components["schemas"]["Refusal"];
+                };
+            };
             /** @description Validation Error */
             422: {
                 headers: {
@@ -673,6 +874,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description The per-client limit refused the request; also sends Retry-After. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": components["schemas"]["RateLimited"];
                 };
             };
         };

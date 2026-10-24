@@ -1,0 +1,8 @@
+{
+  "400": { "detail": "invalid host" },
+  "401": { "detail": "unauthorized" },
+  "403": { "detail": "origin refused" },
+  "413": { "detail": "request too large" },
+  "415": { "detail": "json required" },
+  "429": { "detail": "rate_limited", "retry_after_s": 30 }
+}

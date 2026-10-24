@@ -25,6 +25,7 @@ const SCENARIOS = new Set([
   "daily_cap",
   "citations",
   "flagged",
+  "refused",
   "slow",
   "drop",
 ]);
@@ -35,6 +36,16 @@ function fixture(name) {
 
 function stream(name) {
   return JSON.parse(readFileSync(join(ROOT, "streams", `${name}.json`), "utf8"));
+}
+
+// The gate's declared refusal bodies, kept in a file so the Python test can validate them against
+// the API's own Refusal and RateLimited models.
+const REFUSALS = JSON.parse(readFileSync(join(ROOT, "refusals.json"), "utf8"));
+
+function refused(response, status) {
+  const body = REFUSALS[String(status)];
+  const headers = status === 429 ? { "retry-after": String(body.retry_after_s) } : {};
+  json(response, status, body, headers);
 }
 
 function json(response, status, body, headers = {}) {
@@ -112,8 +123,19 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  if (request.headers.origin) {
+    // The real gate refuses any request carrying an Origin header; a browser always sends one.
+    refused(response, 403);
+    return;
+  }
+
   if (request.headers.authorization !== `Bearer ${TOKEN}`) {
-    json(response, 401, { detail: "unauthorized" });
+    refused(response, 401);
+    return;
+  }
+
+  if (scenario === "refused") {
+    refused(response, 429);
     return;
   }
 

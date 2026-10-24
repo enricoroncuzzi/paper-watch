@@ -101,6 +101,16 @@ test("each section shows its loading empty and error states", async ({ page, req
   );
 });
 
+test("a rate-limited read shows the wait", async ({ page, request }) => {
+  await setScenario(request, "refused");
+  await page.goto("/");
+
+  // The 429 body is the gate's RateLimited; the page shows the wait from retry_after_s.
+  await expect(page.getByTestId("today-error")).toContainText("The API is busy");
+  await expect(page.getByTestId("today-error")).toContainText("retry in 30s");
+  await expect(page.getByTestId("runs-error")).toContainText("The API is busy");
+});
+
 test("the theme toggle persists across a reload", async ({ page }) => {
   const toggle = page.getByRole("button", { name: "Toggle theme" });
   await toggle.click();

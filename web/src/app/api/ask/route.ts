@@ -84,8 +84,16 @@ export async function POST(request: Request): Promise<Response> {
       retry_after_s?: number;
     };
     const retryAfter = Number(upstream.headers.get("retry-after") ?? payload.retry_after_s);
-    // `detail` carries `rate_limited` or `busy`, which the sheet phrases differently.
-    const kind = upstream.status === 429 ? (payload.detail ?? "rate_limited") : "unavailable";
+    // The gate's declared bodies: `RateLimited` carries `detail` and `retry_after_s`, `Refusal` a
+    // `detail` string. A 401/403 means the credential, a 5xx the API, anything else our own bug.
+    const kind =
+      upstream.status === 429
+        ? (payload.detail ?? "rate_limited")
+        : upstream.status === 401 || upstream.status === 403
+          ? "unauthorized"
+          : upstream.status >= 500
+            ? "unavailable"
+            : "error";
     return refused(kind, upstream.status, Number.isFinite(retryAfter) ? retryAfter : undefined);
   }
 

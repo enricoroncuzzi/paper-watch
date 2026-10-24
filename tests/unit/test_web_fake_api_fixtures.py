@@ -22,11 +22,14 @@ from paperwatch.api.app import (
     TokenData,
     ToolData,
 )
+from paperwatch.api.responses import RateLimited, Refusal
 from paperwatch.api.routes.runs import RunDetail, RunsData, TodayData
 
 WEB = Path(__file__).resolve().parents[2] / "web"
 FIXTURES = WEB / "fake-api" / "fixtures"
 STREAMS = WEB / "fake-api" / "streams"
+# The fake API's gate refusals, kept in a file so they can be validated against the contract.
+REFUSALS = WEB / "fake-api" / "refusals.json"
 
 FIXTURE_MODELS: dict[str, type[BaseModel]] = {
     "today": TodayData,
@@ -78,3 +81,13 @@ def test_each_stream_frame_matches_its_event_model(path: Path) -> None:
             model.model_validate(frame["data"]).model_dump(mode="json", by_alias=True)
             == frame["data"]
         )
+
+
+def test_the_fake_refusals_match_the_declared_gate_bodies() -> None:
+    # The gate declares Refusal for 400/401/403/413/415 and RateLimited for 429; the fake serves
+    # exactly these bodies, so a page test that hits one sees the shape the real API sends.
+    bodies: dict[str, Any] = json.loads(REFUSALS.read_text())
+    assert set(bodies) == {"400", "401", "403", "413", "415", "429"}
+    for status in ("400", "401", "403", "413", "415"):
+        assert Refusal.model_validate(bodies[status]).model_dump(mode="json") == bodies[status]
+    assert RateLimited.model_validate(bodies["429"]).model_dump(mode="json") == bodies["429"]
