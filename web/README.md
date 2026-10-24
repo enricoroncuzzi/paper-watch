@@ -7,7 +7,7 @@ the two route handlers it needs.
 ```sh
 npm ci                 # install exactly the lockfile
 npm run dev            # the page on :3000, against the fake API
-npm run fake-api       # the fake API alone, on 127.0.0.1:8787
+npm run fake-api       # the fake API alone, on 127.0.0.1:8787 (FAKE_API_PORT moves it)
 npm test               # Vitest: the pure logic (guards, safeHref, the API client, the SSE parser)
 npm run e2e            # Playwright, Chromium and WebKit (including an iPhone 15), fake API only
 npm run lint
@@ -17,7 +17,10 @@ npm run gen:api        # regenerate src/lib/api-types.ts from ../docs/api/openap
 ```
 
 `npm run e2e` starts the fake API and a production build itself (see `playwright.config.ts`), so it
-needs no other process. It signs in through the test-only `e2e` provider, which exists only when
+needs no other process: the page listens on 127.0.0.1:3100 and the fake API on 127.0.0.1:8787. A
+busy port fails the run instead of testing whatever is on it, so set `PW_E2E_PORT` or
+`PW_E2E_FAKE_API_PORT` to move one; `PW_E2E_REUSE_SERVER=1` attaches to servers you started
+yourself. It signs in through the test-only `e2e` provider, which exists only when
 `PW_E2E_SESSION=1` and the app is not on Vercel.
 
 ## Developing against the fake API

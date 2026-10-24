@@ -68,7 +68,8 @@ a Hugging Face project page crafted to look like another site.
 
 ## The fake API and the contract
 
-`web/fake-api/server.mjs` is a dependency-free `node:http` server on `127.0.0.1:8787`. It accepts
+`web/fake-api/server.mjs` is a dependency-free `node:http` server on `127.0.0.1:8787` (move it with
+`FAKE_API_PORT`, or with `PW_E2E_FAKE_API_PORT` for the suite). It accepts
 only `Authorization: Bearer e2e`, serves `fixtures/<name>.json` for the read routes, streams
 `streams/<scenario>.json` for `POST /ask`, and takes `POST /__scenario` so a Playwright test can pick
 `normal`, `empty`, `error`, `unhealthy`, `followup`, `text_only`, `slow` or `drop`. Tests run one

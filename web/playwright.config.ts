@@ -1,9 +1,9 @@
 import { defineConfig, devices } from "@playwright/test";
 
+import { API_URL, BASE_URL, FAKE_API_PORT, PORT, REUSE_EXISTING_SERVER } from "./e2e/servers";
+
 // The e2e suite runs against the fake API only: it never reaches the real server, holds no key
 // and calls no model. One worker, because the fake API keeps a single global scenario.
-const PORT = 3100;
-const BASE_URL = `http://127.0.0.1:${PORT}`;
 // CI builds once in its own step and sets this, so Playwright does not build a second time; a local
 // run builds first, so the e2e suite always tests the source it just changed.
 const SERVER_COMMAND = process.env.PW_E2E_SKIP_BUILD
@@ -29,19 +29,22 @@ export default defineConfig({
   webServer: [
     {
       command: "node fake-api/server.mjs",
-      url: "http://127.0.0.1:8787/healthz",
-      reuseExistingServer: !process.env.CI,
+      url: `${API_URL}/healthz`,
+      // Off unless asked for: a fixed port may hold another checkout's build, and a run that
+      // attached to it would report the wrong code as green.
+      reuseExistingServer: REUSE_EXISTING_SERVER,
+      env: { FAKE_API_PORT: String(FAKE_API_PORT) },
       stdout: "pipe",
     },
     {
       command: SERVER_COMMAND,
       url: `${BASE_URL}/signin`,
-      reuseExistingServer: !process.env.CI,
+      reuseExistingServer: REUSE_EXISTING_SERVER,
       timeout: 300_000,
       // The test-only session and the fake API are the only credentials a test has.
       env: {
         PW_E2E_SESSION: "1",
-        PW_API_URL: "http://127.0.0.1:8787",
+        PW_API_URL: API_URL,
         PW_API_AUTH: "e2e",
         // The page polls for a pending summary every 20 s; the suite cannot wait that long.
         PW_SUMMARY_REFRESH_MS: "400",
