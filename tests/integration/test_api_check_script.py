@@ -130,7 +130,17 @@ def test_api_check_passes_against_a_gated_app(engine: Engine, tmp_path: Path) ->
         f"print(mint_hmac_token({SECRET!r}, 'check', time.time()))\n"
     )
     command = f"{shlex.quote(sys.executable)} {shlex.quote(str(mint))}"
-    env = {**os.environ, "PW_CHECK_TOKEN_CMD": command}
+    # A stub that answers the script's systemd probe with failure, so the unit checks are the WARN
+    # path on a laptop and on a CI runner alike.
+    stub = tmp_path / "bin"
+    stub.mkdir()
+    (stub / "systemctl").write_text("#!/bin/sh\nexit 1\n")
+    (stub / "systemctl").chmod(0o755)
+    env = {
+        **os.environ,
+        "PW_CHECK_TOKEN_CMD": command,
+        "PATH": f"{stub}{os.pathsep}{os.environ.get('PATH', '')}",
+    }
     env.pop("PW_CHECK_TOKEN", None)
     with _served(create_app(_deps(engine))) as base:
         result = _run(base, env)
