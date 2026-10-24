@@ -909,7 +909,9 @@ def create_app(deps: AgentDeps) -> FastAPI:
     @app.get("/status", response_model=StatusData)
     async def status() -> StatusData:
         """The search mode the page reads on load: hybrid, or keyword-only and why."""
-        decision = deps.search_mode.current()
+        # In a worker thread: the gate reads the run table, and a paused database must not block
+        # the event loop that is serving every other request.
+        decision = await anyio.to_thread.run_sync(deps.search_mode.current)
         return StatusData(mode=decision.mode, reason=decision.reason, since=decision.since)
 
     @app.post(
