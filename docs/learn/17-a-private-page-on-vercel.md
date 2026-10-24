@@ -1,8 +1,8 @@
 # A private page on Vercel
 
 The page is a Next.js app whose server is the only thing that talks to the API: components that
-read data run on the server, and the two things a browser starts (a question, a draft) go through
-route handlers. Each of them checks the GitHub session itself, because a check in middleware alone
+read data run on the server, and what a browser starts (a question) goes through a route handler.
+Every route handler checks the GitHub session itself, because a check in middleware alone
 has been bypassed before. Sign-in compares the numeric GitHub id, which never changes, not the
 login name, which can. The API's address and credentials exist only on the server, so the browser
 sees neither. Tests sign in through a credentials provider that exists only outside Vercel, and
