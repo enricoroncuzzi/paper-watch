@@ -6,22 +6,32 @@ or an embedding is refused by a check constraint.
 """
 
 import uuid
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from sqlalchemy import and_, case, func, or_, select, update
-from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.dialects.postgresql import distinct_on, insert
+from sqlalchemy.orm import Session, load_only, sessionmaker
 
 from paperwatch.config import (
+    HF_ORG_MAX_CHARS,
+    INT4_MAX,
     ITEM_VENUE_MAX_CHARS,
     MAX_ITEM_ATTEMPTS,
     S2_CADENCE,
     S2_RECHECK_SLACK,
 )
-from paperwatch.domain import AdmissionBasis, Signals, SourceItem, Tier
-from paperwatch.store.models import ChatCall, DeadLetter, Item, Run, SourceCursor, TierHistory
+from paperwatch.domain import AdmissionBasis, HfPaper, Signals, SourceItem, Tier
+from paperwatch.store.models import (
+    ChatCall,
+    DeadLetter,
+    Item,
+    Run,
+    SignalSnapshot,
+    SourceCursor,
+    TierHistory,
+)
 
 # Semantic Scholar reports the preprint server while a paper is only a preprint. A real venue,
 # once seen, is never replaced by one of these, so a temporary answer cannot erase an acceptance.
@@ -58,6 +68,14 @@ class ItemDetail:
     citation_count: int
     hf_upvotes: int | None
     profile: str | None
+
+
+def _int4(value: int | None) -> int | None:
+    # The columns are int4, so a number outside that range is a bad extra that would fail the
+    # whole listing write; drop it instead of costing every paper its extras.
+    if value is None or not 0 <= value <= INT4_MAX:
+        return None
+    return value
 
 
 def _is_preprint(venue: str | None) -> bool:
@@ -211,6 +229,105 @@ class Repository:
             row.hf_upvotes = max(row.hf_upvotes or 0, fresh.hf_upvotes)
         self._s.flush()
         return _signals(row)
+
+    def apply_hf_listing(self, papers: Mapping[str, HfPaper], *, at: datetime) -> int:
+        """Store the listing extras on stored arXiv items and append changed signal snapshots.
+
+        Returns the number of snapshots written. One read for the items and one for their latest
+        snapshots keeps this a fixed cost per run however many papers the window lists.
+        """
+        if not papers:
+            return 0
+        # An irrelevant item was classified off-topic on purpose, so it is filtered in SQL: it
+        # must not be loaded at all, and the rest loads only the columns this step writes, while
+        # the model and the run's fetched pages are still in memory.
+        rows = self._s.scalars(
+            select(Item)
+            .where(
+                Item.source == "arxiv",
+                Item.status != "irrelevant",
+                Item.external_id.in_(list(papers)),
+            )
+            .options(
+                load_only(
+                    Item.id,
+                    Item.external_id,
+                    Item.hf_upvotes,
+                    Item.hf_comments,
+                    Item.github_repo,
+                    Item.github_stars,
+                    Item.project_page,
+                    Item.hf_org,
+                    Item.hf_listed_at,
+                    Item.citation_count,
+                )
+            )
+        ).all()
+        if not rows:
+            return 0
+        latest: dict[uuid.UUID, SignalSnapshot] = {}
+        for snapshot in self._s.scalars(
+            select(SignalSnapshot)
+            .where(SignalSnapshot.item_id.in_([row.id for row in rows]))
+            # DISTINCT ON keeps the newest row per item, so the comparison costs one query.
+            .ext(distinct_on(SignalSnapshot.item_id))
+            .order_by(
+                SignalSnapshot.item_id, SignalSnapshot.observed_at.desc(), SignalSnapshot.id.desc()
+            )
+        ):
+            latest[snapshot.item_id] = snapshot
+        written = 0
+        for row in rows:
+            paper = papers[row.external_id]
+            # Upvotes are evidence, so a lower reading is a lag; the extras describe the paper
+            # right now, so the newest non-null reading wins and a missing one keeps the stored
+            # value. The names and numbers are clipped to the columns so one hostile value cannot
+            # fail the write for every paper.
+            upvotes = _int4(paper.upvotes)
+            if upvotes is not None:
+                row.hf_upvotes = max(row.hf_upvotes or 0, upvotes)
+            comments = _int4(paper.comments)
+            if comments is not None:
+                row.hf_comments = comments
+            if paper.github_repo is not None:
+                row.github_repo = paper.github_repo
+            stars = _int4(paper.github_stars)
+            if stars is not None:
+                row.github_stars = stars
+            if paper.project_page is not None:
+                row.project_page = paper.project_page
+            if paper.organization is not None:
+                row.hf_org = paper.organization[:HF_ORG_MAX_CHARS]
+            if paper.listed_at is not None and (
+                row.hf_listed_at is None or paper.listed_at < row.hf_listed_at
+            ):
+                row.hf_listed_at = paper.listed_at
+            current = (row.hf_upvotes, row.hf_comments, row.github_stars, row.citation_count)
+            previous = latest.get(row.id)
+            if (
+                previous is not None
+                and (
+                    previous.hf_upvotes,
+                    previous.hf_comments,
+                    previous.github_stars,
+                    previous.citation_count,
+                )
+                == current
+            ):
+                continue
+            self._s.add(
+                SignalSnapshot(
+                    item_id=row.id,
+                    observed_at=at,
+                    hf_upvotes=row.hf_upvotes,
+                    hf_comments=row.hf_comments,
+                    github_stars=row.github_stars,
+                    citation_count=row.citation_count,
+                )
+            )
+            written += 1
+        self._s.flush()
+        return written
 
     def admit_item(
         self,
