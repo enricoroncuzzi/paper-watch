@@ -215,7 +215,8 @@ const server = createServer(async (request, response) => {
       json(response, 404, { detail: "run not found" });
       return;
     }
-    json(response, 200, detail);
+    // Dated like its row in the Runs list, so the heading's day matches the scenario.
+    json(response, 200, runAt(detail, scenario === "yesterday" ? 1 : 0));
     return;
   }
 

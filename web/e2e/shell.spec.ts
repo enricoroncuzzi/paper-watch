@@ -109,6 +109,20 @@ test("a run from an earlier day says so in amber", async ({ page, request }) => 
   await expect(day).toHaveClass(/text-warn/);
 });
 
+test("the run detail heading names the run's Rome day before its time", async ({ page, request }) => {
+  const detail = "/runs/11111111-1111-4111-8111-111111111111";
+  await page.goto(detail);
+  await expect(page.getByTestId("run-detail").getByRole("heading", { level: 1 })).toHaveText(
+    /^Today \d{2}:\d{2} Europe\/Rome$/,
+  );
+
+  await setScenario(request, "yesterday");
+  await page.goto(detail);
+  await expect(page.getByTestId("run-detail").getByRole("heading", { level: 1 })).toHaveText(
+    /^Yesterday \d{2}:\d{2} Europe\/Rome$/,
+  );
+});
+
 test("a link to a malformed run id says nothing here", async ({ page }) => {
   const response = await page.goto("/runs/not-a-uuid");
   expect(response?.status()).toBe(404);

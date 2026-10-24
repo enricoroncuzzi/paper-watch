@@ -1,6 +1,14 @@
 import Link from "next/link";
 
-import { compactTokens, feedCount, followupLine, formatDay, formatRome, verdict } from "@/lib/format";
+import {
+  compactTokens,
+  feedCount,
+  followupLine,
+  formatDay,
+  formatRome,
+  runDayLabel,
+  verdict,
+} from "@/lib/format";
 import type { RunDetailData } from "@/lib/types";
 
 const VERDICT_STYLE = { healthy: "text-ok", unhealthy: "text-bad", unknown: "text-warn" };
@@ -25,7 +33,7 @@ export function RunDetail({ run }: { run: RunDetailData }) {
       </Link>
       <div className="mt-2 flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b border-rule pb-3">
         <h1 className="font-serif text-[28px] font-normal tracking-[-0.015em]">
-          {formatRome(run.started_at)} Europe/Rome
+          {runDayLabel(run.started_at)} {formatRome(run.started_at)} Europe/Rome
         </h1>
         <span
           className={`flex items-center gap-1.5 text-[9.5px] uppercase tracking-[0.1em] ${VERDICT_STYLE[state]}`}
