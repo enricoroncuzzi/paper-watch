@@ -8,6 +8,8 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { fakeRunFinish, fakeRunStart } from "./dates.mjs";
+
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.FAKE_API_PORT ?? 8787);
 const TOKEN = "e2e";
@@ -65,8 +67,11 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // The real API always serves recent runs; the fake rewrites its fixtures' dates relative to now so
 // the strip's Today/Yesterday label and every screenshot match what the captain sees.
 function runAt(run, daysAgo) {
-  const started = new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000 - 3 * 60 * 60 * 1000);
-  const finished = new Date(started.getTime() + 3 * 60 * 1000);
+  const now = Date.now();
+  // Never before midnight Rome for its day: the strip labels by the Rome calendar date, so a run
+  // dated "three hours ago" would read Yesterday between 00:00 and 03:00.
+  const started = new Date(fakeRunStart(daysAgo, now));
+  const finished = new Date(fakeRunFinish(started.getTime(), now));
   const dated = {
     ...run,
     started_at: started.toISOString(),
