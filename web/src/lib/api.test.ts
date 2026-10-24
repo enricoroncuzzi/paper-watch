@@ -63,6 +63,34 @@ describe("apiGet", () => {
     expect(await apiGet("/runs")).toEqual({ ok: false, kind: "unavailable" });
   });
 
+  it("maps the gate's other refusals by status", async () => {
+    const cases = [
+      [400, "error"],
+      [403, "unauthorized"],
+      [413, "error"],
+      [415, "error"],
+      [500, "unavailable"],
+      [502, "unavailable"],
+    ] as const;
+    for (const [status, kind] of cases) {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(Response.json({ detail: "refused" }, { status })),
+      );
+      expect(await apiGet("/runs")).toEqual({ ok: false, kind });
+    }
+  });
+
+  it("falls back to the body's retry_after_s when Retry-After is absent", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        Response.json({ detail: "rate_limited", retry_after_s: 12 }, { status: 429 }),
+      ),
+    );
+    expect(await apiGet("/runs")).toEqual({ ok: false, kind: "rate_limited", retryAfterS: 12 });
+  });
+
   it("aborts a read after ten seconds", async () => {
     vi.useFakeTimers();
     let captured: AbortSignal | undefined;

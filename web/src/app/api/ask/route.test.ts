@@ -96,6 +96,36 @@ describe("the ask proxy", () => {
     expect(await response.json()).toEqual({ kind: "busy", retryAfterS: 7 });
   });
 
+  it.each([
+    [401, "unauthorized"],
+    [403, "unauthorized"],
+    [400, "error"],
+    [413, "error"],
+    [415, "error"],
+    [500, "unavailable"],
+    [502, "unavailable"],
+  ])("passes a %i refusal through as %s", async (status, kind) => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(Response.json({ detail: "refused" }, { status })),
+    );
+    const response = await POST(askRequest({ question: "q" }));
+    expect(response.status).toBe(status);
+    expect(await response.json()).toEqual({ kind });
+  });
+
+  it("takes the wait from a 429 body when there is no Retry-After", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        Response.json({ detail: "rate_limited", retry_after_s: 12 }, { status: 429 }),
+      ),
+    );
+    const response = await POST(askRequest({ question: "q" }));
+    expect(response.status).toBe(429);
+    expect(await response.json()).toEqual({ kind: "rate_limited", retryAfterS: 12 });
+  });
+
   it("refuses an empty question with 400", async () => {
     vi.stubGlobal("fetch", vi.fn());
     const response = await POST(askRequest({ question: "   " }));

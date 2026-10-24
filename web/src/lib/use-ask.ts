@@ -143,12 +143,17 @@ function applyEvent(state: AskState, event: string, data: unknown): AskState {
 }
 
 function errorFor(status: number, payload: { kind?: string; retryAfterS?: number }): AskError {
+  // A tunnel that is down or stalls answers 502 or 504, and the proxy calls every upstream 5xx
+  // "unavailable"; that copy is the right one for any 5xx, not only for a literal 503.
   const code: AskErrorCode =
-    payload.kind === "rate_limited" || payload.kind === "busy" || payload.kind === "unauthorized"
+    payload.kind === "rate_limited" ||
+    payload.kind === "busy" ||
+    payload.kind === "unauthorized" ||
+    payload.kind === "unavailable"
       ? payload.kind
       : status === 401
         ? "unauthorized"
-        : status === 503
+        : status >= 500
           ? "unavailable"
           : "internal";
   return { code, message: "", retryAt: null, retryAfterS: payload.retryAfterS };

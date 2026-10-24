@@ -193,6 +193,23 @@ describe("the ask controller", () => {
     await run;
   });
 
+  it("a proxied 502 reads as the API being unreachable", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(Response.json({ kind: "unavailable" }, { status: 502 }));
+    const controller = new AskController({ fetchImpl });
+    await controller.ask("q");
+    expect(controller.getState().error?.code).toBe("unavailable");
+  });
+
+  it("a bare 502 with no JSON body still reads as unreachable", async () => {
+    // A gateway error from Vercel itself is HTML, not our proxy's {kind}: the status must decide.
+    const fetchImpl = vi.fn().mockResolvedValue(new Response("bad gateway", { status: 502 }));
+    const controller = new AskController({ fetchImpl });
+    await controller.ask("q");
+    expect(controller.getState().error?.code).toBe("unavailable");
+  });
+
   it("a 429 becomes a rate_limited error with the wait", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(
       Response.json(
