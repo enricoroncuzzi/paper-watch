@@ -135,13 +135,15 @@ ingestion holds the memory; `cursor` is then an offset into that ranking and the
 matches. `total` counts the filtered set without `q`, and the capped match count with it;
 `next_cursor` is null on the last page.
 
-`GET /items/{item_id}` adds `authors`, `url`, `text` (the stored abstract or post text),
+`GET /items/{item_id}` adds `early`, `authors`, `url`, `text` (the stored abstract or post text),
 `github_repo`, `project_page`, `org`, `tier_history` (`[{from_tier, to_tier, basis, changed_at}]`,
 oldest first), `signals` (`[{observed_at, hf_upvotes, hf_comments, github_stars, citation_count}]`,
 the last 30 readings, oldest first), `summary` (the same shape a card carries, or null when none is
-cached yet) and `drafts` (`[{id, created_at}]`, newest first). A `404` is an item that is not
-admitted; a `422` is an unknown profile, a cursor from the other branch, or a cursor that is not
-ours.
+cached yet) and `drafts` (`[{id, created_at}]`, newest first). `early` is true when the item only
+reaches the Rising shelf, which is the same flag the draft generator puts its "early work" sentence
+on, so the page can say so before generating. A `404` is an item that is not admitted; a `422` is an
+unknown profile, a cursor from the other branch, a cursor the API did not issue (including an offset
+past the cap), or a `q` carrying a control character.
 
 Both routes are read-only, open one short session per request and never touch a model, so they are
 safe to poll.

@@ -448,6 +448,8 @@ export interface components {
              * Format: date-time
              */
             published_at: string;
+            /** Early */
+            early: boolean;
             /** Authors */
             authors: string[];
             /** Url */

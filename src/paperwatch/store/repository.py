@@ -224,7 +224,7 @@ class CorpusPage:
 
 @dataclass(frozen=True)
 class CorpusItemDetail:
-    """A row plus the text and extras the item page prints."""
+    """A row plus the text, the extras and the candidate the ranking would see."""
 
     row: CorpusItemRow
     authors: tuple[str, ...]
@@ -233,6 +233,9 @@ class CorpusItemDetail:
     github_repo: str | None
     project_page: str | None
     org: str | None
+    # The page's `early` flag comes from the same candidate the ranking and a draft use, so the
+    # dialog's warning cannot drift from what the draft itself will say.
+    candidate: Candidate
 
 
 @dataclass(frozen=True)
@@ -1458,9 +1461,14 @@ class Repository:
                 statement = statement.where(
                     tuple_(Item.published_at, Item.id) < tuple_(after[0], after[1])
                 )
-            statement = statement.order_by(Item.published_at.desc(), Item.id.desc()).limit(limit)
-            rows = tuple(_corpus_row(row) for row in self._s.execute(statement))
-            return CorpusPage(rows, total, len(rows) == limit)
+            # One row past the page: a page that exactly fills the limit must not offer a next
+            # one that turns out empty.
+            statement = statement.order_by(Item.published_at.desc(), Item.id.desc()).limit(
+                limit + 1
+            )
+            found = [_corpus_row(row) for row in self._s.execute(statement)]
+            rows = tuple(found[:limit])
+            return CorpusPage(rows, total, len(found) > limit)
 
         # Imported here, not at module level: `retrieval.hybrid` imports the embedder, and the
         # ingestion imports this module on every run.
@@ -1485,29 +1493,48 @@ class Repository:
             # statement sorts anyway, so the GIN index still serves the match.
             .order_by(rank.desc(), Item.source.collate("C"), Item.external_id.collate("C"))
             .offset(offset)
-            .limit(limit)
+            # The cap is on the list, not on the page size: a limit that does not divide 200 must
+            # not let the table walk past it.
+            .limit(min(limit, CORPUS_SEARCH_MAX - offset))
         )
         rows = tuple(_corpus_row(row) for row in self._s.execute(statement))
         return CorpusPage(rows, total, offset + len(rows) < total)
 
     def corpus_item(self, item_id: uuid.UUID) -> CorpusItemDetail | None:
         """One admitted item with its text, or None when it is not admitted or not stored."""
-        row = self._s.execute(
-            _corpus_filters(
-                _corpus_select().add_columns(
+        # The whole row except its vector: `_candidate` is the one place the item-to-candidate
+        # mapping lives, and the page's `early` flag has to agree with the ranking's.
+        row = self._s.scalar(
+            select(Item)
+            .options(
+                load_only(
+                    Item.id,
+                    Item.source,
+                    Item.external_id,
+                    Item.tier,
+                    Item.admission_basis,
+                    Item.profile,
+                    Item.relevance,
+                    Item.title,
                     Item.authors,
-                    Item.url,
                     Item.text,
-                    Item.github_repo,
+                    Item.url,
+                    Item.published_at,
+                    Item.venue,
+                    Item.citation_count,
+                    Item.hf_upvotes,
+                    Item.github_stars,
                     Item.project_page,
+                    Item.github_repo,
                     Item.hf_org,
-                ),
-                tiers=None,
-                source=None,
-                profile=None,
-                since=None,
-            ).where(Item.id == item_id)
-        ).first()
+                    Item.hf_listed_at,
+                    # `_candidate` carries the vector; one row of it is about 3 KB, and leaving it
+                    # out would only buy a second query on the item page.
+                    Item.embedding,
+                )
+            )
+            .where(Item.id == item_id, text(f"items.{ADMITTED_SQL}"))
+        )
         if row is None:
             return None
         return CorpusItemDetail(
@@ -1518,6 +1545,7 @@ class Repository:
             github_repo=row.github_repo,
             project_page=row.project_page,
             org=row.hf_org,
+            candidate=_candidate(row),
         )
 
     def corpus_tier_history(self, item_id: uuid.UUID) -> tuple[TierChangeRow, ...]:

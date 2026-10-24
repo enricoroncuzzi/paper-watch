@@ -8,7 +8,7 @@
   "profile": "agentic-engineering",
   "venue": "ICLR 2027",
   "citation_count": 31,
-  "hf_upvotes": null,
+  "hf_upvotes": 38,
   "github_stars": 2400,
   "published_at": "2026-10-20T00:00:00Z",
   "authors": [
@@ -86,5 +86,6 @@
       "id": "9e133e6c-ba08-5bb3-8068-aa7371b9249e",
       "created_at": "2026-10-23T09:15:00Z"
     }
-  ]
+  ],
+  "early": false
 }

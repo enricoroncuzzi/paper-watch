@@ -2,6 +2,7 @@ import Link from "next/link";
 
 import { TierChip } from "@/components/picks/Chips";
 import { basisWord, publishedDay, signalLine } from "@/lib/corpus";
+import { profileLabel } from "@/lib/format";
 import type { CorpusItem } from "@/lib/types";
 
 const CELL = "border-b border-rule px-2 py-2.5 align-top";
@@ -15,50 +16,65 @@ function SourceCell({ item }: { item: CorpusItem }) {
   );
 }
 
+function SignalsCell({ item }: { item: CorpusItem }) {
+  const number = signalLine(item);
+  return (
+    <td
+      className={`${CELL} hidden whitespace-nowrap text-right tabular-nums text-[12px] text-ink-2 sm:table-cell`}
+    >
+      {/* A row whose rule is the lab's own feed has no number to print; the words say why. */}
+      {number !== "n/a" ? <span className="block">{number}</span> : null}
+      <span className="mt-0.5 block text-[10.5px] text-ink-3">
+        {item.venue ?? basisWord(item.basis)}
+      </span>
+    </td>
+  );
+}
+
 /**
  * One row of the corpus table, the row the keyset cursor walks. The title is the control: it is a
  * link a reader can open in a new tab, and `selected` only moves a visual highlight over it.
  */
 export function CorpusRow({
   item,
+  index,
   selected,
+  focusRef,
   onSelect,
 }: {
   item: CorpusItem;
+  index: number;
   selected: boolean;
+  // Set on the first row an append adds, so that row takes focus as it mounts.
+  focusRef?: (node: HTMLAnchorElement | null) => void;
   onSelect: () => void;
 }) {
   return (
     <tr
       data-testid="corpus-row"
+      data-row-index={index}
       data-selected={selected ? "true" : undefined}
       onMouseEnter={onSelect}
       className={selected ? "bg-accent-soft/60" : "transition-colors hover:bg-card"}
     >
       <td className={`${CELL} title-cell`}>
         <Link
+          ref={focusRef}
           href={`/items/${item.id}`}
-          aria-current={selected ? "true" : undefined}
           className="block max-w-[52ch] font-serif text-[15px] leading-[1.4] hover:underline hover:decoration-rule-2 hover:underline-offset-2"
         >
           {item.title}
         </Link>
         <span className="mt-0.5 block text-[10.5px] text-ink-3">
-          {item.profile ?? "no topic"} · {publishedDay(item.published_at)}
+          {item.profile ? profileLabel(item.profile) : "no topic"} ·{" "}
+          {publishedDay(item.published_at)}
         </span>
       </td>
       <td className={`${CELL} whitespace-nowrap`}>
         <TierChip tier={item.tier} />
       </td>
       <SourceCell item={item} />
-      <td
-        className={`${CELL} hidden whitespace-nowrap text-right tabular-nums text-[12px] text-ink-2 sm:table-cell`}
-      >
-        <span className="block">{signalLine(item)}</span>
-        <span className="mt-0.5 block text-[10.5px] text-ink-3">
-          {item.venue ?? basisWord(item.basis)}
-        </span>
-      </td>
+      <SignalsCell item={item} />
     </tr>
   );
 }

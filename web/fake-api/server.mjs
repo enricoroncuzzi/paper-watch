@@ -399,8 +399,15 @@ async function handle(request, response) {
       });
       return;
     }
-    const detail = fixture("item-detail");
-    if (id !== detail.id) {
+    // The ordinary item, one whose stored links are hostile (S9), and one that only reached
+    // Rising, so the dialog warns before a draft is generated.
+    const details = [
+      fixture("item-detail"),
+      fixture("item-detail-hostile"),
+      fixture("item-detail-early"),
+    ];
+    const detail = details.find((entry) => entry.id === id);
+    if (!detail) {
       json(response, 404, { detail: "item not found" });
       return;
     }

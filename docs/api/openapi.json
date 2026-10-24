@@ -1850,6 +1850,10 @@
             "format": "date-time",
             "title": "Published At"
           },
+          "early": {
+            "type": "boolean",
+            "title": "Early"
+          },
           "authors": {
             "items": {
               "type": "string"
@@ -1944,6 +1948,7 @@
           "hf_upvotes",
           "github_stars",
           "published_at",
+          "early",
           "authors",
           "url",
           "text",

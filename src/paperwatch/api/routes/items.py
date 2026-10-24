@@ -26,8 +26,10 @@ from paperwatch.api.responses import BEARER, GATE_RESPONSES, Refusal
 from paperwatch.api.routes.suggestions import SummaryData
 from paperwatch.domain import AdmissionBasis, Tier
 from paperwatch.store.models import ItemSummary
-from paperwatch.store.repository import CorpusItemRow, Repository
+from paperwatch.store.repository import CORPUS_SEARCH_MAX, CorpusItemRow, Repository
 from paperwatch.suggestions.cards import basis_label, summary_data
+from paperwatch.suggestions.config import SuggestionsConfig
+from paperwatch.suggestions.ranking import is_pick_grade
 
 # The table shows 25 rows and the API takes at most 50: a page is read, not crawled.
 CORPUS_DEFAULT_LIMIT = 25
@@ -96,6 +98,9 @@ class ItemDraftData(BaseModel):
 class CorpusItemDetail(CorpusItemData):
     """The row plus the text, the extras, the history and what was already written about it."""
 
+    # False when the item only reaches the Rising shelf; the dialog says so before generating,
+    # because the draft itself carries that sentence (Task 38).
+    early: bool
     authors: list[str]
     url: str
     text: str
@@ -146,7 +151,9 @@ def _decode_cursor(value: str) -> _Cursor:
             )
         if data.get("k") == "search":
             offset = int(str(data["o"]))
-            if offset > 0:
+            # Zero and anything past the cap are positions this API never issues; without the
+            # upper bound a huge integer reaches Postgres and overflows a bigint instead of 422.
+            if 0 < offset <= CORPUS_SEARCH_MAX:
                 return _Cursor(offset=offset)
     except (ValueError, KeyError, TypeError, binascii.Error):
         pass
@@ -185,10 +192,18 @@ def _since_midnight(day: date | None) -> datetime | None:
     return datetime(day.year, day.month, day.day, tzinfo=UTC) if day is not None else None
 
 
+def _has_control_chars(value: str) -> bool:
+    # psycopg refuses a NUL in a text parameter and the full-text parser has nothing to say about
+    # the rest, so a query carrying a control character is refused rather than answered with 500.
+    return any(ord(char) < 32 or ord(char) == 127 for char in value)
+
+
 def make_items_router(
-    session_factory: Callable[[], Session], profile_names: frozenset[str]
+    session_factory: Callable[[], Session],
+    profile_names: frozenset[str],
+    suggestions_config: SuggestionsConfig,
 ) -> APIRouter:
-    """Build the router with the read factory and the known profile names."""
+    """Build the router with the read factory, the known profile names and the ranking rules."""
     router = APIRouter()
 
     @router.get(
@@ -211,6 +226,8 @@ def make_items_router(
     ) -> CorpusData:
         # A blank search box is no search: the table shows the newest items instead of nothing.
         search = q.strip() if q and q.strip() else None
+        if search is not None and _has_control_chars(search):
+            raise HTTPException(status_code=422, detail="q carries a control character")
         if profile is not None and profile not in profile_names:
             # The names are the process's own, so a typo is refused here rather than answered with
             # an empty table that looks like a corpus without that topic.
@@ -263,8 +280,10 @@ def make_items_router(
             # same stored summary differently; the model shape is the one the contract declares.
             built = summary_data(stored, item.text) if stored is not None else None
             summary = SummaryData.model_validate(asdict(built)) if built is not None else None
+            early = not is_pick_grade(item.candidate, suggestions_config)
             return CorpusItemDetail(
                 **_item_data(item.row).model_dump(),
+                early=early,
                 authors=list(item.authors),
                 url=item.url,
                 text=item.text,

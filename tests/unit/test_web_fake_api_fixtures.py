@@ -60,6 +60,8 @@ FIXTURE_MODELS: dict[str, type[BaseModel]] = {
     "corpus": CorpusData,
     "corpus-empty": CorpusData,
     "item-detail": CorpusItemDetail,
+    "item-detail-hostile": CorpusItemDetail,
+    "item-detail-early": CorpusItemDetail,
 }
 
 EVENT_MODELS: dict[str, type[BaseModel]] = {
@@ -113,3 +115,25 @@ def test_the_fake_refusals_match_the_declared_gate_bodies() -> None:
     for status in ("400", "401", "403", "413", "415"):
         assert Refusal.model_validate(bodies[status]).model_dump(mode="json") == bodies[status]
     assert RateLimited.model_validate(bodies["429"]).model_dump(mode="json") == bodies["429"]
+
+
+def test_the_item_fixture_facts_agree_with_its_newest_snapshot() -> None:
+    # The pipeline writes the column before it copies it into a snapshot and only ever raises it,
+    # so an item's facts are never below its newest reading. A fixture that disagrees would let a
+    # page bug ("Hugging Face n/a" beside 38 upvotes) pass CI.
+    detail = json.loads((FIXTURES / "item-detail.json").read_text())
+    assert detail["signals"]
+    newest = detail["signals"][-1]
+    assert detail["hf_upvotes"] == newest["hf_upvotes"]
+    assert detail["github_stars"] == newest["github_stars"]
+    upvotes = [
+        point["hf_upvotes"] for point in detail["signals"] if point["hf_upvotes"] is not None
+    ]
+    stars = [
+        point["github_stars"] for point in detail["signals"] if point["github_stars"] is not None
+    ]
+    assert detail["hf_upvotes"] >= max(upvotes)
+    assert detail["github_stars"] >= max(stars)
+    # The series reads as a series: oldest first.
+    observed = [point["observed_at"] for point in detail["signals"]]
+    assert observed == sorted(observed)

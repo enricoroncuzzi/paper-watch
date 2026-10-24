@@ -1148,9 +1148,14 @@ def create_app(deps: AgentDeps) -> FastAPI:
     # The Recent menu and the re-fetch after a dropped stream: reads only, so no limiter.
     app.include_router(make_threads_router(deps.read_session_factory or deps.session_factory))
     # The corpus table and the item page: read-only, one short session per request, and never a
-    # model, so they stay cheap while an answer holds the model's memory.
+    # model, so they stay cheap while an answer holds the model's memory. They read the ranking
+    # rules only for the item page's `early` flag, which must agree with a draft's own notice.
     app.include_router(
-        make_items_router(deps.read_session_factory or deps.session_factory, deps.profile_names)
+        make_items_router(
+            deps.read_session_factory or deps.session_factory,
+            deps.profile_names,
+            load_suggestions(SUGGESTIONS_PATH),
+        )
     )
 
     # FastAPI types the SSE media type with the `StreamItem` envelope, which exists only to

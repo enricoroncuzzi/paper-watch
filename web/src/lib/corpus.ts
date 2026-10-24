@@ -8,6 +8,17 @@ export const TIER_TABS = [
   { value: "lab_blog", label: "Lab blogs" },
 ] as const;
 
+/** The API's cap on a search: past it the page prints "200+", because nobody pages that far. */
+export const CORPUS_SEARCH_MAX = 200;
+
+/**
+ * What the section prints as the corpus size. A capped search says "200+" rather than a total
+ * that claims to be the whole answer.
+ */
+export function corpusTotalLabel(total: number, searching: boolean): string {
+  return searching && total >= CORPUS_SEARCH_MAX ? `${CORPUS_SEARCH_MAX}+` : String(total);
+}
+
 /** The mockup's footer sentence: it is the reader's only cue for why the table is not the corpus. */
 export const CORPUS_NOTE = "Only admitted items are searchable.";
 

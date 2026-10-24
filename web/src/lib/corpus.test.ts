@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 
-import { basisWord, compactCount, publishedDay, signalLine, tierMove, TIER_TABS } from "./corpus";
+import {
+  basisWord,
+  compactCount,
+  corpusTotalLabel,
+  publishedDay,
+  signalLine,
+  tierMove,
+  TIER_TABS,
+} from "./corpus";
 import type { CorpusItem } from "./types";
 
 function row(overrides: Partial<CorpusItem> = {}): CorpusItem {
@@ -69,6 +77,13 @@ describe("the corpus labels", () => {
         changed_at: "2026-10-22T00:00:00Z",
       }),
     ).toBe("vetted preprint to peer-reviewed");
+  });
+
+  it("says 200+ for a capped search and the plain number otherwise", () => {
+    expect(corpusTotalLabel(12, false)).toBe("12");
+    expect(corpusTotalLabel(12, true)).toBe("12");
+    expect(corpusTotalLabel(200, true)).toBe("200+");
+    expect(corpusTotalLabel(200, false)).toBe("200");
   });
 
   it("offers the four tiers as tabs, All first", () => {

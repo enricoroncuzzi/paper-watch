@@ -123,6 +123,8 @@ html {
      instead of hiding the section's heading under it. The header and this offset read the same
      property, so the two cannot drift apart. */
   --masthead-h: 109px;
+  /* Exactly the masthead's height, not a few pixels less: the section's heading and its top rule
+     then land at the header's bottom edge instead of under it (slice 5's e2e asserts the meet). */
   scroll-padding-top: var(--masthead-h);
 }
 

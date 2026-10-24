@@ -9,7 +9,7 @@ import { PovDialog } from "@/components/drafts/PovDialog";
 import { Chip, TierChip } from "@/components/picks/Chips";
 import { ThirtySeconds } from "@/components/picks/ThirtySeconds";
 import { basisWord, compactCount, publishedDay, tierMove } from "@/lib/corpus";
-import { formatDay } from "@/lib/format";
+import { formatDay, profileLabel } from "@/lib/format";
 import { safeHref } from "@/lib/safe-href";
 import type { CorpusItemDetail, DraftTarget } from "@/lib/types";
 
@@ -40,7 +40,7 @@ function Fact({ label, value }: { label: string; value: string }) {
   );
 }
 
-/** A stored URL that fails safeHref prints as text, never as a link. */
+/** A stored URL that fails safeHref renders nothing at all: no link, and no text either. */
 function LinkButton({ href, label }: { href: string | null; label: string }) {
   const safe = safeHref(href);
   if (!safe) return null;
@@ -70,7 +70,9 @@ function LinkButton({ href, label }: { href: string | null; label: string }) {
 export function ItemPage({ item }: { item: CorpusItemDetail }) {
   const router = useRouter();
   const { askAbout } = useAskLauncher();
-  const [preview, setPreview] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  // The button that opened the dialog, so WebKit puts focus back on it when the dialog closes.
+  const [opener, setOpener] = useState<HTMLElement | null>(null);
   // The API lists drafts newest first, so the first one is the date the page prints.
   const newestDraft = item.drafts[0];
 
@@ -83,7 +85,7 @@ export function ItemPage({ item }: { item: CorpusItemDetail }) {
       <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[10.5px] text-ink-3">
         <TierChip tier={item.tier} />
         {item.venue ? <Chip>{item.venue}</Chip> : null}
-        {item.profile ? <Chip>{item.profile}</Chip> : null}
+        {item.profile ? <Chip>{profileLabel(item.profile)}</Chip> : null}
         <span className="font-mono text-[10.5px]">{publishedDay(item.published_at)}</span>
       </div>
 
@@ -104,7 +106,10 @@ export function ItemPage({ item }: { item: CorpusItemDetail }) {
         </button>
         <button
           type="button"
-          onClick={() => setPreview(true)}
+          onClick={(event) => {
+            setOpener(event.currentTarget);
+            setPreviewOpen(true);
+          }}
           aria-label={`LinkedIn post preview: ${item.title}`}
           className={PRIMARY}
         >
@@ -133,7 +138,7 @@ export function ItemPage({ item }: { item: CorpusItemDetail }) {
             <h2 className="mb-1 text-[9px] uppercase tracking-[0.13em] text-ink-3">Facts</h2>
             <dl>
               <Fact label="Authors" value={item.authors.join(", ") || "n/a"} />
-              <Fact label="Citations" value={item.citation_count > 0 ? String(item.citation_count) : "n/a"} />
+              <Fact label="Citations" value={String(item.citation_count)} />
               <Fact
                 label="Hugging Face"
                 value={item.hf_upvotes === null ? "n/a" : `${item.hf_upvotes} \u2191`}
@@ -226,12 +231,20 @@ export function ItemPage({ item }: { item: CorpusItemDetail }) {
       </div>
 
       <PovDialog
-        card={preview ? draftTarget(item) : null}
-        // The design's early-work notice belongs to the Rising shelf; the generated draft still
-        // carries its own, because the API decides that from the item's tier and basis.
-        early={false}
-        open={preview}
-        onOpenChange={setPreview}
+        card={previewOpen ? draftTarget(item) : null}
+        // The same flag the draft generator uses, so the dialog warns before a call that will
+        // produce the "early work" sentence.
+        early={item.early}
+        open={previewOpen}
+        returnFocus={opener}
+        onOpenChange={(next) => {
+          if (next) {
+            setPreviewOpen(true);
+            return;
+          }
+          // Keep the target for the closing frame, so Radix can return focus to the opener first.
+          setPreviewOpen(false);
+        }}
         onSaved={() => router.refresh()}
       />
     </section>

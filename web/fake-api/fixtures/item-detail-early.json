@@ -1,0 +1,86 @@
+{
+  "id": "36ddae68-0992-5624-87b0-2837bd1485b7",
+  "title": "A lab preprint that only reached Rising",
+  "source": "arxiv",
+  "tier": "vetted_preprint",
+  "basis": "lab_author",
+  "basis_label": "preprint from a recognised lab's authors, not yet independently vetted",
+  "profile": "agentic-engineering",
+  "venue": null,
+  "citation_count": 0,
+  "hf_upvotes": 38,
+  "github_stars": 2400,
+  "published_at": "2026-10-20T00:00:00Z",
+  "authors": [
+    "Ada Lovelace",
+    "Grace Hopper"
+  ],
+  "url": "https://arxiv.org/abs/2610.04412",
+  "text": "Most coding-agent harnesses forget by summarising. We replace the running summary with a replay buffer of raw tool observations and drop the ones that no longer matter. Replaying exact tool results cut tokens per task by 41% on 40 long-horizon coding tasks, with no loss in task success, and retries fell by 31% against a summary-based baseline. Every task is Python and the benchmark is small, so this is a reason to test the idea, not to adopt it. Code and logs are public.",
+  "github_repo": "https://github.com/example/replay-buffers",
+  "project_page": "https://example.org/replay-buffers",
+  "org": "example-lab",
+  "tier_history": [
+    {
+      "from_tier": null,
+      "to_tier": "vetted_preprint",
+      "basis": "hf_upvotes",
+      "changed_at": "2026-10-20T00:00:00Z"
+    },
+    {
+      "from_tier": "vetted_preprint",
+      "to_tier": "peer_reviewed",
+      "basis": "venue",
+      "changed_at": "2026-10-22T06:12:00Z"
+    }
+  ],
+  "signals": [
+    {
+      "observed_at": "2026-10-20T00:00:00Z",
+      "hf_upvotes": 24,
+      "hf_comments": 1,
+      "github_stars": 1800,
+      "citation_count": 0
+    },
+    {
+      "observed_at": "2026-10-21T00:00:00Z",
+      "hf_upvotes": 31,
+      "hf_comments": 3,
+      "github_stars": 2100,
+      "citation_count": 0
+    },
+    {
+      "observed_at": "2026-10-22T00:00:00Z",
+      "hf_upvotes": 38,
+      "hf_comments": 4,
+      "github_stars": 2400,
+      "citation_count": 31
+    }
+  ],
+  "summary": {
+    "status": "checked",
+    "what": {
+      "text": "A replay buffer of raw tool observations replaces the running summary.",
+      "quote": "We replace the running summary with a replay buffer of raw tool observations",
+      "interpretation": false
+    },
+    "result": {
+      "text": "Tokens per task fell by 41%, and retries by 31%.",
+      "quote": "cut tokens per task by 41% on 40 long-horizon coding tasks",
+      "interpretation": false
+    },
+    "why": {
+      "text": "A harness that forgets less can spend its context on the work.",
+      "quote": null,
+      "interpretation": true
+    },
+    "catch": {
+      "text": "One benchmark, all Python tasks, and a small one.",
+      "quote": null,
+      "interpretation": true
+    },
+    "excerpt": ""
+  },
+  "drafts": [],
+  "early": true
+}

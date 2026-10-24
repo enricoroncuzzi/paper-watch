@@ -457,3 +457,323 @@ def test_a_candidate_item_is_404(db_session: Session) -> None:
     assert api.get(f"/items/{item_id}").status_code == 404
     # A candidate is not in the browsable table either.
     assert page_of(api.get("/items"))["total"] == 0
+
+
+def b64(values: dict[str, object]) -> str:
+    """A cursor-shaped blob, for the ones the API did not issue."""
+    raw = json.dumps(values, separators=(",", ":")).encode()
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+def test_a_search_pages_by_offset_and_holds_the_cap_for_any_limit(db_session: Session) -> None:
+    api = client(db_session)
+    for i in range(260):
+        seed(
+            db_session,
+            f"cap-{i:03d}",
+            title=f"Replay buffer study {i:03d}",
+            body="A replay buffer for coding agents.",
+            published_at=NOW - timedelta(minutes=i),
+            commit=False,
+        )
+    db_session.commit()
+
+    # The cap is 200 whatever page size the caller picks: a limit that does not divide it must not
+    # let the table walk past it, and the total says what the walk will really return.
+    for limit in (30, 50):
+        seen: list[str] = []
+        query = f"/items?q=replay+buffer&limit={limit}"
+        while True:
+            page = page_of(api.get(query))
+            assert page["total"] == 200
+            seen.extend(item["id"] for item in page["items"])
+            cursor = page["next_cursor"]
+            if cursor is None:
+                break
+            query = f"/items?q=replay+buffer&limit={limit}&cursor={cursor}"
+        assert len(seen) == 200
+        assert len(set(seen)) == 200
+
+
+def test_a_cursor_the_api_did_not_issue_is_422(db_session: Session) -> None:
+    api = client(db_session)
+    seed(db_session, "one", title="Replay buffer", body="A replay buffer.")
+    for forged in (
+        {"k": "search", "o": 201},
+        {"k": "search", "o": 2**63},
+        {"k": "search", "o": 0},
+        {"k": "search", "o": "many"},
+        {"k": "newest", "p": "not-a-date", "i": "not-a-uuid"},
+    ):
+        refused = api.get("/items", params={"q": "replay", "cursor": b64(forged)})
+        # A cursor is the API's own token: anything else is a client bug, not a 500.
+        assert refused.status_code == 422, forged
+
+
+def test_a_control_character_in_the_query_is_422(db_session: Session) -> None:
+    api = client(db_session)
+    seed(db_session, "one", title="Replay buffer", body="A replay buffer.")
+    # psycopg refuses a NUL in a text parameter, so the route must refuse it before the query.
+    assert api.get("/items", params={"q": "\x00x"}).status_code == 422
+
+
+def test_a_last_page_that_exactly_fills_the_limit_has_no_cursor(db_session: Session) -> None:
+    api = client(db_session)
+    for i in range(20):
+        seed(
+            db_session,
+            f"exact-{i:02d}",
+            title=f"Exact page {i:02d}",
+            body="An abstract.",
+            published_at=NOW - timedelta(hours=i),
+            commit=False,
+        )
+    db_session.commit()
+
+    # A cursor that leads to an empty page is a "Load more" that loads nothing.
+    page = page_of(api.get("/items?limit=20"))
+    assert len(page["items"]) == 20
+    assert page["next_cursor"] is None
+
+    # The same at a two-page boundary, where the second page is exactly full.
+    second = page_of(api.get("/items?limit=10"))
+    assert second["next_cursor"] is not None
+    last = page_of(api.get(f"/items?limit=10&cursor={second['next_cursor']}"))
+    assert len(last["items"]) == 10
+    assert last["next_cursor"] is None
+
+
+def test_a_cursor_from_the_other_branch_is_422(db_session: Session) -> None:
+    api = client(db_session)
+    for i in range(3):
+        seed(
+            db_session,
+            f"both-{i}",
+            title=f"Replay buffer {i}",
+            body="A replay buffer.",
+            published_at=NOW - timedelta(hours=i),
+            commit=False,
+        )
+    db_session.commit()
+
+    newest = page_of(api.get("/items?limit=1"))["next_cursor"]
+    search = page_of(api.get("/items?q=replay&limit=1"))["next_cursor"]
+    assert newest and search
+    # A keyset position is not an offset and an offset is not a keyset position.
+    assert api.get(f"/items?q=replay&cursor={newest}").status_code == 422
+    assert api.get(f"/items?cursor={search}").status_code == 422
+
+
+def test_a_blank_query_is_no_search(db_session: Session) -> None:
+    api = client(db_session)
+    seed(
+        db_session,
+        "older",
+        title="Older item",
+        body="An abstract.",
+        published_at=NOW - timedelta(days=1),
+    )
+    seed(db_session, "newer", title="Newer item", body="An abstract.", published_at=NOW)
+
+    plain = page_of(api.get("/items"))
+    for blank in ("", "   "):
+        assert page_of(api.get("/items", params={"q": blank})) == plain
+    assert [item["title"] for item in plain["items"]] == ["Newer item", "Older item"]
+
+
+def test_the_default_limit_is_25_and_51_is_refused(db_session: Session) -> None:
+    api = client(db_session)
+    for i in range(30):
+        seed(
+            db_session,
+            f"limit-{i:02d}",
+            title=f"Limit {i:02d}",
+            body="An abstract.",
+            published_at=NOW - timedelta(minutes=i),
+            commit=False,
+        )
+    db_session.commit()
+
+    default = page_of(api.get("/items"))
+    assert len(default["items"]) == 25
+    assert default["next_cursor"] is not None
+    assert api.get("/items?limit=51").status_code == 422
+    widest = page_of(api.get("/items?limit=50"))
+    assert len(widest["items"]) == 30
+    assert widest["next_cursor"] is None
+
+
+def test_the_cursor_is_taken_from_the_last_row_of_the_page(db_session: Session) -> None:
+    api = client(db_session)
+    ids = [
+        seed(
+            db_session,
+            f"row-{i}",
+            title=f"Row {i}",
+            body="An abstract.",
+            published_at=NOW - timedelta(hours=i),
+            commit=False,
+        )
+        for i in range(4)
+    ]
+    db_session.commit()
+
+    first = page_of(api.get("/items?limit=2"))
+    assert [item["id"] for item in first["items"]] == [str(ids[0]), str(ids[1])]
+    second = page_of(api.get(f"/items?limit=2&cursor={first['next_cursor']}"))
+    assert [item["id"] for item in second["items"]] == [str(ids[2]), str(ids[3])]
+    assert second["next_cursor"] is None
+
+
+def test_since_includes_the_utc_midnight(db_session: Session) -> None:
+    api = client(db_session)
+    seed(
+        db_session,
+        "midnight",
+        title="Just after midnight",
+        body="An abstract.",
+        published_at=datetime(2026, 11, 1, tzinfo=UTC),
+        commit=False,
+    )
+    seed(
+        db_session,
+        "before",
+        title="A second before",
+        body="An abstract.",
+        published_at=datetime(2026, 10, 31, 23, 59, 59, tzinfo=UTC),
+        commit=False,
+    )
+    db_session.commit()
+
+    found = page_of(api.get("/items?since=2026-11-01"))
+    assert [item["title"] for item in found["items"]] == ["Just after midnight"]
+    assert found["total"] == 1
+
+
+def test_the_item_page_keeps_the_newest_thirty_readings(db_session: Session) -> None:
+    api = client(db_session)
+    item_id = seed(db_session, "series", title="A series", body="An abstract.")
+    for i in range(35):
+        db_session.add(
+            SignalSnapshot(
+                item_id=item_id,
+                observed_at=NOW + timedelta(days=i),
+                hf_upvotes=i,
+                hf_comments=None,
+                github_stars=100 + i,
+                citation_count=0,
+            )
+        )
+    db_session.commit()
+
+    detail = page_of(api.get(f"/items/{item_id}"))
+    assert len(detail["signals"]) == 30
+    # The newest thirty, still oldest first, so the table reads as a series.
+    assert [point["hf_upvotes"] for point in detail["signals"]] == list(range(5, 35))
+
+
+def test_tier_history_is_oldest_first_and_drafts_belong_to_their_item(db_session: Session) -> None:
+    api = client(db_session)
+    item_id = seed(db_session, "moves", title="Moving item", body="An abstract.")
+    other_id = seed(db_session, "other", title="Other item", body="Another abstract.")
+    repo = Repository(db_session)
+    repo.admit_item(
+        item_id,
+        Tier.PEER_REVIEWED,
+        AdmissionBasis.VENUE,
+        None,
+        Signals(venue="ICLR 2027"),
+        NOW + timedelta(days=2),
+    )
+    repo.admit_item(
+        item_id,
+        Tier.LAB_BLOG,
+        AdmissionBasis.FEED,
+        None,
+        Signals(),
+        NOW + timedelta(days=5),
+    )
+    older = repo.add_draft(
+        item_id=item_id,
+        inputs={"title": "x"},
+        pov="",
+        language="en",
+        model="test-model",
+        prompt_version="d1",
+        hook="An old hook",
+        body="A body",
+        hashtags=(),
+        source_link="https://example.org/moves",
+        check={"flags": [], "counts": {}},
+        regenerated_from=None,
+        at=NOW,
+    )
+    newer = repo.add_draft(
+        item_id=item_id,
+        inputs={"title": "x"},
+        pov="",
+        language="en",
+        model="test-model",
+        prompt_version="d1",
+        hook="A new hook",
+        body="A body",
+        hashtags=(),
+        source_link="https://example.org/moves",
+        check={"flags": [], "counts": {}},
+        regenerated_from=None,
+        at=NOW + timedelta(hours=1),
+    )
+    elsewhere = repo.add_draft(
+        item_id=other_id,
+        inputs={"title": "y"},
+        pov="",
+        language="en",
+        model="test-model",
+        prompt_version="d1",
+        hook="Another hook",
+        body="A body",
+        hashtags=(),
+        source_link="https://example.org/other",
+        check={"flags": [], "counts": {}},
+        regenerated_from=None,
+        at=NOW,
+    )
+    db_session.commit()
+
+    detail = page_of(api.get(f"/items/{item_id}"))
+    assert [change["changed_at"] for change in detail["tier_history"]] == [
+        NOW.isoformat().replace("+00:00", "Z"),
+        (NOW + timedelta(days=2)).isoformat().replace("+00:00", "Z"),
+        (NOW + timedelta(days=5)).isoformat().replace("+00:00", "Z"),
+    ]
+    # The page prints the newest draft's date, and never another item's draft.
+    assert [draft["id"] for draft in detail["drafts"]] == [str(newer.id), str(older.id)]
+    assert str(elsewhere.id) not in {draft["id"] for draft in detail["drafts"]}
+
+
+def test_an_item_that_is_not_pick_grade_is_early(db_session: Session) -> None:
+    api = client(db_session)
+    # A vetted preprint from a lab's authors is Rising, so a draft of it must say it is early work.
+    preprint = seed(
+        db_session,
+        "preprint",
+        title="A lab's preprint",
+        body="An abstract.",
+        tier=Tier.VETTED_PREPRINT,
+        basis=AdmissionBasis.LAB_AUTHOR,
+        commit=False,
+    )
+    paper = seed(
+        db_session,
+        "paper",
+        title="A peer-reviewed paper",
+        body="An abstract.",
+        tier=Tier.PEER_REVIEWED,
+        basis=AdmissionBasis.VENUE,
+        venue="ICLR 2027",
+        commit=False,
+    )
+    db_session.commit()
+
+    assert page_of(api.get(f"/items/{preprint}"))["early"] is True
+    assert page_of(api.get(f"/items/{paper}"))["early"] is False
