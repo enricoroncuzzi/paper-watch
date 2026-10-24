@@ -10,6 +10,32 @@ test.beforeEach(async ({ page, request }) => {
   await signIn(page);
 });
 
+// A first visit has no cookie: the palette must still be the light one on a light OS, and the dark
+// one on a dark OS. Every other test sets a theme, so only this pair can catch a missing default.
+test.describe("a first visit with no theme cookie on a light OS", () => {
+  test.use({ colorScheme: "light" });
+
+  test("gets the light palette", async ({ page }) => {
+    await page.goto("/signin");
+    const paper = await page.evaluate(() =>
+      getComputedStyle(document.documentElement).getPropertyValue("--paper").trim(),
+    );
+    expect(paper).toBe("#f6f5ef");
+  });
+});
+
+test.describe("a first visit with no theme cookie on a dark OS", () => {
+  test.use({ colorScheme: "dark" });
+
+  test("gets the dark palette", async ({ page }) => {
+    await page.goto("/signin");
+    const paper = await page.evaluate(() =>
+      getComputedStyle(document.documentElement).getPropertyValue("--paper").trim(),
+    );
+    expect(paper).toBe("#12140f");
+  });
+});
+
 test("the today strip shows the last run", async ({ page }) => {
   const strip = page.getByTestId("today-strip");
   await expect(strip).toContainText("healthy");

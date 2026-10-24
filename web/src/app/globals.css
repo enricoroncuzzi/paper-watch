@@ -1,8 +1,9 @@
 @import "tailwindcss";
 
 /* The mockup's tokens, copied verbatim from concept-b-variant-2.html (Butter & Graphite), so the
-   page and the approved reference cannot drift. Light is the default; the dark set also applies
-   through the media query only when no explicit theme is set. */
+   page and the approved reference cannot drift. Light is the default: `:root` carries it, so a
+   first visit with no cookie (and the "system" choice on a light OS) still has a palette. The dark
+   set applies when chosen, or through the media query only when no explicit theme is set. */
 :root {
   --serif: var(--font-newsreader), ui-serif, Georgia, serif;
   --sans: var(--font-inter), system-ui, -apple-system, sans-serif;
@@ -10,6 +11,7 @@
   --measure: 35rem;
 }
 
+:root,
 html[data-theme="light"] {
   --paper: #f6f5ef;
   --card: #ffffff;
