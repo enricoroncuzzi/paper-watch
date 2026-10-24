@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.1](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.9.0...paperwatch-v0.9.1) (2026-10-24)
+
+
+### Bug Fixes
+
+* **api:** refuse an HMAC token minted in the future ([#54](https://github.com/enricoroncuzzi/paper-watch/issues/54)) ([bbc9437](https://github.com/enricoroncuzzi/paper-watch/commit/bbc94377a8263ddbacbb513b42a288f0360be228))
+
 ## [0.9.0](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.8.0...paperwatch-v0.9.0) (2026-10-24)
 
 
