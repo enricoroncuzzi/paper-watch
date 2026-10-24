@@ -80,5 +80,7 @@ which is a warning, so one hostile value cannot fail the run.
   example a budget exhausted during classification), writes none and leaves a gap in that day's
   history. Moving the read out of that gate is a separate change if gaps turn out to matter; the
   plan deliberately left it where it was.
+- A run whose listing was degraded still stores what it read but does not count as observing
+  (`hf_listing_stored` stays `0`), so papers listed on a failed day are not observed by that run.
 - `HfPaper` is a plain frozen dataclass in `domain.py`, so the store and the source share one type
   for the listing without the store importing the HTTP client.

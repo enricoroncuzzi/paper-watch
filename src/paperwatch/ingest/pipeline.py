@@ -453,6 +453,8 @@ def run_ingestion(
                 "followup_passes": 0,
                 # Signal snapshots appended by the listing step; 0 when it had nothing to write.
                 "snapshots": 0,
+                # 1 only when this run stored the whole Hugging Face listing.
+                "hf_listing_stored": 0,
             }
             # Why this run is degraded, one cause per problem the sources caused ("arxiv",
             # "feeds", "hf", "s2", "classification", "admission", "malformed", "payload").
@@ -756,6 +758,8 @@ def run_ingestion(
             # S2_MAX_PAPERS_PER_RUN of them, most overdue first; the rest wait for the next run.
             targets: list[StoredItem] = []
             papers: dict[str, HfPaper] = {}
+            # Captured beside the call it describes, so the step cannot read a later write.
+            hf_degraded = False
             upvotes: dict[str, int] = {}
             if status != "budget_exhausted":
                 targets = repo.recheck_targets(
@@ -775,6 +779,7 @@ def run_ingestion(
                     # whatever the corpus size; max() in the store keeps a paper's upvotes current
                     # while it is listed, and the extras and snapshots are stored after admission.
                     papers = sources.hf.papers((now - HF_RECHECK_HORIZON).date(), now.date())
+                    hf_degraded = sources.hf.degraded
                     upvotes = {key: paper.upvotes for key, paper in papers.items()}
                     s2 = sources.s2.lookup(paper_ids)
                     # Only ids whose chunk Semantic Scholar answered count as checked; a refused
@@ -826,6 +831,11 @@ def run_ingestion(
                     with session.begin_nested():
                         counts["snapshots"] = repo.apply_hf_listing(papers, at=now)
                     session.commit()
+                    # Set after the commit, so the marker means stored and not attempted. A
+                    # degraded listing stores what it read but is not an observation; saying it
+                    # was would let a momentum baseline count a failed day's upvotes as a gain.
+                    if not hf_degraded:
+                        counts["hf_listing_stored"] = 1
                 except (SQLAlchemyError, UnicodeError) as exc:
                     # A lone surrogate raises UnicodeEncodeError before SQLAlchemy wraps it, so
                     # the encoding failure is caught here too and stays a warning.
