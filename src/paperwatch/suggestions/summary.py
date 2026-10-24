@@ -271,9 +271,12 @@ def _checked(raw: Mapping[str, Any]) -> Summary:
 
 
 def _field(fields: Mapping[str, Mapping[str, Any]], name: str) -> SummaryField:
+    # The model read the source HTML-escaped, so unescape before storing: the card prints this
+    # under "quotes from the stored text" and must not show "R&amp;D".
+    quote = fields[name].get("quote")
     return SummaryField(
-        text=str(fields[name]["text"]).strip(),
-        quote=fields[name].get("quote"),
+        text=html.unescape(str(fields[name]["text"]).strip()),
+        quote=html.unescape(quote) if quote else None,
         interpretation=name in INTERPRETATION_FIELDS,
     )
 

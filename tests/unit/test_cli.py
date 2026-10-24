@@ -1494,3 +1494,36 @@ def test_suggest_summaries_on_the_daily_cap_prints_the_partial_count(
     assert result.exit_code == 2
     assert "summaries: 0 checked, 0 excerpt of 2 cards" in result.output
     assert "daily cap" in result.output.lower()
+
+
+@pytest.mark.parametrize(
+    "error",
+    [cli.BudgetExceeded("the answer budget is spent"), cli.ModelUnavailable("no provider")],
+)
+def test_suggest_summaries_on_other_limits_also_exits_two(
+    monkeypatch: pytest.MonkeyPatch, error: Exception
+) -> None:
+    # The same handler covers a spent token budget and a provider outage, not only the day's cap.
+    repo = _SuggestRepo()
+    engine = SimpleNamespace(dispose=lambda: None)
+
+    class Failing:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def write(self, **kwargs: object) -> object:
+            raise error
+
+    monkeypatch.setattr(cli, "get_settings", lambda: Settings())
+    monkeypatch.setattr(cli, "make_engine", lambda url, **kwargs: engine)
+    session = SimpleNamespace(close=lambda: None)
+    monkeypatch.setattr(cli, "make_session_factory", lambda engine: lambda: session)
+    monkeypatch.setattr(cli, "Repository", lambda session: repo)
+    monkeypatch.setattr(cli, "make_chat_models", lambda settings: [object()])
+    monkeypatch.setattr(cli, "SummaryWriter", Failing)
+
+    result = CliRunner().invoke(app, ["suggest", "--live", "--summaries"])
+
+    assert result.exit_code == 2
+    assert "summaries: 0 checked, 0 excerpt of 2 cards" in result.output
+    assert str(error) in result.output

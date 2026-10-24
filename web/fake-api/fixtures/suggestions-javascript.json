@@ -122,12 +122,12 @@
         "status": "checked",
         "what": {
           "text": "Describes what changed when a coding agent went from a benchmark harness to a product with real traces.",
-          "quote": null,
+          "quote": "the traces stopped looking like the benchmark the harness was built for",
           "interpretation": false
         },
         "result": {
           "text": "No benchmark numbers, but a concrete list of what they now measure first: retries, truncations and abandoned steps.",
-          "quote": null,
+          "quote": "we now measure retries, truncations and abandoned steps first",
           "interpretation": false
         },
         "why": {
@@ -196,12 +196,12 @@
         "status": "checked",
         "what": {
           "text": "Walks through wrapping an agent loop in durable execution so a crashed step resumes instead of restarting the whole task.",
-          "quote": null,
+          "quote": "wrapping the agent loop in durable execution means a crashed step resumes",
           "interpretation": false
         },
         "result": {
-          "text": "A worked example, no numbers.",
-          "quote": null,
+          "text": "A worked example: a crashed step resumes from the last completed step instead of restarting the whole task.",
+          "quote": "the workflow resumes from the last completed step",
           "interpretation": false
         },
         "why": {

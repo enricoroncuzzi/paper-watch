@@ -54,8 +54,9 @@ refreshed.
 once with the abstract's excerpt and "summary on its way"; the queue fills it in and the page
 re-fetches itself. A resident worker or a separate service would hold a database pool and a model
 client all day for a few calls an hour, and the ingestion must not lose memory to it. The queue
-pauses one item for thirty minutes after a provider outage and everything until UTC midnight after
-the daily cap, because retrying before then cannot work.
+pauses everything for thirty minutes after one provider outage (every card would fail the same
+way, so one doomed call per card is how an outage eats a day's cap) and until UTC midnight after the
+daily cap, because retrying before then cannot work.
 
 **Every summary is checked by code, and the check has the last word.** `what` and `result` must
 carry a verbatim quote from the stored text; every number and name-like token in any field must

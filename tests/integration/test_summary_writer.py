@@ -120,3 +120,28 @@ def test_budget_exceeded_propagates() -> None:
 
     with pytest.raises(BudgetExceeded):
         summary_writer.write(title=TITLE, text=TEXT)
+
+
+def test_a_quote_read_from_the_escaped_source_is_stored_unescaped() -> None:
+    # The model reads the abstract inside an escaped <source> block, so a faithful quote comes
+    # back as "R&amp;D" and "&lt;". The card prints what is stored under "quotes from the stored
+    # text", so the entity must be gone before it is saved.
+    text = "We study R&D budgets of agents. Error falls below 5% when latency < 2 s."
+    raw = good()
+    raw["what"] = {
+        "text": "The study looks at research budgets for agents.",
+        "quote": "We study R&amp;D budgets of agents.",
+    }
+    raw["result"] = {
+        "text": "Error falls below 5% when latency is under two seconds.",
+        "quote": "Error falls below 5% when latency &lt; 2 s.",
+    }
+    summary, _ = writer([answer(raw)])
+
+    result = summary.write(title="Budgets", text=text)
+
+    assert result.status == "checked"
+    assert result.what is not None and result.what.quote == "We study R&D budgets of agents."
+    assert result.result is not None and result.result.quote == (
+        "Error falls below 5% when latency < 2 s."
+    )

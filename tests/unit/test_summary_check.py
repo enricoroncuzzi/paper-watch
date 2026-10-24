@@ -200,6 +200,39 @@ def test_a_capitalised_word_at_a_sentence_start_is_exempt() -> None:
 
 def test_a_hyphenated_name_must_appear_in_the_source() -> None:
     raw = good()
-    raw["why"]["text"] = "This makes Tool-Former comparisons cheaper."
+    raw["why"]["text"] = "This makes tool-former comparisons cheaper."
 
-    assert check_summary(raw, title=TITLE, text=TEXT) == ["name:why:Tool-Former"]
+    assert check_summary(raw, title=TITLE, text=TEXT) == ["name:why:tool-former"]
+
+
+def test_a_twenty_character_quote_passes_and_nineteen_fails() -> None:
+    raw = good()
+    raw["what"]["quote"] = "a benchmark of 41 ta"  # exactly 20 characters
+    assert check_summary(raw, title=TITLE, text=TEXT) == []
+
+    raw["what"]["quote"] = "a benchmark of 41 t"  # one short
+    assert check_summary(raw, title=TITLE, text=TEXT) == ["quote_too_short:what"]
+
+
+def test_a_short_optional_quote_is_allowed() -> None:
+    # Only the two factual fields need a quote long enough to back a claim; "why" may quote a
+    # short phrase, and only when it does must the phrase be in the source.
+    raw = good()
+    raw["why"]["quote"] = "We introduce"
+
+    assert check_summary(raw, title=TITLE, text=TEXT) == []
+
+
+def test_an_invented_name_that_is_a_prefix_of_a_source_word_fails() -> None:
+    source = "Albert et al. study agent memory over long horizons. The work reports 12 tasks."
+    raw = {
+        "what": {
+            "text": "The work looks at agent memory.",
+            "quote": "Albert et al. study agent memory over long horizons",
+        },
+        "result": {"text": "The work reports 12 tasks.", "quote": "The work reports 12 tasks"},
+        "why": {"text": "This mentions Albe as a baseline."},
+        "catch": {"text": "Not stated in the abstract."},
+    }
+
+    assert check_summary(raw, title="Memory", text=source) == ["name:why:Albe"]

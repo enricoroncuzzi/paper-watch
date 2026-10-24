@@ -48,9 +48,8 @@ from paperwatch.agent.graph import (
     build_agent,
     stream_answer,
 )
-from paperwatch.agent.prompts import source_block
 from paperwatch.agent.sources import SourceRef, SourceRegistry
-from paperwatch.agent.tools import SearchLog, make_tools
+from paperwatch.agent.tools import SearchLog, item_block, make_tools
 from paperwatch.api.auth import Principal, Verifier
 from paperwatch.api.gate import ApiGate
 from paperwatch.api.limits import Admitted, Refused, RequestLimiter
@@ -483,6 +482,9 @@ def run_question(
             deps.settings.chat_max_calls_per_day,
             deps.clock,
         )
+        # What the model reads: the reader's own question, or that question under the item's
+        # block. `question` stays the reader's words, so a stored turn never becomes a prompt.
+        prompt = question
         if item_id is not None:
             # Registered before the graph starts, so S1 is this item whatever the search returns:
             # "Ask about it" means the question is about that paper, and the citation check reads
@@ -492,13 +494,13 @@ def run_question(
                 detail = Repository(reader).admitted_details([item_id]).get(item_id)
             if detail is not None:
                 ref = registry.register(detail)
-                # The registry alias alone proves the model may cite the item, not that it has read
-                # it: the same escaped block a tool returns goes into the prompt, so an answer
-                # about S1 rests on the stored text rather than on the alias.
-                question = (
+                # The registry alias alone proves the model may cite the item, not that it has
+                # read it: the tools' own block goes into the prompt, so an answer about S1 rests
+                # on stored text that is clipped and attributed like any retrieved source.
+                prompt = (
                     f"The reader is asking about {ref.alias}. "
                     "Its stored record is in the block below.\n"
-                    f"{source_block(detail.title, detail.text)}\n{question}"
+                    f"{item_block(ref, detail)}\n{question}"
                 )
         tools = make_tools(
             session,
@@ -514,7 +516,7 @@ def run_question(
         # next search; the prewarm and the open-answer window only matter for a hybrid answer.
         hybrid = decision.mode == "hybrid"
         with _answer_window(deps.embedder, hybrid=hybrid):
-            stream = stream_answer(graph, question, cancel, registry)
+            stream = stream_answer(graph, prompt, cancel, registry)
             # Not `yield from`: closing a generator suspended in a yield-from closes the
             # sub-generator before this frame can set the flag, so the flag is set first.
             for event in stream:  # noqa: UP028 - yield-from would close before the flag is set

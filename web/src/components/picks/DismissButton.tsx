@@ -12,7 +12,9 @@ export function DismissButton({ title, onDismiss }: { title: string; onDismiss: 
       // A screen reader meets seven of these: the item's title is what tells them apart.
       aria-label={`Not for me: ${title}`}
       title="Dismiss this card"
-      className="inline-flex h-11 items-center rounded-[2px] border border-transparent pl-2 pr-0 text-[11.5px] text-ink-3 transition-colors hover:border-rule-2 hover:bg-card hover:text-ink sm:h-7"
+      // The text ends on the content edge by pulling the whole box out, not by removing one
+      // side's padding: the hover and focus box stays symmetric.
+      className="inline-flex h-11 items-center rounded-[2px] border border-transparent px-2 -mr-2 text-[11.5px] text-ink-3 transition-colors hover:border-rule-2 hover:bg-card hover:text-ink sm:h-7"
     >
       Not for me
     </button>

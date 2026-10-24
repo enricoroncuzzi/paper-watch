@@ -439,12 +439,14 @@ def test_mmr_picks_the_least_similar_item_over_a_higher_scored_neighbour() -> No
 
 
 def test_each_component_is_the_value_the_plan_defines() -> None:
-    profile = PROFILES["agentic-engineering"]
+    # A profile weighted below 1.0, so the editorial weight is part of the value under test.
+    profile = PROFILES["ml-architectures"]
     stars = 9999
     scored = cand(
         external_id="a",
         published_at=NOW - 5 * DAY,
         relevance=0.93,
+        profile="ml-architectures",
         org="OpenAI",
         github_repo="https://github.com/example/repo",
         github_stars=stars,

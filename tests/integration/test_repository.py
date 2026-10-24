@@ -820,3 +820,22 @@ def test_a_feed_item_takes_its_lab_name_from_the_author(db_session: Session) -> 
     assert candidate.item_id == item_id
     assert candidate.org == "LangChain"
     assert candidate.venue is None
+
+
+def test_an_arxiv_item_keeps_its_authors_out_of_the_org_field(db_session: Session) -> None:
+    # The lab-name fallback is for feed posts only; a paper's first author is not its venue.
+    now = datetime(2026, 11, 2, 9, tzinfo=UTC)
+    repo = Repository(db_session)
+    repo.upsert_item(
+        dataclasses.replace(ITEM, authors=("LangChain",)),
+        Tier.VETTED_PREPRINT,
+        "agentic-engineering",
+        0.9,
+        Signals(),
+        VEC,
+    )
+    db_session.flush()
+
+    [candidate] = repo.suggestion_candidates(now=now, max_age=timedelta(days=90), momentum_days=3)
+
+    assert candidate.org is None

@@ -79,17 +79,22 @@ an abstract containing `</source>` and "ignore previous instructions" is data he
 
 `check_summary` in `src/paperwatch/suggestions/summary.py` returns the names of the checks that
 failed, and an empty list means the summary is checked. Every comparison normalises both sides
-first: NFKC, curly quotes and dashes folded to ASCII, whitespace collapsed, case folded. Then:
+first: HTML entities unescaped (the model reads the source inside an escaped block, so it copies
+`&amp;` for `&`), NFKC, curly quotes and dashes folded to ASCII, whitespace collapsed, case folded.
+Then:
 
 - **Shape.** All four fields, each with a non-empty `text`; `what` and `result` also carry a `quote`.
-- **Quotes.** A quote must be a substring of the stored text, word for word. This is the check that
-  makes the other three meaningful: a model that cannot copy a sentence has not read the source.
+- **Quotes.** A quote must be a substring of the stored text, word for word, and at least 20
+  characters long: a `what` or `result` quote of one word backs nothing. This is the check that
+  makes the others meaningful: a model that cannot copy a sentence has not read the source.
 - **Numbers.** Every number in every field (`41%`, `1,000`, `3.1`) must appear in the title or the
   text, compared without spaces or thousands separators. A number is the easiest thing for a model
   to drift on, and the most costly for a reader to trust wrongly.
 - **Names.** Every name-like token must appear too: anything with a digit (`GPT-5`), a capital
   inside the word (`OpenAI`), a hyphen between letters, or a capital where a sentence does not
-  require one. That is a heuristic, not a parser, and it is deliberately over-eager: a false
+  require one. Each token must match a whole word in the source, not a substring of one (an
+  invented `Bert` does not pass because the text says `Albert`). That is a heuristic, not a parser,
+  and it is deliberately over-eager: a false
   positive costs one retry, a missed invented benchmark costs the reader's trust.
 - **Superlatives.** `state-of-the-art`, `breakthrough`, `first` and four more may only be used when
   the source uses them; a claim of novelty is the sentence a reader would quote back at us.

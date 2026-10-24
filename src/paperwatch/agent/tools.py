@@ -143,6 +143,19 @@ def _block(ref: SourceRef, title: str, text: str, meta: str | None = None) -> st
     return source_block(_clip(title, TITLE_MAX_CHARS), text, head=head, meta=meta)
 
 
+def item_block(ref: SourceRef, detail: ItemDetail) -> str:
+    """The one rendering of a stored item for a model: clipped text, metadata, escaped block.
+
+    The get_item tool and the "Ask about it" prompt both use it, so a long article is bounded in
+    both places and the block always carries the alias and the reliability attributes.
+    """
+    text = detail.text[:GET_ITEM_MAX_CHARS]
+    if len(detail.text) > GET_ITEM_MAX_CHARS:
+        # An ellipsis tells the model the text continues; an item field has no other bound.
+        text += "..."
+    return _block(ref, detail.title, text, _meta(detail))
+
+
 def _meta(detail: ItemDetail) -> str:
     authors = [_clip(a, AUTHOR_MAX_CHARS) for a in detail.authors[:AUTHORS_SHOWN]]
     shown = ", ".join(authors) if authors else "unknown"

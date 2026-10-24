@@ -18,6 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from paperwatch.agent.graph import AnswerEvent
+from paperwatch.agent.tools import GET_ITEM_MAX_CHARS
 from paperwatch.api.app import AgentDeps, create_app, run_question
 from paperwatch.api.auth import HmacVerifier, mint_hmac_token
 from paperwatch.api.limits import RequestLimiter
@@ -596,3 +597,115 @@ def test_only_a_missing_or_stale_summary_is_queued_and_served_as_pending(
     # The stale summary describes text that has been replaced: the card says one is on its way.
     assert cards[str(stale_id)]["summary"]["status"] == "pending"
     assert queue.submitted == [stale_id]
+
+
+def test_asking_about_a_long_lab_post_clips_the_source_block(db_session: Session) -> None:
+    # A lab post stores the whole article. The block must be the tools' own: clipped to the
+    # get_item bound and carrying the alias and reliability attributes, or one answer spends a
+    # quarter of the per-answer budget on round one.
+    long_text = ("We report a long lab write-up with 41 tasks. " * 500)[:20000]
+    item_id = seed_item(
+        db_session,
+        "long-post",
+        title="A long lab write-up",
+        text=long_text,
+        tier=Tier.LAB_BLOG,
+        basis=AdmissionBasis.FEED,
+    )
+    db_session.commit()
+    model = ScriptedChatModel(script=[AIMessage(content="It describes a long write-up [S1].")])
+    deps = AgentDeps(
+        session_factory=lambda: db_session,  # type: ignore[arg-type,return-value]
+        embedder=FakeEmbedder(),
+        models=[ChatModel("openrouter", model)],
+        settings=Settings(),
+        clock=lambda: NOW,
+        chat_calls=NoChatCalls(),  # type: ignore[arg-type]
+        profile_names=frozenset(),
+        verifier=HmacVerifier(TEST_SECRET, time.time),
+        allowed_hosts=LOOPBACK_HOSTS,
+        limiter=RequestLimiter(
+            per_minute=REQUESTS_PER_MINUTE,
+            per_day=REQUESTS_PER_DAY,
+            concurrent=CONCURRENT_ANSWERS,
+            clock=lambda: NOW,
+        ),
+        search_mode=FixedMode(),  # type: ignore[arg-type]
+        suggestions=service(db_session, NoQueue()),
+    )
+
+    list(run_question(deps, "What does this describe?", Filters(), item_id=item_id))
+
+    asked = "\n".join(str(message.content) for message in model.seen[0])
+    assert 'id="S1"' in asked
+    assert 'tier="lab_blog"' in asked
+    assert long_text[:GET_ITEM_MAX_CHARS] in asked
+    # The unclipped body is not there: the block stops at the tool's own bound.
+    assert long_text[: GET_ITEM_MAX_CHARS + 500] not in asked
+
+
+def test_an_outage_pauses_submits_for_thirty_minutes_then_summarises_both(
+    db_session: Session,
+) -> None:
+    first = seed_item(db_session, "swe")
+    second = seed_item(db_session, "survey", title=SURVEY_TITLE, text=SURVEY)
+    clock = SimpleClock(NOW)
+    summary = checked_summary()
+
+    class Down:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.down = True
+
+        def write(self, *, title: str, text: str) -> Any:
+            self.calls += 1
+            if self.down:
+                raise ModelUnavailable("no provider answered")
+            return summary
+
+    writer = Down()
+    summary_queue = SummaryQueue(
+        lambda: writer,  # type: ignore[arg-type]
+        lambda: db_session,
+        clock,
+        lambda: "test-model",
+    )
+    summary_queue.submit([first, second])
+    summary_queue.join(timeout=10)
+    assert writer.calls == 1
+
+    # Ten minutes later the provider may be back, but the queue is still resting.
+    writer.down = False
+    clock.now = NOW + timedelta(minutes=10)
+    summary_queue.submit([first, second])
+    summary_queue.join(timeout=10)
+    assert writer.calls == 1
+
+    # After the pause both cards are queued again: neither was left in the pending set.
+    clock.now = NOW + timedelta(minutes=31)
+    summary_queue.submit([first, second])
+    summary_queue.join(timeout=10)
+    assert writer.calls == 3
+    assert db_session.get(ItemSummary, first) is not None
+    assert db_session.get(ItemSummary, second) is not None
+
+
+def test_the_cards_held_behind_the_cap_are_summarised_the_next_day(db_session: Session) -> None:
+    first = seed_item(db_session, "swe")
+    second = seed_item(db_session, "survey", title=SURVEY_TITLE, text=SURVEY)
+    clock = SimpleClock(NOW)
+    refusal = Refusal(True)
+    script = [AIMessage(content=json.dumps(_raw())) for _ in range(4)]
+    summary_queue = queue_for(db_session, script, refuse=refusal, clock=clock)
+
+    summary_queue.submit([first, second])
+    summary_queue.join(timeout=10)
+    assert db_session.get(ItemSummary, first) is None
+
+    refusal.refuse = False
+    clock.now = NOW + timedelta(days=1)
+    summary_queue.submit([first, second])
+    summary_queue.join(timeout=10)
+
+    assert db_session.get(ItemSummary, first) is not None
+    assert db_session.get(ItemSummary, second) is not None
