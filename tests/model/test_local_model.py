@@ -65,3 +65,26 @@ def test_real_model_routes_clear_abstracts_with_the_committed_thresholds(
     assert clf.classify(agent).profile == "agentic-engineering"
     assert clf.classify(forensic).profile == "ai-forensics"
     assert clf.classify(bread).profile is None
+
+
+def test_the_real_worker_matches_the_real_model(embedder: Embedder) -> None:
+    # The API's production path is the child process, so at least one model test exercises it end
+    # to end: the protocol, the real model in the child, and the same vector as the in-process one.
+    import sys
+    import time
+
+    from paperwatch.llm.embedder import WorkerEmbedder
+
+    text = "A harness that lets a coding agent call tools and verify its own patches."
+    worker = WorkerEmbedder([sys.executable, "-m", "paperwatch.llm.embed_worker"])
+    try:
+        started = time.monotonic()
+        vectors = worker.embed([text])
+        elapsed = time.monotonic() - started
+    finally:
+        worker.stop()
+    # The startup includes spawning Python and loading the model; a minute is generous, and a
+    # regression that loads it per search would still show here.
+    print(f"worker spawn to first vector: {elapsed:.2f}s")
+    assert elapsed < 60
+    assert vectors[0] == pytest.approx(embedder.embed([text])[0], abs=1e-5)

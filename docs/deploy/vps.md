@@ -1,10 +1,13 @@
-# Running Paper Watch's ingestion on the shared VPS
+# Running Paper Watch on the shared VPS
 
 The corpus has to accumulate every day, whatever the captain is building, so ingestion runs on
-the shared VPS ahead of M3 ([ADR 0009](../adr/0009-ingestion-runs-on-the-shared-vps.md)). Two
-systemd user services with their timers, both as the `paperwatch` account: the daily ingestion at
-06:00 Europe/Rome, and a nightly `pg_dump` backup at 05:15. The API, the weekly
-shortlist, email alerts and the restore drill are not part of this deployment (M3 and M4).
+the shared VPS ahead of M3 ([ADR 0009](../adr/0009-ingestion-runs-on-the-shared-vps.md)). The API
+joins it in M3 behind a tunnel ([ADR 0012](../adr/0012-the-api-on-the-shared-vps-behind-a-tunnel.md)),
+as a long-lived user unit with its own memory budget and a child embedding process
+([ADR 0013](../adr/0013-api-memory-child-embedder-and-keyword-only-mode.md)). Three systemd user
+services, all as the `paperwatch` account: the daily ingestion at 06:00 Europe/Rome, a nightly
+`pg_dump` backup at 05:15, and the API with its tunnel. The weekly shortlist, email alerts and the
+restore drill are not part of this deployment (M4).
 
 Everything here is a step for the `paperwatch` user. There is no root step: the database, the
 role, pgvector, the swap file and linger were set up by the captain before this guide starts.
@@ -436,10 +439,30 @@ GRANT SELECT ON ALL TABLES IN SCHEMA public TO paperwatch_ro;
 GRANT SELECT ON ALL TABLES IN SCHEMA public TO paperwatch_api;
 GRANT INSERT ON chat_calls TO paperwatch_api;
 GRANT USAGE ON SEQUENCE chat_calls_id_seq TO paperwatch_api;
+-- The API reserves the row before the provider call and completes it after. Column level, so it
+-- can never move the row to another day or provider.
+GRANT UPDATE (model, input_tokens, output_tokens) ON chat_calls TO paperwatch_api;
 
--- Tables later migrations create. A later table the API must write needs its own INSERT grant.
+-- Tables later migrations create are readable by both roles. A later table the API must write is
+-- granted by that migration itself (src/paperwatch/store/grants.py), so the captain has no
+-- per-table step.
 ALTER DEFAULT PRIVILEGES FOR ROLE paperwatch IN SCHEMA public
   GRANT SELECT ON TABLES TO paperwatch_ro, paperwatch_api;
+```
+
+After the grants, this must print `t`: the API can complete a reservation only with the column
+privilege, and without it every answer calls the provider and then fails to update its row.
+
+```sql
+SELECT has_column_privilege('paperwatch_api', 'chat_calls', 'model', 'UPDATE');
+```
+
+The admin creates the two non-owner roles once, with LOGIN but no password, before the grants
+above (peer authentication is what lets them in):
+
+```sql
+CREATE ROLE paperwatch_ro LOGIN;
+CREATE ROLE paperwatch_api LOGIN;
 ```
 
 The admin also has to let the three roles in without a password, and without loosening anything for
@@ -518,6 +541,126 @@ while an ingestion is running.
 
 - `paperwatch eval`: it creates and drops its own throwaway database and needs the `vector`
   extension in it, which means `CREATEDB` and superuser. The role has neither, by design.
-- `paperwatch serve` and `paperwatch ask`: the API is M3 and runs elsewhere. Ingestion needs no
-  chat key, so none is installed here.
+- A second copy of the API: `paperwatch serve` runs as `paperwatch-api.service` (section 15) with
+  its own env file, and two copies would double the memory and split the per-client limiter.
+  `paperwatch ask` is an interactive command and may be used, with `--env-file
+  ~/.config/paperwatch/api.env` when it needs a chat key.
 - Docker, and anything outside `/home/paperwatch/`.
+
+## 15. The API
+
+The API is a long-lived user unit on `127.0.0.1:8000` and refuses every request but
+`GET /healthz` without its credential (`docs/learn/15`); `/docs`, `/redoc` and `/openapi.json` are
+served behind the same credential. The tunnel in section 16 is the only way in.
+
+Write its env file, separate from the ingestion's because it connects as a different role and
+needs a chat key the ingestion does not. The here-document is quoted so `$` stays literal:
+
+```bash
+umask 077
+cat > ~/.config/paperwatch/api.env <<'ENV'
+PW_DATABASE_URL=postgresql+psycopg://paperwatch_api@/paperwatch?host=/var/run/postgresql
+PW_OPENROUTER_API_KEY=
+PW_LOCAL_EMBEDDING_CACHE_DIR=/home/paperwatch/.cache/paperwatch-models
+PW_API_AUTH=oidc
+PW_VERCEL_OIDC_ISSUER=
+PW_VERCEL_OIDC_AUDIENCE=
+PW_VERCEL_OIDC_SUBJECT=
+PW_API_HMAC_SECRET=
+PW_API_PUBLIC_HOST=
+ENV
+chmod 600 ~/.config/paperwatch/api.env
+```
+
+- `PW_DATABASE_URL` uses `paperwatch_api`, the least-privilege role from section 12, over the same
+  socket and peer authentication. The API reads every table and writes only the rows its grants
+  name.
+- `PW_API_AUTH=oidc` needs the three `PW_VERCEL_OIDC_*` values from the Vercel project (the issuer,
+  the audience and the exact subject, production only). For the tunnel rehearsal before a Vercel
+  project exists, set `PW_API_AUTH=hmac` and a `PW_API_HMAC_SECRET` of at least 32 characters
+  instead; `paperwatch api-token --live` mints a token.
+- `PW_API_PUBLIC_HOST` is the tunnel's hostname (section 16); without it the gate accepts loopback
+  names only and the tunnel's `Host` gets 400.
+- The model cache is the same directory the ingestion uses, so the 180 MB model is downloaded once.
+
+Install the unit, the slice and the ingestion drop-in, then start it:
+
+```bash
+mkdir -p ~/.config/systemd/user/paperwatch-ingest.service.d
+cp ~/paper-watch/deploy/vps/paperwatch-api.service \
+   ~/paper-watch/deploy/vps/paperwatch.slice \
+   ~/.config/systemd/user/
+cp ~/paper-watch/deploy/vps/paperwatch-ingest.service.d/slice.conf \
+   ~/.config/systemd/user/paperwatch-ingest.service.d/
+systemctl --user daemon-reload
+systemctl --user enable --now paperwatch-api
+```
+
+`paperwatch-api.service` caps the API at `MemoryMax=700M` with no swap, raises its OOM score to
+900, and joins `paperwatch.slice` (`MemoryMax=1100M`), which the ingestion joins through the one
+drop-in line. There is deliberately no `Conflicts=`, `Requires=` or `After=` between them: the measurements
+showed that `Conflicts=` stops the ingestion, and the slice, not a unit relationship, is what
+makes the kernel pick the API when both need the memory (ADR 0013). The unit runs
+`uv run --frozen --no-dev paperwatch serve --live --host 127.0.0.1 --port 8000` from
+`/home/paperwatch/paper-watch`.
+
+Run the acceptance check with a fresh token per authenticated request. With `PW_API_AUTH=hmac` an
+HMAC token is single use, so pass a command that mints one:
+
+```bash
+PW_CHECK_TOKEN_CMD='uv run --frozen --no-dev --env-file ~/.config/paperwatch/api.env \
+  paperwatch api-token --live' ./deploy/vps/api-check.sh http://127.0.0.1:8000
+```
+
+Every line reads `ok`, `FAIL` or `WARN` (a systemd question that cannot be asked off the server);
+the exit status is non-zero on any `FAIL`. Then read the unit's security score:
+
+```bash
+systemd-analyze --user security paperwatch-api
+```
+
+The API answers `text_only` while the ingestion's main pass runs or while memory is short, which
+`GET /status` reports and the page shows. That is not a failure: the run must never be stopped for
+the API (`docs/learn/16`).
+
+## 16. The tunnel
+
+Tailscale's userspace client needs no root and no TUN device, so it runs as a third user unit. Get
+the static binaries for the VPS's architecture from the official tarball, put `tailscale` and
+`tailscaled` in `~/.local/bin/`, and check them with `--version`. Then install the unit:
+
+```bash
+cp ~/paper-watch/deploy/vps/paperwatch-tunnel.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now paperwatch-tunnel
+```
+
+The unit starts `tailscaled --tun=userspace-networking` with its socket and state under
+`~/.local/state/tailscale`, capped at `MemoryMax=150M` and outside `paperwatch.slice`: a tunnel bug
+must not spend the API's or the ingestion's memory. Join the tailnet once with a tagged auth key from the Tailscale admin console. Prefer giving the
+key to the client through the `TS_AUTHKEY` environment variable if the installed version supports
+it (check `tailscale up --help`); if it only takes `--auth-key`, the key is on that one command
+line, so make it a one-shot key and revoke it afterwards. Never commit it:
+
+```bash
+tailscale --socket="$HOME/.local/state/tailscale/tailscaled.sock" \
+  up --auth-key="tskey-auth-..."
+```
+
+Publish the API's port through Funnel. The port mapping is tailscaled state, set once, not part of
+the unit; confirm the exact flags for the installed version with `tailscale funnel --help`:
+
+```bash
+tailscale --socket="$HOME/.local/state/tailscale/tailscaled.sock" \
+  funnel --bg 443 http://127.0.0.1:8000
+tailscale --socket="$HOME/.local/state/tailscale/tailscaled.sock" funnel status
+```
+
+The hostname Funnel prints is `PW_API_PUBLIC_HOST` in `api.env`; add it, restart the API, and run
+`api-check.sh` against the public URL from outside the tailnet. If any step asks for root or a TUN
+device, stop and report: the rehearsal failed, and the fallback (ngrok's free static domain) is a
+captain decision.
+
+There is no reverse proxy on this path. If Caddy is ever used as the fallback, it must set
+`request_body max_size 16KB` to match the gate's cap; without it the gate still refuses a 20 KB
+body, but the proxy would have buffered it first.

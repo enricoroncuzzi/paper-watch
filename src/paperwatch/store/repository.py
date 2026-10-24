@@ -8,13 +8,14 @@ or an embedding is refused by a check constraint.
 import uuid
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import and_, case, func, or_, select, update
+from sqlalchemy import and_, case, func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import distinct_on, insert
 from sqlalchemy.orm import Session, load_only, sessionmaker
 
 from paperwatch.config import (
+    CHAT_CALLS_LOCK_KEY,
     HF_ORG_MAX_CHARS,
     INT4_MAX,
     ITEM_VENUE_MAX_CHARS,
@@ -36,6 +37,10 @@ from paperwatch.store.models import (
 # Semantic Scholar reports the preprint server while a paper is only a preprint. A real venue,
 # once seen, is never replaced by one of these, so a temporary answer cannot erase an acceptance.
 PREPRINT_VENUES = frozenset({"arxiv", "arxiv.org"})
+# A reserved call is on record before the provider is asked, because the daily cap counts rows;
+# "reserved" and "failed" are the two non-answer model values, like the chat guard's "failed".
+RESERVED_MODEL = "reserved"
+FAILED_MODEL = "failed"
 
 
 @dataclass(frozen=True)
@@ -668,6 +673,49 @@ class Repository:
             self._s.scalar(select(func.count()).select_from(ChatCall).where(ChatCall.at >= at)) or 0
         )
 
+    def reserve_chat_call(self, *, at: datetime, provider: str, cap: int) -> tuple[int | None, int]:
+        """Reserve one call against the daily cap, or return no id when the cap is spent.
+
+        The advisory lock is transaction-scoped: it serialises the count and the insert across
+        processes (the API's answer loop and the CLI), so two answers at 799 cannot both pass.
+        The row is the reservation, with model "reserved" and zero tokens; `fill_chat_call` and
+        `fail_chat_call` complete it. It counts against the cap from this moment on, so a provider
+        call that hangs still cannot let another one through.
+        """
+        self._s.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": CHAT_CALLS_LOCK_KEY})
+        midnight = at.astimezone(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+        calls_today = self.chat_calls_since(midnight)
+        if calls_today >= cap:
+            return None, calls_today
+        row = ChatCall(
+            at=at,
+            provider=provider,
+            model=RESERVED_MODEL,
+            input_tokens=0,
+            output_tokens=0,
+        )
+        self._s.add(row)
+        self._s.flush()
+        return row.id, calls_today + 1
+
+    def fill_chat_call(
+        self, call_id: int, *, model: str, input_tokens: int, output_tokens: int
+    ) -> None:
+        # The provider answered: complete the reserved row. A row that is already gone is not an
+        # error here (a test store or a pruned table); the tokens were still spent.
+        self._s.execute(
+            update(ChatCall)
+            .where(ChatCall.id == call_id)
+            .values(model=model, input_tokens=input_tokens, output_tokens=output_tokens)
+        )
+        self._s.flush()
+
+    def fail_chat_call(self, call_id: int) -> None:
+        # An attempt that reached the provider counts against the cap even when it raised, and
+        # "failed" is what tells the operator it produced no answer.
+        self._s.execute(update(ChatCall).where(ChatCall.id == call_id).values(model=FAILED_MODEL))
+        self._s.flush()
+
 
 class ChatCallLog:
     """The production `ChatCallStore`: every usage row is committed on its own short session.
@@ -681,27 +729,29 @@ class ChatCallLog:
     def __init__(self, session_factory: sessionmaker[Session]) -> None:
         self._session_factory = session_factory
 
-    def record_chat_call(
-        self,
-        *,
-        at: datetime,
-        provider: str,
-        model: str,
-        input_tokens: int,
-        output_tokens: int,
-    ) -> None:
-        # Its own transaction, committed before returning: this is the whole point of the class.
+    def reserve_chat_call(self, *, at: datetime, provider: str, cap: int) -> tuple[int | None, int]:
+        # Its own transaction, committed before returning: the lock, the count and the insert are
+        # one unit, and the reservation is visible to every other process immediately.
         with self._session_factory() as session:
-            Repository(session).record_chat_call(
-                at=at,
-                provider=provider,
+            call_id, calls_today = Repository(session).reserve_chat_call(
+                at=at, provider=provider, cap=cap
+            )
+            session.commit()
+            return call_id, calls_today
+
+    def fill_chat_call(
+        self, call_id: int, *, model: str, input_tokens: int, output_tokens: int
+    ) -> None:
+        with self._session_factory() as session:
+            Repository(session).fill_chat_call(
+                call_id,
                 model=model,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
             )
             session.commit()
 
-    def chat_calls_since(self, at: datetime) -> int:
-        # A read-only session is enough, and closing it releases the connection at once.
+    def fail_chat_call(self, call_id: int) -> None:
         with self._session_factory() as session:
-            return Repository(session).chat_calls_since(at)
+            Repository(session).fail_chat_call(call_id)
+            session.commit()

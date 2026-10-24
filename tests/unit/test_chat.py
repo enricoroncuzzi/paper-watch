@@ -29,19 +29,58 @@ NOW = datetime(2026, 10, 16, 12, tzinfo=UTC)
 
 
 class FakeRepo:
-    """Stands in for Repository: counts and keeps recorded calls in memory."""
+    """Stands in for Repository: counts, reserves and keeps completed rows in memory."""
 
     def __init__(self, calls_today: int = 0) -> None:
         self.calls_today = calls_today
         self.recorded: list[dict[str, object]] = []
+        self.reservations: list[dict[str, object]] = []
+        self._next = 0
 
-    def chat_calls_since(self, at: datetime) -> int:
-        return self.calls_today
-
-    def record_chat_call(self, **row: object) -> None:
-        self.recorded.append(row)
-        # A recorded call is a call: the real repository would count it from now on.
+    def reserve_chat_call(self, *, at: datetime, provider: str, cap: int) -> tuple[int | None, int]:
+        if self.calls_today >= cap:
+            return None, self.calls_today
         self.calls_today += 1
+        self._next += 1
+        self.reservations.append(
+            {
+                "id": self._next,
+                "at": at,
+                "provider": provider,
+                "model": "reserved",
+                "input_tokens": 0,
+                "output_tokens": 0,
+            }
+        )
+        return self._next, self.calls_today
+
+    def fill_chat_call(
+        self, call_id: int, *, model: str, input_tokens: int, output_tokens: int
+    ) -> None:
+        row = next(row for row in self.reservations if row["id"] == call_id)
+        row.update(model=model, input_tokens=input_tokens, output_tokens=output_tokens)
+        self.recorded.append(
+            {
+                "at": row["at"],
+                "provider": row["provider"],
+                "model": model,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+            }
+        )
+
+    def fail_chat_call(self, call_id: int) -> None:
+        row = next(row for row in self.reservations if row["id"] == call_id)
+        row["model"] = "failed"
+        self.recorded.append(
+            {
+                "at": row["at"],
+                "provider": row["provider"],
+                "model": "failed",
+                "input_tokens": 0,
+                "output_tokens": 0,
+            }
+        )
 
 
 def usage(i: int, o: int) -> dict[str, int]:
@@ -103,8 +142,10 @@ def test_chat_output_cap_is_sent_as_max_completion_tokens() -> None:
 
 def test_call_guard_charges_real_usage() -> None:
     repo, ledger = FakeRepo(), Ledger(1000)
+    guard = CallGuard(repo, ledger, 800, lambda: NOW)
+    call_id = guard.before_call("openrouter")
     message = AIMessage("x", usage_metadata=usage(100, 20), response_metadata={"model_name": "m"})
-    CallGuard(repo, ledger, 800, lambda: NOW).after_call("openrouter", message)
+    guard.after_call("openrouter", message, call_id)
     assert ledger.tokens_used == 120
     assert repo.recorded == [
         {
@@ -119,24 +160,29 @@ def test_call_guard_charges_real_usage() -> None:
 
 def test_call_guard_raises_past_the_answer_budget() -> None:
     repo, ledger = FakeRepo(), Ledger(100)
+    guard = CallGuard(repo, ledger, 800, lambda: NOW)
+    call_id = guard.before_call("openrouter")
     with pytest.raises(BudgetExceeded):
-        CallGuard(repo, ledger, 800, lambda: NOW).after_call(
-            "openrouter", AIMessage("x", usage_metadata=usage(100, 20))
-        )
+        guard.after_call("openrouter", AIMessage("x", usage_metadata=usage(100, 20)), call_id)
     assert len(repo.recorded) == 1  # the tokens were spent, so the call is on record
 
 
 def test_message_without_usage_is_charged_zero_and_recorded() -> None:
     repo, ledger = FakeRepo(), Ledger(100)
-    CallGuard(repo, ledger, 800, lambda: NOW).after_call("openrouter", AIMessage("x"))
+    guard = CallGuard(repo, ledger, 800, lambda: NOW)
+    guard.after_call("openrouter", AIMessage("x"), guard.before_call("openrouter"))
     assert ledger.tokens_used == 0
     assert repo.recorded[0]["input_tokens"] == 0 and repo.recorded[0]["model"] == "unknown"
 
 
 def test_before_call_refuses_at_the_daily_cap() -> None:
     with pytest.raises(DailyCapReached):
-        CallGuard(FakeRepo(calls_today=800), Ledger(100), 800, lambda: NOW).before_call()
-    CallGuard(FakeRepo(calls_today=799), Ledger(100), 800, lambda: NOW).before_call()
+        CallGuard(FakeRepo(calls_today=800), Ledger(100), 800, lambda: NOW).before_call(
+            "openrouter"
+        )
+    guard = CallGuard(FakeRepo(calls_today=799), Ledger(100), 800, lambda: NOW)
+    call_id = guard.before_call("openrouter")
+    assert call_id == 1
 
 
 def test_scripted_model_replays_records_and_raises() -> None:
@@ -180,11 +226,12 @@ def test_settings_repr_hides_every_key() -> None:
     assert "az-secret" not in shown and "s2-secret" not in shown
 
 
-def test_failed_attempt_is_recorded_with_zero_tokens() -> None:
+def test_failed_attempt_keeps_its_reserved_row_with_zero_tokens() -> None:
     # A 429 or a timeout is exactly when the next request hurts, so a failed attempt must be
     # counted against the cap too (review S3).
     repo, ledger = FakeRepo(), Ledger(100)
-    CallGuard(repo, ledger, 800, lambda: NOW).after_failure("openrouter")
+    guard = CallGuard(repo, ledger, 800, lambda: NOW)
+    guard.after_failure("openrouter", guard.before_call("openrouter"))
     assert repo.recorded == [
         {
             "at": NOW,
@@ -202,12 +249,10 @@ def test_every_attempt_passes_the_cap() -> None:
     # successes.
     repo = FakeRepo()
     guard = CallGuard(repo, Ledger(100), 2, lambda: NOW)
-    guard.before_call()
-    guard.after_failure("openrouter")
-    guard.before_call()
-    guard.after_failure("groq")
+    guard.after_failure("openrouter", guard.before_call("openrouter"))
+    guard.after_failure("groq", guard.before_call("groq"))
     with pytest.raises(DailyCapReached):
-        guard.before_call()
+        guard.before_call("openrouter")
 
 
 def test_groq_model_id_without_a_key_builds_one_model() -> None:
@@ -233,20 +278,22 @@ def test_openrouter_sends_its_attribution_headers() -> None:
     assert headers["X-Title"] == "Paper Watch"
 
 
-def test_cap_resets_at_utc_midnight_on_a_non_utc_clock() -> None:
-    # A local clock just after local midnight is still the previous UTC day, so the cap must not
-    # reset yet; astimezone(UTC) is what makes that true (review N2).
+def test_the_guard_passes_its_clock_to_the_reservation() -> None:
+    # The store, not the guard, owns the UTC-midnight boundary (the integration test covers it);
+    # the guard hands over the aware instant its injected clock was set to.
     berlin = timezone(timedelta(hours=2))
     now = datetime(2026, 10, 17, 0, 30, tzinfo=berlin)  # 2026-10-16T22:30Z
     seen: list[datetime] = []
 
     class RecordingRepo(FakeRepo):
-        def chat_calls_since(self, at: datetime) -> int:
+        def reserve_chat_call(
+            self, *, at: datetime, provider: str, cap: int
+        ) -> tuple[int | None, int]:
             seen.append(at)
-            return 0
+            return super().reserve_chat_call(at=at, provider=provider, cap=cap)
 
-    CallGuard(RecordingRepo(), Ledger(100), 800, lambda: now).before_call()
-    assert seen == [datetime(2026, 10, 16, tzinfo=UTC)]
+    CallGuard(RecordingRepo(), Ledger(100), 800, lambda: now).before_call("openrouter")
+    assert seen == [now]
 
 
 def test_before_call_refuses_a_naive_clock() -> None:
@@ -254,7 +301,7 @@ def test_before_call_refuses_a_naive_clock() -> None:
     # ValueError, not an assert: assertions vanish under `python -O` and this guard must not.
     naive = datetime(2026, 10, 16, 12)  # no timezone: that is the point of the test
     with pytest.raises(ValueError, match="aware"):
-        CallGuard(FakeRepo(), Ledger(100), 800, lambda: naive).before_call()
+        CallGuard(FakeRepo(), Ledger(100), 800, lambda: naive).before_call("openrouter")
 
 
 def test_scripted_model_streams_a_tool_call() -> None:
@@ -353,7 +400,9 @@ def test_a_streamed_model_id_repeated_by_the_merge_is_recorded_once() -> None:
     repo = FakeRepo()
     guard = CallGuard(repo, Ledger(1000), 10, lambda: NOW)
     guard.after_call(
-        "p", AIMessage("x", usage_metadata=usage(1, 1), response_metadata=merged.response_metadata)
+        "p",
+        AIMessage("x", usage_metadata=usage(1, 1), response_metadata=merged.response_metadata),
+        guard.before_call("p"),
     )
     assert repo.recorded[0]["model"] == name
 
@@ -366,6 +415,8 @@ def test_a_model_id_longer_than_the_column_is_clipped() -> None:
     repo = FakeRepo()
     guard = CallGuard(repo, Ledger(1000), 10, lambda: NOW)
     guard.after_call(
-        "p", AIMessage("x", usage_metadata=usage(1, 1), response_metadata={"model_name": name})
+        "p",
+        AIMessage("x", usage_metadata=usage(1, 1), response_metadata={"model_name": name}),
+        guard.before_call("p"),
     )
     assert len(str(repo.recorded[0]["model"])) == CHAT_CALL_MODEL_MAX_CHARS

@@ -3,7 +3,7 @@
   "info": {
     "title": "Paper Watch API",
     "summary": "Ask questions about the stored AI-research corpus and stream cited answers.",
-    "version": "0.1"
+    "version": "0.2"
   },
   "paths": {
     "/healthz": {
@@ -42,8 +42,97 @@
                 "schema": {}
               }
             }
+          },
+          "400": {
+            "description": "The Host is not allowed, or the Content-Length is bad.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The credential is missing or invalid; `WWW-Authenticate: Bearer`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request carries an Origin header.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
           }
-        }
+        },
+        "security": [
+          {
+            "VercelOidcOrHmac": []
+          }
+        ]
+      }
+    },
+    "/status": {
+      "get": {
+        "summary": "Status",
+        "description": "The search mode the page reads on load: hybrid, or keyword-only and why.",
+        "operationId": "status_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusData"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The Host is not allowed, or the Content-Length is bad.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The credential is missing or invalid; `WWW-Authenticate: Bearer`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request carries an Origin header.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "VercelOidcOrHmac": []
+          }
+        ]
       }
     },
     "/ask": {
@@ -63,7 +152,7 @@
         },
         "responses": {
           "200": {
-            "description": "Server-sent events, one JSON object per `data:` line. The `event` line names the payload: `tool`, `token`, `answer` or `error`. `answer` is the last event unless an `error` follows; a client replaces its streamed text with the `answer` event's `text`, never appends it, and takes every link from its `citations[].url`.",
+            "description": "Server-sent events, one JSON object per `data:` line. The `event` line names the payload: `tool`, `step`, `source`, `token`, `notice`, `answer` or `error`. A `: ping` comment line arrives after 15 s of silence; it has no `data:`. `answer` is the last event unless an `error` follows; a client replaces its streamed text with the `answer` event's `text`, never appends it, and takes every link from its `citations[].url`.",
             "content": {
               "text/event-stream": {
                 "itemSchema": {
@@ -73,7 +162,10 @@
                       "type": "string",
                       "enum": [
                         "tool",
+                        "step",
+                        "source",
                         "token",
+                        "notice",
                         "answer",
                         "error"
                       ]
@@ -87,7 +179,16 @@
                             "$ref": "#/components/schemas/ToolData"
                           },
                           {
+                            "$ref": "#/components/schemas/StepData"
+                          },
+                          {
+                            "$ref": "#/components/schemas/SourceData"
+                          },
+                          {
                             "$ref": "#/components/schemas/TokenData"
+                          },
+                          {
+                            "$ref": "#/components/schemas/NoticeData"
                           },
                           {
                             "$ref": "#/components/schemas/AnswerData"
@@ -107,6 +208,66 @@
               }
             }
           },
+          "400": {
+            "description": "The Host is not allowed, or the Content-Length is bad.",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The credential is missing or invalid; `WWW-Authenticate: Bearer`.",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request carries an Origin header.",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The body is over 16 KB, by header or by stream.",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "A POST without application/json.",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The per-client limit refused the request; also sends Retry-After.",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/RateLimited"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -117,7 +278,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "VercelOidcOrHmac": []
+          }
+        ]
       }
     }
   },
@@ -128,6 +294,16 @@
           "text": {
             "type": "string",
             "title": "Text"
+          },
+          "search_mode": {
+            "type": "string",
+            "enum": [
+              "hybrid",
+              "text_only"
+            ],
+            "title": "Search Mode",
+            "description": "Hybrid retrieval, or the keyword-only branch during a run.",
+            "default": "hybrid"
           },
           "supported": {
             "type": "boolean",
@@ -262,13 +438,26 @@
               "daily_cap",
               "budget",
               "model_unavailable",
-              "internal"
+              "internal",
+              "deadline"
             ],
             "title": "Code"
           },
           "message": {
             "type": "string",
             "title": "Message"
+          },
+          "retry_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retry At"
           }
         },
         "type": "object",
@@ -313,6 +502,168 @@
         },
         "type": "object",
         "title": "HTTPValidationError"
+      },
+      "NoticeData": {
+        "properties": {
+          "code": {
+            "type": "string",
+            "const": "text_only",
+            "title": "Code"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          }
+        },
+        "type": "object",
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "NoticeData",
+        "description": "The `notice` event: the answer runs in a reduced mode and says so."
+      },
+      "RateLimited": {
+        "properties": {
+          "detail": {
+            "type": "string",
+            "enum": [
+              "rate_limited",
+              "busy"
+            ],
+            "title": "Detail"
+          },
+          "retry_after_s": {
+            "type": "integer",
+            "title": "Retry After S"
+          }
+        },
+        "type": "object",
+        "required": [
+          "detail",
+          "retry_after_s"
+        ],
+        "title": "RateLimited",
+        "description": "A 429: the per-client limit refused the request before the stream started."
+      },
+      "Refusal": {
+        "properties": {
+          "detail": {
+            "type": "string",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "required": [
+          "detail"
+        ],
+        "title": "Refusal",
+        "description": "The body of every gate refusal except 429, as `docs/learn/15` lists them."
+      },
+      "SourceData": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "The per-answer source alias, such as S1."
+          },
+          "item_id": {
+            "type": "string",
+            "title": "Item Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "url": {
+            "type": "string",
+            "title": "Url"
+          },
+          "tier": {
+            "type": "string",
+            "title": "Tier"
+          },
+          "basis": {
+            "type": "string",
+            "title": "Basis"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "item_id",
+          "title",
+          "url",
+          "tier",
+          "basis"
+        ],
+        "title": "SourceData",
+        "description": "The `source` event: a source a tool just returned, in alias order."
+      },
+      "StatusData": {
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "hybrid",
+              "text_only"
+            ],
+            "title": "Mode"
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "ingestion",
+              "memory",
+              "database"
+            ],
+            "title": "Reason"
+          },
+          "since": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Since"
+          }
+        },
+        "type": "object",
+        "required": [
+          "mode",
+          "reason"
+        ],
+        "title": "StatusData",
+        "description": "`GET /status`: the search mode the page reads on load."
+      },
+      "StepData": {
+        "properties": {
+          "round": {
+            "type": "integer",
+            "title": "Round"
+          },
+          "ms": {
+            "type": "integer",
+            "title": "Ms"
+          },
+          "new_sources": {
+            "type": "integer",
+            "title": "New Sources"
+          }
+        },
+        "type": "object",
+        "required": [
+          "round",
+          "ms",
+          "new_sources"
+        ],
+        "title": "StepData",
+        "description": "The `step` event: one tool round finished."
       },
       "Tier": {
         "type": "string",
@@ -396,6 +747,14 @@
           "type"
         ],
         "title": "ValidationError"
+      }
+    },
+    "securitySchemes": {
+      "VercelOidcOrHmac": {
+        "type": "http",
+        "description": "A Vercel OIDC token, or an HMAC token from `paperwatch api-token --live`.",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
       }
     }
   }

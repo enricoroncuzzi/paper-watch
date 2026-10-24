@@ -12,9 +12,9 @@ posts, edits, skips, or defers by hand. Paper Watch never posts to LinkedIn itse
 It is also a deliberate learning project: every technology it uses has a load-bearing job in the
 code and a short lesson in [`docs/learn/`](docs/learn/).
 
-Status: M0 to M2 are done, the daily ingestion has run on a shared VPS since 2026-10-22
-([`docs/deploy/vps.md`](docs/deploy/vps.md)), and M3 (the weekly draft and the control page) is
-next.
+Status: M0 to M2 are done, the daily ingestion has run on a shared VPS since 2026-10-22, and
+M3 is in progress: the API is built to be public (credential gate, limits, its own user unit
+behind a tunnel) and the page follows ([`docs/deploy/vps.md`](docs/deploy/vps.md)).
 
 ## Quickstart
 
@@ -84,7 +84,9 @@ uv run paperwatch qa-eval   # replay recorded answers through the checker; no ke
 # Put PW_OPENROUTER_API_KEY in .env first (a free key from openrouter.ai; never commit it).
 uv run paperwatch ask "what is new on agent memory?" --live   # stream one answer in the terminal
 uv run paperwatch serve --live                                # POST /ask, server-sent events
+# With PW_API_AUTH=hmac and a 32+ character PW_API_HMAC_SECRET in .env, each token works once:
 curl -N -X POST localhost:8000/ask \
+  -H "authorization: Bearer $(uv run paperwatch api-token --live)" \
   -H 'content-type: application/json' \
   -d '{"question": "which papers evaluate coding agents?"}'
 ```
@@ -93,7 +95,12 @@ The chat model is an OpenRouter free model by default, with Groq as an optional 
 (`PW_GROQ_API_KEY` and `PW_GROQ_CHAT_MODEL`); embedding and relevance classification stay local, so
 only the question and the retrieved abstracts and lab posts leave the machine. `ask` needs
 `--live`, the same as the other commands that touch a real service. `serve` listens on
-`127.0.0.1:8000` only: the API has no sign-in until M3, so do not put it on a public interface.
+`127.0.0.1:8000` only. Every route but `GET /healthz` needs a credential (`PW_API_AUTH=oidc` for a
+Vercel OIDC token, or `hmac` with a token from `paperwatch api-token --live`), and `PW_API_PUBLIC_HOST`
+names the tunnel host the gate accepts; keep the API behind the tunnel rather than on a public
+interface. The API holds no embedding model: a child process loads it when a question arrives and
+exits when idle, and while the ingestion runs the API answers by keyword and says so
+([lesson 16](docs/learn/16-memory-on-a-shared-server.md)).
 
 `docs/api/README.md` documents the event stream and the client rules; `docs/learn/13` explains how
 the stream works. Every answer stays within `PW_CHAT_MAX_CALLS_PER_DAY` (800, counted from UTC
@@ -105,8 +112,9 @@ over the corpus.
 
 ## Documentation
 
-- [`docs/deploy/vps.md`](docs/deploy/vps.md): running the daily ingestion and its nightly backup
-  on the shared VPS, and browsing the corpus from a desktop client over an SSH tunnel.
+- [`docs/deploy/vps.md`](docs/deploy/vps.md): running the daily ingestion, the API and its tunnel
+  as capped systemd user units on the shared VPS, and browsing the corpus from a desktop client
+  over an SSH tunnel.
 - [`docs/learn/`](docs/learn/): one lesson per technology, starting with
   [how to read this repo](docs/learn/00-how-to-read-this-repo.md).
 - [`docs/adr/`](docs/adr/): architecture decision records.

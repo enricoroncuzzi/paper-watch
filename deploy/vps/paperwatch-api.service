@@ -1,0 +1,44 @@
+# The Paper Watch API, as a systemd user unit for the `paperwatch` account.
+# Install into ~/.config/systemd/user/ and follow docs/deploy/vps.md section 15.
+[Unit]
+Description=Paper Watch API
+Documentation=https://github.com/enricoroncuzzi/paper-watch/blob/main/docs/deploy/vps.md
+# No ordering or relationship to the ingestion, ever. The measurements showed that Conflicts= stops the
+# ingestion, and the API must give way to the run, not disturb it (ADR 0013); the shared slice is
+# the only bound between them.
+[Service]
+Type=simple
+WorkingDirectory=/home/paperwatch/paper-watch
+# Absolute path, not PATH: a user unit's PATH is systemd's, not a login shell's. Loopback only:
+# the tunnel publishes it (docs/deploy/vps.md section 16).
+ExecStart=/home/paperwatch/.local/bin/uv run --frozen --no-dev paperwatch serve --live --host 127.0.0.1 --port 8000
+# 0600 and outside the repo: PW_DATABASE_URL for paperwatch_api, the chat key, the model cache, the
+# credential settings and PW_API_PUBLIC_HOST.
+EnvironmentFile=/home/paperwatch/.config/paperwatch/api.env
+# The shared slice bounds everything Paper Watch runs together (MemoryMax=1100M). The API and the
+# ingestion cannot both fit on a 1.9 GB machine, so one ceiling makes the kernel pick.
+Slice=paperwatch.slice
+# With its child embedder the API measured under 520 MB; 700M leaves room for the parent, the
+# child and one burst. MemorySwapMax=0 is the important half: without it a runaway keeps running in
+# the shared swap instead of being OOM-killed, which is the failure mode the measurements recorded.
+MemoryMax=700M
+MemorySwapMax=0
+# The API side volunteers to the OOM killer (the child raises its own score to 1000 too), so when
+# the slice is exhausted the API dies before the ingestion, which is the morning that matters.
+OOMScoreAdjust=900
+# When the kernel OOM-kills a process in this unit's cgroup (the child embedder, by design),
+# systemd's default OOMPolicy=stop would stop the whole API and cut every open answer. Continue
+# leaves the unit running; if the parent itself is the victim, its main process exits on the
+# signal and Restart=on-failure still brings it back.
+OOMPolicy=continue
+TasksMax=128
+# A crash restarts in three seconds; a clean `systemctl --user stop` is not a failure and stays
+# stopped.
+Restart=on-failure
+RestartSec=3
+# Neither the API nor anything it runs needs to gain privilege: no setuid or setgid binary, no
+# file capability.
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target

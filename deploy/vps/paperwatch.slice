@@ -1,0 +1,7 @@
+# Everything Paper Watch runs shares this ceiling. The API's 700M and the ingestion's 950M cannot
+# both fit on a 1.9 GB machine, and the slice is what makes the kernel pick one when they meet:
+# 1100M leaves the operating system, Postgres and the other project their share (ADR 0013).
+# No swap: a capped process must be OOM-killed, not kept crawling in the shared swap.
+[Slice]
+MemoryMax=1100M
+MemorySwapMax=0

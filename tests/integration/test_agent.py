@@ -24,6 +24,8 @@ from paperwatch.agent.graph import (
     AgentState,
     AnswerAborted,
     AnswerEvent,
+    SourceEvent,
+    StepEvent,
     TokenEvent,
     ToolEvent,
     _may_run_tools,
@@ -73,18 +75,37 @@ def agent(
     return build_agent(chat, make_tools(session, FakeEmbedder(), reg), reg, guard)
 
 
+def agent_with_registry(
+    session: Session, *models: ScriptedChatModel, cap: int = 800, budget: int = 10_000
+) -> tuple[Any, SourceRegistry]:
+    # The stream only carries source and step events when it can see the answer's registry.
+    reg = SourceRegistry()
+    guard = CallGuard(Repository(session), Ledger(budget), cap, lambda: NOW)
+    chat = [ChatModel(f"p{i}", m) for i, m in enumerate(models)]
+    return build_agent(chat, make_tools(session, FakeEmbedder(), reg), reg, guard), reg
+
+
 def calls(session: Session) -> int:
     return session.scalar(select(func.count()).select_from(ChatCall)) or 0
 
 
 class _FailingStore:
-    """A `chat_calls` store that cannot write, to prove that failure cannot hide a model error."""
+    """A `chat_calls` store that reserves but cannot complete a row.
 
-    def record_chat_call(self, **kwargs: Any) -> None:
+    Reservation has to succeed, or the model would never be called; the failure under test is the
+    completion write, which must not hide the provider error or the abort.
+    """
+
+    def reserve_chat_call(self, *, at: datetime, provider: str, cap: int) -> tuple[int, int]:
+        return 1, 1
+
+    def fill_chat_call(
+        self, call_id: int, *, model: str, input_tokens: int, output_tokens: int
+    ) -> None:
         raise RuntimeError("chat_calls is unwritable")
 
-    def chat_calls_since(self, at: datetime) -> int:
-        return 0
+    def fail_chat_call(self, call_id: int) -> None:
+        raise RuntimeError("chat_calls is unwritable")
 
 
 class _AbortingModel(ScriptedChatModel):
@@ -674,3 +695,46 @@ def test_a_streamed_model_id_repeated_on_every_chunk_is_recorded_once(
     )
     list(stream_answer(graph, "q"))
     assert list(db_session.scalars(select(ChatCall.model))) == [name, name]
+
+
+def test_sources_stream_once_as_they_are_found(db_session: Session, seed_items: Seed) -> None:
+    # The page shows each source as soon as a tool returns it, and never twice: the registry keeps
+    # the alias, so an overlapping second search adds only the items it found first.
+    seed_items(AGENT_ROWS)
+    model = ScriptedChatModel(
+        script=[
+            call("search_corpus", query="SWE-bench", tiers=["peer_reviewed"]),
+            call("search_corpus", query="agent harness memory", n=2),
+            final("SWE-bench Verified measures coding agents on real bugs [S1]."),
+        ]
+    )
+    graph, registry = agent_with_registry(db_session, model)
+    events = list(stream_answer(graph, "q", registry=registry))
+    sources = [e for e in events if isinstance(e, SourceEvent)]
+    assert [e.ref.alias for e in sources] == ["S1", "S2", "S3"]
+    assert len({e.ref.item_id for e in sources}) == 3
+
+
+def test_a_tool_round_ends_with_a_step_event(db_session: Session, seed_items: Seed) -> None:
+    # One step per tool round, after that round's sources, so the page can time the round and count
+    # what it added without reading the sources themselves.
+    seed_items(AGENT_ROWS)
+    model = ScriptedChatModel(
+        script=[
+            call("search_corpus", query="SWE-bench", tiers=["peer_reviewed"]),
+            call("search_corpus", query="agent harness memory", n=2),
+            final("SWE-bench Verified measures coding agents on real bugs [S1]."),
+        ]
+    )
+    graph, registry = agent_with_registry(db_session, model)
+    events = list(stream_answer(graph, "q", registry=registry))
+    starts = [i for i, e in enumerate(events) if isinstance(e, ToolEvent)]
+    steps = [(i, e) for i, e in enumerate(events) if isinstance(e, StepEvent)]
+    assert [step.round for _, step in steps] == [1, 2]
+    assert [step.new_sources for _, step in steps] == [1, 2]
+    assert all(isinstance(step.ms, int) and step.ms >= 0 for _, step in steps)
+    # A step comes after the tool call that opened its round, and after that round's sources.
+    for index, step in steps:
+        assert any(start < index for start in starts)
+        between = [e for e in events[starts[step.round - 1] : index] if isinstance(e, SourceEvent)]
+        assert len(between) == step.new_sources

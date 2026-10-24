@@ -13,21 +13,26 @@ body also runs in a savepoint: one failed statement would otherwise abort the se
 and fail every later tool call in the same answer.
 """
 
+import contextlib
 import html
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
+from typing import Literal
 
 import structlog
 from langchain_core.tools import BaseTool, StructuredTool, ToolException
 from pydantic import BaseModel, Field
+from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from paperwatch.agent.prompts import TEXT_ONLY_NOTE
 from paperwatch.agent.sources import SourceRef, SourceRegistry
 from paperwatch.domain import Tier
-from paperwatch.llm.embedder import Embedder
+from paperwatch.llm.embedder import Embedder, EmbedderUnavailable
 from paperwatch.retrieval.hybrid import Filters, hybrid_search
 from paperwatch.store.repository import ItemDetail, Repository
 
@@ -167,15 +172,81 @@ def _database_work(session: Session, tool: str) -> Iterator[None]:
         raise ToolException(f"{tool} failed on a database error; try the same call again.") from exc
 
 
+@dataclass
+class SearchLog:
+    """What the searches of one answer did, so the answer can label its own retrieval mode."""
+
+    text_only: bool = False
+
+
 def make_tools(
-    session: Session,
-    embedder: Embedder,
+    session: Session | None,
+    embedder: Embedder | None,
     registry: SourceRegistry,
     base_filters: Filters = _NO_FILTERS,
     k: int = 8,
+    *,
+    mode: Callable[[], Literal["hybrid", "text_only"]] | None = None,
+    search_log: SearchLog | None = None,
+    session_factory: Callable[[], Session] | None = None,
 ) -> list[BaseTool]:
-    repo = Repository(session)
+    """Build the three read-only tools for one answer.
+
+    `session_factory` is how the API gives each tool call its own short read-only session: the
+    answer then holds no connection while the model thinks. Without it (the CLI, the eval, tests)
+    the tools use the session the caller already made read-only.
+
+    `mode` is read before every search: when it says `text_only`, or the embedding child fails,
+    the search runs on the text branch alone and its result says so. `search_log` records that, so
+    the answer can carry `search_mode`.
+    """
     lock = threading.Lock()
+
+    @contextmanager
+    def session_scope(tool: str) -> Iterator[Session]:
+        if session_factory is None:
+            if session is None:
+                raise RuntimeError("make_tools needs a session or a session_factory")
+            with _database_work(session, tool):
+                yield session
+            return
+        short = None
+        try:
+            short = session_factory()
+            # The tools only read, so the database enforces it per session: a tool added later
+            # cannot write even if its code tries. It must be the transaction's first statement.
+            short.execute(text("SET TRANSACTION READ ONLY"))
+        except SQLAlchemyError as exc:
+            # A pool timeout or a connect failure must reach the model as a tool message, not as a
+            # raw OperationalError whose repr ends up in the prompt. A session that was checked
+            # out must go back to the pool even though its first statement failed.
+            if short is not None:
+                with contextlib.suppress(Exception):
+                    short.rollback()
+                with contextlib.suppress(Exception):
+                    short.close()
+            log.error("tool_database_error", tool=tool, error=str(exc))
+            raise ToolException(
+                f"{tool} failed on a database error; try the same call again."
+            ) from exc
+        try:
+            with _database_work(short, tool):
+                yield short
+        finally:
+            # A read-only session has nothing to commit; rollback clears a failed statement and
+            # close returns the connection before the model's next round.
+            short.rollback()
+            short.close()
+
+    child_failed = False
+
+    def choose() -> tuple[Embedder | None, bool]:
+        nonlocal child_failed
+        if embedder is None or child_failed:
+            return None, True
+        if mode is not None and mode() == "text_only":
+            return None, True
+        return embedder, False
 
     def search(
         query: str,
@@ -183,6 +254,7 @@ def make_tools(
         profiles: list[str] | None = None,
         since: date | None = None,
     ) -> str:
+        nonlocal child_failed
         # A small model can send a blank query, a stray NUL or a lone surrogate: the last two
         # would reach Postgres as a DataError or a UTF-8 failure, and the blank query trips
         # hybrid_search's own ValueError, so all three are handled here and come back as a message.
@@ -191,14 +263,35 @@ def make_tools(
         if not query.strip():
             raise ToolException("query must not be blank.")
         clean_profiles = [_clean(p) for p in profiles] if profiles else profiles
-        with lock, _database_work(session, "search_corpus"):
-            hits = hybrid_search(
-                session,
-                embedder,
-                query,
-                k=k,
-                filters=_narrow(base_filters, tiers, clean_profiles, since),
-            )
+        with lock, session_scope("search_corpus") as active:
+            chosen, text_only = choose()
+            try:
+                hits = hybrid_search(
+                    active,
+                    chosen,
+                    query,
+                    k=k,
+                    filters=_narrow(base_filters, tiers, clean_profiles, since),
+                )
+            except EmbedderUnavailable:
+                if chosen is None:
+                    # Already keyword-only, so there was no embedder to fail; anything here is a
+                    # tool error the model can retry, never a crash that ends the answer.
+                    raise ToolException("search failed; try the same call again.") from None
+                # A dead or timed-out child costs this search its semantic half, not the answer.
+                # The rest of the answer stays keyword-only: another search would only wait for
+                # the same cold start to fail again.
+                child_failed = True
+                text_only = True
+                hits = hybrid_search(
+                    active,
+                    None,
+                    query,
+                    k=k,
+                    filters=_narrow(base_filters, tiers, clean_profiles, since),
+                )
+            if text_only and search_log is not None:
+                search_log.text_only = True
             # One line per call, tiers in rank order: real query mixes can be compared with the
             # measured tier shares in docs/learn/07. The query text itself is model-controlled and
             # can be huge, so only its length is logged.
@@ -206,15 +299,16 @@ def make_tools(
             if not hits:
                 return NO_HITS
             # One query for every hit, never one per hit, and only admitted rows come back.
-            details = repo.admitted_details([h.item_id for h in hits])
+            details = Repository(active).admitted_details([h.item_id for h in hits])
             blocks = [
                 _block(registry.register(detail), detail.title, hit.snippet)
                 for hit in hits
                 if (detail := details.get(hit.item_id)) is not None
             ]
-            return "\n".join(blocks) if blocks else NO_HITS
+            body = "\n".join(blocks) if blocks else NO_HITS
+            return f"{TEXT_ONLY_NOTE}\n{body}" if text_only else body
 
-    def registered(alias: str) -> tuple[SourceRef, ItemDetail]:
+    def registered(active: Session, alias: str) -> tuple[SourceRef, ItemDetail]:
         ref = registry.get(alias)
         if ref is None:
             known = ", ".join(r.alias for r in registry.all()) or "none"
@@ -224,14 +318,14 @@ def make_tools(
                 f"{alias[:40]!r} is not a source in this answer (known: {known}). Only aliases a "
                 "search returned can be used."
             )
-        detail = repo.admitted_details([ref.item_id]).get(ref.item_id)
+        detail = Repository(active).admitted_details([ref.item_id]).get(ref.item_id)
         if detail is None:
             raise ToolException(f"{alias} is no longer in the admitted corpus.")
         return ref, detail
 
     def get_item(source_id: str) -> str:
-        with lock, _database_work(session, "get_item"):
-            ref, detail = registered(source_id)
+        with lock, session_scope("get_item") as active:
+            ref, detail = registered(active, source_id)
             text = detail.text[:GET_ITEM_MAX_CHARS]
             if len(detail.text) > GET_ITEM_MAX_CHARS:
                 text += "\n[text truncated]"
@@ -245,10 +339,10 @@ def make_tools(
                 f"compare_items needs {COMPARE_MIN} to {COMPARE_MAX} distinct source ids, "
                 f"got {len(aliases)}."
             )
-        with lock, _database_work(session, "compare_items"):
+        with lock, session_scope("compare_items") as active:
             blocks = []
             for alias in aliases:
-                ref, detail = registered(alias)
+                ref, detail = registered(active, alias)
                 blocks.append(_block(ref, detail.title, detail.text[:COMPARE_MAX_CHARS]))
             return "\n".join(blocks)
 

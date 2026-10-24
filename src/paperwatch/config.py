@@ -120,6 +120,11 @@ CHAT_CALL_MODEL_MAX_CHARS = 128
 # below still override both by name.
 CHAT_MAX_TOKENS_PER_ANSWER = 60_000
 CHAT_MAX_CALLS_PER_DAY = 800
+# The single-key advisory lock that serialises the daily-cap check and its insert across the API
+# and the CLI. Two answers reading "799 calls" at the same instant would both pass the cap and both
+# reach the provider, so the count and the reservation happen under one transaction lock. The value
+# is ASCII "PAWCHAT!", arbitrary but fixed.
+CHAT_CALLS_LOCK_KEY = 0x5041_5743_4841_5421
 
 # Connection budget for `paperwatch serve` (one local user, a few tabs at most). One answer holds
 # a pooled connection for its whole life, which can be minutes while the model writes, so the pool
@@ -138,6 +143,53 @@ CONNECT_TIMEOUT_S = 3
 # the probe for the driver's own timeout.
 READY_CONCURRENCY = 2
 READY_TIMEOUT_S = 2.0
+
+# Answer pacing (Task 27). Six model-spending requests a minute and 100 a UTC day bound what one
+# caller can spend, two concurrent answers bound the memory they hold, and the deadline is well
+# under Vercel Hobby's 300 s function limit. iOS and proxies drop a stream that says nothing, so a
+# silent answer gets a comment line every 15 s.
+REQUESTS_PER_MINUTE = 6
+REQUESTS_PER_DAY = 100
+CONCURRENT_ANSWERS = 2
+ANSWER_DEADLINE_S = 120
+SSE_HEARTBEAT_S = 15
+
+# The embedding model in a child process (Task 28). With the model resident the API held 380-520 MB
+# all day next to an ingestion that peaks near 707 MB, and freeing it in process gave nothing back
+# to the kernel; exiting is the one release that always works. It exits after ten idle minutes,
+# never while an answer is open, and one question is clipped to 600 bytes because that is a query,
+# not a document.
+EMBED_WORKER_IDLE_S = 600
+EMBED_WORKER_TIMEOUT_S = 8.0
+QUERY_EMBED_MAX_BYTES = 600
+# The search mode is re-read at most this often, so a minute of answers does not query the run
+# table and /proc on every tool call. The ingestion's memory pressure can hit within that window;
+# the memory caps, not this cache, are the hard guarantee.
+SEARCH_MODE_CACHE_S = 2.0
+SEARCH_MODE_MIN_AVAILABLE_MB = 800
+SEARCH_MODE_MAX_PSI_SOME_AVG10 = 5.0
+# A row still marked running after this long is a killed run, not a pass to wait out; it is the
+# morning check's own stale-row limit.
+MAIN_PASS_MAX_AGE = timedelta(hours=3)
+# The API's read-only pool for one tool call: one per concurrent answer plus slack, because the
+# session is closed as soon as the tool returns.
+READ_POOL_SIZE = 4
+
+# The request gate (Task 26). 16 KB is far above the largest request the API takes (a points of
+# view box is capped at 2,000 characters), so a bigger body is a client bug or an attack.
+API_MAX_BODY_BYTES = 16_384
+# Vercel rotates the keys that sign its OIDC tokens; an unknown key id triggers a refetch, but
+# never more often than this, so an unauthenticated caller cannot use the API to hammer Vercel's
+# key endpoint.
+JWKS_REFETCH_MIN_S = 300
+# Clock skew between Vercel and this server, applied to the token's exp, nbf and iat claims.
+TOKEN_LEEWAY_S = 30
+# An HMAC token is minted for one check and expires at once: it is the fallback credential for
+# local operation and the tunnel rehearsal, not a long-lived key.
+HMAC_TOKEN_TTL_S = 60
+HMAC_AUDIENCE = "paperwatch-api"
+# The names a browser uses for this machine; the tunnel's own name comes from PW_API_PUBLIC_HOST.
+LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
 
 class Settings(BaseSettings):
@@ -213,6 +265,17 @@ class Settings(BaseSettings):
     followup_max_passes: int = Field(default=FOLLOWUP_MAX_PASSES, ge=1)
     followup_interval_s: int = Field(default=FOLLOWUP_INTERVAL_S, ge=60)
     followup_deadline_hour: int = Field(default=FOLLOWUP_DEADLINE_HOUR, ge=1, le=22)
+
+    # The API credential (Task 26): a token Vercel signs for one project's production deployment,
+    # verified against Vercel's published keys, or the HMAC fallback for local operation and the
+    # tunnel rehearsal. One credential at a time, never both.
+    api_auth: Literal["oidc", "hmac"] = "oidc"
+    vercel_oidc_issuer: str | None = None
+    vercel_oidc_audience: str | None = None
+    vercel_oidc_subject: str | None = None
+    api_hmac_secret: SecretStr | None = None
+    # The tunnel's host name, added to the loopback names the gate accepts.
+    api_public_host: str | None = None
 
     log_level: str = "INFO"
     # Sent with every HTTP request so source sites can identify us.

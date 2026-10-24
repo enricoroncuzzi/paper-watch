@@ -1,4 +1,5 @@
 import math
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -22,6 +23,18 @@ from paperwatch.store.repository import Repository
 
 pytestmark = pytest.mark.integration
 E = FakeEmbedder()
+
+
+@pytest.fixture(autouse=True)
+def _vacuum_items(engine: Engine) -> Iterator[None]:
+    # Every test in this module inserts items and rolls them back, so the shared container's HNSW
+    # index collects dead tuples across the whole session. An index scan capped at ef_search rows
+    # can then return none of a test's fresh rows, which made the vector-rank assertions flaky.
+    # VACUUM reclaims them; it must run outside the test's own transaction, which is why this is
+    # an autouse fixture that only depends on the engine.
+    with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+        conn.execute(text("VACUUM (ANALYZE) items"))
+    yield
 
 
 def seed(session: Session) -> None:
@@ -471,3 +484,16 @@ def test_a_query_term_matches_a_document_with_the_same_stem(
     admitted(db_session, "x", body, "p1", datetime(2026, 10, 1, tzinfo=UTC))
     db_session.flush()
     assert len(list(db_session.scalars(text_query(query, Filters(), 10)))) == 1
+
+
+def test_text_only_search_returns_the_text_branch_ranking(db_session: Session) -> None:
+    # With no embedder the vector branch is skipped; the fused order is the text branch's own,
+    # because one branch's shared ranks are already the ranking.
+    seed(db_session)
+    query = "SWE-bench agents harness"
+    expected = [
+        external_id(db_session, item_id)
+        for item_id in db_session.scalars(text_query(query, Filters(), 50))
+    ]
+    hits = hybrid_search(db_session, None, query, k=3)
+    assert [hit.url.rsplit("/", 1)[1] for hit in hits] == expected[:3]

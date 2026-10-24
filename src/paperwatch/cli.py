@@ -20,8 +20,6 @@ from sqlalchemy import Engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
-from starlette.responses import PlainTextResponse
-from starlette.types import ASGIApp, Receive, Scope, Send
 
 from paperwatch.admission import load_admission
 from paperwatch.agent.citations import NO_SUPPORT, CheckedAnswer
@@ -33,10 +31,18 @@ from paperwatch.api.app import (
     live_deps,
     run_question,
 )
+from paperwatch.api.auth import (
+    HMAC_SECRET_MIN_CHARS,
+    ApiAuthNotConfigured,
+    RefuseEveryToken,
+    make_verifier,
+    mint_hmac_token,
+)
 from paperwatch.config import (
     ADMISSION_PATH,
     CHAT_MODEL,
     FEEDS_PATH,
+    LOOPBACK_HOSTS,
     PROFILES_PATH,
     REPO_ROOT,
     Settings,
@@ -79,9 +85,9 @@ SEARCH_LIVE = typer.Option(
     False, "--live", help="Use the configured embedding model and the database"
 )
 K = typer.Option(10, min=1)
-# The API has no sign-in until M3's Entra ID, so it listens on the loopback interface by default:
-# a host option is a deliberate choice, never the default.
-HOST = typer.Option("127.0.0.1", help="Bind address; the API has no sign-in yet")
+# The API listens on the loopback interface by default, behind the tunnel: a host option is a
+# deliberate choice, never the default.
+HOST = typer.Option("127.0.0.1", help="Bind address; keep the API on loopback behind the tunnel")
 PORT = typer.Option(8000, min=1, max=65535)
 _TIER_VALUES = frozenset(t.value for t in Tier)
 # Unicode categories a terminal or a renderer acts on rather than shows: Cc (C0/C1 controls and
@@ -669,9 +675,10 @@ def ask(
     s = get_settings()
     configure_logging(s.log_level)
     # A missing key is a setup error (exit 2) with the variable's name, not a traceback from
-    # inside the first request.
+    # inside the first request. `ask` serves no route, so its deps get a verifier that accepts no
+    # token rather than failing on API credential settings this command never reads.
     try:
-        deps = live_deps(s)
+        deps = live_deps(s, RefuseEveryToken())
     except ChatNotConfigured as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(2) from exc
@@ -739,80 +746,38 @@ def ask(
 
 
 def _is_loopback(host: str) -> bool:
-    return host in {"127.0.0.1", "localhost", "::1"}
+    return host in LOOPBACK_HOSTS
 
 
-# The names a browser uses for this machine. A DNS-rebinding page can reach a loopback API with
-# a hostile `Host` header, so only these are accepted.
-_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 # `serve` cancels an open stream after this long on shutdown. uvicorn otherwise waits for every
 # in-flight answer, which is minutes: Ctrl-C on a server would sit there until the model finished.
 GRACEFUL_SHUTDOWN_S = 5
 
 
-def _host_name(header: str) -> str:
-    """The host part of a `Host` header, lowercased, or "" when it is not a host at all.
-
-    A browser writes an IPv6 host in brackets (`[::1]:8000`), a port may follow any host, and a
-    trailing dot or embedded credentials make a name that is not one of the loopback ones. A
-    plain string comparison against `::1` can never match a real header, which is why the
-    starlette middleware made `--host ::1` refuse every request.
-    """
-    if header.startswith("["):
-        end = header.find("]")
-        if end < 0:
-            return ""
-        name, rest = header[1:end].lower(), header[end + 1 :]
-        # Only `[host]` and `[host]:port` are a host header; `[::1].evil.example` is not.
-        if rest and (not rest.startswith(":") or not rest[1:].isdigit()):
-            return ""
-        return name
-    name, sep, port = header.partition(":")
-    return name.lower() if not sep or port.isdigit() else ""
-
-
-class _LoopbackHosts:
-    """Refuse a request whose `Host` header is not a name a browser uses for this machine.
-
-    Plain ASGI rather than a `BaseHTTPMiddleware`: `/ask` streams a model answer for seconds, and
-    a middleware that buffered or wrapped the response would change the disconnect path
-    `_ClosingStream` depends on.
-    """
-
-    def __init__(self, app: ASGIApp) -> None:
-        self._app = app
-
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] not in {"http", "websocket"}:
-            await self._app(scope, receive, send)
-            return
-        header = dict(scope["headers"]).get(b"host", b"").decode("latin-1")
-        if _host_name(header) not in _LOOPBACK_HOSTS:
-            await PlainTextResponse("Invalid host header", status_code=400)(scope, receive, send)
-            return
-        await self._app(scope, receive, send)
-
-
 def _served_app(deps: AgentDeps, host: str) -> Any:
-    """The app `serve` runs, with the host allow-list installed for a loopback bind."""
+    """The app `serve` runs. The credential and host gate is part of `create_app` itself."""
+    # Warm the OIDC key set before the first request. This lives in the serve path, not in
+    # `live_deps`: `paperwatch ask` builds the same deps and never uses the credential.
+    prefetch = getattr(getattr(deps, "verifier", None), "prefetch", None)
+    if callable(prefetch):
+        prefetch()
     app_ = create_app(deps)
-    if _is_loopback(host):
-        app_.add_middleware(_LoopbackHosts)
-    else:
-        # A public bind is the operator's choice, but the API has no sign-in until M3.
-        typer.echo(f"warning: {host} is not loopback and the API has no sign-in yet", err=True)
+    if not _is_loopback(host):
+        # A public bind is the operator's choice, but the gate's host allow-list expects the tunnel
+        # name, and binding publicly would put the API on the network without it.
+        typer.echo(f"warning: {host} is not loopback; keep the API behind the tunnel", err=True)
     return app_
 
 
 @app.command()
 def serve(host: str = HOST, port: int = PORT, live: bool = LIVE) -> None:
-    """Serve the streaming API on the loopback interface (needs a chat API key)."""
+    """Serve the streaming API behind a credential gate (needs a chat API key)."""
     _require_live(live)
     s = get_settings()
     configure_logging(s.log_level)
     try:
-        deps = live_deps(s)
-    except ChatNotConfigured as exc:
+        deps = live_deps(s, make_verifier(s))
+    except (ChatNotConfigured, ApiAuthNotConfigured) as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(2) from exc
     app_ = _served_app(deps, host)
@@ -829,3 +794,22 @@ def serve(host: str = HOST, port: int = PORT, live: bool = LIVE) -> None:
         log_level=s.log_level.lower(),
         timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_S,
     )
+
+
+@app.command()
+def api_token(live: bool = LIVE) -> None:
+    """Print one short-lived HMAC token for the API (only when PW_API_AUTH=hmac)."""
+    _require_live(live)
+    s = get_settings()
+    if s.api_auth != "hmac":
+        # A token minted under the OIDC setting would never be accepted, so this refuses rather
+        # than printing something useless.
+        typer.echo("PW_API_AUTH is not hmac, so an API token would not be accepted", err=True)
+        raise typer.Exit(2)
+    secret = s.api_hmac_secret.get_secret_value().strip() if s.api_hmac_secret else ""
+    if len(secret) < HMAC_SECRET_MIN_CHARS:
+        typer.echo(
+            f"PW_API_HMAC_SECRET must be at least {HMAC_SECRET_MIN_CHARS} characters", err=True
+        )
+        raise typer.Exit(2)
+    typer.echo(mint_hmac_token(secret, "operator", time.time()))

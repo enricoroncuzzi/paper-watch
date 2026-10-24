@@ -6,15 +6,30 @@ Azure implementation clips and batches so no single request breaks the model's i
 limits. `make_embedder` picks one from settings.
 """
 
+import contextlib
 import hashlib
+import json
 import math
 import re
-from collections.abc import Iterable
-from typing import Protocol
+import select
+import subprocess
+import sys
+import threading
+import time
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from contextlib import contextmanager
+from typing import Any, Protocol
 
 import openai
+import structlog
 
-from paperwatch.config import EMBEDDING_DIM, Settings
+from paperwatch.config import (
+    EMBED_WORKER_IDLE_S,
+    EMBED_WORKER_TIMEOUT_S,
+    EMBEDDING_DIM,
+    QUERY_EMBED_MAX_BYTES,
+    Settings,
+)
 from paperwatch.domain import SourceItem
 from paperwatch.llm.ledger import Ledger
 
@@ -34,8 +49,233 @@ EMBED_BATCH = 32
 LOCAL_EMBED_MAX_BYTES = 3000
 
 
+log = structlog.get_logger()
+# The reaper checks the child every this many seconds; it is a bound on how long a stopped child
+# can hold the memory, not a precision timer.
+REAPER_INTERVAL_S = 2.0
+# How long a kill waits for the child to be reaped before giving up on it.
+KILL_TIMEOUT_S = 5.0
+
+
 class Embedder(Protocol):
     def embed(self, texts: list[str]) -> list[list[float]]: ...
+
+
+class EmbedderUnavailable(RuntimeError):
+    """The embedding worker cannot answer now, so a search must fall back to keywords."""
+
+
+def _read_line(stream: Any, timeout_s: float) -> str | None:
+    # `select` on the pipe, then one read: a blocking `readline` would ignore the timeout and a
+    # hung model would hold the answer until the deadline. POSIX only, like the deployment.
+    ready, _, _ = select.select([stream], [], [], timeout_s)
+    if not ready:
+        return None
+    line = stream.readline()
+    return line if isinstance(line, str) else None
+
+
+class WorkerEmbedder:
+    """Embed through a child process that loads the model and exits when it is no longer needed.
+
+    The parent holds no model, so the model's memory is returned by the kernel the moment the
+    child exits. `prewarm` starts it in the background while the chat model thinks, `embed` sends
+    one clipped query, and the reaper kills it when the caller says stop or when it has been idle
+    for `idle_s` and no answer is open.
+    """
+
+    def __init__(
+        self,
+        command: Sequence[str] = (sys.executable, "-m", "paperwatch.llm.embed_worker"),
+        *,
+        idle_s: float = EMBED_WORKER_IDLE_S,
+        timeout_s: float = EMBED_WORKER_TIMEOUT_S,
+        query_max_bytes: int = QUERY_EMBED_MAX_BYTES,
+        should_stop: Callable[[], bool] = lambda: False,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._command = list(command)
+        self._idle_s = idle_s
+        self._timeout_s = timeout_s
+        self._query_max_bytes = query_max_bytes
+        self._should_stop = should_stop
+        self._clock = clock
+        self._state = threading.Lock()
+        self._io = threading.Lock()
+        self._process: subprocess.Popen[str] | None = None
+        self._answers = 0
+        self._last_used: float | None = None
+        self._reaper: threading.Thread | None = None
+        self._stop = False
+
+    def prewarm(self) -> None:
+        """Start the child without waiting for it: the model load happens during the chat call."""
+        with self._state:
+            if self._alive_locked():
+                return
+        threading.Thread(target=self._spawn, name="embed-prewarm", daemon=True).start()
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            return []
+        clipped = [clip_for_embedding(text, self._query_max_bytes) for text in texts]
+        # One request/response at a time: the child reads whole lines, and two threads writing
+        # them at once would interleave a request and its answer.
+        with self._io:
+            process = self._spawn()
+            if process is None or process.stdin is None or process.stdout is None:
+                raise EmbedderUnavailable("the embedding worker is not running")
+            try:
+                process.stdin.write(json.dumps({"texts": clipped}) + "\n")
+                process.stdin.flush()
+                line = _read_line(process.stdout, self._timeout_s)
+            except (BrokenPipeError, OSError, ValueError) as exc:
+                self._kill()
+                raise EmbedderUnavailable("the embedding worker failed") from exc
+            if line is None:
+                self._kill()
+                raise EmbedderUnavailable("the embedding worker timed out")
+            if not line:
+                self._kill()
+                raise EmbedderUnavailable("the embedding worker died")
+            try:
+                response = json.loads(line)
+            except json.JSONDecodeError as exc:
+                self._kill()
+                raise EmbedderUnavailable("the embedding worker sent no JSON") from exc
+            if "error" in response:
+                # The child is healthy and the request was not; keep it for the next query.
+                raise EmbedderUnavailable(f"the embedding worker refused: {response['error']}")
+            vectors = response.get("vectors")
+            if (
+                not isinstance(vectors, list)
+                or len(vectors) != len(texts)
+                or not all(isinstance(vector, list) for vector in vectors)
+            ):
+                raise EmbedderUnavailable("the embedding worker returned a bad shape")
+            with self._state:
+                self._last_used = self._clock()
+            return vectors
+
+    @contextmanager
+    def answer_open(self) -> Iterator[None]:
+        """Count an open answer: the child may grow, but it may not exit mid-answer."""
+        with self._state:
+            self._answers += 1
+        try:
+            yield
+        finally:
+            with self._state:
+                self._answers = max(0, self._answers - 1)
+                # Idle time counts from the end of the last answer, not from its last embed.
+                self._last_used = self._clock()
+
+    def reap_once(self) -> None:
+        """Kill the child when it is no longer needed. The reaper calls this every 2 s."""
+        with self._state:
+            process = self._process
+            if process is None:
+                return
+            if process.poll() is not None:
+                self._process = None
+                return
+            if self._answers > 0:
+                return
+            now = self._clock()
+            idle = self._last_used is not None and now - self._last_used >= self._idle_s
+        if not idle:
+            try:
+                stop = self._should_stop()
+            except Exception as exc:  # noqa: BLE001 - a mode read must not kill the reaper
+                # The child must still exit when idle even if the mode check is broken.
+                log.warning("embed_worker_stop_check_failed", error_type=type(exc).__name__)
+                stop = False
+            if not stop:
+                return
+        with self._state:
+            # Another thread may have replaced the child, and an answer may have opened, while the
+            # mode check ran; the child may not exit mid-answer.
+            if self._process is process and self._answers == 0:
+                self._terminate_locked(process)
+
+    def stop(self) -> None:
+        with self._state:
+            self._stop = True
+        self._kill()
+
+    def alive(self) -> bool:
+        with self._state:
+            process = self._process
+            if process is not None and process.poll() is not None:
+                self._process = None
+                return False
+            return process is not None
+
+    def _alive_locked(self) -> bool:
+        process = self._process
+        if process is None:
+            return False
+        if process.poll() is not None:
+            self._process = None
+            return False
+        return True
+
+    def _spawn(self) -> subprocess.Popen[str] | None:
+        with self._state:
+            if self._stop:
+                return None
+            if self._alive_locked():
+                return self._process
+            try:
+                # S603: the command is this interpreter plus a fixed module path, never caller
+                # input; the child is ours.
+                process = subprocess.Popen(  # noqa: S603
+                    self._command,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    close_fds=True,
+                    text=True,
+                )
+            except OSError as exc:
+                # A missing interpreter or module must not take the API down; the search falls
+                # back to keywords for this call.
+                log.warning("embed_worker_spawn_failed", error_type=type(exc).__name__)
+                return None
+            self._process = process
+            self._last_used = self._clock()
+            if self._reaper is None or not self._reaper.is_alive():
+                self._reaper = threading.Thread(
+                    target=self._reap_loop, name="embed-reaper", daemon=True
+                )
+                self._reaper.start()
+            return process
+
+    def _reap_loop(self) -> None:
+        while True:
+            time.sleep(REAPER_INTERVAL_S)
+            self.reap_once()
+            with self._state:
+                if self._stop or self._process is None:
+                    return
+
+    def _kill(self) -> None:
+        with self._state:
+            process = self._process
+            if process is not None:
+                self._terminate_locked(process)
+
+    def _terminate_locked(self, process: subprocess.Popen[str]) -> None:
+        # Closing stdin lets a healthy child see EOF and exit on its own; kill() is for a child
+        # that is hung or already gone. stderr is inherited, so the journal keeps its traceback.
+        with contextlib.suppress(OSError):
+            if process.stdin is not None:
+                process.stdin.close()
+        with contextlib.suppress(OSError):
+            if process.poll() is None:
+                process.kill()
+        with contextlib.suppress(OSError, subprocess.TimeoutExpired):
+            process.wait(timeout=KILL_TIMEOUT_S)
+        self._process = None
 
 
 def clip_for_embedding(text: str, max_bytes: int = EMBED_MAX_BYTES) -> str:

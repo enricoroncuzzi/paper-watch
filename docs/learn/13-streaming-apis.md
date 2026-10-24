@@ -10,8 +10,8 @@ place the database session is released, and both surfaces use it:
 - `POST /ask` (`create_app`) formats `run_question`'s events as server-sent events.
 - `paperwatch ask "QUESTION" --live` (`src/paperwatch/cli.py`) prints the same events to a
   terminal, and prints tool calls and errors on stderr so a redirected answer stays clean text.
-- `paperwatch serve --live` runs the API with uvicorn. It binds to `127.0.0.1` by default because
-  the API has no sign-in until M3.
+- `paperwatch serve --live` runs the API with uvicorn. It binds to `127.0.0.1` by default and sits
+  behind the credential gate (`docs/learn/15`).
 
 The graph, the tools, the guard and the checker do not know which surface is consuming them.
 
@@ -23,8 +23,9 @@ fresh `SourceRegistry`, token ledger, `CallGuard` and tool set for this answer, 
 `stream_answer`'s events. A new `SourceRegistry` per answer is what makes `S1` mean "the first
 source this answer retrieved": a second question cannot cite the first one's aliases.
 
-Four events reach a client, and each one is a Pydantic model in `api/app.py` (`ToolData`,
-`TokenData`, `AnswerData` with `CitationData` and `FlagData`, `ErrorData`). The models build the
+Seven events reach a client, and each one is a Pydantic model in `api/app.py` (`ToolData`,
+`StepData`, `SourceData`, `TokenData`, `NoticeData`, `AnswerData` with `CitationData` and
+`FlagData`, `ErrorData`). The models build the
 payloads and are the committed OpenAPI contract, so M3's generated client gets typed events and
 the code cannot drift from the document. The `text/event-stream` media type is an `itemSchema`
 for one parsed event (the `event` name plus a JSON `data` string with the payload's schema), not
@@ -34,9 +35,12 @@ holding `event` and `data` keys together does not exist on the wire.
 | Event | Data | Meaning |
 |---|---|---|
 | `tool` | `name`, `args` | The model called a corpus tool. `args` is model-authored. |
+| `step` | `round`, `ms`, `new_sources` | A tool round finished, timed from the model's decision. |
+| `source` | `id`, `item_id`, `title`, `url`, `tier`, `basis` | A source a tool just returned, once per alias. |
 | `token` | `text` | A piece of the model's answer as it is produced. |
-| `answer` | `text`, `supported`, `citations`, `flags` | The checked answer. Always last, unless an error follows. |
-| `error` | `code`, `message` | `daily_cap`, `budget`, `model_unavailable` or `internal`. |
+| `notice` | `code`, `message` | The answer runs in a reduced mode, such as `text_only`. |
+| `answer` | `text`, `search_mode`, `supported`, `citations`, `flags` | The checked answer. Always last, unless an error follows. |
+| `error` | `code`, `message`, `retry_at` | `daily_cap`, `budget`, `model_unavailable`, `internal` or `deadline`. |
 
 The `answer` event is authoritative, and that is the most important rule for a client. Streamed
 tokens are what the model wrote before the check; the checked text can differ, because an alias no
@@ -52,6 +56,24 @@ on `ModelUnavailable.__cause__`, for a debugger, and is never logged or serialis
 body can echo the question the provider refused. The `internal` branch logs the exception type,
 the cause's type and the code site (`file:line:function`), never a message, a variable value or a
 traceback, for the same reason.
+
+## Heartbeats and the deadline
+
+A free model can think for a minute before its first token, and a stream that says nothing looks
+exactly like a dead connection: iOS drops it, a proxy may time it out, and a reader sees a spinner
+forever. `api/pacing.py` wraps the finished frame stream in two guarantees. Every 15 seconds of
+silence it yields an SSE comment line, `: ping`, and nothing else: it has no `event:` or `data:`
+line, so a client's parser ignores it while its watchdog resets on the bytes. At
+`ANSWER_DEADLINE_S` (120 seconds, well under Vercel Hobby's 300 second function limit) it sets the
+answer's cancel event, yields one `error` event whose code is `deadline`, and ends the stream. The
+cancel flag is set before the error is written, so a model call still in flight stops at its next
+token instead of talking to nobody.
+
+The producer runs in a thread because the frame generator blocks in `next()`; the consumer polls a
+queue with a short real timeout, so the injected clock decides when a heartbeat or the deadline is
+due (a test places 46 fake seconds in a few milliseconds). Closing the consumer sets the cancel
+event and joins the producer, on the worker thread `_ClosingStream` already uses for exactly this
+reason.
 
 ## Why SSE and not WebSockets
 
@@ -133,4 +155,4 @@ one hangs up under ASGI 2.3 (where Starlette listens for `http.disconnect`) and 
 was still recorded. Two more cover the phases that produce no token: a hang-up during a tool, and
 one during a tool-call round, must not start another provider request. The committed
 `docs/api/openapi.json` is compared with the app's own document, so an API change that skips the
-contract fails the suite; `docs/api/README.md` holds the one-liner that rewrites it.
+contract fails the suite; `uv run python -m paperwatch.api.contract` rewrites it.

@@ -5,7 +5,8 @@ database session is released, so the CLI and the HTTP API cannot drift apart. Th
 formats events; every rule about answers (the citation check, the alias registry, the call cap)
 lives below it in `agent` and `llm`.
 
-The answer arrives as server-sent events (`tool`, `token`, `answer`, then optionally `error`).
+The answer arrives as server-sent events (`tool`, `step`, `source`, `token`, `answer`, then
+optionally `error`), paced with a `: ping` comment every 15 s of silence and a 120 s deadline.
 Only the `answer` event is authoritative: the model's streamed words can differ from the checked
 text (an unknown alias is masked, or the whole answer is replaced with `NO_SUPPORT`), so a client
 replaces its streamed text with `answer.text` instead of appending to it.
@@ -14,23 +15,25 @@ replaces its streamed text with `answer.text` instead of appending to it.
 import json
 import math
 import threading
+import time
 import traceback
-from collections.abc import Callable, Generator
-from contextlib import closing
+from collections.abc import Callable, Generator, Iterator
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 
 import anyio
 import structlog
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Security
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.security import HTTPBearer
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import text
 from sqlalchemy.exc import TimeoutError as PoolTimeout
 from sqlalchemy.orm import Session, sessionmaker
-from starlette.types import Receive, Send
+from starlette.types import Receive, Scope, Send
 
 import paperwatch
 from paperwatch.agent.citations import NO_SUPPORT, CheckedAnswer
@@ -38,20 +41,34 @@ from paperwatch.agent.graph import (
     AgentEvent,
     AnswerAborted,
     AnswerEvent,
+    SourceEvent,
+    StepEvent,
     TokenEvent,
     ToolEvent,
     build_agent,
     stream_answer,
 )
-from paperwatch.agent.sources import SourceRegistry
-from paperwatch.agent.tools import make_tools
+from paperwatch.agent.sources import SourceRef, SourceRegistry
+from paperwatch.agent.tools import SearchLog, make_tools
+from paperwatch.api.auth import Principal, Verifier
+from paperwatch.api.gate import ApiGate
+from paperwatch.api.limits import Admitted, Refused, RequestLimiter
+from paperwatch.api.pacing import paced
+from paperwatch.api.search_mode import SearchModeGate
 from paperwatch.config import (
+    ANSWER_DEADLINE_S,
     ANSWER_POOL_OVERFLOW,
     ANSWER_POOL_SIZE,
     ANSWER_POOL_TIMEOUT_S,
+    CONCURRENT_ANSWERS,
+    LOOPBACK_HOSTS,
     PROFILES_PATH,
+    READ_POOL_SIZE,
     READY_CONCURRENCY,
     READY_TIMEOUT_S,
+    REQUESTS_PER_DAY,
+    REQUESTS_PER_MINUTE,
+    SSE_HEARTBEAT_S,
     USAGE_POOL_SIZE,
     Settings,
 )
@@ -64,17 +81,17 @@ from paperwatch.llm.chat import (
     ModelUnavailable,
     make_chat_models,
 )
-from paperwatch.llm.embedder import Embedder, make_embedder
+from paperwatch.llm.embedder import Embedder, EmbedderUnavailable, WorkerEmbedder, make_embedder
 from paperwatch.llm.ledger import BudgetExceeded, Ledger
-from paperwatch.retrieval.hybrid import Filters
+from paperwatch.retrieval.hybrid import Filters, hybrid_search
 from paperwatch.store.db import make_engine, make_session_factory
-from paperwatch.store.repository import ChatCallLog
+from paperwatch.store.repository import ChatCallLog, Repository
 
 log = structlog.get_logger()
 
 # The API contract's own version, not the package version: release-please bumps the package on
 # every release, and the committed docs/api/openapi.json must change only when the API does.
-API_VERSION = "0.1"
+API_VERSION = "0.2"
 
 # The fixed text of the `internal` event: the client gets something it can show, and the detail
 # (which could carry a provider body or stored text) stays in the server log.
@@ -82,6 +99,25 @@ INTERNAL_MESSAGE = "the answer failed; see the server log"
 # A saturated connection pool is not the same failure as a bug: the client is told to come back,
 # and the operator gets the code site in the log.
 BUSY_MESSAGE = "the server is busy; try again shortly"
+# The deadline's message is fixed for the same reason as the internal one: the client gets a
+# sentence it can show, and the operator reads the reason code.
+DEADLINE_MESSAGE = "the answer took too long; ask again"
+# The SSE comment line, not a named event: it carries no data, and a client's watchdog resets on
+# any received bytes.
+HEARTBEAT_FRAME = ": ping\n\n"
+# The notice a keyword-only answer starts with, so the page can explain the reduced search.
+TEXT_ONLY_MESSAGE = (
+    "Semantic search is paused while the corpus updates, so this answer uses keyword search."
+)
+
+
+@dataclass(frozen=True)
+class NoticeEvent:
+    """A mode notice sent before the answer: currently only `text_only`."""
+
+    code: Literal["text_only"]
+    message: str
+
 
 # The package's own directory, so `_failure_site` can tell the application's frames from a
 # library's by location. A checkout in a directory called `paperwatch` used to match every frame.
@@ -110,13 +146,25 @@ class AgentDeps:
     chat_calls: ChatCallStore
     # The profile names the corpus knows, so a typo is refused before a model call is spent.
     profile_names: frozenset[str]
+    # The credential verifier and the host names the gate accepts. `create_app` always installs the
+    # gate with them, so no code path can serve a route without one.
+    verifier: Verifier
+    allowed_hosts: frozenset[str]
+    # The per-client limit in front of every model-spending request.
+    limiter: RequestLimiter
+    # The search mode: a running main pass or memory pressure switches answers to keyword-only.
+    search_mode: SearchModeGate
+    # The API opens one short read-only session per tool call through this factory, so an answer
+    # holds no connection while it waits for the model. Unset in tests and the CLI, where the
+    # tools use the caller's already read-only session.
+    read_session_factory: Callable[[], Session] | None = None
     # `/readyz` queries the database through this factory. In production it is the usage engine,
     # not the answer pool: with every answer connection held by a live answer, a healthy database
     # would otherwise answer 503, which an orchestrator reads as "restart me".
     ready_session_factory: Callable[[], Session] | None = None
 
 
-def live_deps(settings: Settings) -> AgentDeps:
+def live_deps(settings: Settings, verifier: Verifier) -> AgentDeps:
     """Build the production dependencies: the provider chain, then the two engines."""
     # The chat chain is built first: without a key it refuses here, before the local embedding
     # model is loaded or its ~180 MB file is downloaded.
@@ -136,18 +184,47 @@ def live_deps(settings: Settings) -> AgentDeps:
         max_overflow=0,
         pool_timeout=ANSWER_POOL_TIMEOUT_S,
     )
+    # The tools' own pool: a connection per tool call, so the answer pool's long-lived
+    # connections are not the API's normal state.
+    read_engine = make_engine(
+        settings.database_url,
+        pool_size=READ_POOL_SIZE,
+        max_overflow=0,
+        pool_timeout=ANSWER_POOL_TIMEOUT_S,
+    )
+    read_factory = make_session_factory(read_engine)
+    search_mode = SearchModeGate(read_factory, clock=lambda: datetime.now(UTC))
+    # The model lives in a child process and exits when idle or when the ingestion needs the memory
+    # (ADR 0013). Azure embeddings are the kept Azure proof, not the deployment: they run in
+    # process because there is no local model to release.
+    if settings.embedding_provider == "azure":
+        embedder: Embedder = make_embedder(settings, Ledger(settings.max_tokens_per_run))
+    else:
+        embedder = WorkerEmbedder(should_stop=lambda: search_mode.current().mode == "text_only")
     profiles = load_profiles(PROFILES_PATH)
     usage_factory = make_session_factory(usage_engine)
+    # The tunnel's own host name is added to the loopback ones; unset means loopback only, and the
+    # tunnel name arrives through the same 0600 env file as the credential.
+    public_host = (settings.api_public_host or "").strip().lower()
+    allowed_hosts = LOOPBACK_HOSTS | ({public_host} if public_host else set())
     return AgentDeps(
         session_factory=factory,
-        # Local embeddings need no token budget of their own; the ledger is here because
-        # `make_embedder` takes one, and it charges nothing on the local path.
-        embedder=make_embedder(settings, Ledger(settings.max_tokens_per_run)),
+        embedder=embedder,
         models=models,
         settings=settings,
         clock=lambda: datetime.now(UTC),
         chat_calls=ChatCallLog(usage_factory),
         profile_names=frozenset(p.name for p in profiles),
+        verifier=verifier,
+        allowed_hosts=frozenset(allowed_hosts),
+        limiter=RequestLimiter(
+            per_minute=REQUESTS_PER_MINUTE,
+            per_day=REQUESTS_PER_DAY,
+            concurrent=CONCURRENT_ANSWERS,
+            clock=lambda: datetime.now(UTC),
+        ),
+        search_mode=search_mode,
+        read_session_factory=read_factory,
         ready_session_factory=usage_factory,
     )
 
@@ -156,8 +233,10 @@ def live_deps(settings: Settings) -> AgentDeps:
 class ErrorEvent:
     """A failure the stream reports instead of ending in a traceback."""
 
-    code: Literal["daily_cap", "budget", "model_unavailable", "internal"]
+    code: Literal["daily_cap", "budget", "model_unavailable", "internal", "deadline"]
     message: str
+    # Set for `daily_cap`: the UTC midnight when the free tier's call count resets.
+    retry_at: datetime | None = None
 
 
 class ToolData(BaseModel):
@@ -184,6 +263,32 @@ class CitationData(BaseModel):
     basis: str
 
 
+class StepData(BaseModel):
+    """The `step` event: one tool round finished."""
+
+    round: int
+    ms: int
+    new_sources: int
+
+
+class SourceData(BaseModel):
+    """The `source` event: a source a tool just returned, in alias order."""
+
+    id: str = Field(description="The per-answer source alias, such as S1.")
+    item_id: str
+    title: str
+    url: str
+    tier: str
+    basis: str
+
+
+class NoticeData(BaseModel):
+    """The `notice` event: the answer runs in a reduced mode and says so."""
+
+    code: Literal["text_only"]
+    message: str
+
+
 class FlagData(BaseModel):
     kind: str
     sentence: str
@@ -192,6 +297,9 @@ class FlagData(BaseModel):
 
 class AnswerData(BaseModel):
     text: str
+    search_mode: Literal["hybrid", "text_only"] = Field(
+        default="hybrid", description="Hybrid retrieval, or the keyword-only branch during a run."
+    )
     supported: bool = Field(
         description=(
             "True when every visible claim points at a retrieved source. That is not a "
@@ -202,23 +310,81 @@ class AnswerData(BaseModel):
     flags: list[FlagData]
 
 
+class Refusal(BaseModel):
+    """The body of every gate refusal except 429, as `docs/learn/15` lists them."""
+
+    detail: str
+
+
+class RateLimited(BaseModel):
+    """A 429: the per-client limit refused the request before the stream started."""
+
+    detail: Literal["rate_limited", "busy"]
+    retry_after_s: int
+
+
 class ErrorData(BaseModel):
-    code: Literal["daily_cap", "budget", "model_unavailable", "internal"]
+    code: Literal["daily_cap", "budget", "model_unavailable", "internal", "deadline"]
     message: str
+    retry_at: datetime | None = None
+
+
+class StatusData(BaseModel):
+    """`GET /status`: the search mode the page reads on load."""
+
+    mode: Literal["hybrid", "text_only"]
+    reason: Literal["ok", "ingestion", "memory", "database"]
+    since: datetime | None = None
 
 
 class StreamItem(BaseModel):
-    """Registration of the six payload models, not the shape of the wire.
+    """Registration of the payload models, not the shape of the wire.
 
     A real event is one `event: <name>` line and one `data: <json payload>` line, so its payload
     has no `event` key and no `data` wrapper. FastAPI needs a response model to register the
     payload models in the contract, and the app's `openapi` post-processing replaces this envelope
     with the honest `itemSchema`. A client replaces its streamed text with `answer.data.text`.
+
+    The heartbeat is an SSE comment line (`: ping`), not a named event, so it is not here.
     """
 
-    event: Literal["tool", "token", "answer", "error"]
-    data: ToolData | TokenData | AnswerData | ErrorData
+    event: Literal["tool", "step", "source", "token", "notice", "answer", "error"]
+    data: ToolData | StepData | SourceData | TokenData | NoticeData | AnswerData | ErrorData
 
+
+# The daily cap's fallback search: enough to fill a reading sheet, and one query.
+CAP_FALLBACK_K = 8
+
+# The gate's refusals, declared on every gated route so slice 3's generated client knows them.
+# The real decision is `api/gate.py`; these models only describe its bodies.
+_GATE_RESPONSES: dict[int | str, dict[str, Any]] = {
+    400: {
+        "model": Refusal,
+        "description": "The Host is not allowed, or the Content-Length is bad.",
+    },
+    401: {
+        "model": Refusal,
+        "description": "The credential is missing or invalid; `WWW-Authenticate: Bearer`.",
+    },
+    403: {"model": Refusal, "description": "The request carries an Origin header."},
+}
+_ASK_GATE_RESPONSES: dict[int | str, dict[str, Any]] = {
+    **_GATE_RESPONSES,
+    413: {"model": Refusal, "description": "The body is over 16 KB, by header or by stream."},
+    415: {"model": Refusal, "description": "A POST without application/json."},
+    429: {
+        "model": RateLimited,
+        "description": "The per-client limit refused the request; also sends Retry-After.",
+    },
+}
+# The bearer scheme is documentation here: the gate verifies the token before FastAPI runs, and
+# `auto_error=False` keeps this dependency from rejecting anything on its own.
+_BEARER = HTTPBearer(
+    auto_error=False,
+    scheme_name="VercelOidcOrHmac",
+    bearerFormat="JWT",
+    description="A Vercel OIDC token, or an HMAC token from `paperwatch api-token --live`.",
+)
 
 # The schema of one parsed server-sent event, in the OpenAPI 3.1 form FastAPI's native SSE
 # response emits: `event` names the frame and `data` is a JSON string whose own schema is the
@@ -227,14 +393,20 @@ class StreamItem(BaseModel):
 STREAM_ITEM_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
-        "event": {"type": "string", "enum": ["tool", "token", "answer", "error"]},
+        "event": {
+            "type": "string",
+            "enum": ["tool", "step", "source", "token", "notice", "answer", "error"],
+        },
         "data": {
             "type": "string",
             "contentMediaType": "application/json",
             "contentSchema": {
                 "anyOf": [
                     {"$ref": "#/components/schemas/ToolData"},
+                    {"$ref": "#/components/schemas/StepData"},
+                    {"$ref": "#/components/schemas/SourceData"},
                     {"$ref": "#/components/schemas/TokenData"},
+                    {"$ref": "#/components/schemas/NoticeData"},
                     {"$ref": "#/components/schemas/AnswerData"},
                     {"$ref": "#/components/schemas/ErrorData"},
                 ]
@@ -250,7 +422,8 @@ def run_question(
     question: str,
     filters: Filters,
     cancel: threading.Event | None = None,
-) -> Generator[AgentEvent | ErrorEvent, None, None]:
+    search_log: SearchLog | None = None,
+) -> Generator[AgentEvent | ErrorEvent | NoticeEvent, None, None]:
     """Drive one answer, yielding its events and closing its database session whatever happens.
 
     A new `SourceRegistry`, ledger and tool set is built per call: aliases and spending belong to
@@ -260,36 +433,65 @@ def run_question(
     token, and the round after a running tool is never sent. The API's response sets it the moment
     its disconnect listener fires; a caller that can be interrupted from outside (the CLI's
     Ctrl-C) passes its own event.
+
+    `search_log` records whether a search ran by keyword only, so the answer can carry
+    `search_mode`; the API passes the one its stream will read.
     """
     session: Session | None = None
     stream: Generator[AgentEvent, None, None] | None = None
     cancel = cancel if cancel is not None else threading.Event()
+    search_log = search_log if search_log is not None else SearchLog()
+    # Created before the graph so the cap fallback below can see what the answer had already found.
+    registry = SourceRegistry()
     try:
-        session = deps.session_factory()
-        # The tools only read, so the database enforces it: a bug, or a tool added later, cannot
-        # write to the corpus during an answer. SET TRANSACTION has to be the transaction's first
-        # statement, which is why nothing runs before it on this fresh session.
-        session.execute(text("SET TRANSACTION READ ONLY"))
-        registry = SourceRegistry()
+        decision = deps.search_mode.current()
+        if decision.mode == "text_only":
+            # The answer still runs; the page is told why its search is keyword-only.
+            search_log.text_only = True
+            yield NoticeEvent("text_only", TEXT_ONLY_MESSAGE)
+        # With a read factory the tools open one short read-only session per call and the answer
+        # holds no connection; without one (CLI, tests) it uses this session, made read-only once.
+        if deps.read_session_factory is None:
+            session = deps.session_factory()
+            # The tools only read, so the database enforces it: a bug, or a tool added later,
+            # cannot write to the corpus during an answer. SET TRANSACTION has to be the
+            # transaction's first statement, which is why nothing runs before it here.
+            session.execute(text("SET TRANSACTION READ ONLY"))
         guard = CallGuard(
             deps.chat_calls,
             Ledger(deps.settings.chat_max_tokens_per_answer),
             deps.settings.chat_max_calls_per_day,
             deps.clock,
         )
-        tools = make_tools(session, deps.embedder, registry, base_filters=filters)
+        tools = make_tools(
+            session,
+            deps.embedder,
+            registry,
+            base_filters=filters,
+            mode=lambda: deps.search_mode.current().mode,
+            search_log=search_log,
+            session_factory=deps.read_session_factory,
+        )
         graph = build_agent(deps.models, tools, registry, guard, cancel)
-        stream = stream_answer(graph, question, cancel)
-        # Not `yield from`: closing a generator suspended in a yield-from closes the sub-generator
-        # before this frame can set the flag, and the flag has to be set first.
-        for event in stream:  # noqa: UP028 - a yield-from would close the stream before the flag
-            yield event
+        # The mode is read again per search, so an ingestion starting mid-answer switches the
+        # next search; the prewarm and the open-answer window only matter for a hybrid answer.
+        hybrid = decision.mode == "hybrid"
+        with _answer_window(deps.embedder, hybrid=hybrid):
+            stream = stream_answer(graph, question, cancel, registry)
+            # Not `yield from`: closing a generator suspended in a yield-from closes the
+            # sub-generator before this frame can set the flag, so the flag is set first.
+            for event in stream:  # noqa: UP028 - yield-from would close before the flag is set
+                yield event
     except AnswerAborted:
         # The consumer left (see `AnswerAborted`): there is nobody to report to. The `finally`
         # below still releases the session, and `ChatCallLog` has already committed any usage row.
         return
     except DailyCapReached as exc:
-        yield ErrorEvent("daily_cap", str(exc))
+        # The sheet stays useful: one search still runs, so the reader sees candidate sources
+        # beside the message about the reset time (section 15's call).
+        embedder = deps.embedder if deps.search_mode.current().mode == "hybrid" else None
+        yield from _cap_fallback(deps, session, embedder, question, filters, registry)
+        yield ErrorEvent("daily_cap", str(exc), retry_at=_next_midnight(deps.clock()))
     except BudgetExceeded as exc:
         yield ErrorEvent("budget", str(exc))
     except ModelUnavailable as exc:
@@ -325,6 +527,77 @@ def run_question(
             if session is not None:
                 session.rollback()
                 session.close()
+
+
+@contextmanager
+def _answer_window(embedder: Embedder, *, hybrid: bool) -> Iterator[None]:
+    """Prewarm the model while the chat call thinks, and keep it alive until the answer ends."""
+    if not hybrid:
+        yield
+        return
+    prewarm = getattr(embedder, "prewarm", None)
+    if callable(prewarm):
+        prewarm()
+    opener = getattr(embedder, "answer_open", None)
+    if callable(opener):
+        with opener():
+            yield
+    else:
+        yield
+
+
+def _next_midnight(now: datetime) -> datetime:
+    """The UTC midnight when the free tier's daily call count starts again."""
+    today = now.astimezone(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+    return today + timedelta(days=1)
+
+
+@contextmanager
+def _read_scope(deps: AgentDeps, session: Session | None) -> Iterator[Session | None]:
+    if deps.read_session_factory is None:
+        yield session
+        return
+    short = deps.read_session_factory()
+    try:
+        short.execute(text("SET TRANSACTION READ ONLY"))
+        yield short
+    finally:
+        short.rollback()
+        short.close()
+
+
+def _cap_fallback(
+    deps: AgentDeps,
+    session: Session | None,
+    embedder: Embedder | None,
+    question: str,
+    filters: Filters,
+    registry: SourceRegistry,
+) -> Generator[SourceEvent, None, None]:
+    """One plain search when the daily cap refuses the answer before any source was found.
+
+    A failure here is logged by type and skipped: the cap error is what the client needs, and a
+    search that cannot run must not replace it with a traceback.
+    """
+    if registry.all():
+        return
+    try:
+        with _read_scope(deps, session) as active:
+            if active is None:
+                return
+            try:
+                hits = hybrid_search(active, embedder, question, k=CAP_FALLBACK_K, filters=filters)
+            except EmbedderUnavailable:
+                hits = hybrid_search(active, None, question, k=CAP_FALLBACK_K, filters=filters)
+            details = Repository(active).admitted_details([hit.item_id for hit in hits])
+            refs = [
+                registry.register(details[hit.item_id]) for hit in hits if hit.item_id in details
+            ]
+    except Exception as exc:  # noqa: BLE001 - the cap error must still reach the client
+        log.warning("cap_fallback_search_failed", error_type=type(exc).__name__)
+        return
+    for ref in refs:
+        yield SourceEvent(ref)
 
 
 def _failure_site(exc: BaseException, limit: int = 4) -> list[str]:
@@ -387,9 +660,11 @@ _ASK_RESPONSES: dict[int | str, dict[str, Any]] = {
     200: {
         "description": (
             "Server-sent events, one JSON object per `data:` line. The `event` line names the "
-            "payload: `tool`, `token`, `answer` or `error`. `answer` is the last event unless an "
-            "`error` follows; a client replaces its streamed text with the `answer` event's "
-            "`text`, never appends it, and takes every link from its `citations[].url`."
+            "payload: `tool`, `step`, `source`, `token`, `notice`, `answer` or `error`. A `: ping` "
+            "comment line arrives after 15 s of silence; it has no `data:`. `answer` is the last "
+            "event unless an `error` follows; a client replaces its streamed text with the "
+            "`answer` event's `text`, never appends it, and takes every link from its "
+            "`citations[].url`."
         ),
     }
 }
@@ -437,7 +712,20 @@ def _json_safe(value: Any) -> Any:
     return value
 
 
-def _answer_payload(answer: CheckedAnswer) -> AnswerData:
+def _source_payload(ref: SourceRef) -> SourceData:
+    # The `source` event carries the same facts as a citation, so a client can render a card
+    # before the answer is checked and the alias it will cite later is already known.
+    return SourceData(
+        id=ref.alias,
+        item_id=str(ref.item_id),
+        title=ref.title,
+        url=ref.url,
+        tier=ref.tier,
+        basis=ref.basis,
+    )
+
+
+def _answer_payload(answer: CheckedAnswer, search_log: SearchLog) -> AnswerData:
     flags = answer.flags
     if answer.text == NO_SUPPORT:
         # The fixed message replaces the model's text, so the flags describe words the reader
@@ -449,6 +737,7 @@ def _answer_payload(answer: CheckedAnswer) -> AnswerData:
         flags = ()
     return AnswerData(
         text=answer.text,
+        search_mode="text_only" if search_log.text_only else "hybrid",
         supported=answer.supported,
         citations=[
             CitationData(
@@ -476,21 +765,60 @@ def _sse(name: str, payload: dict[str, Any]) -> str:
 def _stream(
     deps: AgentDeps, body: AskRequest, cancel: threading.Event
 ) -> Generator[str, None, None]:
+    # The pacer owns the deadline and the heartbeat, and closing this generator closes both: it
+    # sets the cancel event and joins the producer, on the worker thread `_ClosingStream` uses.
+    yield from paced(
+        _answer_frames(deps, body, cancel),
+        cancel=cancel,
+        clock=time.monotonic,
+        heartbeat_s=SSE_HEARTBEAT_S,
+        deadline_s=ANSWER_DEADLINE_S,
+        heartbeat=lambda: HEARTBEAT_FRAME,
+        deadline_error=lambda: _sse(
+            "error", ErrorData(code="deadline", message=DEADLINE_MESSAGE).model_dump(mode="json")
+        ),
+    )
+
+
+def _answer_frames(
+    deps: AgentDeps, body: AskRequest, cancel: threading.Event
+) -> Generator[str, None, None]:
+    # One log per answer: the tools mark it when a search runs by keyword only, and the answer
+    # event reads it so `search_mode` describes what actually produced the answer.
+    search_log = SearchLog()
     # closing() releases the database session as soon as this generator is closed (a client
     # disconnect) instead of waiting for garbage collection. The cancel event is the response's,
     # so the flag is set the moment the client leaves, not when this generator is closed.
-    with closing(run_question(deps, body.question, _filters(body), cancel)) as events:
+    with closing(run_question(deps, body.question, _filters(body), cancel, search_log)) as events:
         for event in events:
-            if isinstance(event, ToolEvent):
+            if isinstance(event, NoticeEvent):
+                yield _sse(
+                    "notice", NoticeData(code=event.code, message=event.message).model_dump()
+                )
+            elif isinstance(event, ToolEvent):
                 yield _sse(
                     "tool", ToolData(name=event.name, args=_json_safe(event.args)).model_dump()
+                )
+            elif isinstance(event, SourceEvent):
+                yield _sse("source", _source_payload(event.ref).model_dump())
+            elif isinstance(event, StepEvent):
+                yield _sse(
+                    "step",
+                    StepData(
+                        round=event.round, ms=event.ms, new_sources=event.new_sources
+                    ).model_dump(),
                 )
             elif isinstance(event, TokenEvent):
                 yield _sse("token", TokenData(text=event.text).model_dump())
             elif isinstance(event, AnswerEvent):
-                yield _sse("answer", _answer_payload(event.answer).model_dump())
+                yield _sse("answer", _answer_payload(event.answer, search_log).model_dump())
             else:
-                yield _sse("error", ErrorData(code=event.code, message=event.message).model_dump())
+                yield _sse(
+                    "error",
+                    ErrorData(
+                        code=event.code, message=event.message, retry_at=event.retry_at
+                    ).model_dump(mode="json"),
+                )
 
 
 class _ClosingStream(StreamingResponse):
@@ -508,17 +836,34 @@ class _ClosingStream(StreamingResponse):
     """
 
     def __init__(
-        self, events: Generator[str, None, None], cancel: threading.Event, **kwargs: Any
+        self,
+        events: Generator[str, None, None],
+        cancel: threading.Event,
+        release: Callable[[], None] | None = None,
+        **kwargs: Any,
     ) -> None:
         super().__init__(events, **kwargs)
         self._events = events
         self._cancel = cancel
+        # The request limiter's slot belongs to this response, not to the route: it must be freed
+        # when the stream ends however it ends, including a client hang-up.
+        self._release = release
 
     async def listen_for_disconnect(self, receive: Receive) -> None:
         # Starlette's listener is the only thing that learns about a hang-up while the response
         # task waits for the next chunk; the generator is closed later, when that wait ends.
         await super().listen_for_disconnect(receive)
         self._cancel.set()
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            # A hang-up can cancel the response before `stream_response` starts, so the limiter's
+            # slot is freed here: the outermost path, which every ending passes through. The
+            # release is idempotent per grant, so a double call cannot free a slot twice.
+            if self._release is not None:
+                self._release()
 
     async def stream_response(self, send: Send) -> None:
         try:
@@ -542,7 +887,13 @@ def create_app(deps: AgentDeps) -> FastAPI:
         title="Paper Watch API",
         version=API_VERSION,
         summary="Ask questions about the stored AI-research corpus and stream cited answers.",
+        # The captain's requirement: docs and the schema are served only to an authenticated
+        # request, not removed. The gate is in front of every route, so these three inherit it;
+        # the committed docs/api/openapi.json remains the client's reference.
     )
+    # Every request, including the routes FastAPI adds itself, meets the gate first. Adding it here
+    # rather than in `serve` means a test, a script or a future caller cannot build an open app.
+    app.add_middleware(ApiGate, verifier=deps.verifier, allowed_hosts=deps.allowed_hosts)
     # The readiness gate lives on the app so a test can replace it, and so two apps never share
     # one limiter (a limiter belongs to one event loop's concurrency budget).
     app.state.ready_limiter = anyio.CapacityLimiter(READY_CONCURRENCY)
@@ -568,7 +919,7 @@ def create_app(deps: AgentDeps) -> FastAPI:
         # async, so a liveness probe never queues behind a sync route waiting for a thread.
         return {"status": "ok"}
 
-    @app.get("/readyz")
+    @app.get("/readyz", dependencies=[Security(_BEARER)], responses=_GATE_RESPONSES)
     async def readyz(request: Request) -> JSONResponse:
         """Readiness: an answer needs the database, so readiness means one query succeeds."""
         limiter = request.app.state.ready_limiter
@@ -600,13 +951,27 @@ def create_app(deps: AgentDeps) -> FastAPI:
             limiter.release()
         return JSONResponse(content={"status": "ready"})
 
+    @app.get(
+        "/status",
+        response_model=StatusData,
+        dependencies=[Security(_BEARER)],
+        responses=_GATE_RESPONSES,
+    )
+    async def status() -> StatusData:
+        """The search mode the page reads on load: hybrid, or keyword-only and why."""
+        # In a worker thread: the gate reads the run table, and a paused database must not block
+        # the event loop that is serving every other request.
+        decision = await anyio.to_thread.run_sync(deps.search_mode.current)
+        return StatusData(mode=decision.mode, reason=decision.reason, since=decision.since)
+
     @app.post(
         "/ask",
         response_class=_EventStream,
         response_model=StreamItem,
-        responses=_ASK_RESPONSES,
+        dependencies=[Security(_BEARER)],
+        responses={**_ASK_RESPONSES, **_ASK_GATE_RESPONSES},
     )
-    async def ask(body: AskRequest) -> Response:
+    async def ask(body: AskRequest, request: Request) -> Response:
         """Answer one question as server-sent events, one `itemSchema` event per frame."""
         # Refused here rather than in `AskRequest`: both would only buy an empty search after a
         # model call was paid for, and the profile names are the process's, not the model's.
@@ -615,10 +980,22 @@ def create_app(deps: AgentDeps) -> FastAPI:
             raise _refused(f"unknown profiles: {', '.join(unknown)}", ["profiles"])
         if body.since is not None and body.since > deps.clock().astimezone(UTC).date():
             raise _refused("since must not be in the future", ["since"])
+        principal: Principal = request.state.principal
+        admitted = deps.limiter.admit(principal.subject)
+        if isinstance(admitted, Refused):
+            # Refused before the stream starts, so the client gets a status and a Retry-After it
+            # can honour instead of a 200 that ends in an error event.
+            return JSONResponse(
+                status_code=429,
+                content={"detail": admitted.reason, "retry_after_s": admitted.retry_after_s},
+                headers={"Retry-After": str(admitted.retry_after_s)},
+            )
+        assert isinstance(admitted, Admitted)  # narrows the union for mypy
         cancel = threading.Event()
         return _ClosingStream(
             _stream(deps, body, cancel),
             cancel,
+            release=admitted.release,
             media_type="text/event-stream",
             # A cached or proxy-buffered answer would arrive all at once, so the stream is
             # uncacheable and unbuffered end to end.

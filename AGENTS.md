@@ -34,14 +34,18 @@ the standing rules.
   the per-answer `SourceRegistry` that issues the aliases S1, S2, ... (`sources.py`), the LangGraph
   graph that loops model and tools (`graph.py`), and `citations.py`, which checks every finished
   answer's citations against the sources those tools retrieved (`docs/learn/11`).
-- `src/paperwatch/api/app.py` is the FastAPI app (`/healthz`, `/readyz`, SSE `POST /ask`) and
+- `src/paperwatch/api/` is the HTTP face: `gate.py` puts the credential, host, origin and size
+  checks in front of `app.py` (`/healthz`, `/readyz`, `/status`, SSE `POST /ask`) and
   `run_question`, the one place an agent failure becomes an error event and the session is
-  released; `docs/api/openapi.json` is the committed contract, rewritten per `docs/api/README.md`.
+  released; `auth.py` verifies the Vercel OIDC or HMAC token, `limits.py` bounds requests,
+  `pacing.py` adds heartbeats and the deadline, `search_mode.py` decides hybrid or keyword-only and
+  `contract.py` rewrites `docs/api/openapi.json` (`uv run python -m paperwatch.api.contract`).
 - `evals/` holds the retrieval eval (`retrieval_eval.py`: recall@k, MRR, nDCG@k over the
   deterministic fake embedder) and the relevance eval (`relevance_eval.py`: classifier
   calibration and held-out scores), each with a committed baseline.
 - `config/` holds the hand-edited YAML (topic profiles, admission thresholds, feeds),
-  `docs/adr/` records architecture decisions, `docs/learn/` explains each technology, and
+  `deploy/vps/` the systemd user units, the shared slice, the ingestion drop-in and the two check
+  scripts, `docs/adr/` records architecture decisions, `docs/learn/` explains each technology, and
   `docs/architecture.md` is the current unit map.
 - `src/paperwatch/cli.py` exposes `paperwatch ingest`, `paperwatch search`, `paperwatch ask`,
   `paperwatch serve` and `paperwatch eval`.

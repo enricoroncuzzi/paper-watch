@@ -29,27 +29,31 @@ def _documented_urls() -> list[str]:
     return re.findall(r"^PW_DATABASE_URL=(\S+)$", GUIDE.read_text(), re.MULTILINE)
 
 
-def test_the_guide_shows_one_database_url() -> None:
+def test_the_guide_shows_one_database_url_per_env_file() -> None:
+    # The ingestion connects as the owner and the API as its own least-privilege role; the two
+    # files must not silently converge on one role.
     urls = _documented_urls()
-    assert urls, "docs/deploy/vps.md must show the PW_DATABASE_URL line of the env file"
-    assert len(set(urls)) == 1, f"the guide shows conflicting URLs: {sorted(set(urls))}"
+    assert urls, "docs/deploy/vps.md must show the PW_DATABASE_URL line of each env file"
+    assert len(urls) == len(set(urls)) == 2, f"the guide shows conflicting URLs: {sorted(urls)}"
+    assert {make_url(url).username for url in urls} == {"paperwatch", "paperwatch_api"}
 
 
-def test_the_documented_database_url_is_a_passwordless_socket_url() -> None:
-    [url] = set(_documented_urls())
-    parsed = make_url(url)
-    assert parsed.drivername == "postgresql+psycopg"
-    assert parsed.username == "paperwatch" and parsed.password is None
-    assert parsed.database == "paperwatch"
-    # No TCP host and a host in the query string: psycopg reads an absolute path as the directory
-    # holding the server's Unix socket, exactly as peer authentication expects.
-    assert parsed.host is None
-    assert parsed.query["host"] == "/var/run/postgresql"
-    args, options = PGDialect_psycopg().create_connect_args(parsed)
-    assert args == []  # positional args would mean a DSN string, not the keyword form
-    assert options["host"] == "/var/run/postgresql"
-    assert options["dbname"] == "paperwatch" and options["user"] == "paperwatch"
-    assert "password" not in options
+def test_the_documented_database_urls_are_passwordless_socket_urls() -> None:
+    for url in set(_documented_urls()):
+        parsed = make_url(url)
+        assert parsed.drivername == "postgresql+psycopg"
+        assert parsed.password is None
+        assert parsed.username in {"paperwatch", "paperwatch_api"}
+        assert parsed.database == "paperwatch"
+        # No TCP host and a host in the query string: psycopg reads an absolute path as the
+        # directory holding the Unix socket, exactly as peer authentication expects.
+        assert parsed.host is None
+        assert parsed.query["host"] == "/var/run/postgresql"
+        args, options = PGDialect_psycopg().create_connect_args(parsed)
+        assert args == []  # positional args would mean a DSN string, not the keyword form
+        assert options["host"] == "/var/run/postgresql"
+        assert options["dbname"] == "paperwatch" and options["user"] == parsed.username
+        assert "password" not in options
 
 
 # The unit is the deployment contract for the follow-up window: it must enable the loop, and its
@@ -117,11 +121,85 @@ def _service_section(unit: Path) -> list[str]:
     return section
 
 
-@pytest.mark.parametrize("unit", [UNIT, BACKUP_UNIT], ids=["ingest", "backup"])
+API_UNIT = REPO_ROOT / "deploy" / "vps" / "paperwatch-api.service"
+TUNNEL_UNIT = REPO_ROOT / "deploy" / "vps" / "paperwatch-tunnel.service"
+SLICE_FILE = REPO_ROOT / "deploy" / "vps" / "paperwatch.slice"
+INGEST_DROP_IN = REPO_ROOT / "deploy" / "vps" / "paperwatch-ingest.service.d" / "slice.conf"
+
+
+@pytest.mark.parametrize(
+    "unit", [UNIT, BACKUP_UNIT, API_UNIT, TUNNEL_UNIT], ids=["ingest", "backup", "api", "tunnel"]
+)
 def test_each_unit_refuses_to_gain_privileges(unit: Path) -> None:
-    # Both units run code from the account's home. Neither needs a setuid or setgid binary, so the
+    # The units run code from the account's home. None needs a setuid or setgid binary, so the
     # setting that stops one from raising its own privileges costs nothing to keep.
     assert "NoNewPrivileges=yes" in _service_section(unit)
+
+
+def _assert_no_unit_relationships(unit: Path) -> None:
+    # The measurements showed that Conflicts= stops the ingestion, and any ordering would couple
+    # the API to a run that must finish. The only shared bound is the slice (ADR 0013). The keys
+    # live in [Unit], so the whole file is scanned, not only [Service].
+    lines = [
+        line
+        for line in unit.read_text().splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    for key in ("Conflicts=", "Requires=", "BindsTo=", "PartOf=", "After=", "Wants="):
+        assert not any(line.startswith(key) for line in lines), f"{unit.name} uses {key}"
+
+
+def test_the_api_unit_never_names_the_ingestion() -> None:
+    _assert_no_unit_relationships(API_UNIT)
+    lines = [
+        line
+        for line in API_UNIT.read_text().splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    assert not any("paperwatch-ingest" in line for line in lines)
+    assert not any(line.startswith("MemoryHigh=") for line in lines), (
+        "MemoryHigh without swap stalls (the measurements)"
+    )
+
+
+def test_the_tunnel_unit_never_creates_a_relationship() -> None:
+    _assert_no_unit_relationships(TUNNEL_UNIT)
+
+
+def test_the_api_unit_caps_memory_and_volunteers_for_the_oom_killer() -> None:
+    section = _service_section(API_UNIT)
+    assert "Slice=paperwatch.slice" in section
+    assert "MemoryMax=700M" in section
+    assert "MemorySwapMax=0" in section
+    assert "OOMScoreAdjust=900" in section
+    # A child OOM kill must leave the API answering: systemd's default would stop the whole unit.
+    assert "OOMPolicy=continue" in section
+    assert "Restart=on-failure" in section
+
+
+def test_the_slice_caps_everything_paper_watch_runs() -> None:
+    lines = SLICE_FILE.read_text().splitlines()
+    start = lines.index("[Slice]") + 1
+    section = [line for line in lines[start:] if line and not line.startswith("#")]
+    assert "MemoryMax=1100M" in section
+    assert "MemorySwapMax=0" in section
+
+
+def test_the_ingest_drop_in_only_sets_the_slice() -> None:
+    # The ingestion's own unit is not edited, so a release does not overwrite this line and this
+    # line cannot acquire a second setting.
+    lines = [
+        line
+        for line in INGEST_DROP_IN.read_text().splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    assert lines == ["[Service]", "Slice=paperwatch.slice"]
+
+
+def test_the_api_binds_loopback_only() -> None:
+    [line] = [line for line in _service_section(API_UNIT) if line.startswith("ExecStart=")]
+    assert "--host 127.0.0.1" in line
+    assert "/home/paperwatch/.local/bin/uv run --frozen --no-dev paperwatch serve --live" in line
 
 
 def test_the_guide_shows_how_to_read_the_unit_security_score() -> None:
