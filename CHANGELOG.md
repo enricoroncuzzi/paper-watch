@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.7.0](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.6.6...paperwatch-v0.7.0) (2026-10-24)
+
+
+### Features
+
+* keep Hugging Face extras and record signal snapshots ([#37](https://github.com/enricoroncuzzi/paper-watch/issues/37)) ([385a2be](https://github.com/enricoroncuzzi/paper-watch/commit/385a2be412e6f936d8bb558a8b8cbec166f64ba7))
+
+
+### Bug Fixes
+
+* bump filelock to 4.2.4 and ignore two new unreachable Pillow advisories ([#38](https://github.com/enricoroncuzzi/paper-watch/issues/38)) ([4fb1e94](https://github.com/enricoroncuzzi/paper-watch/commit/4fb1e9432f0ae4345da4c331851de004f55fa6d3))
+
 ## [0.6.6](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.6.5...paperwatch-v0.6.6) (2026-10-23)
 
 
