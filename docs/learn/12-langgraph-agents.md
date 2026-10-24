@@ -120,6 +120,31 @@ flags, and `supported`. An answer with no evidence leaves the graph as
 `NO_SUPPORT = "I could not find anything in the corpus that answers this question."`, so the
 worst case of a bad model is an honest refusal, not an invented citation.
 
+## Follow-ups
+
+A thread gives the graph earlier turns, and the changes are small on purpose (ADR 0016).
+`stream_answer(..., history=...)` takes `(question, answer)` pairs, oldest first, and builds the
+state as `HumanMessage(question), AIMessage(answer)` for each, then this turn's `HumanMessage`. The
+graph is still built for one run: `AgentState.turn_start` holds the index of this turn's question,
+and the first-call test is `len(state["messages"]) == state["turn_start"] + 1`, so a reused graph is
+still refused (`test_a_graph_with_history_still_answers_once`).
+
+Only the question and the checked answer of an earlier turn are replayed. The earlier `<source>`
+blocks are not: they would spend the per-answer token budget on text the model can ask for again.
+`HISTORY_NOTE` is added to the system prompt only when `turn_start > 0`, and it says what the model
+needs to know about the earlier markers: they still name citable sources, and a detail should be
+re-read with `get_item` before it is relied on. The registry is the other half: `SourceRegistry`
+is restored from the thread's stored refs (`from_refs`), so a follow-up's tools and
+`check_answer` read the same aliases the earlier turns issued, and `S2` from turn 1 is citable and
+checkable in turn 5 (`test_a_follow_up_may_cite_an_alias_from_an_earlier_turn`). A restored
+registry is checked exactly like a fresh one, so an alias the thread never issued is still flagged
+(`test_an_alias_the_thread_never_issued_is_still_flagged`).
+
+The history is bounded before it reaches the model: `bound_history` keeps the last
+`THREAD_HISTORY_TURNS` (6) turns whose answers fit `THREAD_HISTORY_CHARS` (6,000) characters,
+dropping the oldest first. The per-answer token cap bounds one answer, not a conversation, and a
+thread with a hundred turns must not grow the prompt without a bound.
+
 ## What a caller sees
 
 `answer_question(graph, question)` runs the graph and returns the `CheckedAnswer`, the tool names
@@ -162,4 +187,9 @@ rule is covered by `test_a_graph_answers_only_one_question`,
 `test_build_agent_rejects_an_empty_model_list`. The answers are checked by
 `test_answer_citing_an_unretrieved_alias_is_flagged`,
 `test_empty_corpus_gives_the_no_support_answer` and
-`test_a_wrong_tool_argument_comes_back_as_an_error_message`.
+`test_a_wrong_tool_argument_comes_back_as_an_error_message`. Replay is covered by
+`test_history_reaches_the_model_before_the_question` (the messages and `HISTORY_NOTE` in order),
+`test_a_single_turn_does_not_get_the_history_note`, `test_history_keeps_the_last_six_turns`,
+`test_history_drops_the_oldest_answers_past_the_character_budget`,
+`test_an_answer_over_the_budget_leaves_no_history` and
+`test_a_registry_survives_the_json_a_thread_stores`.

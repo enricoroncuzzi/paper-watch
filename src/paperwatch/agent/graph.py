@@ -36,9 +36,9 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.prebuilt import ToolNode
 
 from paperwatch.agent.citations import CheckedAnswer, check_answer
-from paperwatch.agent.prompts import FINAL_ROUND_NOTE, SYSTEM_PROMPT
+from paperwatch.agent.prompts import FINAL_ROUND_NOTE, HISTORY_NOTE, SYSTEM_PROMPT
 from paperwatch.agent.sources import SourceRef, SourceRegistry
-from paperwatch.config import MAX_TOOL_ROUNDS
+from paperwatch.config import MAX_TOOL_ROUNDS, THREAD_HISTORY_CHARS, THREAD_HISTORY_TURNS
 from paperwatch.llm.chat import CallGuard, ChatModel, ModelUnavailable
 
 log = structlog.get_logger()
@@ -46,11 +46,16 @@ log = structlog.get_logger()
 
 class AgentState(TypedDict):
     """One answer's state: the conversation, the tool rounds used plus one for the answer
-    round, and the checked answer."""
+    round, and the checked answer.
+
+    `turn_start` is the index of this turn's question, so a follow-up that carries earlier turns
+    is still recognisable as the first model call of its own run (see `call_agent`).
+    """
 
     messages: Annotated[list[AnyMessage], add_messages]
     rounds: int
     answer: CheckedAnswer | None
+    turn_start: int
 
 
 @dataclass(frozen=True)
@@ -242,15 +247,19 @@ def build_agent(
 
     def call_agent(state: AgentState) -> dict[str, Any]:
         nonlocal started
-        # The first model call of a run is the only one with just the question in the state; a
-        # second run would share this answer's registry and ledger.
-        if len(state["messages"]) == 1:
+        # The first model call of a run is the only one with just this turn's question left after
+        # the earlier turns; a second run would share this answer's registry and ledger.
+        if len(state["messages"]) == state["turn_start"] + 1:
             if started:
                 raise RuntimeError("an agent graph answers one question")
             started = True
         # The system prompt is prepended at every call and never stored, so the transcript a
-        # client sees holds only the question, the tool calls and the answer.
-        messages = [SystemMessage(SYSTEM_PROMPT), *state["messages"]]
+        # client sees holds only the question, the tool calls and the answer. The history note is
+        # for a follow-up only: a first turn has no earlier markers to explain.
+        system = SYSTEM_PROMPT
+        if state["turn_start"] > 0:
+            system = f"{SYSTEM_PROMPT}\n\n{HISTORY_NOTE}"
+        messages = [SystemMessage(system), *state["messages"]]
         if state["rounds"] >= MAX_TOOL_ROUNDS:
             # The cap works by forbidding tool calls (tool_choice="none") and by spending this
             # round below: whatever the reply says, no tool runs after it. The note tells the
@@ -294,8 +303,41 @@ def build_agent(
     return graph.compile()
 
 
-def _initial_state(question: str) -> AgentState:
-    return {"messages": [HumanMessage(question)], "rounds": 0, "answer": None}
+def _initial_state(question: str, history: Sequence[tuple[str, str]] = ()) -> AgentState:
+    """This turn's state: the earlier turns as messages, then the question.
+
+    Only the question and the checked answer of an earlier turn are replayed, never its tool calls
+    or `<source>` blocks: a follow-up can cite an earlier alias, and `get_item` re-reads one, but
+    the earlier sources are not carried in the prompt.
+    """
+    messages: list[AnyMessage] = []
+    for earlier_question, earlier_answer in history:
+        messages.append(HumanMessage(earlier_question))
+        messages.append(AIMessage(earlier_answer))
+    messages.append(HumanMessage(question))
+    return {
+        "messages": messages,
+        "rounds": 0,
+        "answer": None,
+        "turn_start": len(messages) - 1,
+    }
+
+
+def bound_history(turns: Sequence[tuple[str, str]]) -> list[tuple[str, str]]:
+    """The earlier turns a follow-up replays: the newest few, whose answers fit the budget.
+
+    The per-answer token cap bounds one answer, not a conversation, so the oldest turns are dropped
+    first: a turn whose answer does not fit the remaining budget takes every older one with it.
+    """
+    kept: list[tuple[str, str]] = []
+    budget = THREAD_HISTORY_CHARS
+    for question, answer in reversed(turns[-THREAD_HISTORY_TURNS:]):
+        if len(answer) > budget:
+            break
+        kept.append((question, answer))
+        budget -= len(answer)
+    kept.reverse()
+    return kept
 
 
 def _may_run_tools(state: AgentState) -> bool:
@@ -333,6 +375,7 @@ def stream_answer(
     question: str,
     cancel: threading.Event | None = None,
     registry: SourceRegistry | None = None,
+    history: Sequence[tuple[str, str]] = (),
 ) -> Generator[AgentEvent, None, None]:
     """Yield tool calls, sources and tokens as they happen, then exactly one `AnswerEvent`.
 
@@ -343,8 +386,11 @@ def stream_answer(
     `registry` is the answer's registry, which the graph writes to through the tools. Without it
     the stream carries no `source` or `step` events: a caller that only wants the answer (a test,
     the eval) does not need them.
+
+    `history` is a thread's earlier `(question, answer)` turns, oldest first: they reach the model
+    before this question, and the graph's first-call guard counts from this turn's question.
     """
-    state = _initial_state(question)
+    state = _initial_state(question, history)
     config = _run_config(cancel)
     # With several stream modes LangGraph yields `(mode, chunk)` pairs; its type stub only says
     # the modes' union, so the pair is named here once.
@@ -390,7 +436,7 @@ def stream_answer(
                     finished = time.monotonic()
                     started = round_started if round_started is not None else finished
                     round_started = None
-                    refs = registry.all() if registry is not None else []
+                    refs = registry.refs() if registry is not None else []
                     new_refs = refs[seen:]
                     seen = len(refs)
                     # Sources first, then the step that counts them: a client renders sources as

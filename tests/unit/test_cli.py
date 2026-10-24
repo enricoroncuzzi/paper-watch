@@ -21,7 +21,7 @@ from evals.retrieval_eval import GATED, DatabaseNotEmpty
 from paperwatch import cli
 from paperwatch.agent.citations import CheckedAnswer, Citation, Flag
 from paperwatch.agent.graph import AnswerEvent, TokenEvent, ToolEvent
-from paperwatch.api.app import ErrorEvent
+from paperwatch.api.app import ErrorEvent, ThreadEvent
 from paperwatch.api.auth import HmacVerifier
 from paperwatch.cli import app
 from paperwatch.config import Settings
@@ -555,9 +555,9 @@ HOSTILE = "\u202e"
 
 def scripted_run(*evts: object) -> Callable[..., Iterator[object]]:
     # A generator, not iter(): `ask` closes the stream, which is how the database session is
-    # released when an error event ends the loop early. `cancel` is accepted because `ask` passes
-    # the event its Ctrl-C handler sets.
-    return lambda deps, question, filters, cancel=None: (event for event in evts)
+    # released when an error event ends the loop early. `cancel` and `thread_id` are accepted
+    # because `ask` passes the Ctrl-C event and the thread it continues.
+    return lambda deps, question, filters, cancel=None, thread_id=None: (event for event in evts)
 
 
 def answer_with(
@@ -612,6 +612,46 @@ def test_ask_prints_answer_sources_and_flags(monkeypatch: pytest.MonkeyPatch) ->
     assert "warning: uncited_claim: Most agents forget everything" in result.output
 
 
+def test_ask_continues_a_thread(monkeypatch: pytest.MonkeyPatch) -> None:
+    thread = uuid4()
+    seen: dict[str, object] = {}
+
+    def stream(
+        deps: object,
+        question: str,
+        filters: object,
+        cancel: object = None,
+        thread_id: object = None,
+    ) -> Iterator[object]:
+        seen["thread_id"] = thread_id
+        yield AnswerEvent(answer_with("Coding agents are scored on real bugs [S1]."))
+        yield ThreadEvent(thread, 4)
+
+    monkeypatch.setattr(cli, "live_deps", lambda s, verifier: object())
+    monkeypatch.setattr(cli, "run_question", stream)
+    result = CliRunner().invoke(app, ["ask", "q", "--thread", str(thread), "--live"])
+    assert result.exit_code == 0
+    assert seen["thread_id"] == thread
+    # The id goes to stderr, so a piped answer stays just the answer.
+    assert f"thread {thread} turn 4" in result.stderr
+
+
+def test_ask_prints_the_thread_a_new_answer_started(monkeypatch: pytest.MonkeyPatch) -> None:
+    thread = uuid4()
+    monkeypatch.setattr(cli, "live_deps", lambda s, verifier: object())
+    monkeypatch.setattr(
+        cli,
+        "run_question",
+        scripted_run(
+            AnswerEvent(answer_with("Coding agents are scored on real bugs [S1].")),
+            ThreadEvent(thread, 1),
+        ),
+    )
+    result = CliRunner().invoke(app, ["ask", "q", "--live"])
+    assert result.exit_code == 0
+    assert f"thread {thread} turn 1" in result.stderr
+
+
 def test_ask_exits_1_on_error_event(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cli, "live_deps", lambda s, verifier: object())
     monkeypatch.setattr(
@@ -652,7 +692,11 @@ def test_a_cleanup_cancel_is_not_a_user_interrupt(monkeypatch: pytest.MonkeyPatc
     # checked answer used to look like Ctrl-C and exit 130. Only the handler's own event means the
     # user asked to stop; a wiring bug must still exit 1.
     def stream(
-        deps: object, question: str, filters: object, cancel: object = None
+        deps: object,
+        question: str,
+        filters: object,
+        cancel: object = None,
+        thread_id: object = None,
     ) -> Iterator[object]:
         try:
             yield TokenEvent("nothing")
@@ -938,7 +982,11 @@ def test_ask_keeps_log_lines_out_of_its_stdout(monkeypatch: pytest.MonkeyPatch) 
     # stdout: the tool call's INFO line landed in the middle of the answer, and `ask q > a.txt`
     # captured it. Log lines belong on stderr, beside the `tool:` progress line.
     def stream(
-        deps: object, question: str, filters: object, cancel: object = None
+        deps: object,
+        question: str,
+        filters: object,
+        cancel: object = None,
+        thread_id: object = None,
     ) -> Iterator[object]:
         structlog.get_logger().info("search_corpus", query_chars=9)
         yield ToolEvent("search_corpus", {"query": "SWE-bench"})
@@ -1008,7 +1056,11 @@ def test_ask_passes_the_filters_to_run_question(monkeypatch: pytest.MonkeyPatch)
     seen: list[tuple[str, Filters]] = []
 
     def stream(
-        deps: object, question: str, filters: Filters, cancel: object = None
+        deps: object,
+        question: str,
+        filters: Filters,
+        cancel: object = None,
+        thread_id: object = None,
     ) -> Iterator[object]:
         seen.append((question, filters))
         yield AnswerEvent(answer_with("ok [S1].", supported=True))
@@ -1029,7 +1081,11 @@ def test_ask_closes_the_stream_when_an_error_ends_it(monkeypatch: pytest.MonkeyP
     closed: list[bool] = []
 
     def stream(
-        deps: object, question: str, filters: object, cancel: object = None
+        deps: object,
+        question: str,
+        filters: object,
+        cancel: object = None,
+        thread_id: object = None,
     ) -> Iterator[object]:
         try:
             yield ErrorEvent("internal", "boom")
@@ -1051,7 +1107,11 @@ def test_ask_exits_130_on_ctrl_c(monkeypatch: pytest.MonkeyPatch) -> None:
     received: list[object] = []
 
     def stream(
-        deps: object, question: str, filters: object, cancel: object = None
+        deps: object,
+        question: str,
+        filters: object,
+        cancel: object = None,
+        thread_id: object = None,
     ) -> Iterator[object]:
         received.append(cancel)
         try:
@@ -1083,7 +1143,11 @@ def test_ask_handles_a_real_sigint_and_restores_the_handler(
     seen: list[object] = []
 
     def stream(
-        deps: object, question: str, filters: object, cancel: object = None
+        deps: object,
+        question: str,
+        filters: object,
+        cancel: object = None,
+        thread_id: object = None,
     ) -> Iterator[object]:
         seen.append(cancel)
         yield TokenEvent("half an answer")
@@ -1177,7 +1241,11 @@ def test_ask_runs_without_an_api_credential(monkeypatch: pytest.MonkeyPatch) -> 
     built: list[object] = []
 
     def stream(
-        deps: object, question: str, filters: object, cancel: object = None
+        deps: object,
+        question: str,
+        filters: object,
+        cancel: object = None,
+        thread_id: object = None,
     ) -> Iterator[object]:
         built.append(deps)
         yield AnswerEvent(answer_with(supported=True))

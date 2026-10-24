@@ -147,6 +147,43 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/threads": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Threads
+         * @description The Recent menu: newest conversation first.
+         */
+        get: operations["list_threads_threads_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/threads/{thread_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Thread */
+        get: operations["get_thread_threads__thread_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/healthz": {
         parameters: {
             query?: never;
@@ -273,6 +310,8 @@ export interface components {
             since?: string | null;
             /** Item Id */
             item_id?: string | null;
+            /** Thread Id */
+            thread_id?: string | null;
         };
         /** CitationData */
         CitationData: {
@@ -805,6 +844,77 @@ export interface components {
             quote: string | null;
             /** Interpretation */
             interpretation: boolean;
+        };
+        /**
+         * ThreadData
+         * @description The `thread` event: the finished turn was stored, so the client can follow up.
+         */
+        ThreadData: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Turn */
+            turn: number;
+        };
+        /**
+         * ThreadDetailData
+         * @description One conversation with every finished turn, oldest first.
+         */
+        ThreadDetailData: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Title */
+            title: string;
+            /** Turns */
+            turns: components["schemas"]["ThreadTurnData"][];
+        };
+        /**
+         * ThreadSummaryData
+         * @description One conversation in the Recent menu: its name and how many turns it holds.
+         */
+        ThreadSummaryData: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Title */
+            title: string;
+            /** Turns */
+            turns: number;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /**
+         * ThreadTurnData
+         * @description One finished turn as the page re-renders it after a dropped stream.
+         */
+        ThreadTurnData: {
+            /** N */
+            n: number;
+            /** Question */
+            question: string;
+            answer: components["schemas"]["AnswerData"];
+            /** Search Mode */
+            search_mode: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
+        /** ThreadsData */
+        ThreadsData: {
+            /** Threads */
+            threads: components["schemas"]["ThreadSummaryData"][];
         };
         /**
          * Tier
@@ -1454,6 +1564,131 @@ export interface operations {
             };
         };
     };
+    list_threads_threads_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ThreadsData"];
+                };
+            };
+            /** @description The Host is not allowed, or the Content-Length is bad. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description The credential is missing or invalid; `WWW-Authenticate: Bearer`. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description The request carries an Origin header. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_thread_threads__thread_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                thread_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ThreadDetailData"];
+                };
+            };
+            /** @description The Host is not allowed, or the Content-Length is bad. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description The credential is missing or invalid; `WWW-Authenticate: Bearer`. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description The request carries an Origin header. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description No thread with that id. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     healthz_healthz_get: {
         parameters: {
             query?: never;
@@ -1583,7 +1818,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Server-sent events, one JSON object per `data:` line. The `event` line names the payload: `tool`, `step`, `source`, `token`, `notice`, `answer` or `error`. A `: ping` comment line arrives after 15 s of silence; it has no `data:`. `answer` is the last event unless an `error` follows; a client replaces its streamed text with the `answer` event's `text`, never appends it, and takes every link from its `citations[].url`. */
+            /** @description Server-sent events, one JSON object per `data:` line. The `event` line names the payload: `tool`, `step`, `source`, `token`, `notice`, `answer`, `thread` or `error`. A `: ping` comment line arrives after 15 s of silence; it has no `data:`. `answer` is the last event unless a `thread` or an `error` follows; a client replaces its streamed text with the `answer` event's `text`, never appends it, and takes every link from its `citations[].url`. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -1612,6 +1847,15 @@ export interface operations {
             };
             /** @description The request carries an Origin header. */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description The `thread_id` names no thread. */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

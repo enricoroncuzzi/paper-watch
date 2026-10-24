@@ -351,7 +351,7 @@ def test_every_streamed_payload_validates_against_its_model(
     # documents them and the route builds every payload from them.
     seed_items(AGENT_ROWS)
     response = ask(deps(db_session, search_then()), {"question": "q"})
-    from paperwatch.api.app import NoticeData, SourceData, StepData
+    from paperwatch.api.app import NoticeData, SourceData, StepData, ThreadData
 
     models: dict[str, Any] = {
         "tool": ToolData,
@@ -360,6 +360,7 @@ def test_every_streamed_payload_validates_against_its_model(
         "token": TokenData,
         "notice": NoticeData,
         "answer": AnswerData,
+        "thread": ThreadData,
         "error": ErrorData,
     }
     for name, data in events(response.text):
@@ -383,6 +384,7 @@ def test_the_question_is_stripped_before_it_reaches_the_agent(
         cancel: Any = None,
         search_log: Any = None,
         item_id: Any = None,
+        thread_id: Any = None,
     ) -> Any:
         seen.append(question)
         yield AnswerEvent(CheckedAnswer(NO_SUPPORT, (), (), False))
@@ -404,6 +406,7 @@ def test_request_filters_reach_the_answer(
         cancel: Any = None,
         search_log: Any = None,
         item_id: Any = None,
+        thread_id: Any = None,
     ) -> Any:
         seen.append(filters)
         yield AnswerEvent(CheckedAnswer(NO_SUPPORT, (), (), False))
@@ -661,6 +664,7 @@ def test_closing_the_sse_stream_closes_the_answer(
         cancel: Any = None,
         search_log: Any = None,
         item_id: Any = None,
+        thread_id: Any = None,
     ) -> Any:
         def events() -> Any:
             try:
@@ -1158,6 +1162,7 @@ def test_the_openapi_contract_types_the_event_payloads(db_session: Session) -> N
         "AnswerData",
         "CitationData",
         "FlagData",
+        "ThreadData",
         "ErrorData",
     ):
         assert name in schemas, name
@@ -1179,6 +1184,7 @@ def test_the_contract_describes_one_parsed_event_not_the_body(db_session: Sessio
         "token",
         "notice",
         "answer",
+        "thread",
         "error",
     ]
     data = item["properties"]["data"]
@@ -1190,6 +1196,7 @@ def test_the_contract_describes_one_parsed_event_not_the_body(db_session: Sessio
         "#/components/schemas/TokenData",
         "#/components/schemas/NoticeData",
         "#/components/schemas/AnswerData",
+        "#/components/schemas/ThreadData",
         "#/components/schemas/ErrorData",
     }
     # The registration model is not part of the contract.
@@ -1404,7 +1411,7 @@ def test_no_token_or_question_text_in_info_logs(db_session: Session, seed_items:
 def test_every_streamed_event_has_a_payload_model(db_session: Session, seed_items: Seed) -> None:
     # Every event the stream can emit is one of these models, and the contract's itemSchema lists
     # the same set. A new event without a payload model would fail here.
-    from paperwatch.api.app import STREAM_ITEM_SCHEMA, NoticeData, SourceData, StepData
+    from paperwatch.api.app import STREAM_ITEM_SCHEMA, NoticeData, SourceData, StepData, ThreadData
 
     seed_items(AGENT_ROWS)
     response = ask(deps(db_session, search_then()), {"question": "q"})
@@ -1415,6 +1422,7 @@ def test_every_streamed_event_has_a_payload_model(db_session: Session, seed_item
         "token": TokenData,
         "notice": NoticeData,
         "answer": AnswerData,
+        "thread": ThreadData,
         "error": ErrorData,
     }
     for name, data in events(response.text):

@@ -227,3 +227,46 @@ def test_migration_0007_grants_the_api_insert_on_drafts() -> None:
     # the CI container has no paperwatch_api role to make a runtime check meaningful.
     text = (REPO_ROOT / "migrations" / "versions" / "0007_drafts.py").read_text()
     assert 'grant_api_writes(["drafts"])' in text
+
+
+def test_the_thread_grants_cover_what_the_api_writes(engine: Engine) -> None:
+    # Migration 0008: the API creates a thread and updates it as turns arrive, inserts each
+    # finished turn from its own sequence, and can do nothing else with either table.
+    _roles(engine)
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            grant_api_writes(
+                ["threads", "thread_turns"],
+                update=["threads"],
+                sequences=["thread_turns_id_seq"],
+            )
+        )
+
+    with engine.connect() as conn:
+        conn.execute(text("SET ROLE paperwatch_api"))
+        thread_id = conn.scalar(
+            text(
+                "INSERT INTO threads (id, title, source_registry, created_at, updated_at) "
+                "VALUES (gen_random_uuid(), 'first question', '[]', now(), now()) RETURNING id"
+            )
+        )
+        assert thread_id is not None
+        turn_id = conn.scalar(
+            text(
+                "INSERT INTO thread_turns (thread_id, n, question, answer, search_mode, "
+                "created_at) VALUES (:thread_id, 1, 'q', '{}', 'hybrid', now()) RETURNING id"
+            ),
+            {"thread_id": thread_id},
+        )
+        assert turn_id is not None
+        conn.execute(
+            text("UPDATE threads SET updated_at = now() WHERE id = :id"), {"id": thread_id}
+        )
+        conn.rollback()
+
+    for statement in ("DELETE FROM thread_turns", "DELETE FROM threads"):
+        with engine.connect() as conn:
+            conn.execute(text("SET ROLE paperwatch_api"))
+            with pytest.raises(SQLAlchemyError):
+                conn.execute(text(statement))
+            conn.rollback()

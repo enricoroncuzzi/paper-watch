@@ -27,6 +27,7 @@ from paperwatch.agent.graph import AnswerEvent, TokenEvent, ToolEvent
 from paperwatch.api.app import (
     AgentDeps,
     ErrorEvent,
+    ThreadEvent,
     create_app,
     live_deps,
     run_question,
@@ -95,6 +96,8 @@ FOLLOWUP = typer.Option(
 )
 TIERS = typer.Option(None, "--tier")
 PROFILES_OPT = typer.Option(None, "--profile")
+# A follow-up continues a thread; without it the answer starts one and the CLI prints its id.
+THREAD_OPT = typer.Option(None, "--thread", help="Continue a thread by id")
 # `search` runs no sources, so its `--live` help names only the model and the database.
 SEARCH_LIVE = typer.Option(
     False, "--live", help="Use the configured embedding model and the database"
@@ -886,6 +889,7 @@ def ask(
     question: str,
     tier: list[str] | None = TIERS,
     profile: list[str] | None = PROFILES_OPT,
+    thread: uuid.UUID | None = THREAD_OPT,
     live: bool = LIVE,
 ) -> None:
     """Ask one question about the corpus and stream a citation-checked answer."""
@@ -907,6 +911,7 @@ def ask(
     )
     streamed: list[str] = []
     answer: CheckedAnswer | None = None
+    saved_thread: tuple[uuid.UUID, int] | None = None
     cancel = threading.Event()
     # The run also sets `cancel` when it ends normally; only the handler's own event says the
     # user pressed Ctrl-C, which is what decides between exit 130 and a wiring error.
@@ -918,7 +923,7 @@ def ask(
         # closing() releases the database session at once, including when an error event ends the
         # loop before the generator's last event was requested; closing also aborts a model call
         # still in flight (the Ctrl-C path sets the flag first, see `_interrupt_handler`).
-        with closing(run_question(deps, question, filters, cancel)) as stream:
+        with closing(run_question(deps, question, filters, cancel, thread_id=thread)) as stream:
             for event in stream:
                 if isinstance(event, TokenEvent):
                     streamed.append(event.text)
@@ -934,6 +939,8 @@ def ask(
                     )
                 elif isinstance(event, AnswerEvent):
                     answer = event.answer
+                elif isinstance(event, ThreadEvent):
+                    saved_thread = (event.thread_id, event.turn)
                 elif isinstance(event, ErrorEvent):
                     if streamed:
                         # Tokens already went to stdout without a newline; end that line first.
@@ -962,6 +969,10 @@ def ask(
         typer.echo("error (internal): the answer ended without a checked answer", err=True)
         raise typer.Exit(1)
     _render_answer(answer, "".join(streamed))
+    if saved_thread is not None:
+        # stderr, like the tool progress: a piped answer is still just the answer. The id is what
+        # the next `ask --thread` continues.
+        typer.echo(f"thread {saved_thread[0]} turn {saved_thread[1]}", err=True)
 
 
 def _is_loopback(host: str) -> bool:

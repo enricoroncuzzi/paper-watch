@@ -5,8 +5,9 @@ Paper Watch builds a growing, queryable corpus of AI research focused on agentic
 fallback topic. Items come only from reliable sources, in three tiers: peer-reviewed venues,
 arXiv preprints with a quality signal, and official AI-lab engineering blogs.
 
-The corpus answers questions on demand through retrieval-augmented generation, and turns a
-suggested item into a LinkedIn draft grounded in its stored text plus the author's own point of
+The corpus answers questions on demand through retrieval-augmented generation, keeps a
+conversation's turns and sources so a follow-up still cites what an earlier answer found, and turns
+a suggested item into a LinkedIn draft grounded in its stored text plus the author's own point of
 view, checked by code before it is saved. The author posts, edits, skips or defers each draft by
 hand. Paper Watch never posts to LinkedIn itself.
 
@@ -83,8 +84,9 @@ flagged, not silently dropped ([lesson 11](docs/learn/11-citations-and-grounding
 uv run paperwatch qa-eval   # replay recorded answers through the checker; no key, model or network
 
 # Put PW_OPENROUTER_API_KEY in .env first (a free key from openrouter.ai; never commit it).
-uv run paperwatch ask "what is new on agent memory?" --live   # stream one answer in the terminal
-uv run paperwatch serve --live                                # the API: /ask, /suggestions, /runs
+uv run paperwatch ask "what is new on agent memory?" --live   # stream one answer; it prints a thread id
+uv run paperwatch ask "and how was it measured?" --thread ID --live   # continue that conversation
+uv run paperwatch serve --live                                # the API: /ask, /threads, /suggestions, /drafts, /runs
 uv run paperwatch suggest --live                              # the ranked picks and the Rising shelf
 uv run paperwatch draft ITEM_ID --live                        # one checked LinkedIn draft, with its notes
 # With PW_API_AUTH=hmac and a 32+ character PW_API_HMAC_SECRET in .env, each token works once:

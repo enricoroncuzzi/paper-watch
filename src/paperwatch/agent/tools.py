@@ -320,7 +320,7 @@ def make_tools(
     def registered(active: Session, alias: str) -> tuple[SourceRef, ItemDetail]:
         ref = registry.get(alias)
         if ref is None:
-            known = ", ".join(r.alias for r in registry.all()) or "none"
+            known = ", ".join(r.alias for r in registry.refs()) or "none"
             # The alias is model-controlled text, so the echo is clipped; the known list helps a
             # small model recover from a wrong-case or invented id.
             raise ToolException(

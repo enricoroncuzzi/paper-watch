@@ -17,7 +17,7 @@ import math
 import threading
 import time
 import traceback
-from collections.abc import Callable, Generator, Iterator
+from collections.abc import Callable, Generator, Iterator, Sequence
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -36,7 +36,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from starlette.types import Receive, Scope, Send
 
 import paperwatch
-from paperwatch.agent.citations import NO_SUPPORT, CheckedAnswer
+from paperwatch.agent.citations import NO_SUPPORT, CheckedAnswer, Flag
 from paperwatch.agent.graph import (
     AgentEvent,
     AnswerAborted,
@@ -45,19 +45,27 @@ from paperwatch.agent.graph import (
     StepEvent,
     TokenEvent,
     ToolEvent,
+    bound_history,
     build_agent,
     stream_answer,
 )
-from paperwatch.agent.sources import SourceRef, SourceRegistry
+from paperwatch.agent.sources import (
+    SourceRef,
+    SourceRegistry,
+    ref_from_json,
+    ref_to_json,
+)
 from paperwatch.agent.tools import SearchLog, item_block, make_tools
 from paperwatch.api.auth import Principal, Verifier
 from paperwatch.api.gate import ApiGate
 from paperwatch.api.limits import Admitted, Refused, RequestLimiter
 from paperwatch.api.pacing import paced
+from paperwatch.api.payloads import AnswerData, CitationData, FlagData
 from paperwatch.api.responses import (
     ASK_GATE_RESPONSES,
     BEARER,
     GATE_RESPONSES,
+    Refusal,
 )
 from paperwatch.api.routes.drafts import DraftService, make_drafts_router
 from paperwatch.api.routes.runs import make_runs_router
@@ -65,6 +73,7 @@ from paperwatch.api.routes.suggestions import (
     SuggestionService,
     make_suggestions_router,
 )
+from paperwatch.api.routes.threads import make_threads_router
 from paperwatch.api.search_mode import SearchModeGate
 from paperwatch.api.summary_queue import SummaryQueue
 from paperwatch.config import (
@@ -82,6 +91,7 @@ from paperwatch.config import (
     REQUESTS_PER_MINUTE,
     SSE_HEARTBEAT_S,
     SUGGESTIONS_PATH,
+    THREAD_TITLE_MAX_CHARS,
     USAGE_POOL_SIZE,
     Settings,
 )
@@ -98,7 +108,7 @@ from paperwatch.llm.embedder import Embedder, EmbedderUnavailable, WorkerEmbedde
 from paperwatch.llm.ledger import BudgetExceeded, Ledger
 from paperwatch.retrieval.hybrid import Filters, hybrid_search
 from paperwatch.store.db import make_engine, make_session_factory
-from paperwatch.store.repository import ChatCallLog, Repository
+from paperwatch.store.repository import ChatCallLog, Repository, ThreadDetailRow
 from paperwatch.suggestions.config import load_suggestions
 from paperwatch.suggestions.summary import SummaryWriter
 
@@ -106,7 +116,7 @@ log = structlog.get_logger()
 
 # The API contract's own version, not the package version: release-please bumps the package on
 # every release, and the committed docs/api/openapi.json must change only when the API does.
-API_VERSION = "0.5"
+API_VERSION = "0.6"
 
 # The fixed text of the `internal` event: the client gets something it can show, and the detail
 # (which could carry a provider body or stored text) stays in the server log.
@@ -124,6 +134,18 @@ HEARTBEAT_FRAME = ": ping\n\n"
 TEXT_ONLY_MESSAGE = (
     "Semantic search is paused while the corpus updates, so this answer uses keyword search."
 )
+
+
+@dataclass(frozen=True)
+class ThreadEvent:
+    """A finished turn was stored: the thread it joined and that turn's number.
+
+    It is the last event of the stream and exists only on success, so a client follows up with an
+    id it can re-fetch; an answer that failed stores nothing and sends no thread event.
+    """
+
+    thread_id: UUID
+    turn: int
 
 
 @dataclass(frozen=True)
@@ -173,6 +195,10 @@ class AgentDeps:
     # holds no connection while it waits for the model. Unset in tests and the CLI, where the
     # tools use the caller's already read-only session.
     read_session_factory: Callable[[], Session] | None = None
+    # Where a finished turn is written. The answer's own session is read-only by design, so the
+    # thread write needs its own: in production this is the answer pool, which an answer holds no
+    # connection on. None means the caller does not keep threads (a test, the contract build).
+    write_session_factory: Callable[[], Session] | None = None
     # `/readyz` queries the database through this factory. In production it is the usage engine,
     # not the answer pool: with every answer connection held by a live answer, a healthy database
     # would otherwise answer 503, which an orchestrator reads as "restart me".
@@ -313,6 +339,9 @@ def live_deps(settings: Settings, verifier: Verifier) -> AgentDeps:
         search_mode=search_mode,
         read_session_factory=read_factory,
         ready_session_factory=usage_factory,
+        # The answer pool is writable and an answer holds no connection on it, so the thread write
+        # takes one short connection there rather than a fourth pool's worth of memory.
+        write_session_factory=factory,
         # Built here with the answer chain: without an OpenRouter key the app refuses to start,
         # and the draft chain is the one-model chain data collection denied.
         draft_models=make_chat_models(settings, purpose="draft"),
@@ -344,15 +373,6 @@ class TokenData(BaseModel):
     text: str
 
 
-class CitationData(BaseModel):
-    id: str = Field(description="The per-answer source alias, such as S1.")
-    item_id: str
-    title: str
-    url: str
-    tier: str
-    basis: str
-
-
 class StepData(BaseModel):
     """The `step` event: one tool round finished."""
 
@@ -379,25 +399,11 @@ class NoticeData(BaseModel):
     message: str
 
 
-class FlagData(BaseModel):
-    kind: str
-    sentence: str
-    detail: str
+class ThreadData(BaseModel):
+    """The `thread` event: the finished turn was stored, so the client can follow up."""
 
-
-class AnswerData(BaseModel):
-    text: str
-    search_mode: Literal["hybrid", "text_only"] = Field(
-        default="hybrid", description="Hybrid retrieval, or the keyword-only branch during a run."
-    )
-    supported: bool = Field(
-        description=(
-            "True when every visible claim points at a retrieved source. That is not a "
-            "verification: sentences under six words and numbers are not checked."
-        )
-    )
-    citations: list[CitationData]
-    flags: list[FlagData]
+    id: UUID
+    turn: int
 
 
 class ErrorData(BaseModel):
@@ -425,8 +431,17 @@ class StreamItem(BaseModel):
     The heartbeat is an SSE comment line (`: ping`), not a named event, so it is not here.
     """
 
-    event: Literal["tool", "step", "source", "token", "notice", "answer", "error"]
-    data: ToolData | StepData | SourceData | TokenData | NoticeData | AnswerData | ErrorData
+    event: Literal["tool", "step", "source", "token", "notice", "answer", "thread", "error"]
+    data: (
+        ToolData
+        | StepData
+        | SourceData
+        | TokenData
+        | NoticeData
+        | AnswerData
+        | ThreadData
+        | ErrorData
+    )
 
 
 # The daily cap's fallback search: enough to fill a reading sheet, and one query.
@@ -445,7 +460,16 @@ STREAM_ITEM_SCHEMA: dict[str, Any] = {
     "properties": {
         "event": {
             "type": "string",
-            "enum": ["tool", "step", "source", "token", "notice", "answer", "error"],
+            "enum": [
+                "tool",
+                "step",
+                "source",
+                "token",
+                "notice",
+                "answer",
+                "thread",
+                "error",
+            ],
         },
         "data": {
             "type": "string",
@@ -458,6 +482,7 @@ STREAM_ITEM_SCHEMA: dict[str, Any] = {
                     {"$ref": "#/components/schemas/TokenData"},
                     {"$ref": "#/components/schemas/NoticeData"},
                     {"$ref": "#/components/schemas/AnswerData"},
+                    {"$ref": "#/components/schemas/ThreadData"},
                     {"$ref": "#/components/schemas/ErrorData"},
                 ]
             },
@@ -474,11 +499,17 @@ def run_question(
     cancel: threading.Event | None = None,
     search_log: SearchLog | None = None,
     item_id: UUID | None = None,
-) -> Generator[AgentEvent | ErrorEvent | NoticeEvent, None, None]:
+    thread_id: UUID | None = None,
+) -> Generator[AgentEvent | ErrorEvent | NoticeEvent | ThreadEvent, None, None]:
     """Drive one answer, yielding its events and closing its database session whatever happens.
 
     A new `SourceRegistry`, ledger and tool set is built per call: aliases and spending belong to
     one answer. This is a generator, so a client that never starts reading spends nothing.
+
+    `thread_id` continues a conversation: its registry and its last finished turns are loaded
+    before the graph starts, so a follow-up can cite an earlier alias and knows what was asked.
+    A finished answer is stored as the thread's next turn. Only the reader's `question` is
+    stored, never the prompt the item block turned it into.
 
     `cancel` is set when the consumer leaves: a model call still in flight then stops at its next
     token, and the round after a running tool is never sent. The API's response sets it the moment
@@ -494,7 +525,20 @@ def run_question(
     search_log = search_log if search_log is not None else SearchLog()
     # Created before the graph so the cap fallback below can see what the answer had already found.
     registry = SourceRegistry()
+    history: list[tuple[str, str]] = []
     try:
+        if thread_id is not None:
+            # The route checks the thread first, so an unknown id is a 404 before the stream; this
+            # is the read the answer itself needs. A thread deleted between the two is an error
+            # event rather than a silent new conversation under a different id.
+            saved = _load_thread(deps, thread_id)
+            if saved is None:
+                yield ErrorEvent("internal", INTERNAL_MESSAGE)
+                return
+            registry = SourceRegistry.from_refs([ref_from_json(ref) for ref in saved.registry])
+            history = bound_history(
+                [(turn.question, str(turn.answer.get("text", ""))) for turn in saved.turns]
+            )
         decision = deps.search_mode.current()
         if decision.mode == "text_only":
             # The answer still runs; the page is told why its search is keyword-only.
@@ -517,7 +561,9 @@ def run_question(
         # What the model reads: the reader's own question, or that question under the item's
         # block. `question` stays the reader's words, so a stored turn never becomes a prompt.
         prompt = question
-        if item_id is not None:
+        # Only a new thread registers the item as S1: a follow-up already has its aliases, and a
+        # second S1 would point the reader at two different papers.
+        if item_id is not None and thread_id is None:
             # Registered before the graph starts, so S1 is this item whatever the search returns:
             # "Ask about it" means the question is about that paper, and the citation check reads
             # the same registry the answer cites from.
@@ -548,11 +594,21 @@ def run_question(
         # next search; the prewarm and the open-answer window only matter for a hybrid answer.
         hybrid = decision.mode == "hybrid"
         with _answer_window(deps.embedder, hybrid=hybrid):
-            stream = stream_answer(graph, prompt, cancel, registry)
+            stream = stream_answer(graph, prompt, cancel, registry, history=history)
             # Not `yield from`: closing a generator suspended in a yield-from closes the
             # sub-generator before this frame can set the flag, so the flag is set first.
-            for event in stream:  # noqa: UP028 - yield-from would close before the flag is set
+            for event in stream:
                 yield event
+                if isinstance(event, AnswerEvent):
+                    # After the answer, so a failed or aborted answer stores nothing. The write is
+                    # one transaction on the writable factory; a failure is logged by type and the
+                    # stream ends without a thread event, so the answer still reaches the reader.
+                    stored = _save_turn(
+                        deps, thread_id, question, event.answer, search_log, registry
+                    )
+                    if stored is not None:
+                        stored_id, turn = stored
+                        yield ThreadEvent(stored_id, turn)
     except AnswerAborted:
         # The consumer left (see `AnswerAborted`): there is nobody to report to. The `finally`
         # below still releases the session, and `ChatCallLog` has already committed any usage row.
@@ -598,6 +654,50 @@ def run_question(
             if session is not None:
                 session.rollback()
                 session.close()
+
+
+def _load_thread(deps: AgentDeps, thread_id: UUID) -> ThreadDetailRow | None:
+    """The thread an answer continues: its registry and its finished turns."""
+    with closing((deps.read_session_factory or deps.session_factory)()) as reader:
+        return Repository(reader).thread(thread_id)
+
+
+def _save_turn(
+    deps: AgentDeps,
+    thread_id: UUID | None,
+    question: str,
+    answer: CheckedAnswer,
+    search_log: SearchLog,
+    registry: SourceRegistry,
+) -> tuple[UUID, int] | None:
+    """Store one finished turn and the thread's registry; None when it could not be stored.
+
+    The answer event has already been yielded, so every failure here is logged by its type only
+    and swallowed: the reader keeps the checked answer either way. Nothing is logged at info level
+    with the question in it, which is why only the error type is recorded.
+    """
+    writer = deps.write_session_factory
+    if writer is None:
+        return None
+    # The same payload the stream sent, built without the log line: the answer is not unsupported
+    # anew because a thread stored it.
+    payload = _answer_fields(answer, search_log, _visible_flags(answer))
+    try:
+        with writer() as session:
+            stored_id, turn = Repository(session).save_thread_turn(
+                thread_id=thread_id,
+                title=question[:THREAD_TITLE_MAX_CHARS],
+                registry=[ref_to_json(ref) for ref in registry.refs()],
+                question=question,
+                answer=payload.model_dump(mode="json"),
+                search_mode=payload.search_mode,
+                at=deps.clock(),
+            )
+            session.commit()
+    except Exception as exc:  # noqa: BLE001 - the answer is already the reader's
+        log.warning("thread_save_failed", error_type=type(exc).__name__)
+        return None
+    return stored_id, turn
 
 
 @contextmanager
@@ -650,7 +750,7 @@ def _cap_fallback(
     A failure here is logged by type and skipped: the cap error is what the client needs, and a
     search that cannot run must not replace it with a traceback.
     """
-    if registry.all():
+    if registry.refs():
         return
     try:
         with _read_scope(deps, session) as active:
@@ -694,6 +794,9 @@ class AskRequest(BaseModel):
     # "Ask about it" from a suggestion card: the item is registered as S1 before the graph starts,
     # so the answer can talk about "this paper" and still cite a source the check can verify.
     item_id: UUID | None = None
+    # A follow-up: the thread this answer continues. The route refuses an unknown id with a 404
+    # before the stream starts; `item_id` only pre-registers a source on a new thread.
+    thread_id: UUID | None = None
 
     @field_validator("question")
     @classmethod
@@ -734,13 +837,14 @@ _ASK_RESPONSES: dict[int | str, dict[str, Any]] = {
     200: {
         "description": (
             "Server-sent events, one JSON object per `data:` line. The `event` line names the "
-            "payload: `tool`, `step`, `source`, `token`, `notice`, `answer` or `error`. A `: ping` "
-            "comment line arrives after 15 s of silence; it has no `data:`. `answer` is the last "
-            "event unless an `error` follows; a client replaces its streamed text with the "
-            "`answer` event's `text`, never appends it, and takes every link from its "
-            "`citations[].url`."
+            "payload: `tool`, `step`, `source`, `token`, `notice`, `answer`, `thread` or "
+            "`error`. A `: ping` comment line arrives after 15 s of silence; it has no `data:`. "
+            "`answer` is the last event unless a `thread` or an `error` follows; a client replaces "
+            "its streamed text with the `answer` event's `text`, never appends it, and takes every "
+            "link from its `citations[].url`."
         ),
-    }
+    },
+    404: {"model": Refusal, "description": "The `thread_id` names no thread."},
 }
 
 
@@ -799,16 +903,15 @@ def _source_payload(ref: SourceRef) -> SourceData:
     )
 
 
-def _answer_payload(answer: CheckedAnswer, search_log: SearchLog) -> AnswerData:
-    flags = answer.flags
-    if answer.text == NO_SUPPORT:
-        # The fixed message replaces the model's text, so the flags describe words the reader
-        # never saw. They go to the log for the operator and never into the event.
-        log.info(
-            "answer_unsupported",
-            flags=[{"kind": f.kind, "sentence": f.sentence, "detail": f.detail} for f in flags],
-        )
-        flags = ()
+def _visible_flags(answer: CheckedAnswer) -> tuple[Flag, ...]:
+    # The fixed message replaces the model's text, so its flags describe words the reader never
+    # saw: they go to the log for the operator and never into the event or a stored turn.
+    return () if answer.text == NO_SUPPORT else answer.flags
+
+
+def _answer_fields(
+    answer: CheckedAnswer, search_log: SearchLog, flags: Sequence[Flag]
+) -> AnswerData:
     return AnswerData(
         text=answer.text,
         search_mode="text_only" if search_log.text_only else "hybrid",
@@ -826,6 +929,20 @@ def _answer_payload(answer: CheckedAnswer, search_log: SearchLog) -> AnswerData:
         ],
         flags=[FlagData(kind=f.kind, sentence=f.sentence, detail=f.detail) for f in flags],
     )
+
+
+def _answer_payload(answer: CheckedAnswer, search_log: SearchLog) -> AnswerData:
+    flags = _visible_flags(answer)
+    if answer.text == NO_SUPPORT:
+        # The one log line for an unsupported answer; the stored turn reuses `_answer_fields`, so
+        # re-fetching a turn never logs it a second time.
+        log.info(
+            "answer_unsupported",
+            flags=[
+                {"kind": f.kind, "sentence": f.sentence, "detail": f.detail} for f in answer.flags
+            ],
+        )
+    return _answer_fields(answer, search_log, flags)
 
 
 def _sse(name: str, payload: dict[str, Any]) -> str:
@@ -864,7 +981,13 @@ def _answer_frames(
     # disconnect) instead of waiting for garbage collection. The cancel event is the response's,
     # so the flag is set the moment the client leaves, not when this generator is closed.
     events = run_question(
-        deps, body.question, _filters(body), cancel, search_log, item_id=body.item_id
+        deps,
+        body.question,
+        _filters(body),
+        cancel,
+        search_log,
+        item_id=body.item_id,
+        thread_id=body.thread_id,
     )
     with closing(events):
         for event in events:
@@ -889,6 +1012,13 @@ def _answer_frames(
                 yield _sse("token", TokenData(text=event.text).model_dump())
             elif isinstance(event, AnswerEvent):
                 yield _sse("answer", _answer_payload(event.answer, search_log).model_dump())
+            elif isinstance(event, ThreadEvent):
+                # Last event of a saved turn: the client follows up with this id, and re-fetches
+                # it after a dropped stream.
+                yield _sse(
+                    "thread",
+                    ThreadData(id=event.thread_id, turn=event.turn).model_dump(mode="json"),
+                )
             else:
                 yield _sse(
                     "error",
@@ -986,6 +1116,8 @@ def create_app(deps: AgentDeps) -> FastAPI:
     app.include_router(make_suggestions_router(suggestions))
     # The same suggestions service, so a saved draft takes its item out of the cached list.
     app.include_router(make_drafts_router(deps.drafts or _default_drafts(deps, suggestions)))
+    # The Recent menu and the re-fetch after a dropped stream: reads only, so no limiter.
+    app.include_router(make_threads_router(deps.read_session_factory or deps.session_factory))
 
     # FastAPI types the SSE media type with the `StreamItem` envelope, which exists only to
     # register the payload models. Post-processing swaps in the shape a client parses and drops
@@ -1075,6 +1207,12 @@ def create_app(deps: AgentDeps) -> FastAPI:
             with closing((deps.read_session_factory or deps.session_factory)()) as reader:
                 if not Repository(reader).admitted_item(body.item_id):
                     raise _refused("item_id is not an admitted item", ["item_id"])
+        if body.thread_id is not None:
+            # The thread's turns are small, so the route reads it for the 404 the plan wants before
+            # a stream starts; `run_question` then loads it again for the answer it needs.
+            with closing((deps.read_session_factory or deps.session_factory)()) as reader:
+                if Repository(reader).thread(body.thread_id) is None:
+                    raise HTTPException(status_code=404, detail="thread not found")
         principal: Principal = request.state.principal
         admitted = deps.limiter.admit(principal.subject)
         if isinstance(admitted, Refused):

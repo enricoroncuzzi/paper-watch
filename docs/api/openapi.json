@@ -3,7 +3,7 @@
   "info": {
     "title": "Paper Watch API",
     "summary": "Ask questions about the stored AI-research corpus and stream cited answers.",
-    "version": "0.5"
+    "version": "0.6"
   },
   "paths": {
     "/runs": {
@@ -718,6 +718,169 @@
         }
       }
     },
+    "/threads": {
+      "get": {
+        "summary": "List Threads",
+        "description": "The Recent menu: newest conversation first.",
+        "operationId": "list_threads_threads_get",
+        "security": [
+          {
+            "VercelOidcOrHmac": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 20,
+              "minimum": 1,
+              "default": 20,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreadsData"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The Host is not allowed, or the Content-Length is bad.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The credential is missing or invalid; `WWW-Authenticate: Bearer`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request carries an Origin header.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/threads/{thread_id}": {
+      "get": {
+        "summary": "Get Thread",
+        "operationId": "get_thread_threads__thread_id__get",
+        "security": [
+          {
+            "VercelOidcOrHmac": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "thread_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Thread Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreadDetailData"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The Host is not allowed, or the Content-Length is bad.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The credential is missing or invalid; `WWW-Authenticate: Bearer`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request carries an Origin header.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No thread with that id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/healthz": {
       "get": {
         "summary": "Healthz",
@@ -864,7 +1027,7 @@
         },
         "responses": {
           "200": {
-            "description": "Server-sent events, one JSON object per `data:` line. The `event` line names the payload: `tool`, `step`, `source`, `token`, `notice`, `answer` or `error`. A `: ping` comment line arrives after 15 s of silence; it has no `data:`. `answer` is the last event unless an `error` follows; a client replaces its streamed text with the `answer` event's `text`, never appends it, and takes every link from its `citations[].url`.",
+            "description": "Server-sent events, one JSON object per `data:` line. The `event` line names the payload: `tool`, `step`, `source`, `token`, `notice`, `answer`, `thread` or `error`. A `: ping` comment line arrives after 15 s of silence; it has no `data:`. `answer` is the last event unless a `thread` or an `error` follows; a client replaces its streamed text with the `answer` event's `text`, never appends it, and takes every link from its `citations[].url`.",
             "content": {
               "text/event-stream": {
                 "itemSchema": {
@@ -879,6 +1042,7 @@
                         "token",
                         "notice",
                         "answer",
+                        "thread",
                         "error"
                       ]
                     },
@@ -906,6 +1070,9 @@
                             "$ref": "#/components/schemas/AnswerData"
                           },
                           {
+                            "$ref": "#/components/schemas/ThreadData"
+                          },
+                          {
                             "$ref": "#/components/schemas/ErrorData"
                           }
                         ]
@@ -916,6 +1083,16 @@
                     "event",
                     "data"
                   ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The `thread_id` names no thread.",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
                 }
               }
             }
@@ -1130,6 +1307,18 @@
               }
             ],
             "title": "Item Id"
+          },
+          "thread_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Thread Id"
           }
         },
         "type": "object",
@@ -2423,6 +2612,135 @@
           "interpretation"
         ],
         "title": "SummaryFieldData"
+      },
+      "ThreadData": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "turn": {
+            "type": "integer",
+            "title": "Turn"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "turn"
+        ],
+        "title": "ThreadData",
+        "description": "The `thread` event: the finished turn was stored, so the client can follow up."
+      },
+      "ThreadDetailData": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "turns": {
+            "items": {
+              "$ref": "#/components/schemas/ThreadTurnData"
+            },
+            "type": "array",
+            "title": "Turns"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "turns"
+        ],
+        "title": "ThreadDetailData",
+        "description": "One conversation with every finished turn, oldest first."
+      },
+      "ThreadSummaryData": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "turns": {
+            "type": "integer",
+            "title": "Turns"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "turns",
+          "updated_at"
+        ],
+        "title": "ThreadSummaryData",
+        "description": "One conversation in the Recent menu: its name and how many turns it holds."
+      },
+      "ThreadTurnData": {
+        "properties": {
+          "n": {
+            "type": "integer",
+            "title": "N"
+          },
+          "question": {
+            "type": "string",
+            "title": "Question"
+          },
+          "answer": {
+            "$ref": "#/components/schemas/AnswerData"
+          },
+          "search_mode": {
+            "type": "string",
+            "title": "Search Mode"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "n",
+          "question",
+          "answer",
+          "search_mode",
+          "created_at"
+        ],
+        "title": "ThreadTurnData",
+        "description": "One finished turn as the page re-renders it after a dropped stream."
+      },
+      "ThreadsData": {
+        "properties": {
+          "threads": {
+            "items": {
+              "$ref": "#/components/schemas/ThreadSummaryData"
+            },
+            "type": "array",
+            "title": "Threads"
+          }
+        },
+        "type": "object",
+        "required": [
+          "threads"
+        ],
+        "title": "ThreadsData"
       },
       "Tier": {
         "type": "string",

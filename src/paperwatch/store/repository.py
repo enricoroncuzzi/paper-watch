@@ -35,6 +35,8 @@ from paperwatch.store.models import (
     SignalSnapshot,
     SourceCursor,
     SuggestionEvent,
+    Thread,
+    ThreadTurn,
     TierHistory,
 )
 from paperwatch.suggestions.prompts import SUMMARY_PROMPT_VERSION
@@ -128,6 +130,37 @@ class DraftRow:
     source_link: str
     flags: tuple[Mapping[str, object], ...]
     counts: Mapping[str, tuple[int, int]]
+
+
+@dataclass(frozen=True)
+class ThreadTurnRow:
+    """One stored turn as the API and the page read it back."""
+
+    n: int
+    question: str
+    answer: Mapping[str, object]
+    search_mode: str
+    created_at: datetime
+
+
+@dataclass(frozen=True)
+class ThreadRow:
+    """One conversation in the Recent menu, with how many finished turns it holds."""
+
+    id: uuid.UUID
+    title: str
+    turns: int
+    updated_at: datetime
+
+
+@dataclass(frozen=True)
+class ThreadDetailRow:
+    """One conversation with the registry every turn may cite and its finished turns."""
+
+    id: uuid.UUID
+    title: str
+    registry: tuple[Mapping[str, str], ...]
+    turns: tuple[ThreadTurnRow, ...]
 
 
 @dataclass(frozen=True)
@@ -284,6 +317,16 @@ def _draft_row(row: Draft) -> DraftRow:
         source_link=row.source_link,
         flags=flags,
         counts=counts,
+    )
+
+
+def _thread_turn_row(row: ThreadTurn) -> ThreadTurnRow:
+    return ThreadTurnRow(
+        n=row.n,
+        question=row.question,
+        answer=row.answer,
+        search_mode=row.search_mode,
+        created_at=row.created_at,
     )
 
 
@@ -1137,6 +1180,93 @@ class Repository:
     def draft(self, draft_id: uuid.UUID) -> DraftRow | None:
         row = self._s.get(Draft, draft_id)
         return _draft_row(row) if row is not None else None
+
+    def threads(self, limit: int) -> list[ThreadRow]:
+        """The Recent menu: newest conversation first, with its finished turn count."""
+        counts = (
+            select(ThreadTurn.thread_id, func.count().label("turns"))
+            .group_by(ThreadTurn.thread_id)
+            .subquery()
+        )
+        rows = self._s.execute(
+            select(Thread, func.coalesce(counts.c.turns, 0))
+            .outerjoin(counts, counts.c.thread_id == Thread.id)
+            .order_by(Thread.updated_at.desc())
+            .limit(limit)
+        )
+        return [
+            ThreadRow(
+                id=thread.id, title=thread.title, turns=int(turns), updated_at=thread.updated_at
+            )
+            for thread, turns in rows
+        ]
+
+    def thread(self, thread_id: uuid.UUID) -> ThreadDetailRow | None:
+        thread = self._s.get(Thread, thread_id)
+        if thread is None:
+            return None
+        turns = self._s.scalars(
+            select(ThreadTurn).where(ThreadTurn.thread_id == thread_id).order_by(ThreadTurn.n)
+        )
+        return ThreadDetailRow(
+            id=thread.id,
+            title=thread.title,
+            registry=tuple(thread.source_registry),
+            turns=tuple(_thread_turn_row(turn) for turn in turns),
+        )
+
+    def save_thread_turn(
+        self,
+        *,
+        thread_id: uuid.UUID | None,
+        title: str,
+        registry: Sequence[Mapping[str, str]],
+        question: str,
+        answer: Mapping[str, object],
+        search_mode: str,
+        at: datetime,
+    ) -> tuple[uuid.UUID, int]:
+        """Append one finished turn, creating the thread when there is none.
+
+        The registry is rewritten with every alias the thread has now, so a follow-up that added
+        sources makes them citable in the turn after it too. The thread row is locked for the
+        duration, so two answers racing on one thread number their turns instead of both reading
+        the same `max(n)`.
+        """
+        stored = [dict(ref) for ref in registry]
+        if thread_id is None:
+            created = Thread(
+                id=uuid.uuid4(),
+                title=title,
+                source_registry=stored,
+                created_at=at,
+                updated_at=at,
+            )
+            self._s.add(created)
+            self._s.flush()
+            thread_id = created.id
+        else:
+            existing = self._s.get(Thread, thread_id, with_for_update=True)
+            if existing is None:
+                raise LookupError("thread not found")
+            existing.source_registry = stored
+            existing.updated_at = at
+        n = (
+            self._s.scalar(select(func.max(ThreadTurn.n)).where(ThreadTurn.thread_id == thread_id))
+            or 0
+        ) + 1
+        self._s.add(
+            ThreadTurn(
+                thread_id=thread_id,
+                n=n,
+                question=question,
+                answer=dict(answer),
+                search_mode=search_mode,
+                created_at=at,
+            )
+        )
+        self._s.flush()
+        return thread_id, n
 
 
 class ChatCallLog:

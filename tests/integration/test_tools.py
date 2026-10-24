@@ -48,19 +48,19 @@ def test_search_registers_hits_with_stable_aliases(db_session: Session, seed_ite
     reg = SourceRegistry()
     tools = tools_for(db_session, reg)
     first_out = tools["search_corpus"].invoke({"query": "SWE-bench"})
-    first = {r.item_id: r.alias for r in reg.all()}
+    first = {r.item_id: r.alias for r in reg.refs()}
     second_out = tools["search_corpus"].invoke({"query": "SWE-bench Verified coding agents"})
-    assert {r.item_id: r.alias for r in reg.all() if r.item_id in first} == first
-    assert [r.alias for r in reg.all()] == [f"S{i}" for i in range(1, len(reg.all()) + 1)]
+    assert {r.item_id: r.alias for r in reg.refs() if r.item_id in first} == first
+    assert [r.alias for r in reg.refs()] == [f"S{i}" for i in range(1, len(reg.refs()) + 1)]
     assert first[ids["swe"]] == "S1"
     # What a block prints must be the registry's alias for that item, in both searches, not a
     # fresh number computed at print time.
     for out in (first_out, second_out):
         for alias, title in re.findall(r'id="(S\d+)"[^>]*>\n([^\n]+)\n', out):
-            assert next(r.alias for r in reg.all() if r.title == title) == alias
+            assert next(r.alias for r in reg.refs() if r.title == title) == alias
     # A third search ranks the blog item first, whose alias was issued last, so a printer that
     # numbered blocks by their position in this output would disagree with the registry.
-    blog_alias = next(r.alias for r in reg.all() if r.tier == "lab_blog")
+    blog_alias = next(r.alias for r in reg.refs() if r.tier == "lab_blog")
     third_out = tools["search_corpus"].invoke({"query": "sandboxed tools harness"})
     assert re.findall(r'id="(S\d+)"', third_out)[0] == blog_alias
 
@@ -117,7 +117,7 @@ def test_get_item_returns_full_text_clipped(db_session: Session, seed_items: See
     reg = SourceRegistry()
     tools = tools_for(db_session, reg)
     tools["search_corpus"].invoke({"query": "agents"})
-    alias_of = {r.title: r.alias for r in reg.all()}
+    alias_of = {r.title: r.alias for r in reg.refs()}
     out = tools["get_item"].invoke({"source_id": alias_of["Long agents paper"]})
     body = out.split("\n", 2)[2].rsplit("\n</source>", 1)[0]
     assert "Ada Lovelace" in out and len(body) <= GET_ITEM_MAX_CHARS + 200
@@ -147,7 +147,7 @@ def test_get_item_returns_full_text_clipped(db_session: Session, seed_items: See
     )
     db_session.flush()
     tools["search_corpus"].invoke({"query": "agents blowup"})
-    blowup_alias = next(r.alias for r in reg.all() if r.title == "A blowup paper")
+    blowup_alias = next(r.alias for r in reg.refs() if r.title == "A blowup paper")
     blowup_out = tools["get_item"].invoke({"source_id": blowup_alias})
     assert len(blowup_out) <= GET_ITEM_MAX_CHARS + 200
     assert "B" * 100000 not in blowup_out and "B" * 100 in blowup_out
@@ -185,7 +185,7 @@ def test_lab_blog_block_is_attributed(db_session: Session, seed_items: Seed) -> 
     reg = SourceRegistry()
     tools = tools_for(db_session, reg)
     tools["search_corpus"].invoke({"query": "sandboxed tools harness"})
-    blog = next(r for r in reg.all() if r.tier == "lab_blog")
+    blog = next(r for r in reg.refs() if r.tier == "lab_blog")
     out = tools["get_item"].invoke({"source_id": blog.alias})
     assert 'tier="lab_blog"' in out and "https://example.org/blog" in out and "sandboxed" in out
 
@@ -343,9 +343,9 @@ def test_compare_refuses_five_distinct_aliases(db_session: Session, seed_items: 
     reg = SourceRegistry()
     tools = tools_for(db_session, reg)
     tools["search_corpus"].invoke({"query": "agents harness"})
-    assert len(reg.all()) == 5
+    assert len(reg.refs()) == 5
     assert "<source" not in tools["compare_items"].invoke(
-        {"source_ids": [r.alias for r in reg.all()]}
+        {"source_ids": [r.alias for r in reg.refs()]}
     )
 
 
@@ -468,7 +468,7 @@ def test_parallel_searches_keep_aliases_consistent(db_session: Session, seed_ite
         sys.setswitchinterval(interval)
 
     assert all("<source" in out for out in outputs), [o for o in outputs if "<source" not in o]
-    refs = reg.all()
+    refs = reg.refs()
     assert len({r.alias for r in refs}) == len(refs)
     assert [r.alias for r in refs] == [f"S{i}" for i in range(1, len(refs) + 1)]
     # Every block printed a title the registry holds, under the alias the registry gave it.
