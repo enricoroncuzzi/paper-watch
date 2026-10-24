@@ -6,6 +6,7 @@ from datetime import datetime
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     JSON,
+    BigInteger,
     CheckConstraint,
     Computed,
     DateTime,
@@ -22,7 +23,12 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import TSVECTOR, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-from paperwatch.config import CHAT_CALL_MODEL_MAX_CHARS, EMBEDDING_DIM, ITEM_VENUE_MAX_CHARS
+from paperwatch.config import (
+    CHAT_CALL_MODEL_MAX_CHARS,
+    EMBEDDING_DIM,
+    HF_ORG_MAX_CHARS,
+    ITEM_VENUE_MAX_CHARS,
+)
 
 # The only rows search may return. The HNSW index is partial on exactly this predicate, and
 # Task 10 repeats it as literal SQL so the planner can match the query to the index.
@@ -86,6 +92,16 @@ class Item(Base):
     venue_aliases: Mapped[list[str]] = mapped_column(JSON, default=list)
     citation_count: Mapped[int] = mapped_column(Integer, default=0)
     hf_upvotes: Mapped[int | None] = mapped_column(Integer)
+    # The rest of what the Hugging Face listing carries: kept so the page and the ranking can use
+    # it without another request. Upvotes only grow (evidence); the others are the newest
+    # non-null reading of the listing.
+    hf_comments: Mapped[int | None] = mapped_column(Integer)
+    github_repo: Mapped[str | None] = mapped_column(Text)
+    github_stars: Mapped[int | None] = mapped_column(Integer)
+    project_page: Mapped[str | None] = mapped_column(Text)
+    hf_org: Mapped[str | None] = mapped_column(String(HF_ORG_MAX_CHARS))
+    # When the paper first appeared on the daily listing; the earliest the window has seen.
+    hf_listed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # Last time Semantic Scholar answered for this paper; drives the age-based re-check cadence.
     s2_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     licence: Mapped[str] = mapped_column(String(128))
@@ -128,6 +144,30 @@ class TierHistory(Base):
     evidence: Mapped[dict[str, object]] = mapped_column(JSON)
     # Set from the run's `now`, never the database clock, so time-based tests are deterministic.
     changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class SignalSnapshot(Base):
+    """One observation of a paper's quality signals, appended when a reading changes.
+
+    Momentum needs a history, not the running maximum on `items`: this table turns '25 upvotes
+    now' into a velocity. Rows are only written when one of the recorded numbers moves, which
+    keeps a long-listed paper from adding a flat row every morning.
+    """
+
+    __tablename__ = "signal_snapshots"
+    __table_args__ = (
+        # Reading one item's history and the ON DELETE CASCADE from `items` both need this; Postgres
+        # does not index foreign keys on its own.
+        Index("ix_signal_snapshots_item_observed", "item_id", "observed_at"),
+    )
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    item_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("items.id", ondelete="CASCADE"))
+    # The run's `now`, not the database clock, so a test or a replay is deterministic.
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    hf_upvotes: Mapped[int | None] = mapped_column(Integer)
+    hf_comments: Mapped[int | None] = mapped_column(Integer)
+    github_stars: Mapped[int | None] = mapped_column(Integer)
+    citation_count: Mapped[int] = mapped_column(Integer)
 
 
 class Run(Base):

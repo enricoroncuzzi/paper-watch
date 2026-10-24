@@ -114,7 +114,8 @@ stop and tell the captain, because changing them is a root step.
 
 ```bash
 uv run --frozen --no-dev --env-file ~/.config/paperwatch/env alembic upgrade head
-psql -d paperwatch -c '\dt'      # items, tier_history, runs, dead_letters, source_cursors, chat_calls
+psql -d paperwatch -c '\dt'      # items, tier_history, signal_snapshots, runs, dead_letters,
+                                  # source_cursors, chat_calls
 ```
 
 The role owns the database, so no grant is needed. Every later release runs the same command
