@@ -175,6 +175,65 @@ describe("the ask controller", () => {
     expect(controller.getState().status).toBe("dropped");
   });
 
+  it("a second ask keeps its own watchdog", async () => {
+    // The first request has no byte yet, so aborting it rejects its fetch; that request's finally
+    // must leave the second request's watchdog armed.
+    const second = controllable();
+    const fetchImpl = vi
+      .fn()
+      .mockImplementationOnce(
+        (_url: string, init: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            init.signal?.addEventListener("abort", () =>
+              reject(new DOMException("The operation was aborted.", "AbortError")),
+            );
+          }),
+      )
+      .mockResolvedValueOnce(new Response(second.body));
+    const controller = new AskController({ fetchImpl, watchdogMs: 45_000 });
+
+    const firstRun = controller.ask("first");
+    await vi.advanceTimersByTimeAsync(0);
+    const secondRun = controller.ask("second");
+    // The aborted request settles while the second one is the active request.
+    await vi.advanceTimersByTimeAsync(0);
+    await firstRun;
+
+    await vi.advanceTimersByTimeAsync(45_000);
+    expect(controller.getState().status).toBe("dropped");
+    expect(controller.getState().question).toBe("second");
+
+    second.close();
+    await secondRun;
+  });
+
+  it("a finished answer leaves no watchdog timer behind", async () => {
+    const stream = controllable();
+    const { controller } = controllerFor(stream.body);
+    const run = controller.ask("q");
+    await vi.advanceTimersByTimeAsync(0);
+    stream.push(frame("answer", ANSWER));
+    stream.close();
+    await run;
+    expect(controller.getState().status).toBe("done");
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("a late byte after abort does not re-arm the watchdog", async () => {
+    const stream = controllable();
+    const { controller } = controllerFor(stream.body);
+    const run = controller.ask("q");
+    await vi.advanceTimersByTimeAsync(0);
+
+    controller.abort();
+    // A connection can deliver one more buffered chunk after the abort; it must not arm a timer
+    // that nothing will ever clear.
+    stream.push(": ping\n\n");
+    stream.close();
+    await run;
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("abort clears the sheet instead of keeping a partial answer", async () => {
     const stream = controllable();
     const { controller } = controllerFor(stream.body);

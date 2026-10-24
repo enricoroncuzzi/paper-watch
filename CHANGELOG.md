@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.9.2](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.9.1...paperwatch-v0.9.2) (2026-10-24)
+
+
+### Bug Fixes
+
+* **web:** keep the watchdog of the newer question when an older one aborts ([#55](https://github.com/enricoroncuzzi/paper-watch/issues/55)) ([c9461ce](https://github.com/enricoroncuzzi/paper-watch/commit/c9461ce3ea1bad151cd0e808438cad1b4501e54e))
+
+## [0.9.1](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.9.0...paperwatch-v0.9.1) (2026-10-24)
+
+
+### Bug Fixes
+
+* **api:** refuse an HMAC token minted in the future ([#54](https://github.com/enricoroncuzzi/paper-watch/issues/54)) ([bbc9437](https://github.com/enricoroncuzzi/paper-watch/commit/bbc94377a8263ddbacbb513b42a288f0360be228))
+
+## [0.9.0](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.8.0...paperwatch-v0.9.0) (2026-10-24)
+
+
+### Features
+
+* **web:** add the private page on Vercel with sign-in, today strip, Runs and Ask ([#45](https://github.com/enricoroncuzzi/paper-watch/issues/45)) ([f925b94](https://github.com/enricoroncuzzi/paper-watch/commit/f925b94031e449736d13a6540a6bf76ebb4df130))
+
+
+### Bug Fixes
+
+* let the memory gate count the model child it would free ([#53](https://github.com/enricoroncuzzi/paper-watch/issues/53)) ([8c56e57](https://github.com/enricoroncuzzi/paper-watch/commit/8c56e575f2bde107a4fe4ad2e5a453bcc7c2f41f))
+
 ## [0.8.0](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.7.1...paperwatch-v0.8.0) (2026-10-24)
 
 
