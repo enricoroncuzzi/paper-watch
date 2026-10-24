@@ -1625,7 +1625,7 @@ def test_draft_prints_the_draft_and_its_flags(monkeypatch: pytest.MonkeyPatch) -
     assert "A replay buffer cut tokens per task by 45% on 40 coding tasks." in result.output
     assert "1. [number]" in result.output
     assert "45%" in result.output
-    assert "counts: number 2/1" in result.output
+    assert "counts: number 2 checked, 1 passed" in result.output
 
 
 def test_draft_refuses_an_unknown_item(monkeypatch: pytest.MonkeyPatch) -> None:

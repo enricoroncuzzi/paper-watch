@@ -24,7 +24,7 @@ export function Masthead({ session }: { session: Session }) {
   const image = session.user?.image;
   const label = session.user?.name ?? session.githubId ?? "the owner";
   return (
-    <header className="sticky top-0 z-40 flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-rule bg-paper/90 py-2 backdrop-blur-md sm:flex-nowrap sm:py-3">
+    <header className="sticky top-0 z-40 flex min-h-[var(--masthead-h)] flex-wrap items-center gap-x-4 gap-y-1 border-b border-rule bg-paper/90 py-2 backdrop-blur-md sm:flex-nowrap sm:py-3">
       <Link
         href="/"
         className="flex min-h-11 items-center font-serif text-[19px] font-medium tracking-[-0.02em]"

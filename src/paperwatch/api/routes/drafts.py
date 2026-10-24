@@ -36,7 +36,7 @@ from paperwatch.drafts.generate import (
     draft_text,
     generate_draft,
 )
-from paperwatch.drafts.prompts import MAX_POV_CHARS
+from paperwatch.drafts.prompts import LANGUAGE_MAX_CHARS, MAX_POV_CHARS, clean_language
 from paperwatch.llm.chat import (
     CallGuard,
     ChatCallStore,
@@ -55,7 +55,6 @@ log = structlog.get_logger()
 
 # The Drafts section asks for the newest 50; a larger page is a client bug, not a reader's need.
 DRAFT_LIST_LIMIT = 50
-LANGUAGE_MAX_CHARS = 8
 # The daily cap's sentence names the failure the reader can act on. The reset time travels as a
 # timestamp, so the page never has to parse prose.
 CAP_MESSAGE = "The daily model cap is spent, so the draft was not generated."
@@ -119,12 +118,9 @@ class DraftRequest(BaseModel):
     @field_validator("language")
     @classmethod
     def _language(cls, value: str) -> str:
-        # The prompt receives this as the requested language, so a stray newline would be an
-        # instruction line of its own; a code is letters and a dash.
-        cleaned = value.strip().lower()
-        if not cleaned.replace("-", "").isalpha():
-            raise ValueError("language must be a language code such as en or pt-br")
-        return cleaned
+        # Shared with the CLI: the prompt receives this as a line, so a newline would be an
+        # instruction of its own.
+        return clean_language(value)
 
 
 class DraftRefused(Exception):
@@ -208,6 +204,32 @@ class DraftService:
         self.suggestions = suggestions
         self._config = config
         self._clock = clock
+
+    def check_item(self, item_id: UUID) -> None:
+        """Refuse a 404 or 422 before the limiter spends one of the client's slots."""
+        with self._session_factory() as session:
+            item = Repository(session).draft_item(item_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail="item not found")
+        self._check_text(item)
+
+    def check_regenerate(self, draft_id: UUID) -> None:
+        """The same pre-admission check for a regenerate: the draft, then its item's text."""
+        with self._session_factory() as session:
+            repo = Repository(session)
+            existing = repo.draft(draft_id)
+            if existing is None:
+                raise HTTPException(status_code=404, detail="draft not found")
+            item = repo.draft_item(existing.item_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail="item not found")
+        self._check_text(item)
+
+    def _check_text(self, item: DraftItem) -> None:
+        if len(item.text) < self._config.min_text_chars:
+            raise _unprocessable(
+                f"stored text is under {self._config.min_text_chars} characters", "item_id"
+            )
 
     def generate(self, body: DraftRequest) -> DraftData:
         with self._session_factory() as session:
@@ -433,8 +455,17 @@ _DRAFT_RESPONSES: dict[int | str, dict[str, Any]] = {
 }
 
 
-def _limited(service: DraftService, request: Request, work: Callable[[], Any]) -> Any:
-    """Admit against the shared limiter, run the work, turn a refusal into its response."""
+def _limited(
+    service: DraftService,
+    request: Request,
+    work: Callable[[], Any],
+    *,
+    prepare: Callable[[], None] | None = None,
+) -> Any:
+    """Check the request, admit against the shared limiter, run the work, map a refusal."""
+    # Before admit: a 404 or a 422 spends no model call, so it must spend no limiter slot either.
+    if prepare is not None:
+        prepare()
     principal: Principal = request.state.principal
     admitted = service.limiter.admit(principal.subject)
     if isinstance(admitted, Refused):
@@ -469,7 +500,12 @@ def make_drafts_router(service: DraftService) -> APIRouter:
     )
     def create_draft(body: DraftRequest, request: Request) -> Any:
         """Generate, check and save one draft; generating is saving."""
-        return _limited(service, request, lambda: service.generate(body))
+        return _limited(
+            service,
+            request,
+            lambda: service.generate(body),
+            prepare=lambda: service.check_item(body.item_id),
+        )
 
     @router.post(
         "/drafts/{draft_id}/regenerate",
@@ -480,7 +516,12 @@ def make_drafts_router(service: DraftService) -> APIRouter:
     )
     def regenerate_draft(draft_id: UUID, request: Request) -> Any:
         """Re-run the stored inputs and point of view; the old draft stays, linked."""
-        return _limited(service, request, lambda: service.regenerate(draft_id))
+        return _limited(
+            service,
+            request,
+            lambda: service.regenerate(draft_id),
+            prepare=lambda: service.check_regenerate(draft_id),
+        )
 
     @router.get(
         "/drafts",

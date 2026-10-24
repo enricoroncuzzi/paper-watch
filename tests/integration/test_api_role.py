@@ -220,3 +220,10 @@ def test_the_draft_grant_lets_the_api_save_a_draft(engine: Engine) -> None:
     # This test commits its own item (the grants are connection-level), so remove it again.
     with engine.begin() as conn:
         conn.execute(text("DELETE FROM items WHERE external_id = 'draft-grant-check'"))
+
+
+def test_migration_0007_grants_the_api_insert_on_drafts() -> None:
+    # The grant is in the migration, not the admin's block, so the revision itself must carry it:
+    # the CI container has no paperwatch_api role to make a runtime check meaningful.
+    text = (REPO_ROOT / "migrations" / "versions" / "0007_drafts.py").read_text()
+    assert 'grant_api_writes(["drafts"])' in text

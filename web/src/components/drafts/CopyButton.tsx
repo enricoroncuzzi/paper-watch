@@ -8,8 +8,17 @@ const STYLE =
 /**
  * The one way a draft leaves this page: the exact plain text on the clipboard, never markdown and
  * never HTML. A browser that refuses the clipboard leaves the text on screen to select by hand.
+ * The confirmation is a polite live region, so a screen reader hears it without losing the button.
  */
-export function CopyButton({ text, testId }: { text: string; testId?: string }) {
+export function CopyButton({
+  text,
+  title,
+  testId,
+}: {
+  text: string;
+  title: string;
+  testId?: string;
+}) {
   const [copied, setCopied] = useState(false);
 
   async function copy() {
@@ -23,14 +32,19 @@ export function CopyButton({ text, testId }: { text: string; testId?: string }) 
   }
 
   return (
-    <button
-      type="button"
-      onClick={() => void copy()}
-      data-testid={testId}
-      aria-label="Copy for LinkedIn"
-      className={STYLE}
-    >
-      {copied ? "Copied" : "Copy for LinkedIn"}
-    </button>
+    <>
+      <button
+        type="button"
+        onClick={() => void copy()}
+        data-testid={testId}
+        aria-label={`Copy for LinkedIn: ${title}`}
+        className={STYLE}
+      >
+        {copied ? "Copied" : "Copy for LinkedIn"}
+      </button>
+      <span aria-live="polite" className="sr-only">
+        {copied ? "Copied to the clipboard" : ""}
+      </span>
+    </>
   );
 }

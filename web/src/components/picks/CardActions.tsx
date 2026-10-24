@@ -59,12 +59,14 @@ export function LinkedInPreview({
   onPreview,
 }: {
   card: SuggestionCard;
-  onPreview: () => void;
+  onPreview: (opener: HTMLElement) => void;
 }) {
   return (
     <button
       type="button"
-      onClick={onPreview}
+      // WebKit does not focus a clicked button, so the dialog cannot read the opener from
+      // document.activeElement; the element itself travels with the click.
+      onClick={(event) => onPreview(event.currentTarget)}
       aria-label={`LinkedIn post preview: ${card.title}`}
       className={PRIMARY}
     >

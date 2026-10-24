@@ -21,7 +21,7 @@ function RisingCard({
 }: {
   card: SuggestionCard;
   onDismiss: (itemId: string) => void;
-  onPreview: () => void;
+  onPreview: (opener: HTMLElement) => void;
 }) {
   const signal = signalFor(card);
   // The stored location a reader can recognise: an arXiv id, the repository, or the lab's name.
@@ -82,7 +82,7 @@ export function RisingShelf({
   rising: SuggestionCard[];
   note: string;
   onDismiss: (itemId: string) => void;
-  onPreview: (card: SuggestionCard) => void;
+  onPreview: (card: SuggestionCard, opener: HTMLElement) => void;
 }) {
   return (
     <section
@@ -135,7 +135,7 @@ export function RisingShelf({
               key={card.item_id}
               card={card}
               onDismiss={onDismiss}
-              onPreview={() => onPreview(card)}
+              onPreview={(opener) => onPreview(card, opener)}
             />
           ))}
         </div>

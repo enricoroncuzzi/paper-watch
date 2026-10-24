@@ -5,18 +5,20 @@ import { useState } from "react";
 
 import { CheckNotes } from "@/components/drafts/CheckNotes";
 import { CopyButton } from "@/components/drafts/CopyButton";
+import { draftParagraphs, previewParagraphs } from "@/lib/draft-body";
+import { draftFailureMessage } from "@/lib/draft-errors";
 import { formatRome, runDayLabel } from "@/lib/format";
 import { linkedinText } from "@/lib/linkedin-text";
 import type { Draft, DraftDetail } from "@/lib/types";
 
-// How much of the body the collapsed card shows. Long enough to judge the post, short enough that
-// eight drafts still read as a list; "Open" is where the full text and the point of view live.
+// The collapsed card's body limit. Long enough to judge the post, short enough that eight drafts
+// still read as a list; "Open" is where the full text and the point of view live.
 const PREVIEW_CHARS = 220;
 
 const SMALL =
   "inline-flex h-11 items-center rounded-[2px] border border-rule-2 px-2.5 text-[11.5px] font-medium text-ink hover:border-ink hover:bg-card sm:h-7";
-const PLAIN =
-  "inline-flex h-11 items-center rounded-[2px] px-2 text-[11.5px] text-ink-2 hover:bg-card-2 hover:text-ink sm:h-7";
+// The two chips differ only in font; the sans one is nudged 0.5 px down so their baselines meet.
+const CHIP = "inline-flex h-[21px] items-center rounded-[2px] border border-rule px-2 text-[10.5px] leading-none text-ink-2";
 
 function headline(draft: Draft): string {
   // "saved today 12:41" reads as one label; a date keeps its capital ("saved Oct 21 12:41").
@@ -39,10 +41,8 @@ export function DraftCard({ draft }: { draft: Draft }) {
   const [error, setError] = useState<string | null>(null);
 
   const text = linkedinText(draft);
-  const body =
-    open || draft.body.length <= PREVIEW_CHARS
-      ? draft.body
-      : `${draft.body.slice(0, PREVIEW_CHARS).trimEnd()}...`;
+  const preview = previewParagraphs(draft.body, PREVIEW_CHARS);
+  const paragraphs = open ? draftParagraphs(draft.body) : preview.paragraphs;
 
   async function toggleOpen() {
     if (open) {
@@ -54,7 +54,11 @@ export function DraftCard({ draft }: { draft: Draft }) {
     setLoadingDetail(true);
     try {
       const response = await fetch(`/api/drafts/${draft.id}`, { cache: "no-store" });
-      if (!response.ok) throw new Error("the detail was refused");
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        setError(draftFailureMessage(response.status, body));
+        return;
+      }
       setDetail((await response.json()) as DraftDetail);
     } catch {
       setError("The point of view could not be loaded. Try again.");
@@ -74,8 +78,8 @@ export function DraftCard({ draft }: { draft: Draft }) {
         body: "{}",
       });
       if (!response.ok) {
-        const body = (await response.json().catch(() => null)) as { message?: string } | null;
-        setError(body?.message ?? "The draft could not be regenerated. Try again.");
+        const body = await response.json().catch(() => null);
+        setError(draftFailureMessage(response.status, body));
         return;
       }
       // The saved draft is in the server's list; a refresh puts the newer one above this card.
@@ -88,34 +92,30 @@ export function DraftCard({ draft }: { draft: Draft }) {
   }
 
   return (
-    <article
-      data-testid="draft-card"
-      className="rounded-[2px] border border-rule bg-card"
-    >
+    <article data-testid="draft-card" className="rounded-[2px] border border-rule bg-card">
       <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 border-b border-rule px-3.5 py-2.5">
         <span className="text-[12px] text-ink-2">
           From <b className="font-medium text-ink">{draft.item_title}</b>
         </span>
-        <span className="inline-flex h-[21px] items-center rounded-[2px] border border-rule px-2 font-mono text-[10.5px] text-ink-2">
-          saved {headline(draft)}
-        </span>
-        <span className="inline-flex h-[21px] items-center rounded-[2px] border border-rule px-2 text-[10.5px] text-ink-2">
-          {draft.chars.toLocaleString("en-GB")} chars
-        </span>
-        {draft.regenerated_from ? (
-          <span className="inline-flex h-[21px] items-center rounded-[2px] border border-rule px-2 text-[10.5px] text-ink-3">
-            Regenerated
-          </span>
-        ) : null}
+        <span className={`${CHIP} font-mono`}>saved {headline(draft)}</span>
+        <span className={`${CHIP} pt-[0.5px]`}>{draft.chars.toLocaleString("en-GB")} chars</span>
+        {draft.regenerated_from ? <span className={CHIP}>Regenerated</span> : null}
         <div className="ml-auto flex flex-wrap items-center gap-1.5">
-          <CopyButton text={text} />
-          <button type="button" onClick={() => void toggleOpen()} className={SMALL}>
+          <CopyButton text={text} title={draft.item_title} />
+          <button
+            type="button"
+            onClick={() => void toggleOpen()}
+            aria-expanded={open}
+            aria-label={`${open ? "Close" : "Open"} draft: ${draft.item_title}`}
+            className={SMALL}
+          >
             {open ? "Close" : "Open"}
           </button>
           <button
             type="button"
             onClick={() => void regenerate()}
             disabled={regenerating}
+            aria-label={`Regenerate: ${draft.item_title}`}
             className={`${SMALL} disabled:opacity-60`}
           >
             {regenerating ? "Regenerating..." : "Regenerate"}
@@ -125,11 +125,16 @@ export function DraftCard({ draft }: { draft: Draft }) {
 
       <div className="px-4 py-3.5">
         <p className="mb-2.5 font-serif text-[17.5px] leading-[1.62] text-ink">{draft.hook}</p>
-        {body ? (
-          <p className="mb-2.5 whitespace-pre-line font-serif text-[17.5px] leading-[1.62] text-ink">
-            {body}
+        {paragraphs.map((paragraph, index) => (
+          <p
+            key={`${index}-${paragraph.slice(0, 24)}`}
+            data-testid="draft-paragraph"
+            className="mb-2.5 whitespace-pre-line font-serif text-[17.5px] leading-[1.62] text-ink"
+          >
+            {paragraph}
+            {!open && preview.truncated && index === paragraphs.length - 1 ? "..." : ""}
           </p>
-        ) : null}
+        ))}
         {draft.hashtags.length > 0 ? (
           <p className="mb-2 text-[12px] text-ink-2">
             {draft.hashtags.map((tag) => `#${tag}`).join(" ")}

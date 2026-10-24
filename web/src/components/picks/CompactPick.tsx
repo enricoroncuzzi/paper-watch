@@ -15,7 +15,7 @@ export function CompactPick({
   card: SuggestionCard;
   rank: number;
   onDismiss: (itemId: string) => void;
-  onPreview: () => void;
+  onPreview: (opener: HTMLElement) => void;
 }) {
   const arxiv = arxivLabel(card.url);
   return (

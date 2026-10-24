@@ -17,7 +17,7 @@ export function LeadPick({
 }: {
   card: SuggestionCard;
   onDismiss: (itemId: string) => void;
-  onPreview: () => void;
+  onPreview: (opener: HTMLElement) => void;
 }) {
   const arxiv = arxivLabel(card.url);
   return (

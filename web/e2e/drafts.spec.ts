@@ -106,7 +106,7 @@ test("copy for linkedin puts the plain text on the clipboard", async ({ page, br
   await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
 
   const dialog = await generate(page);
-  await dialog.getByRole("button", { name: "Copy for LinkedIn" }).click();
+  await dialog.getByRole("button", { name: /^Copy for LinkedIn:/ }).click();
 
   const copied = await page.evaluate(() => navigator.clipboard.readText());
   expect(copied).toBe(
@@ -127,7 +127,7 @@ test("regenerate adds a new draft above the old one", async ({ page }) => {
   await drafts
     .getByTestId("draft-card")
     .first()
-    .getByRole("button", { name: "Regenerate" })
+    .getByRole("button", { name: /^Regenerate:/ })
     .click();
   await regenerated;
 
@@ -177,6 +177,36 @@ test("a rising item says the draft will note it is early", async ({ page }) => {
   const rising = page.getByTestId("rising-section").getByTestId("rising-card").first();
   await expect(rising).toContainText("This item is early work; the draft will say so.");
   await expect(rising.getByRole("button", { name: /^LinkedIn post preview:/ })).toBeVisible();
+});
+
+test("the Drafts link stops below the masthead", async ({ page }) => {
+  // The masthead is sticky: an anchor that puts the section under it hides the heading and its
+  // rule. The header and scroll-padding-top share one custom property, and this asserts they meet.
+  await page.getByRole("navigation", { name: "Sections" }).getByRole("link", { name: "Drafts" }).click();
+  await expect
+    .poll(async () => {
+      const header = await page.locator("header").first().boundingBox();
+      const section = await page.locator("#drafts").boundingBox();
+      if (!header || !section) return -1;
+      return Math.round(section.y - (header.y + header.height));
+    })
+    .toBeGreaterThanOrEqual(0);
+});
+
+test("closing the dialog returns focus to the button that opened it", async ({ page }) => {
+  await openDialog(page);
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("pov-dialog")).toBeHidden();
+  const opener = page
+    .getByTestId("lead-pick")
+    .getByRole("button", { name: `LinkedIn post preview: ${LEAD_TITLE}` });
+  expect(await opener.evaluate((element) => element === document.activeElement)).toBe(true);
+});
+
+test("a body keeps one paragraph per blank line", async ({ page }) => {
+  const cards = page.getByTestId("drafts-section").getByTestId("draft-card");
+  // The second fixture draft's body has two paragraphs; the card renders them as two paragraphs.
+  await expect(cards.nth(1).getByTestId("draft-paragraph")).toHaveCount(2);
 });
 
 test("the dialog is full screen on the phone", async ({ page }, testInfo) => {

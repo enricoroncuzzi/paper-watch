@@ -99,7 +99,7 @@ def generate_draft(
     reservation = guard.before_call(model.provider)
     started = time.monotonic()
     try:
-        message = model.model.invoke(_messages(source, pov, language))
+        message = model.model.invoke(draft_messages(source, pov, language))
     except Exception as exc:  # noqa: BLE001 - any provider error means no compliant answer
         try:
             guard.after_failure(model.provider, reservation)
@@ -155,7 +155,7 @@ def draft_text(draft: DraftText) -> str:
     return "\n".join(parts).strip()
 
 
-def _messages(source: DraftSource, pov: str, language: str) -> list[BaseMessage]:
+def draft_messages(source: DraftSource, pov: str, language: str) -> list[BaseMessage]:
     meta = [
         f"requested language: {language}",
         f"tier: {source.tier}",

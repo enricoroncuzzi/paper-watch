@@ -3,10 +3,11 @@
 import * as Dialog from "@radix-ui/react-dialog";
 import { useRef, useState } from "react";
 
-import { Chip, TierChip } from "@/components/picks/Chips";
 import { CheckNotes } from "@/components/drafts/CheckNotes";
 import { CopyButton } from "@/components/drafts/CopyButton";
-import { formatRome } from "@/lib/format";
+import { Chip, TierChip } from "@/components/picks/Chips";
+import { draftParagraphs } from "@/lib/draft-body";
+import { draftFailureMessage } from "@/lib/draft-errors";
 import { linkedinText } from "@/lib/linkedin-text";
 import type { Draft, SuggestionCard } from "@/lib/types";
 
@@ -16,45 +17,9 @@ const POV_MAX_CHARS = 2000;
 const GENERATE_TIMEOUT_MS = 300_000;
 
 const SMALL =
-  "inline-flex h-11 items-center justify-center rounded-[2px] border border-rule-2 px-2.5 text-[11.5px] font-medium text-ink hover:border-ink hover:bg-card sm:h-7";
+  "inline-flex h-11 items-center justify-center rounded-[2px] border border-rule-2 px-2.5 text-[11.5px] font-medium text-ink hover:border-ink hover:bg-card disabled:opacity-60 sm:h-7";
 const PRIMARY =
   "inline-flex h-11 items-center justify-center rounded-[2px] border border-accent bg-accent px-3 text-[11.5px] font-medium text-accent-ink hover:border-accent-2 hover:bg-accent-2 disabled:opacity-60 sm:h-8";
-
-type Failure = { message: string };
-
-function failureMessage(status: number, body: unknown): Failure {
-  const payload = body as
-    | { message?: unknown; code?: unknown; retry_at?: unknown; retryAfterS?: unknown }
-    | null;
-  if (status === 503 && typeof payload?.message === "string") {
-    if (payload.code === "daily_cap" && typeof payload.retry_at === "string") {
-      // The API names the failure; the page adds the reset time it was sent, in the owner's zone.
-      return {
-        message: `${payload.message} It resets at ${formatRome(payload.retry_at)} Europe/Rome.`,
-      };
-    }
-    // model_unavailable and unusable are shown as the API wrote them, including the privacy
-    // refusal sentence, so the page cannot soften a promise about the point of view.
-    return { message: payload.message };
-  }
-  if (status === 429) {
-    return {
-      message:
-        typeof payload?.retryAfterS === "number"
-          ? `Too many drafts right now. Try again in ${payload.retryAfterS}s.`
-          : "Too many drafts right now. Try again shortly.",
-    };
-  }
-  if (status === 401 || status === 403) {
-    return { message: "Your session is not accepted any more. Sign in again." };
-  }
-  if (status === 404) return { message: "That item is no longer in the corpus." };
-  if (status === 422) {
-    return { message: "That item does not have enough stored text for a draft." };
-  }
-  if (status === 413) return { message: "That point of view is too long." };
-  return { message: "The draft could not be generated. Try again." };
-}
 
 function Context({ card }: { card: SuggestionCard }) {
   const context = card.summary.what?.text ?? card.summary.excerpt;
@@ -75,7 +40,8 @@ function Context({ card }: { card: SuggestionCard }) {
 /**
  * The point-of-view dialog: the item and its 30-second context, the owner's words, then the
  * checked draft. Generating saves, so the footer has no Save button; it has the copy a reader
- * came for.
+ * came for. Closing is disabled while a request is in flight, so the same call cannot be started
+ * twice into two saved drafts.
  */
 export function PovDialog({
   card,
@@ -83,16 +49,20 @@ export function PovDialog({
   open,
   onOpenChange,
   onSaved,
+  returnFocus,
 }: {
   card: SuggestionCard | null;
   early: boolean;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSaved: () => void;
+  // The button that opened the dialog. WebKit does not focus a clicked button, so the section
+  // hands the element over rather than the dialog reading document.activeElement.
+  returnFocus: HTMLElement | null;
 }) {
   const [pov, setPov] = useState("");
   const [draft, setDraft] = useState<Draft | null>(null);
-  const [failure, setFailure] = useState<Failure | null>(null);
+  const [failure, setFailure] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const input = useRef<HTMLTextAreaElement>(null);
 
@@ -119,11 +89,9 @@ export function PovDialog({
         onSaved();
         return;
       }
-      setFailure(failureMessage(response.status, body));
+      setFailure(draftFailureMessage(response.status, body));
     } catch {
-      setFailure({
-        message: "The draft request did not complete. Try again, or check the API.",
-      });
+      setFailure("The draft request did not complete. Try again, or check the API.");
     } finally {
       window.clearTimeout(timer);
       setPending(false);
@@ -133,7 +101,14 @@ export function PovDialog({
   if (!card) return null;
 
   return (
-    <Dialog.Root open={open} onOpenChange={onOpenChange}>
+    <Dialog.Root
+      open={open}
+      onOpenChange={(next) => {
+        // A request in flight is a provider call already spent: closing now would hide it, and
+        // reopening would offer a second Generate that saves a duplicate.
+        if (!pending) onOpenChange(next);
+      }}
+    >
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-[94] bg-black/25 backdrop-blur-[5px]" />
         <Dialog.Content
@@ -141,6 +116,13 @@ export function PovDialog({
           onOpenAutoFocus={(event) => {
             event.preventDefault();
             input.current?.focus();
+          }}
+          onCloseAutoFocus={(event) => {
+            // The card that opened this may have left the picks; Radix's trigger no longer exists.
+            // Focus returns to whatever opened the dialog, so a keyboard user does not restart at
+            // the top of the page.
+            event.preventDefault();
+            returnFocus?.focus();
           }}
           className="fixed inset-0 z-[95] flex h-[100dvh] w-full flex-col overflow-hidden border border-rule bg-card shadow-[var(--shadow)] sm:inset-auto sm:left-1/2 sm:top-1/2 sm:max-h-[min(86dvh,760px)] sm:w-[min(660px,94vw)] sm:-translate-x-1/2 sm:-translate-y-1/2"
         >
@@ -152,10 +134,15 @@ export function PovDialog({
               <Dialog.Title className="max-w-[34ch] font-serif text-[21px] font-normal leading-[1.25] tracking-[-0.015em]">
                 {card.title}
               </Dialog.Title>
+              <Dialog.Description className="sr-only">
+                Write your own point of view. The draft quotes the item&apos;s stored text, and
+                code checks every number, quote and link before saving it.
+              </Dialog.Description>
             </div>
             <Dialog.Close
               aria-label="Close the dialog"
-              className="ml-auto grid h-11 w-11 flex-none place-items-center rounded-full text-ink-3 hover:bg-card-2 hover:text-ink"
+              disabled={pending}
+              className="ml-auto grid h-11 w-11 flex-none place-items-center rounded-full text-ink-3 hover:bg-card-2 hover:text-ink disabled:opacity-60"
             >
               <svg
                 width="14"
@@ -175,8 +162,7 @@ export function PovDialog({
             <Context card={card} />
 
             <label htmlFor="pov-input" className="mb-1.5 block text-[11.5px] text-ink-2">
-              Your point of view. This is the only thing the draft is built from, and it is never
-              rewritten.
+              Your point of view. This is your voice in the draft; it is never rewritten.
             </label>
             <textarea
               id="pov-input"
@@ -190,9 +176,7 @@ export function PovDialog({
             />
             <div className="mt-1.5 flex justify-between gap-2.5 text-[10.5px] text-ink-3">
               <span>Two or three sentences are enough.</span>
-              <span aria-live="polite">
-                {pov.length.toLocaleString("en-GB")} characters
-              </span>
+              <span>{pov.length.toLocaleString("en-GB")} / 2,000 characters</span>
             </div>
 
             <div className="mt-3.5 flex flex-wrap items-center gap-2.5">
@@ -222,15 +206,12 @@ export function PovDialog({
                 role="alert"
                 className="mt-3.5 border border-bad/40 bg-bad-soft px-3 py-2.5 text-[12px] leading-[1.5] text-bad"
               >
-                {failure.message}
+                {failure}
               </p>
             ) : null}
 
             {draft ? (
-              <div
-                data-testid="pov-preview"
-                className="mt-4 border-t border-rule pt-3.5"
-              >
+              <div data-testid="pov-preview" className="mt-4 border-t border-rule pt-3.5">
                 <div className="mb-2 flex flex-wrap items-center gap-2 text-[10px] uppercase tracking-[0.13em] text-ink-3">
                   <span>Draft preview</span>
                   <span
@@ -246,14 +227,22 @@ export function PovDialog({
                 </div>
                 <div className="max-w-[34rem] font-serif text-[16.5px] leading-[1.6] text-ink">
                   <p className="mb-2.5">{draft.hook}</p>
-                  <p className="mb-2.5 whitespace-pre-line">{draft.body}</p>
+                  {draftParagraphs(draft.body).map((paragraph, index) => (
+                    <p
+                      key={`${index}-${paragraph.slice(0, 24)}`}
+                      data-testid="pov-paragraph"
+                      className="mb-2.5 whitespace-pre-line"
+                    >
+                      {paragraph}
+                    </p>
+                  ))}
                   {draft.hashtags.length > 0 ? (
-                    <p className="mb-2 text-[12px] text-ink-2">
+                    <p className="mb-2 font-sans text-[12px] text-ink-2">
                       {draft.hashtags.map((tag) => `#${tag}`).join(" ")}
                     </p>
                   ) : null}
                   {draft.source_link ? (
-                    <p className="break-all font-mono text-[10.5px] text-ink-3">
+                    <p className="break-all font-mono text-[10.5px] font-normal text-ink-3">
                       {draft.source_link}
                     </p>
                   ) : null}
@@ -288,15 +277,18 @@ export function PovDialog({
               <span className="text-[10.5px] text-ink-3">Nothing generated yet</span>
             )}
             {early ? (
-              <span className="text-[10.5px] text-ink-3">
-                Early work: the draft says so.
-              </span>
+              <span className="text-[10.5px] text-ink-3">Early work: the draft says so.</span>
             ) : null}
             <div className="ml-auto flex items-center gap-2">
-              <button type="button" onClick={() => onOpenChange(false)} className={SMALL}>
+              <button
+                type="button"
+                onClick={() => onOpenChange(false)}
+                disabled={pending}
+                className={SMALL}
+              >
                 Close
               </button>
-              {draft ? <CopyButton text={linkedinText(draft)} /> : null}
+              {draft ? <CopyButton text={linkedinText(draft)} title={card.title} /> : null}
             </div>
           </footer>
         </Dialog.Content>

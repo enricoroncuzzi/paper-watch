@@ -54,7 +54,7 @@ from paperwatch.config import (
 from paperwatch.domain import Tier, load_profiles
 from paperwatch.drafts.check import check_draft
 from paperwatch.drafts.generate import DraftUnusable, draft_text, generate_draft
-from paperwatch.drafts.prompts import MAX_POV_CHARS
+from paperwatch.drafts.prompts import MAX_POV_CHARS, clean_language
 from paperwatch.ingest.pipeline import Followup, Sources, run_ingestion
 from paperwatch.llm.chat import (
     CallGuard,
@@ -592,6 +592,10 @@ def draft(
         raise typer.BadParameter(f"not a UUID: {item_id}") from exc
     if len(pov) > MAX_POV_CHARS:
         raise typer.BadParameter(f"--pov is longer than {MAX_POV_CHARS} characters")
+    try:
+        language = clean_language(language)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
     config = load_suggestions(SUGGESTIONS_PATH)
     engine = make_engine(s.database_url)
     usage_engine = make_engine(s.database_url, pool_size=USAGE_POOL_SIZE, max_overflow=0)
@@ -621,7 +625,8 @@ def draft(
         else:
             typer.echo("No flags: every number, quote and link was found in the stored evidence.")
         counts = ", ".join(
-            f"{kind} {checked}/{passed}" for kind, (checked, passed) in check.counts.items()
+            f"{kind} {checked} checked, {passed} passed"
+            for kind, (checked, passed) in check.counts.items()
         )
         typer.echo(f"counts: {counts}")
     except ChatNotConfigured as exc:

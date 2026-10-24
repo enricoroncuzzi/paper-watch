@@ -7,10 +7,12 @@ is what it is in production: one OpenRouter model, with no fallback.
 
 import json
 import logging
+import threading
 import time
 from datetime import UTC, datetime, timedelta
-from typing import Any
-from uuid import UUID
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Any, ClassVar
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -19,6 +21,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from structlog.testing import capture_logs
 
+import paperwatch.llm.chat as chat_module
 from paperwatch.api.app import AgentDeps, create_app
 from paperwatch.api.auth import HmacVerifier, mint_hmac_token
 from paperwatch.api.limits import RequestLimiter
@@ -35,8 +38,10 @@ from paperwatch.config import (
     Settings,
 )
 from paperwatch.domain import AdmissionBasis, Signals, SourceItem, Tier, load_profiles
-from paperwatch.llm.chat import ChatModel, ScriptedChatModel
+from paperwatch.drafts.generate import DraftSource, generate_draft
+from paperwatch.llm.chat import CallGuard, ChatModel, ScriptedChatModel, make_chat_models
 from paperwatch.llm.embedder import FakeEmbedder
+from paperwatch.llm.ledger import Ledger
 from paperwatch.store.models import Draft, Item, ItemSummary, SuggestionEvent
 from paperwatch.store.repository import Repository
 from paperwatch.suggestions.config import load_suggestions
@@ -429,6 +434,11 @@ def test_the_pov_never_reaches_the_logs(
     assert "POST /drafts" in caplog.text
     captured = json.dumps(logs, default=str) + caplog.text
     assert phrase not in captured
+    # The draft text, the stored text and the title are as private as the point of view.
+    assert REPLY["hook"] not in captured
+    assert REPLY["body"][:40] not in captured
+    assert "Replaying exact tool results" not in captured
+    assert TITLE not in captured
     for response in (ok, refused, unusable):
         assert phrase not in response.text
     # The refusal keeps the provider's error type for the operator and nothing else.
@@ -454,6 +464,7 @@ def test_daily_cap_is_503_with_retry_at(db_session: Session) -> None:
 
 def test_a_provider_refusal_fails_without_a_fallback(db_session: Session) -> None:
     item_id = seed_item(db_session)
+    calls = RecordingCalls()
     primary = scripted(RuntimeError("provider refused"))
     fallback = ScriptedChatModel(script=[AIMessage(json.dumps(REPLY))])
     api = client(
@@ -464,6 +475,7 @@ def test_a_provider_refusal_fails_without_a_fallback(db_session: Session) -> Non
                 ChatModel("openrouter", primary),
                 ChatModel("groq", fallback),
             ],
+            calls=calls,
         ),
     )
 
@@ -473,6 +485,8 @@ def test_a_provider_refusal_fails_without_a_fallback(db_session: Session) -> Non
     assert response.json()["code"] == "model_unavailable"
     # The point of view may only go to a provider that refuses training, so there is no second try.
     assert fallback.seen == []
+    # An attempt that reached the provider was spent, even though it produced no draft.
+    assert calls.failed == 1 and calls.filled == 0
     assert drafts(db_session) == []
 
 
@@ -488,6 +502,9 @@ def test_draft_requests_count_against_the_limiter(db_session: Session) -> None:
     api = client(db_session, draft_service(db_session, [model], limiter=limiter))
 
     assert api.post("/drafts", json={"item_id": str(item_id)}).status_code == 201
+    created = api.get("/drafts").json()["drafts"][0]["id"]
+    regenerated = api.post(f"/drafts/{created}/regenerate", json={})
+    assert regenerated.status_code == 429
     refused = api.post("/drafts", json={"item_id": str(item_id)})
 
     assert refused.status_code == 429
@@ -565,3 +582,215 @@ def test_a_flagged_draft_is_saved_as_written(db_session: Session) -> None:
     [saved] = drafts(db_session)
     assert saved.body == invented["body"]
     assert saved.check["flags"][0]["kind"] == "number"
+
+
+def test_a_404_or_a_422_spends_no_limiter_slot(db_session: Session) -> None:
+    good = seed_item(db_session)
+    short = seed_item(db_session, "short", text="Too short to draft from.")
+    limiter = RequestLimiter(
+        per_minute=1,
+        per_day=REQUESTS_PER_DAY,
+        concurrent=CONCURRENT_ANSWERS,
+        clock=Clock(),
+    )
+    model = scripted()
+    api = client(db_session, draft_service(db_session, [model], limiter=limiter))
+
+    assert api.post("/drafts", json={"item_id": str(uuid4())}).status_code == 404
+    assert api.post("/drafts", json={"item_id": str(short)}).status_code == 422
+    # Neither refusal reached the model, so neither spent the one slot this client has.
+    assert api.post("/drafts", json={"item_id": str(good)}).status_code == 201
+    assert len(model.model.seen) == 1
+
+
+def test_regenerate_keeps_the_early_flag_and_the_stored_summary(db_session: Session) -> None:
+    item_id = seed_item(db_session, tier=Tier.VETTED_PREPRINT, basis=AdmissionBasis.LAB_AUTHOR)
+    store_summary(db_session, item_id)
+    reply = {
+        **REPLY,
+        "hook": "An early memory layer for coding agents.",
+        "body": (
+            "The authors report that replaying tool results cut tokens per task by 41% on 40 "
+            "tasks. The work is early and not yet independently reviewed."
+        ),
+    }
+    api = client(db_session, draft_service(db_session, [scripted([reply, reply])]))
+    first = api.post("/drafts", json={"item_id": str(item_id)}).json()
+
+    second = api.post(f"/drafts/{first['id']}/regenerate", json={})
+
+    assert second.status_code == 201
+    [saved] = [row for row in drafts(db_session) if str(row.id) == second.json()["id"]]
+    # A regenerate re-runs the stored inputs, so the early notice and the summary survive it.
+    assert saved.inputs["early"] is True
+    summary = saved.inputs["summary"]
+    assert isinstance(summary, dict)
+    assert summary["result"]["quote"].startswith("cut tokens per task")
+
+
+def test_a_failed_drafted_event_still_saves_the_draft(db_session: Session) -> None:
+    item_id = seed_item(db_session)
+    suggestions = suggestions_service(db_session, NoQueue())
+
+    def broken(item_id: UUID, event: str) -> None:
+        raise RuntimeError("the event store is down")
+
+    suggestions.record = broken  # type: ignore[method-assign]
+    api = client(db_session, draft_service(db_session, [scripted()], suggestions=suggestions))
+
+    response = api.post("/drafts", json={"item_id": str(item_id)})
+
+    # The model was paid for: a failed event must not turn a saved draft into an error the reader
+    # would retry into a duplicate.
+    assert response.status_code == 201
+    assert len(drafts(db_session)) == 1
+
+
+def test_an_excerpt_summary_is_not_sent_as_context(db_session: Session) -> None:
+    item_id = seed_item(db_session)
+    db_session.add(
+        ItemSummary(
+            item_id=item_id,
+            text_hash="hash",
+            model="test-model",
+            prompt_version="s1",
+            status="excerpt",
+            fields={"excerpt": "The abstract's own first sentences."},
+            failed_checks=["shape"],
+            created_at=NOW,
+        )
+    )
+    db_session.commit()
+    api = client(db_session, draft_service(db_session, [scripted()]))
+
+    response = api.post("/drafts", json={"item_id": str(item_id)})
+
+    assert response.status_code == 201
+    [saved] = drafts(db_session)
+    # An excerpt is the stored text again, not a checked summary: it must not become context.
+    assert saved.inputs["summary"] is None
+
+
+def test_the_point_of_view_limit_and_language_are_enforced(db_session: Session) -> None:
+    item_id = seed_item(db_session)
+    api = client(db_session, draft_service(db_session, [scripted()]))
+
+    assert api.post("/drafts", json={"item_id": str(item_id), "pov": "x" * 2000}).status_code == 201
+    assert api.post("/drafts", json={"item_id": str(item_id), "pov": "x" * 2001}).status_code == 422
+    assert (
+        api.post("/drafts", json={"item_id": str(item_id), "language": "en\nx"}).status_code == 422
+    )
+
+
+def test_the_draft_list_limit_is_bounded(db_session: Session) -> None:
+    seed_item(db_session)
+    api = client(db_session, draft_service(db_session, [scripted()]))
+    assert api.get("/drafts", params={"limit": 1}).status_code == 200
+    assert api.get("/drafts", params={"limit": 0}).status_code == 422
+    assert api.get("/drafts", params={"limit": 51}).status_code == 422
+
+
+def test_the_hashtags_are_normalised(db_session: Session) -> None:
+    item_id = seed_item(db_session)
+    reply = {**REPLY, "hashtags": ["#agents", "ai safety"]}
+    api = client(db_session, draft_service(db_session, [scripted(reply)]))
+
+    response = api.post("/drafts", json={"item_id": str(item_id)})
+
+    assert response.status_code == 201
+    assert response.json()["hashtags"] == ["agents", "aisafety"]
+
+
+class _DraftProvider(BaseHTTPRequestHandler):
+    """A local OpenAI-compatible endpoint, so the real ChatOpenAI path is exercised offline."""
+
+    bodies: ClassVar[list[bytes]] = []
+
+    def do_POST(self) -> None:
+        length = int(self.headers.get("content-length") or 0)
+        type(self).bodies.append(self.rfile.read(length))
+        payload = json.dumps(
+            {
+                "id": "chatcmpl-test",
+                "object": "chat.completion",
+                "created": 1,
+                "model": "vendor/model:free",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": json.dumps(REPLY)},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+            }
+        ).encode()
+        self.send_response(200)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def log_message(self, format: str, *args: object) -> None:
+        return  # the server's own access line is noise in a test
+
+
+def test_the_real_draft_chain_denies_data_collection_and_logs_nothing(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # The configured ChatOpenAI object is tested in test_chat.py; this drives the real client, so
+    # the wire body and the openai/httpx loggers are covered too.
+    phrase = "quartz-zebra-4417-my-own-harness"
+    _DraftProvider.bodies = []
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _DraftProvider)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    monkeypatch.setattr(
+        chat_module,
+        "OPENROUTER_BASE_URL",
+        f"http://127.0.0.1:{server.server_address[1]}/api/v1",
+    )
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1")
+    monkeypatch.setenv("no_proxy", "127.0.0.1")
+    settings = Settings(
+        _env_file=None,  # type: ignore[call-arg]
+        openrouter_api_key="or-key",
+        groq_api_key="g",
+        groq_chat_model="some-model",
+    )
+    models = make_chat_models(settings, purpose="draft")
+    source = DraftSource(
+        item_id=uuid4(),
+        title=TITLE,
+        url=URL,
+        source="arxiv",
+        tier="peer_reviewed",
+        basis_label="peer-reviewed via venue: ICLR",
+        venue="ICLR",
+        org=None,
+        text=TEXT,
+        github_repo=REPO,
+        project_page=None,
+        summary=None,
+        early=False,
+    )
+    guard = CallGuard(RecordingCalls(), Ledger(100_000), 800, Clock())  # type: ignore[arg-type]
+    try:
+        with capture_logs() as logs, caplog.at_level(logging.DEBUG):
+            text, answered = generate_draft(models, guard, source, pov=phrase, language="en")
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    assert text.hook == REPLY["hook"]
+    assert answered == "vendor/model:free"
+    # One model, OpenRouter only: a Groq key and model were configured and never built.
+    assert [model.provider for model in models] == ["openrouter"]
+    assert len(_DraftProvider.bodies) == 1
+    body = json.loads(_DraftProvider.bodies[0])
+    assert body["provider"] == {"data_collection": "deny"}
+    # The point of view may go to this provider (that is the feature), but never to a log line.
+    assert phrase in json.dumps(body)
+    captured = json.dumps(logs, default=str) + caplog.text
+    assert phrase not in captured

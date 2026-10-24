@@ -44,6 +44,16 @@ export function PicksSection({
   const [dismissed, setDismissed] = useState<ReadonlySet<string>>(new Set());
   // One dialog for the whole section: the card that opened it, and whether it is early work.
   const [preview, setPreview] = useState<{ card: SuggestionCard; early: boolean } | null>(null);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  // The element that opened the dialog, so focus returns there when it closes. A click event
+  // carries it because WebKit does not focus the clicked button.
+  const [opener, setOpener] = useState<HTMLElement | null>(null);
+
+  function openPreview(card: SuggestionCard, early: boolean, element: HTMLElement): void {
+    setOpener(element);
+    setPreview({ card, early });
+    setPreviewOpen(true);
+  }
   const picks = suggestions.picks.filter((card) => !dismissed.has(card.item_id));
   const rising = suggestions.rising.filter((card) => !dismissed.has(card.item_id));
   const pending = [...suggestions.picks, ...suggestions.rising].some(
@@ -95,7 +105,7 @@ export function PicksSection({
           <LeadPick
             card={lead}
             onDismiss={dismiss}
-            onPreview={() => setPreview({ card: lead, early: false })}
+            onPreview={(opener) => openPreview(lead, false, opener)}
           />
           <div className="mt-2">
             {rest.map((card, index) => (
@@ -104,7 +114,7 @@ export function PicksSection({
                 card={card}
                 rank={index + 2}
                 onDismiss={dismiss}
-                onPreview={() => setPreview({ card, early: false })}
+                onPreview={(opener) => openPreview(card, false, opener)}
               />
             ))}
           </div>
@@ -121,16 +131,24 @@ export function PicksSection({
         rising={rising}
         note={suggestions.rising_note}
         onDismiss={dismiss}
-        onPreview={(card) => setPreview({ card, early: true })}
+        onPreview={(card, opener) => openPreview(card, true, opener)}
       />
 
       <PovDialog
         key={preview?.card.item_id ?? "closed"}
         card={preview?.card ?? null}
         early={preview?.early ?? false}
-        open={preview !== null}
+        open={previewOpen}
+        returnFocus={opener}
         onOpenChange={(next) => {
-          if (!next) setPreview(null);
+          if (next) {
+            setPreviewOpen(true);
+            return;
+          }
+          // Keep the card for the closing frame, so Radix can return focus to the opener before
+          // the component unmounts.
+          setPreviewOpen(false);
+          window.setTimeout(() => setPreview(null), 0);
         }}
         onSaved={() => router.refresh()}
       />

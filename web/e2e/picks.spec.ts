@@ -37,7 +37,14 @@ test("the lead pick and four compact picks render with their facts", async ({ pa
   await expect(lead.getByRole("button", { name: `Ask about it: ${LEAD_TITLE}` })).toBeVisible();
   // A reader never sees a database enum: every tier and basis is printed as words.
   const text = await picks.innerText();
-  for (const raw of ["peer_reviewed", "vetted_preprint", "lab_blog", "hf_upvotes", "lab_post", "lab_author"]) {
+  for (const raw of [
+    "peer_reviewed",
+    "vetted_preprint",
+    "lab_blog",
+    "hf_upvotes",
+    "lab_post",
+    "lab_author",
+  ]) {
     expect(text).not.toContain(raw);
   }
   await expect(picks).toContainText("vetted preprint");

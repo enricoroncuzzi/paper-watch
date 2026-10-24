@@ -43,6 +43,8 @@ KIND_ORDER: tuple[FlagKind, ...] = (
     "long_copy",
 )
 MIN_QUOTE_WORDS = 3
+# The prompt caps a quote at 25 words; a longer verbatim quote is copying, not quoting.
+MAX_QUOTE_WORDS = 25
 # Twelve consecutive words is a passage, not a turn of phrase; ten would catch ordinary phrasing
 # shared with the abstract, and the point is to catch copying, not to force synonyms.
 LONG_COPY_WORDS = 12
@@ -64,21 +66,40 @@ _FIRST_PERSON = re.compile(
 )
 # The experiences a draft may not invent. Each stem's own forms are matched, so a draft that says
 # "built" is allowed only by a point of view that says "build" or "built".
-_EXPERIENCE_VERBS: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
-    (stem, re.compile(rf"\b(?:{forms})\b"))
-    for stem, forms in (
-        ("build", "build|builds|building|built"),
-        ("test", "test|tests|tested|testing"),
-        ("try", "try|tries|tried|trying"),
-        ("use", "use|uses|used|using"),
-        ("run", "run|runs|ran|running"),
-        ("ship", "ship|ships|shipped|shipping"),
-        ("deploy", "deploy|deploys|deployed|deploying"),
-        ("implement", "implement|implements|implemented|implementing"),
-        ("benchmark", "benchmark|benchmarks|benchmarked|benchmarking"),
-        ("evaluate", "evaluate|evaluates|evaluated|evaluating"),
-        ("measure", "measure|measures|measured|measuring"),
+_EXPERIENCE_VERBS: tuple[tuple[str, re.Pattern[str], re.Pattern[str]], ...] = tuple(
+    (stem, re.compile(rf"\b(?:{forms})\b"), re.compile(rf"\b(?:{asserted})\b"))
+    for stem, forms, asserted in (
+        ("build", "build|builds|building|built", "built"),
+        ("test", "test|tests|tested|testing", "tested"),
+        ("try", "try|tries|tried|trying", "tried"),
+        ("use", "use|uses|used|using", "used"),
+        # "run" is its own participle, so the perfect form is spelled out; the simple past is "ran".
+        ("run", "run|runs|ran|running", "ran|(?:have|has|had|'ve) run"),
+        ("ship", "ship|ships|shipped|shipping", "shipped"),
+        ("deploy", "deploy|deploys|deployed|deploying", "deployed"),
+        ("implement", "implement|implements|implemented|implementing", "implemented"),
+        ("benchmark", "benchmark|benchmarks|benchmarked|benchmarking", "benchmarked"),
+        ("evaluate", "evaluate|evaluates|evaluated|evaluating", "evaluated"),
+        ("measure", "measure|measures|measured|measuring", "measured"),
+        ("train", "train|trains|training|trained", "trained"),
+        ("reproduce", "reproduce|reproduces|reproducing|reproduced", "reproduced"),
+        ("replicate", "replicate|replicates|replicating|replicated", "replicated"),
+        (
+            "fine-tune",
+            "fine-tune|fine-tunes|fine-tuning|fine-tuned|fine tuned",
+            "fine-tuned|fine tuned",
+        ),
+        ("adopt", "adopt|adopts|adopting|adopted", "adopted"),
+        ("integrate", "integrate|integrates|integrating|integrated", "integrated"),
+        ("develop", "develop|develops|developing|developed", "developed"),
+        ("launch", "launch|launches|launching|launched", "launched"),
+        ("write", "write|writes|writing|wrote|written", "wrote|written"),
     )
+)
+# A point of view that only intends, negates or doubts an experience does not license a claim that
+# it already happened. One marker anywhere in the sentence is enough to withhold support.
+_INTENT_OR_NEGATION = re.compile(
+    r"\b(?:not|never|would|will|want to|plan to|going to|might|could|should|hope to|if|yet)\b|n't"
 )
 # A verb that turns a sentence into a report of someone else's claim.
 _ATTRIBUTION_VERB = re.compile(
@@ -104,6 +125,8 @@ _TRANSLATION = str.maketrans(
         "\u2019": "'",
         "\u201c": '"',
         "\u201d": '"',
+        "\u2010": "-",
+        "\u2011": "-",
         "\u2013": "-",
         "\u2014": "-",
         "\u2212": "-",
@@ -132,6 +155,8 @@ class DraftCheck:
 def check_draft(draft: DraftText, source: DraftSource, *, pov: str) -> DraftCheck:
     """Run every rule over the hook, body and hashtags together."""
     text = "\n".join((draft.hook, draft.body, " ".join(f"#{tag}" for tag in draft.hashtags)))
+    # The hashtag line is a label, not a sentence: a tag such as #gpt4 is not a numeric claim.
+    body_text = "\n".join((draft.hook, draft.body))
     folded_pov = _normalise(pov)
     folded_store = _normalise(f"{source.title}\n{source.text}")
     quotes = _summary_quotes(source.summary)
@@ -141,12 +166,12 @@ def check_draft(draft: DraftText, source: DraftSource, *, pov: str) -> DraftChec
     counts: dict[FlagKind, list[int]] = {kind: [0, 0] for kind in KIND_ORDER}
     found: dict[FlagKind, list[DraftFlag]] = {kind: [] for kind in KIND_ORDER}
 
-    _check_numbers(text, evidence, counts, found)
+    _check_numbers(body_text, evidence, counts, found)
     _check_quotes(text, folded_store, folded_pov, counts, found)
     _check_links(draft, text, source, folded_pov, counts, found)
     _check_first_person(text, folded_pov, counts, found)
     _check_attribution(text, source, counts, found)
-    _check_preprint_numbers(text, source, counts, found)
+    _check_preprint_numbers(body_text, source, counts, found)
     _check_early_notice(text, source, counts, found)
     _check_long_copy(text, folded_store, counts, found)
 
@@ -166,7 +191,7 @@ def _check_numbers(
     flagged: set[str] = set()
     for number in _numbers(_normalise(text)):
         counts["number"][0] += 1
-        if number in evidence:
+        if _number_supported(number, evidence):
             counts["number"][1] += 1
             continue
         if number in flagged:
@@ -197,6 +222,16 @@ def _check_quotes(
         counts["quote"][0] += 1
         if folded in folded_store or (folded_pov and folded in folded_pov):
             counts["quote"][1] += 1
+            words = len(folded.split())
+            if words > MAX_QUOTE_WORDS:
+                counts["long_copy"][0] += 1
+                found["long_copy"].append(
+                    DraftFlag(
+                        "long_copy",
+                        span,
+                        f"quote is {words} words, the limit is {MAX_QUOTE_WORDS}",
+                    )
+                )
             continue
         found["quote"].append(
             DraftFlag(
@@ -223,20 +258,18 @@ def _check_links(
         if url
     }
     flagged: set[str] = set()
-    if draft.source_link:
-        counts["link"][0] += 1
-        key = _url_key(draft.source_link)
-        if key == _url_key(source.url):
-            counts["link"][1] += 1
-        else:
-            flagged.add(key)
-            found["link"].append(
-                DraftFlag(
-                    "link",
-                    draft.source_link,
-                    f"The source link must be the item's own link: {source.url}",
-                )
-            )
+    counts["link"][0] += 1
+    key = _url_key(draft.source_link)
+    if key == _url_key(source.url):
+        counts["link"][1] += 1
+    else:
+        flagged.add(key)
+        detail = (
+            f"The draft has no source link; it must be the item's own link: {source.url}"
+            if not draft.source_link
+            else f"The source link must be the item's own link: {source.url}"
+        )
+        found["link"].append(DraftFlag("link", draft.source_link, detail))
     for link in _links(text):
         counts["link"][0] += 1
         key = _url_key(link)
@@ -267,7 +300,9 @@ def _check_first_person(
         folded = _normalise(sentence)
         if _FIRST_PERSON.search(folded) is None:
             continue
-        stems = [stem for stem, pattern in _EXPERIENCE_VERBS if pattern.search(folded) is not None]
+        stems = [
+            stem for stem, loose, _asserted in _EXPERIENCE_VERBS if loose.search(folded) is not None
+        ]
         if not stems:
             continue
         counts["first_person"][0] += 1
@@ -298,10 +333,13 @@ def _check_attribution(
         # name, and inventing the requirement would flag every such draft.
         return
     counts["attribution"][0] = 1
-    name = _normalise(source.org)
+    # The first token names the lab: "LangChain Team" is still "LangChain reports ...", and a
+    # word-boundary match keeps "AI" from being found inside "said".
+    name = _normalise(source.org).split()[0]
     for sentence in _sentences(text):
         folded = _normalise(sentence)
-        if name in folded and _ATTRIBUTION_VERB.search(folded) is not None:
+        named = re.search(rf"(?<!\w){re.escape(name)}(?!\w)", folded) is not None
+        if named and _ATTRIBUTION_VERB.search(folded) is not None:
             counts["attribution"][1] = 1
             return
     found["attribution"].append(
@@ -420,6 +458,14 @@ def _numbers(normalised: str) -> list[str]:
     return [match.replace(" ", "").replace(",", "") for match in _NUMBER.findall(normalised)]
 
 
+def _number_supported(number: str, evidence: set[str]) -> bool:
+    # The percent sign belongs to a number only when the draft claims it: a source's "41%" backs
+    # "41", while a draft's "41%" is not backed by a source that only says "41".
+    if number in evidence:
+        return True
+    return not number.endswith("%") and f"{number}%" in evidence
+
+
 def _quoted_spans(text: str) -> list[str]:
     spans = []
     for match in _QUOTE.finditer(text):
@@ -436,9 +482,13 @@ def _links(text: str) -> list[str]:
 
 
 def _pov_supports(stem: str, pov_sentences: list[str]) -> bool:
-    pattern = dict(_EXPERIENCE_VERBS)[stem]
+    # Only a point-of-view sentence that makes the claim in the past licenses it: it needs a
+    # first-person word, a past or perfect form of the stem, and no negation or intention marker.
+    asserted = {name: pattern for name, _loose, pattern in _EXPERIENCE_VERBS}[stem]
     return any(
-        _FIRST_PERSON.search(candidate) is not None and pattern.search(candidate) is not None
+        _FIRST_PERSON.search(candidate) is not None
+        and _INTENT_OR_NEGATION.search(candidate) is None
+        and asserted.search(candidate) is not None
         for candidate in pov_sentences
     )
 

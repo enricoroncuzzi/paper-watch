@@ -71,3 +71,17 @@ test("an api route without a session is 401", async ({ request }) => {
   expect(response.status()).toBe(401);
   expect(await response.json()).toEqual({ kind: "unauthorized" });
 });
+
+test("the drafts proxies without a session are 401", async ({ request }) => {
+  // Every route handler checks the session itself; the browser cannot reach the API's address or
+  // credential, and a missing session is refused before any body is read.
+  const id = "44444444-4444-4444-8444-444444444401";
+  for (const response of [
+    await request.post("/api/drafts", { data: { item_id: id, pov: "anything" } }),
+    await request.get(`/api/drafts/${id}`),
+    await request.post(`/api/drafts/${id}/regenerate`, { data: {} }),
+  ]) {
+    expect(response.status()).toBe(401);
+    expect(await response.json()).toEqual({ kind: "unauthorized" });
+  }
+});
