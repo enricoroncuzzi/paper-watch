@@ -5,9 +5,10 @@ Paper Watch builds a growing, queryable corpus of AI research focused on agentic
 fallback topic. Items come only from reliable sources, in three tiers: peer-reviewed venues,
 arXiv preprints with a quality signal, and official AI-lab engineering blogs.
 
-The corpus answers questions on demand through retrieval-augmented generation, and will produce one
-weekly LinkedIn draft grounded in stored sources (milestone M3, not built yet), which the author
-posts, edits, skips, or defers by hand. Paper Watch never posts to LinkedIn itself.
+The corpus answers questions on demand through retrieval-augmented generation, and turns a
+suggested item into a LinkedIn draft grounded in its stored text plus the author's own point of
+view, checked by code before it is saved. The author posts, edits, skips or defers each draft by
+hand. Paper Watch never posts to LinkedIn itself.
 
 It is also a deliberate learning project: every technology it uses has a load-bearing job in the
 code and a short lesson in [`docs/learn/`](docs/learn/).
@@ -85,6 +86,7 @@ uv run paperwatch qa-eval   # replay recorded answers through the checker; no ke
 uv run paperwatch ask "what is new on agent memory?" --live   # stream one answer in the terminal
 uv run paperwatch serve --live                                # the API: /ask, /suggestions, /runs
 uv run paperwatch suggest --live                              # the ranked picks and the Rising shelf
+uv run paperwatch draft ITEM_ID --live                        # one checked LinkedIn draft, with its notes
 # With PW_API_AUTH=hmac and a 32+ character PW_API_HMAC_SECRET in .env, each token works once:
 curl -N -X POST localhost:8000/ask \
   -H "authorization: Bearer $(uv run paperwatch api-token --live)" \

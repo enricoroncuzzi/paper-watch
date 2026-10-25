@@ -1,0 +1,5 @@
+{
+  "code": "daily_cap",
+  "message": "The daily model cap is spent, so the draft was not generated.",
+  "retry_at": "2026-10-25T00:00:00Z"
+}

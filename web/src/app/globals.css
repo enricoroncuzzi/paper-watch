@@ -119,6 +119,18 @@ html[data-theme="dark"] {
 
 html {
   scroll-behavior: smooth;
+  /* The masthead is sticky, so an in-page link (This week, Runs, Drafts) must stop below it
+     instead of hiding the section's heading under it. The header and this offset read the same
+     property, so the two cannot drift apart. */
+  --masthead-h: 109px;
+  scroll-padding-top: var(--masthead-h);
+}
+
+@media (min-width: 640px) {
+  html {
+    /* The desktop masthead is one row, 69 px tall with its border. */
+    --masthead-h: 69px;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

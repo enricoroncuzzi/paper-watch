@@ -14,13 +14,14 @@ fake, so the whole test and eval suite runs offline against a real Postgres + pg
 | `retrieval` | Hybrid search (pgvector + Postgres full-text, fused with reciprocal rank fusion), filters | store |
 | `llm` | Local embedder and embedding-similarity classifier; the child process that hosts the embedder for the API (`embed_worker.py`); chat models on a free OpenAI-compatible API behind the daily call cap and the token ledger; the Azure wrappers kept for the Azure proof | fastembed (ONNX Runtime), OpenAI SDK |
 | `suggestions` | The weekly picks: a pure gate-score-diversify ranking weighted from `config/suggestions.yaml`, the 30-second summary writer and the code checks on its quotes, numbers and names, and the card shapes the route serves (ADR 0014) | store, llm, domain |
+| `drafts` | The LinkedIn draft: one OpenRouter-only call with data collection denied, the prompt, and the code check over its numbers, quotes, links, first-person claims, attribution and copying; the point of view is stored with the draft and never logged (ADR 0015) | store, llm, suggestions |
 | `agent` | The LangGraph question-answering graph, the three read-only corpus tools, the per-answer source aliases and the deterministic citation check; the only place LangGraph is used | retrieval, llm, store |
-| `api` | The credential and host gate, the per-client limits, the paced SSE stream, the search-mode gate, the FastAPI routes (`/healthz`, `/readyz`, `/status`, `POST /ask`, `GET /suggestions` with its 5-minute cache and background summary queue), health and readiness, the committed OpenAPI contract; the one place an agent failure becomes an error event | agent, store, llm |
+| `api` | The credential and host gate, the per-client limits, the paced SSE stream, the search-mode gate, the FastAPI routes (`/healthz`, `/readyz`, `/status`, `POST /ask`, `GET /suggestions` with its 5-minute cache and background summary queue, `POST /drafts` and the Drafts reads), health and readiness, the committed OpenAPI contract; the one place an agent failure becomes an error event | agent, store, llm |
 | `web` | The Next.js page in `web/`: server-rendered sections, the GitHub session guard on every server component and route handler, the streaming route handlers and the server-only API client; the only caller of the API | the API over HTTPS |
 | `evals` | Labelled synthetic corpus and questions; recall@k, MRR and nDCG@k against a committed baseline | retrieval, llm, store |
 | `deploy/vps` | systemd user units for the daily ingestion (06:00 Europe/Rome, `--followup`), the 05:15 backup, the API and its tunnel, the shared `paperwatch.slice` and the ingestion drop-in, `backup.sh`, the morning `check.sh` and the API `api-check.sh` | the `paperwatch ingest` and `serve` CLIs, Postgres |
 
-`drafts` and `bench` arrive in later milestones. `infra` exists in part:
+`bench` arrives in a later milestone. `infra` exists in part:
 `docker-compose.yml` for local Postgres and `deploy/vps/` (systemd user units, `backup.sh`,
 `check.sh` and `api-check.sh`, described in `docs/deploy/vps.md`) for the ingestion and the API on
 the shared VPS, which ADR 0009 records and ADRs 0012 and 0013 extend. The page and the Azure proof

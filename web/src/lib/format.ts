@@ -46,6 +46,24 @@ export function runDayLabel(startedAt: string, now: Date = new Date()): string {
   return formatDay(startedAt);
 }
 
+// The profiles the corpus classifies into. The YAML name is a slug; a reader sees words.
+const PROFILE_LABELS: Record<string, string> = {
+  "agentic-engineering": "Agentic engineering",
+  "ai-forensics": "AI forensics",
+  "ml-architectures": "ML architectures",
+};
+
+/**
+ * The topic a card belongs to, as words. A profile added to config/profiles.yaml later still
+ * reads as a name instead of a database slug.
+ */
+export function profileLabel(name: string): string {
+  const known = PROFILE_LABELS[name];
+  if (known) return known;
+  const words = name.replaceAll("-", " ").trim();
+  return words ? words.charAt(0).toUpperCase() + words.slice(1) : name;
+}
+
 /** The schedule the ingestion unit runs on, kept next to the page's copy of it. */
 export const RUN_SCHEDULE_LABEL = "daily 06:00 Europe/Rome · one run at a time";
 

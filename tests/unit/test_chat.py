@@ -420,3 +420,22 @@ def test_a_model_id_longer_than_the_column_is_clipped() -> None:
         guard.before_call("p"),
     )
     assert len(str(repo.recorded[0]["model"])) == CHAT_CALL_MODEL_MAX_CHARS
+
+
+def test_draft_models_deny_data_collection_and_skip_groq() -> None:
+    # A draft carries the captain's own point of view, so it may only go to a provider that refuses
+    # training on its inputs (design 15, Q6). A fallback chain would silently break that promise,
+    # and a second provider configured in the environment must not be reached at all.
+    models = make_chat_models(
+        keyed(groq_api_key="g", groq_chat_model="some-model"), purpose="draft"
+    )
+    [draft] = models
+    assert draft.provider == "openrouter"
+    assert draft.model.openai_api_base == OPENROUTER_BASE_URL
+    assert draft.model.extra_body == {"provider": {"data_collection": "deny"}}
+
+
+def test_answer_models_carry_no_data_collection_deny() -> None:
+    # The OpenAI-compatible clients accept extra_body everywhere; only the draft chain opts in.
+    [primary] = make_chat_models(keyed())
+    assert primary.model.extra_body is None

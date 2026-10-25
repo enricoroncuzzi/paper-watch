@@ -3,11 +3,12 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 
+import { PovDialog } from "@/components/drafts/PovDialog";
 import { CompactPick } from "@/components/picks/CompactPick";
 import { LeadPick } from "@/components/picks/LeadPick";
 import { RisingShelf } from "@/components/picks/RisingShelf";
 import { EmptyState } from "@/components/SectionState";
-import type { SuggestionsData } from "@/lib/types";
+import type { SuggestionCard, SuggestionsData } from "@/lib/types";
 
 /** The API writes summaries in the background, so a pending card asks the server again this often. */
 export const SUMMARY_REFRESH_MS = 20_000;
@@ -39,7 +40,20 @@ export function PicksSection({
   suggestions: SuggestionsData;
   refreshMs?: number;
 }) {
+  const router = useRouter();
   const [dismissed, setDismissed] = useState<ReadonlySet<string>>(new Set());
+  // One dialog for the whole section: the card that opened it, and whether it is early work.
+  const [preview, setPreview] = useState<{ card: SuggestionCard; early: boolean } | null>(null);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  // The element that opened the dialog, so focus returns there when it closes. A click event
+  // carries it because WebKit does not focus the clicked button.
+  const [opener, setOpener] = useState<HTMLElement | null>(null);
+
+  function openPreview(card: SuggestionCard, early: boolean, element: HTMLElement): void {
+    setOpener(element);
+    setPreview({ card, early });
+    setPreviewOpen(true);
+  }
   const picks = suggestions.picks.filter((card) => !dismissed.has(card.item_id));
   const rising = suggestions.rising.filter((card) => !dismissed.has(card.item_id));
   const pending = [...suggestions.picks, ...suggestions.rising].some(
@@ -88,7 +102,11 @@ export function PicksSection({
 
       {lead ? (
         <>
-          <LeadPick card={lead} onDismiss={dismiss} />
+          <LeadPick
+            card={lead}
+            onDismiss={dismiss}
+            onPreview={(opener) => openPreview(lead, false, opener)}
+          />
           <div className="mt-2">
             {rest.map((card, index) => (
               <CompactPick
@@ -96,6 +114,7 @@ export function PicksSection({
                 card={card}
                 rank={index + 2}
                 onDismiss={dismiss}
+                onPreview={(opener) => openPreview(card, false, opener)}
               />
             ))}
           </div>
@@ -108,7 +127,31 @@ export function PicksSection({
         />
       )}
 
-      <RisingShelf rising={rising} note={suggestions.rising_note} onDismiss={dismiss} />
+      <RisingShelf
+        rising={rising}
+        note={suggestions.rising_note}
+        onDismiss={dismiss}
+        onPreview={(card, opener) => openPreview(card, true, opener)}
+      />
+
+      <PovDialog
+        key={preview?.card.item_id ?? "closed"}
+        card={preview?.card ?? null}
+        early={preview?.early ?? false}
+        open={previewOpen}
+        returnFocus={opener}
+        onOpenChange={(next) => {
+          if (next) {
+            setPreviewOpen(true);
+            return;
+          }
+          // Keep the card for the closing frame, so Radix can return focus to the opener before
+          // the component unmounts.
+          setPreviewOpen(false);
+          window.setTimeout(() => setPreview(null), 0);
+        }}
+        onSaved={() => router.refresh()}
+      />
     </section>
   );
 }

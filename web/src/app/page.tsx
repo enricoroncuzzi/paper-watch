@@ -2,6 +2,7 @@ import { Suspense } from "react";
 
 import { requireOwner } from "@/auth";
 import { AskProvider } from "@/components/ask/AskProvider";
+import { DraftsSection } from "@/components/drafts/DraftsSection";
 import { Footer } from "@/components/Footer";
 import { Masthead } from "@/components/Masthead";
 import { PicksSection } from "@/components/picks/PicksSection";
@@ -9,7 +10,7 @@ import { RunsSection } from "@/components/RunsSection";
 import { ErrorState, LoadingState } from "@/components/SectionState";
 import { TodayStrip } from "@/components/TodayStrip";
 import { apiGet } from "@/lib/api";
-import type { RunSummary, SuggestionsData, TodayData } from "@/lib/types";
+import type { DraftsData, RunSummary, SuggestionsData, TodayData } from "@/lib/types";
 
 // A private page reads a live corpus: nothing here may be cached or statically rendered.
 export const dynamic = "force-dynamic";
@@ -37,6 +38,21 @@ async function SuggestionsSectionData({ refreshMs }: { refreshMs: number }) {
     );
   }
   return <PicksSection suggestions={result.data} refreshMs={refreshMs} />;
+}
+
+async function DraftsSectionData() {
+  const result = await apiGet<DraftsData>("/drafts?limit=50");
+  if (!result.ok) {
+    return (
+      <ErrorState
+        kind={result.kind}
+        testId="drafts-error"
+        detail="GET /drafts"
+        retryAfterS={result.retryAfterS}
+      />
+    );
+  }
+  return <DraftsSection drafts={result.data.drafts} />;
 }
 
 async function RunsSectionData() {
@@ -67,6 +83,9 @@ export default async function Home() {
         </Suspense>
         <Suspense fallback={<LoadingState testId="picks-loading" lines={3} />}>
           <SuggestionsSectionData refreshMs={summaryRefreshMs()} />
+        </Suspense>
+        <Suspense fallback={<LoadingState testId="drafts-loading" lines={2} />}>
+          <DraftsSectionData />
         </Suspense>
         <Suspense fallback={<LoadingState testId="runs-loading" lines={4} />}>
           <RunsSectionData />

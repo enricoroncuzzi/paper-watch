@@ -16,7 +16,7 @@ import json
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 import structlog
 from langchain_core.callbacks import CallbackManagerForLLMRun
@@ -80,8 +80,16 @@ class ChatCallStore(Protocol):
     def fail_chat_call(self, call_id: int) -> None: ...
 
 
-def make_chat_models(settings: Settings) -> list[ChatModel]:
-    """Build the provider chain, primary first: OpenRouter, then Groq when fully configured."""
+def make_chat_models(
+    settings: Settings, *, purpose: Literal["answer", "draft"] = "answer"
+) -> list[ChatModel]:
+    """Build the provider chain, primary first: OpenRouter, then Groq when fully configured.
+
+    `purpose="draft"` builds one model, OpenRouter only, with `provider.data_collection: "deny"`.
+    A draft carries the owner's own point of view, and the per-request denial is what makes a
+    provider that would train on it refuse the call instead of receiving the text. There is no
+    fallback on purpose: a silent second provider would break exactly that promise (design 15, Q6).
+    """
     if not settings.openrouter_api_key:
         # Named as the env var, not the field: the reader has to know what to put in .env.
         raise ChatNotConfigured("PW_OPENROUTER_API_KEY is not set, so no chat model can be built")
@@ -116,9 +124,17 @@ def make_chat_models(settings: Settings) -> list[ChatModel]:
                     "HTTP-Referer": "https://github.com/enricoroncuzzi/paper-watch",
                     "X-Title": "Paper Watch",
                 },
+                # OpenRouter forwards this to every endpoint it routes to; an endpoint that trains
+                # on inputs then declines the request rather than see the owner's words.
+                extra_body=(
+                    {"provider": {"data_collection": "deny"}} if purpose == "draft" else None
+                ),
             ),
         )
     ]
+    if purpose == "draft":
+        # A draft never falls back: see the docstring. Groq is not even built for this purpose.
+        return models
     # Groq answers only when both the key and a model id are set: its free model list changes too
     # often to pin a default here, and a guessed id would fail on every fallback attempt.
     if settings.groq_api_key and settings.groq_chat_model:

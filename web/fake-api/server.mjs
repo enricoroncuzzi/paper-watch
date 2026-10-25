@@ -3,6 +3,7 @@
 //
 // Every fixture is validated against the API's own pydantic models by
 // tests/unit/test_web_fake_api_fixtures.py, so this server cannot drift from the contract.
+import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -18,6 +19,26 @@ const TOKEN = "e2e";
 let scenario = "normal";
 // How many suggestion lists this scenario has served: the summary arrives after the first one.
 let suggestionRequests = 0;
+// The drafts this fake serves. POST /drafts appends, regenerate prepends, and a scenario switch
+// resets the list, so every test starts from the same two fixtures.
+let drafts = [];
+let draftedItemIds = new Set();
+
+/** The clipboard text, the same rule as `src/lib/linkedin-text.ts` and `draft_text` in Python. */
+function linkedinText(draft) {
+  const tags = draft.hashtags.map((tag) => `#${tag}`).join(" ");
+  const parts = [draft.hook, "", draft.body];
+  if (tags) parts.push("", tags);
+  if (draft.source_link) parts.push("", draft.source_link);
+  return parts.join("\n").trim();
+}
+
+function resetDrafts() {
+  drafts = fixture("drafts").drafts.map((draft) => ({ ...draft }));
+  draftedItemIds = new Set();
+}
+
+resetDrafts();
 
 const SCENARIOS = new Set([
   "normal",
@@ -35,6 +56,13 @@ const SCENARIOS = new Set([
   "drop",
   "summary_pending",
   "javascript",
+  "drafts_empty",
+  "draft_flags",
+  "draft_refused",
+  "draft_cap",
+  "draft_slow",
+  "drafts_ellipsis",
+  "draft_detail_failed",
 ]);
 
 function fixture(name) {
@@ -155,6 +183,7 @@ const server = createServer(async (request, response) => {
     }
     scenario = picked;
     suggestionRequests = 0;
+    resetDrafts();
     json(response, 200, { scenario });
     return;
   }
@@ -245,7 +274,104 @@ const server = createServer(async (request, response) => {
       );
       return;
     }
-    json(response, 200, fixture(scenario === "javascript" ? "suggestions-javascript" : "suggestions"));
+    // A drafted item leaves the list, like the real API's `drafted` event does.
+    const body = fixture(scenario === "javascript" ? "suggestions-javascript" : "suggestions");
+    const keep = (card) => !draftedItemIds.has(card.item_id);
+    json(response, 200, {
+      ...body,
+      picks: body.picks.filter(keep),
+      rising: body.rising.filter(keep),
+    });
+    return;
+  }
+
+  if (path === "/drafts" && request.method === "GET") {
+    if (scenario === "drafts_empty") {
+      json(response, 200, fixture("drafts-empty"));
+      return;
+    }
+    if (scenario === "drafts_ellipsis") {
+      json(response, 200, fixture("drafts-ellipsis"));
+      return;
+    }
+    json(response, 200, { drafts });
+    return;
+  }
+
+  if (path === "/drafts" && request.method === "POST") {
+    let raw = "";
+    for await (const chunk of request) raw += chunk;
+    let body = {};
+    try {
+      body = JSON.parse(raw || "{}");
+    } catch {
+      json(response, 400, { detail: "bad body" });
+      return;
+    }
+    if (scenario === "draft_refused") {
+      json(response, 503, fixture("draft-refused"));
+      return;
+    }
+    if (scenario === "draft_cap") {
+      json(response, 503, fixture("draft-capped"));
+      return;
+    }
+    if (scenario === "draft_slow") {
+      // Long enough for a test to see the button's writing state, short enough for CI.
+      await sleep(1200);
+    }
+    const template = fixture(scenario === "draft_flags" ? "draft-flagged" : "draft-created");
+    const card = [...fixture("suggestions").picks, ...fixture("suggestions").rising].find(
+      (entry) => entry.item_id === body.item_id,
+    );
+    const created = {
+      ...template,
+      id: randomUUID(),
+      item_id: body.item_id,
+      item_title: card?.title ?? template.item_title,
+      item_url: card?.url ?? template.item_url,
+      created_at: new Date().toISOString(),
+      regenerated_from: null,
+    };
+    created.chars = linkedinText(created).length;
+    drafts = [created, ...drafts];
+    draftedItemIds = new Set([...draftedItemIds, body.item_id]);
+    json(response, 201, created);
+    return;
+  }
+
+  if (/^\/drafts\/[0-9a-f-]+\/regenerate$/.test(path) && request.method === "POST") {
+    const id = path.split("/")[2];
+    const old = drafts.find((draft) => draft.id === id);
+    if (!old) {
+      json(response, 404, { detail: "draft not found" });
+      return;
+    }
+    const created = {
+      ...old,
+      id: randomUUID(),
+      created_at: new Date().toISOString(),
+      regenerated_from: id,
+      hook: "Regenerated: a fresh cut of the same evidence.",
+    };
+    created.chars = linkedinText(created).length;
+    drafts = [created, ...drafts];
+    json(response, 201, created);
+    return;
+  }
+
+  if (/^\/drafts\/[0-9a-f-]+$/.test(path) && request.method === "GET") {
+    if (scenario === "draft_detail_failed") {
+      json(response, 500, { detail: "internal server error" });
+      return;
+    }
+    const id = path.split("/")[2];
+    const found = drafts.find((draft) => draft.id === id);
+    if (!found) {
+      json(response, 404, { detail: "draft not found" });
+      return;
+    }
+    json(response, 200, { ...found, pov: fixture("draft-detail").pov });
     return;
   }
 

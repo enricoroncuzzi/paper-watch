@@ -6,6 +6,7 @@ import {
   followupLine,
   formatDay,
   formatRome,
+  profileLabel,
   runDayLabel,
   stripStatus,
   verdict,
@@ -89,5 +90,17 @@ describe("formatting", () => {
       }),
     ).toBe("follow-up pass 3 of 40 at 10:30, 12 papers pending");
     expect(followupLine(null)).toBeNull();
+  });
+});
+
+describe("profile label", () => {
+  it("names the three known profiles", () => {
+    expect(profileLabel("agentic-engineering")).toBe("Agentic engineering");
+    expect(profileLabel("ai-forensics")).toBe("AI forensics");
+    expect(profileLabel("ml-architectures")).toBe("ML architectures");
+  });
+
+  it("falls back to a readable name for an unknown profile", () => {
+    expect(profileLabel("evaluation-methods")).toBe("Evaluation methods");
   });
 });

@@ -304,3 +304,41 @@ class ItemSummary(Base):
     fields: Mapped[dict[str, object]] = mapped_column(JSON)
     failed_checks: Mapped[list[str]] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class Draft(Base):
+    """One saved LinkedIn draft: the model's reply, its inputs, and the code check over it.
+
+    `inputs` is the item as it was when the draft was written (title, url, tier, basis label,
+    venue, org, the summary used, `early`), so a regenerate can re-run the same inputs. The point
+    of view is stored because the reader sees what he wrote; it is never logged (ADR 0015).
+    """
+
+    __tablename__ = "drafts"
+    __table_args__ = (
+        # The Drafts list reads newest first on every page load, and the cascade from `items`
+        # filters by item_id; Postgres does not index foreign keys on its own.
+        Index("ix_drafts_created_at", "created_at"),
+        Index("ix_drafts_item_id", "item_id"),
+    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    item_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("items.id", ondelete="CASCADE"))
+    # Set on a regenerate: the draft it was made from. SET NULL rather than CASCADE, so deleting
+    # an old draft never takes the newer one with it.
+    regenerated_from: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("drafts.id", ondelete="SET NULL")
+    )
+    # The owner's own words. Stored, shown in the detail view, and never sent anywhere else.
+    pov: Mapped[str] = mapped_column(Text)
+    language: Mapped[str] = mapped_column(String(8))
+    # The provider's model id, clipped to the column by the generator.
+    model: Mapped[str] = mapped_column(String(128))
+    prompt_version: Mapped[str] = mapped_column(String(16))
+    inputs: Mapped[dict[str, object]] = mapped_column(JSON)
+    hook: Mapped[str] = mapped_column(Text)
+    body: Mapped[str] = mapped_column(Text)
+    hashtags: Mapped[list[str]] = mapped_column(JSON)
+    source_link: Mapped[str] = mapped_column(Text)
+    # {"flags": [{kind, text, detail}], "counts": {kind: [checked, passed]}}, as the check found it.
+    check: Mapped[dict[str, object]] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

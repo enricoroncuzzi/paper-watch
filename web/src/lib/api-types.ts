@@ -89,6 +89,64 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/drafts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Drafts */
+        get: operations["list_drafts_drafts_get"];
+        put?: never;
+        /**
+         * Create Draft
+         * @description Generate, check and save one draft; generating is saving.
+         */
+        post: operations["create_draft_drafts_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/drafts/{draft_id}/regenerate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Regenerate Draft
+         * @description Re-run the stored inputs and point of view; the old draft stays, linked.
+         */
+        post: operations["regenerate_draft_drafts__draft_id__regenerate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/drafts/{draft_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Draft */
+        get: operations["get_draft_drafts__draft_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/healthz": {
         parameters: {
             query?: never;
@@ -251,6 +309,160 @@ export interface components {
             created_at: string;
             /** Resolved At */
             resolved_at: string | null;
+        };
+        /**
+         * DraftData
+         * @description One saved draft as the list shows it; the detail adds the owner's own words.
+         */
+        DraftData: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Item Id
+             * Format: uuid
+             */
+            item_id: string;
+            /** Item Title */
+            item_title: string;
+            /** Item Url */
+            item_url: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Regenerated From */
+            regenerated_from: string | null;
+            /** Language */
+            language: string;
+            /** Model */
+            model: string;
+            /** Hook */
+            hook: string;
+            /** Body */
+            body: string;
+            /** Hashtags */
+            hashtags: string[];
+            /** Source Link */
+            source_link: string;
+            /** Flags */
+            flags: components["schemas"]["DraftFlagData"][];
+            /** Counts */
+            counts: {
+                [key: string]: [
+                    number,
+                    number
+                ];
+            };
+            /** Chars */
+            chars: number;
+        };
+        /**
+         * DraftDetail
+         * @description The detail adds the owner's own words, so "Open" shows what the draft was built from.
+         */
+        DraftDetail: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Item Id
+             * Format: uuid
+             */
+            item_id: string;
+            /** Item Title */
+            item_title: string;
+            /** Item Url */
+            item_url: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Regenerated From */
+            regenerated_from: string | null;
+            /** Language */
+            language: string;
+            /** Model */
+            model: string;
+            /** Hook */
+            hook: string;
+            /** Body */
+            body: string;
+            /** Hashtags */
+            hashtags: string[];
+            /** Source Link */
+            source_link: string;
+            /** Flags */
+            flags: components["schemas"]["DraftFlagData"][];
+            /** Counts */
+            counts: {
+                [key: string]: [
+                    number,
+                    number
+                ];
+            };
+            /** Chars */
+            chars: number;
+            /** Pov */
+            pov: string;
+        };
+        /**
+         * DraftError
+         * @description A 503 the page can show: which failure, a sentence, and the cap's reset time.
+         */
+        DraftError: {
+            /**
+             * Code
+             * @enum {string}
+             */
+            code: "daily_cap" | "model_unavailable" | "unusable";
+            /** Message */
+            message: string;
+            /** Retry At */
+            retry_at?: string | null;
+        };
+        /**
+         * DraftFlagData
+         * @description One numbered note under a draft; `text` is the claim it is about.
+         */
+        DraftFlagData: {
+            /** N */
+            n: number;
+            /** Kind */
+            kind: string;
+            /** Text */
+            text: string;
+            /** Detail */
+            detail: string;
+        };
+        /** DraftRequest */
+        DraftRequest: {
+            /**
+             * Item Id
+             * Format: uuid
+             */
+            item_id: string;
+            /**
+             * Pov
+             * @default
+             */
+            pov: string;
+            /**
+             * Language
+             * @default en
+             */
+            language: string;
+        };
+        /** DraftsData */
+        DraftsData: {
+            /** Drafts */
+            drafts: components["schemas"]["DraftData"][];
         };
         /** ErrorData */
         ErrorData: {
@@ -930,6 +1142,299 @@ export interface operations {
                 };
             };
             /** @description No admitted item with that id. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_drafts_drafts_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DraftsData"];
+                };
+            };
+            /** @description The Host is not allowed, or the Content-Length is bad. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description The credential is missing or invalid; `WWW-Authenticate: Bearer`. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description The request carries an Origin header. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_draft_drafts_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DraftRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DraftData"];
+                };
+            };
+            /** @description The Host is not allowed, or the Content-Length is bad. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description The credential is missing or invalid; `WWW-Authenticate: Bearer`. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description The request carries an Origin header. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description No admitted item, or no draft, with that id. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description The stored text is too short to draft from, or a field is invalid. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The per-client limit refused the request; also sends Retry-After. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RateLimited"];
+                };
+            };
+            /** @description No draft was generated: the daily cap (`retry_at`), no compliant provider, or a reply that could not be read as a draft. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DraftError"];
+                };
+            };
+        };
+    };
+    regenerate_draft_drafts__draft_id__regenerate_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                draft_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DraftData"];
+                };
+            };
+            /** @description The Host is not allowed, or the Content-Length is bad. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description The credential is missing or invalid; `WWW-Authenticate: Bearer`. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description The request carries an Origin header. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description No admitted item, or no draft, with that id. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description The stored text is too short to draft from, or a field is invalid. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The per-client limit refused the request; also sends Retry-After. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RateLimited"];
+                };
+            };
+            /** @description No draft was generated: the daily cap (`retry_at`), no compliant provider, or a reply that could not be read as a draft. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DraftError"];
+                };
+            };
+        };
+    };
+    get_draft_drafts__draft_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                draft_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DraftDetail"];
+                };
+            };
+            /** @description The Host is not allowed, or the Content-Length is bad. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description The credential is missing or invalid; `WWW-Authenticate: Bearer`. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description The request carries an Origin header. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description No saved draft with that id. */
             404: {
                 headers: {
                     [name: string]: unknown;
