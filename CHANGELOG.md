@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.0](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.12.1...paperwatch-v0.13.0) (2026-10-25)
+
+
+### Features
+
+* **web:** add corpus browsing with the item list API and item page ([#73](https://github.com/enricoroncuzzi/paper-watch/issues/73)) ([3cef1f5](https://github.com/enricoroncuzzi/paper-watch/commit/3cef1f52b34d1ba3e8ecbeefe209f552fcd5b4aa))
+
 ## [0.12.1](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.12.0...paperwatch-v0.12.1) (2026-10-25)
 
 
