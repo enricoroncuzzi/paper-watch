@@ -247,7 +247,9 @@ function isThisRequest(state: AskState, last: WireTurn | undefined): last is Wir
  * The thread's own count of finished turns: the highest stored `n`, not how many turns came back.
  *
  * The route skips a stored turn whose payload no longer validates, and numbering the next request
- * from the readable count would collide with the unique `(thread_id, n)`.
+ * from the readable count would collide with the unique `(thread_id, n)`. A skipped *newest* turn
+ * is invisible here, so the count stays one low in that case; it needs a corrupt row, and closing
+ * it would mean the read returning the thread's own turn count.
  */
 function storedCount(wire: WireTurn[], fallback: number): number {
   return wire.at(-1)?.n ?? fallback;
@@ -530,6 +532,10 @@ export class AskController {
       const detail = (await response.json()) as { turns: WireTurn[] };
       // A newer ask or an opened conversation took over while this read was in flight.
       if (generation !== this.generation) return;
+      // The stream can also finish, fail or be refused while the read is in flight, and that
+      // outcome is already on screen: applying a read taken before it would turn a refusal into
+      // "interrupted" and put the turn chip back to the count the answer replaced.
+      if (this.state.status !== "streaming" && this.state.status !== "dropped") return;
       if (isThisRequest(this.state, detail.turns.at(-1))) {
         // The server finished the answer the client stopped hearing: adopting it is what makes
         // the abort below safe, because the answer is no longer only in the stream.

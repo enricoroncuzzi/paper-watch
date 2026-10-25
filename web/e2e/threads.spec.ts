@@ -183,6 +183,71 @@ test("a refused follow-up keeps its error when the reader comes back", async ({ 
   await expect(sheet.getByTestId("interrupted")).toHaveCount(0);
 });
 
+test("a refusal that lands while the return's read is in flight keeps its error", async ({
+  page,
+}) => {
+  await openSheet(page);
+  await firstTurn(page);
+  const sheet = page.getByRole("dialog");
+
+  // The follow-up's answer is held open, so the sheet is streaming when the reader returns.
+  let releaseAsk!: () => void;
+  const askGate = new Promise<void>((resolve) => {
+    releaseAsk = resolve;
+  });
+  await page.route("**/api/ask", async (route) => {
+    await askGate;
+    await route.fulfill({
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+      body: `event: error\ndata: ${JSON.stringify({ code: "daily_cap", message: "The daily model limit is spent.", retry_at: "2026-10-26T00:00:00Z" })}\n\n`,
+    });
+  });
+  // The thread read is held too, and holds only the turn that was stored before this request.
+  let releaseRead!: () => void;
+  const readGate = new Promise<void>((resolve) => {
+    releaseRead = resolve;
+  });
+  await page.route("**/api/threads/**", async (route) => {
+    await readGate;
+    await route.fulfill({
+      json: {
+        id: "any",
+        title: "What do coding agents measure?",
+        turns: [
+          {
+            n: 1,
+            question: "What do coding agents measure?",
+            answer: ANSWER,
+            search_mode: "hybrid",
+            created_at: new Date().toISOString(),
+          },
+        ],
+      },
+    });
+  });
+
+  await sheet.getByRole("textbox", { name: "Your question" }).fill("What would break this approach?");
+  await sheet.getByRole("button", { name: "Send the question" }).click();
+  await expect(sheet.getByTestId("asked-question")).toHaveText("What would break this approach?");
+
+  const readRequest = page.waitForRequest("**/api/threads/**");
+  const readResponse = page.waitForResponse("**/api/threads/**");
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await readRequest;
+
+  // The refusal lands first, then the read taken before it: the refusal has to stay, because a
+  // retry cannot succeed until the cap resets and the interrupted line would demand one.
+  releaseAsk();
+  await expect(sheet.getByTestId("ask-error")).toContainText("The daily model limit is spent", {
+    timeout: 15_000,
+  });
+  releaseRead();
+  await readResponse;
+  await expect(sheet.getByTestId("ask-error")).toContainText("The daily model limit is spent");
+  await expect(sheet.getByTestId("interrupted")).toHaveCount(0);
+});
+
 test("a return to the page adopts the turn the server finished", async ({ page, request }) => {
   await openSheet(page);
   await firstTurn(page);

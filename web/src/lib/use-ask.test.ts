@@ -956,6 +956,24 @@ describe("the ask controller with threads", () => {
     expect(adopted.interrupted).toBe(false);
   });
 
+  it("adopting a turn with a gap in the numbers counts by the highest one", () => {
+    // Turn 2's payload no longer validates, so the route leaves it out. The adopted turn is still
+    // the third, and the chip and the next request both have to say three.
+    const held: AskState = {
+      ...INITIAL_ASK_STATE,
+      status: "dropped",
+      question: "q3",
+      askedAt: "2026-11-04T03:00:00Z",
+      threadId: "55555555-5555-4555-8555-555555555555",
+      turnCount: 2,
+      expected: 3,
+    };
+    const adopted = askReducer(held, { type: "adopted", turns: [turn(1, "q1"), turn(3, "q3")] });
+    expect(adopted.turn).toBe(3);
+    expect(adopted.turnCount).toBe(3);
+    expect(adopted.turns.map((one) => one.n)).toEqual([1]);
+  });
+
   it("a recovered conversation counts its turns by number after a skipped turn", async () => {
     // Turn 2's payload no longer validates, so the route leaves it out; the next question is still
     // numbered by the highest stored n.
@@ -1058,6 +1076,123 @@ describe("the ask controller with threads", () => {
     await first;
     expect(controller.getState().threadId).toBe(other);
     expect(controller.getState().question).toBe("another question");
+  });
+
+  it("a stored turn with this number but other words is not adopted", async () => {
+    // Another tab or device appended a turn while this one was open: the number matches, the words
+    // do not, so it is not this request's answer and the sheet must say the request was interrupted.
+    let turns = [turn(1, "q1")];
+    const fetchImpl = routedFetch({
+      [`/api/threads/${THREAD}`]: () => Response.json({ id: THREAD, title: "q1", turns }),
+    });
+    const controller = new AskController({ fetchImpl, watchdogMs: 45_000 });
+    await controller.openThread(THREAD);
+
+    const stalled = controllable();
+    fetchImpl.mockImplementationOnce(async () => new Response(stalled.body));
+    const run = controller.ask("q2");
+    await vi.advanceTimersByTimeAsync(0);
+    turns = [turn(1, "q1"), turn(2, "a question another tab asked")];
+    stalled.close();
+    await run;
+    expect(controller.getState().status).toBe("dropped");
+
+    await controller.recover();
+    const state = controller.getState();
+    expect(state.status).toBe("dropped");
+    expect(state.interrupted).toBe(true);
+    expect(state.answer).toBeNull();
+    expect(state.question).toBe("q2");
+  });
+
+  it("a first question with no thread reads nothing when the page returns", async () => {
+    // The thread id arrives with the first answer, so there is nothing to read yet: a return must
+    // not ask the API for the thread of a conversation it has not stored.
+    const stream = controllable();
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(stream.body));
+    const controller = new AskController({ fetchImpl, watchdogMs: 45_000 });
+    const run = controller.ask("q1");
+    await vi.advanceTimersByTimeAsync(0);
+    await controller.recover();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    stream.close();
+    await run;
+  });
+
+  it("a refusal that lands while the thread read is in flight stays a refusal", async () => {
+    // The read started while the stream was healthy; the server then refused the answer. That
+    // outcome is already on screen, so the late read must not turn it into an interruption.
+    let release!: () => void;
+    const gated = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let reads = 0;
+    const stream = controllable();
+    const fetchImpl = routedFetch({
+      "/api/ask": () => new Response(stream.body),
+      [`/api/threads/${THREAD}`]: async () => {
+        reads += 1;
+        if (reads > 1) await gated;
+        return Response.json({ id: THREAD, title: "q1", turns: [turn(1, "q1")] });
+      },
+    });
+    const controller = new AskController({ fetchImpl, watchdogMs: 45_000 });
+    await controller.openThread(THREAD);
+
+    const run = controller.ask("q2");
+    await vi.advanceTimersByTimeAsync(0);
+    const read = controller.recover();
+    await vi.advanceTimersByTimeAsync(0);
+    stream.push(frame("error", { code: "daily_cap", message: "cap" }));
+    stream.close();
+    await run;
+    expect(controller.getState().status).toBe("error");
+
+    release();
+    await read;
+    const state = controller.getState();
+    expect(state.status).toBe("error");
+    expect(state.error?.code).toBe("daily_cap");
+    expect(state.interrupted).toBe(false);
+  });
+
+  it("an answer that lands while the thread read is in flight keeps its turn count", async () => {
+    // Same race with a finished answer: the read was taken before the server stored this turn, so
+    // applying it would put the chip back to the count the conversation had before the answer.
+    let release!: () => void;
+    const gated = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let reads = 0;
+    const stream = controllable();
+    const fetchImpl = routedFetch({
+      "/api/ask": () => new Response(stream.body),
+      [`/api/threads/${THREAD}`]: async () => {
+        reads += 1;
+        if (reads > 1) await gated;
+        return Response.json({ id: THREAD, title: "q1", turns: [turn(1, "q1")] });
+      },
+    });
+    const controller = new AskController({ fetchImpl, watchdogMs: 45_000 });
+    await controller.openThread(THREAD);
+
+    const run = controller.ask("q2");
+    await vi.advanceTimersByTimeAsync(0);
+    const read = controller.recover();
+    await vi.advanceTimersByTimeAsync(0);
+    stream.push(frame("answer", ANSWER));
+    stream.push(frame("thread", { id: THREAD, turn: 2 }));
+    stream.close();
+    await run;
+    expect(controller.getState().status).toBe("done");
+
+    release();
+    await read;
+    const state = controller.getState();
+    expect(state.status).toBe("done");
+    expect(state.turnCount).toBe(2);
+    expect(state.turn).toBe(2);
+    expect(state.answer).toEqual(ANSWER);
   });
 
   it("a conversation with an unreadable turn still counts its turns by number", async () => {
