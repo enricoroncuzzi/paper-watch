@@ -668,3 +668,102 @@ captain decision.
 There is no reverse proxy on this path. If Caddy is ever used as the fallback, it must set
 `request_body max_size 16KB` to match the gate's cap; without it the gate still refuses a 20 KB
 body, but the proxy would have buffered it first.
+
+## 17. The soak
+
+Before the M3 acceptance the tunnel gets one 72-hour soak: the public address must keep answering
+from outside for three days, and a restart of the tunnel agent must be back inside two minutes. Run
+the probe from the Mac, never from the server: a probe on the server proves nothing about the
+public path.
+
+`deploy/vps/tunnel-soak.sh` is the probe (`run`) and the arithmetic over its log (`summary`);
+`deploy/vps/soak-stream.py` is a heartbeat SSE test server that exists only for the soak, with
+`paperwatch-soak-stream.service` as its unit. The stream is what measures recovery: the five-minute
+probes confirm health only at their next tick, while a gap between heartbeats is a reading fine
+enough for the two-minute rule.
+
+Start the stream server on the server and publish it on 8443. Funnel allows 8443 alongside 443, so
+this is a second mapping and not a second hostname. The stream has no credential on purpose: it
+serves a counter and nothing else, and the mapping exists only for the soak:
+
+```bash
+cp ~/paper-watch/deploy/vps/paperwatch-soak-stream.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now paperwatch-soak-stream
+tailscale --socket="$HOME/.local/state/tailscale/tailscaled.sock" \
+  funnel --bg 8443 http://127.0.0.1:8443
+tailscale --socket="$HOME/.local/state/tailscale/tailscaled.sock" funnel status
+```
+
+`funnel status` must show both mappings. The stream's public URL is
+`https://<PW_API_PUBLIC_HOST>:8443/events`; check it once from the Mac before starting the soak,
+because a tailnet policy that does not allow 8443 fails here and not three days later:
+
+```bash
+curl -sS -N --max-time 5 https://<PW_API_PUBLIC_HOST>:8443/events | head -n 2
+```
+
+Then start the probe from the Mac. It appends one line per probe and holds a five-minute stream
+every hour; 72 hours means it has to run under `tmux` on a machine that does not sleep:
+
+```bash
+./deploy/vps/tunnel-soak.sh run https://<PW_API_PUBLIC_HOST> \
+  --stream-url https://<PW_API_PUBLIC_HOST>:8443/events
+```
+
+The defaults are the soak's: `--hours` 72, `--interval` 300, `--stream-window` 300,
+`--stream-every` 3600, `--max-time` 20 and `--log ~/paperwatch-soak.log`. The log stays outside the
+repository: it carries the public hostname. A sleeping Mac is a gap in the soak, not a tunnel
+failure, and it shows up as a longer gap between probes in the summary.
+
+Afterwards, read the numbers back:
+
+```bash
+./deploy/vps/tunnel-soak.sh summary ~/paperwatch-soak.log
+```
+
+It prints the window, the probe counts, the failed handshakes (a probe that got no HTTP response
+at all: DNS, TCP or the TLS handshake failed), the stream count, the longest outage, the longest gap
+between probes, and `verdict: PASS` or `FAIL` with its reasons; the exit status is 1 on a `FAIL`.
+The pass rule is the soak's own: no failed handshake and no failed probe in the window, and no
+outage of two minutes or more. The probes can confirm an outage only at their next tick, so the
+stream's gap is the fine measurement and the probe outage is the coarse one.
+
+### The restart check
+
+Restart the tunnel agent while a stream is running, so the recovery is timed to the next heartbeat:
+
+```bash
+# during the hourly stream
+systemctl --user restart paperwatch-tunnel
+```
+
+The stream that was open ends early (`why=short`) or records the break as its `gap=`, and its frames
+resume within one heartbeat of the agent coming back. The probes read `ok` again at their next tick.
+If the hourly stream is not running, take the measurement with a short run of its own:
+
+```bash
+./deploy/vps/tunnel-soak.sh run https://<PW_API_PUBLIC_HOST> \
+  --stream-url https://<PW_API_PUBLIC_HOST>:8443/events \
+  --interval 60 --stream-window 120 --stream-every 120 --hours 0 --log ~/restart-check.log
+# Ctrl-C after a few minutes, then read it:
+./deploy/vps/tunnel-soak.sh summary ~/restart-check.log
+```
+
+That log counts the restart's own handshake failures, so read its `longest outage` line, not its
+verdict: the line is the recovery time the two-minute rule is about.
+
+### Removing the mapping
+
+When the soak is over, remove the 8443 mapping and stop the stream server. The mapping is
+tailscaled state, so nothing is uninstalled, but leaving it published would leave a public stream
+running:
+
+```bash
+tailscale --socket="$HOME/.local/state/tailscale/tailscaled.sock" funnel --https=8443 off
+tailscale --socket="$HOME/.local/state/tailscale/tailscaled.sock" funnel status
+systemctl --user disable --now paperwatch-soak-stream
+```
+
+If the installed `tailscale` spells the removal differently, `tailscale funnel --help` prints it;
+`funnel status` must then show only the 443 mapping.

@@ -123,12 +123,15 @@ def _service_section(unit: Path) -> list[str]:
 
 API_UNIT = REPO_ROOT / "deploy" / "vps" / "paperwatch-api.service"
 TUNNEL_UNIT = REPO_ROOT / "deploy" / "vps" / "paperwatch-tunnel.service"
+SOAK_UNIT = REPO_ROOT / "deploy" / "vps" / "paperwatch-soak-stream.service"
 SLICE_FILE = REPO_ROOT / "deploy" / "vps" / "paperwatch.slice"
 INGEST_DROP_IN = REPO_ROOT / "deploy" / "vps" / "paperwatch-ingest.service.d" / "slice.conf"
 
 
 @pytest.mark.parametrize(
-    "unit", [UNIT, BACKUP_UNIT, API_UNIT, TUNNEL_UNIT], ids=["ingest", "backup", "api", "tunnel"]
+    "unit",
+    [UNIT, BACKUP_UNIT, API_UNIT, TUNNEL_UNIT, SOAK_UNIT],
+    ids=["ingest", "backup", "api", "tunnel", "soak-stream"],
 )
 def test_each_unit_refuses_to_gain_privileges(unit: Path) -> None:
     # The units run code from the account's home. None needs a setuid or setgid binary, so the

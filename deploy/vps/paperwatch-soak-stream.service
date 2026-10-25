@@ -1,0 +1,20 @@
+# The soak's SSE test server, as a systemd user unit for the `paperwatch` account. It exists only
+# for the 72-hour tunnel soak in section 17 of docs/deploy/vps.md: start it for the soak, then stop
+# and disable it and remove the port 8443 Funnel mapping when the soak ends.
+[Unit]
+Description=Paper Watch soak stream (SSE test server)
+Documentation=https://github.com/enricoroncuzzi/paper-watch/blob/main/docs/deploy/vps.md
+[Service]
+Type=simple
+# The system python3 is enough, because the server is standard library only. Loopback only: the
+# tunnel's second Funnel mapping is what publishes it for the soak.
+ExecStart=/usr/bin/python3 /home/paperwatch/paper-watch/deploy/vps/soak-stream.py --host 127.0.0.1 --port 8443 --heartbeat 15
+# One thread and twenty small frames a minute, capped so a soak bug cannot reach the slice.
+MemoryMax=64M
+MemorySwapMax=0
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target
