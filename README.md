@@ -14,12 +14,14 @@ hand. Paper Watch never posts to LinkedIn itself.
 It is also a deliberate learning project: every technology it uses has a load-bearing job in the
 code and a short lesson in [`docs/learn/`](docs/learn/).
 
-Status: M0 to M3 are done. The daily ingestion has run on a shared VPS since 2026-10-22, and M3
-puts the product on the web: the API runs on that VPS behind a credential gate and a tunnel, and a
-private Next.js page signs one reader in with GitHub and reads it over HTTPS. The page shows the
-last run, the weekly picks and the Rising shelf, the LinkedIn drafts and the stored conversations,
-and browses every admitted item with its tier history, its signal series, its stored text and its
-30-second summary.
+Status: M0 to M2 are done, and M3 is built: all seven of its slices are shipped and live. The daily
+ingestion has run on a shared VPS since 2026-10-22, and M3 puts the product on the web: the API
+runs on that VPS behind a credential gate and a tunnel, and a private Next.js page signs one reader
+in with GitHub and reads it over HTTPS. The page shows the last run, the weekly picks and the
+Rising shelf, the LinkedIn drafts and the stored conversations, and browses every admitted item
+with its tier history, its signal series, its stored text and its 30-second summary. M3's
+completion checks are still open: the 72-hour soak of the public tunnel, the main-flow smoke test
+and the owner's acceptance.
 
 ## Quickstart
 
@@ -133,8 +135,9 @@ its stored text before it is shown. A LinkedIn draft is one model call from the 
 and your point of view, checked by code and saved in the same request; regenerating makes a new
 draft and never edits the old one.
 
-**CV line (true as of M3):** Built a private Next.js page on Vercel in front of a credential-gated
-API published through a userspace tunnel, with ranked picks and code-checked LinkedIn drafts.
+**CV line (true of what M3 has built):** Built a private Next.js page on Vercel in front of a
+credential-gated API published through a userspace tunnel, with ranked picks and code-checked
+LinkedIn drafts.
 
 ## Documentation
 
