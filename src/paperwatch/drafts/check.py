@@ -330,18 +330,24 @@ def _check_first_person(
     sentences unchanged, as separate sentences, but may not trim one or blend it with other text.
     A sentence passes when its words equal one owner sentence or a run of neighbouring ones, since
     a line wrap in the point of view may split one sentence in two. A verbatim quote of the item is
-    the authors' voice, so it is not a first-person claim here; the quote rule already checks it.
+    the authors' voice, so it does not make a sentence first person; the quote rule already checks
+    it. Whether the owner wrote the sentence is decided on its own characters, quotes and links
+    included, so a quote or link added to, dropped from or swapped in an owner sentence is flagged.
     """
     owner = [
-        key for key in map(_sentence_key, _split_sentences(_blanked(pov, folded_store))) if key
+        key
+        for key in (
+            _sentence_key(pov[start:end])
+            for start, end in _piece_spans(_SENTENCE_END, _blanked(pov, folded_store))
+        )
+        if key
     ]
     blanked = _blanked(text, folded_store)
     for start, end in _piece_spans(_SENTENCE_END, blanked):
-        sentence = blanked[start:end]
-        if not _is_first_person(sentence):
+        if not _is_first_person(blanked[start:end]):
             continue
         counts["first_person"][0] += 1
-        if _owner_wrote(_sentence_key(sentence), owner):
+        if _owner_wrote(_sentence_key(text[start:end]), owner):
             counts["first_person"][1] += 1
             continue
         found["first_person"].append(
@@ -381,11 +387,6 @@ def _is_first_person(sentence: str) -> bool:
 def _fold(value: str) -> str:
     # The folding of `_normalise` without its case change: "US" and "us" are different words.
     return unicodedata.normalize("NFKC", html.unescape(value)).translate(_TRANSLATION)
-
-
-def _split_sentences(text: str) -> list[str]:
-    """Sentences as this rule splits them: after . ! ? and at a newline, not at a comma."""
-    return [text[start:end] for start, end in _piece_spans(_SENTENCE_END, text)]
 
 
 def _sentence_key(value: str) -> str:

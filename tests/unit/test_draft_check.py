@@ -805,6 +805,24 @@ def test_the_owner_may_copy_a_sentence_that_quotes_the_source() -> None:
     assert first_person(replace(GOOD, body=GOOD.body + " " + sentence), source, pov=sentence) == []
 
 
+def test_a_quote_added_to_or_dropped_from_an_owner_sentence_is_flagged() -> None:
+    source = replace(SOURCE, text=TEXT + " We evaluated this on 40 long-horizon tasks.")
+    blended = 'I ran it on our traces and it worked: "we evaluated this on 40 long-horizon tasks".'
+    draft = replace(GOOD, body=GOOD.body + " " + blended)
+    assert first_person(draft, source, pov="I ran it on our traces and it worked.") == [blended]
+    quoted = 'I like "we evaluated this on 40 long-horizon tasks."'
+    dropped = replace(GOOD, body=GOOD.body + ' I like "".')
+    assert first_person(dropped, source, pov=quoted) == ['I like "".']
+
+
+def test_a_link_swapped_in_an_owner_sentence_is_flagged() -> None:
+    source = replace(SOURCE, github_repo="https://github.com/authors/repo")
+    draft = replace(GOOD, body=GOOD.body + " I built https://github.com/authors/repo.")
+    assert kinds(draft, source, pov="I built https://github.com/me/tool.") == ["first_person"]
+    copied = replace(GOOD, body=GOOD.body + " I built https://github.com/me/tool.")
+    assert kinds(copied, source, pov="I built https://github.com/me/tool.") == []
+
+
 def test_the_note_after_a_url_is_the_readers_own_words() -> None:
     draft = replace(GOOD, body=GOOD.body + " Paper: https://arxiv.org/abs/2601.01234. I stole it.")
     assert first_person(draft, pov="Interesting.") == ["I stole it."]
