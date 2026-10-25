@@ -46,7 +46,7 @@ function errorCopy(error: AskError): string {
     case "unavailable":
       return "The API is unreachable right now. The ingestion is unaffected.";
     case "dropped":
-      return "The connection dropped. Ask again.";
+      return "The connection dropped.";
     case "internal":
       return "Something went wrong answering. Ask again.";
   }
@@ -164,11 +164,10 @@ export function AskSheet({
       threadId,
       tiers: options.tiers,
     });
-    // A failure puts the question back only when nothing else has been typed since, and only when
-    // no block above already offers to send it again: a follow-up's drop ends in the adopted
-    // answer or in the interrupted line, and a dropped first question has no thread to recover.
-    const refill = status === "error" || (status === "dropped" && !threadId);
-    if (refill) setDraft((current) => (current === "" ? trimmed : current));
+    // A refusal puts the question back only when nothing else has been typed since. A dropped
+    // answer does not: its own block offers "Ask it again", and refilling as well would both
+    // duplicate the offer and discard the block's own question and filter.
+    if (status === "error") setDraft((current) => (current === "" ? trimmed : current));
   }
 
   function onKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -265,6 +264,19 @@ export function AskSheet({
                   Recent
                 </span>
               </button>
+              {/* Right after its trigger, so Tab reaches the list before the Close button; it is
+                  positioned against the header rule, not against this row. */}
+              {recentOpen ? (
+                <RecentThreads
+                  id="recent-threads"
+                  opener={recentButton}
+                  onPick={(threadId) => {
+                    setRecentOpen(false);
+                    void openThread(threadId);
+                  }}
+                  onDismiss={closeRecent}
+                />
+              ) : null}
               <Dialog.Close
                 aria-label="Close the sheet"
                 className="grid h-11 w-11 place-items-center rounded-full text-ink-3 hover:bg-card-2 hover:text-ink"
@@ -282,17 +294,6 @@ export function AskSheet({
                 </svg>
               </Dialog.Close>
             </div>
-            {recentOpen ? (
-              <RecentThreads
-                id="recent-threads"
-                opener={recentButton}
-                onPick={(threadId) => {
-                  setRecentOpen(false);
-                  void openThread(threadId);
-                }}
-                onDismiss={closeRecent}
-              />
-            ) : null}
           </header>
 
           <div
@@ -359,7 +360,14 @@ export function AskSheet({
               </p>
             ) : null}
 
-            <Trace tools={state.tools} steps={state.steps} sourceCount={state.sources.length} />
+            <Trace
+              tools={state.tools}
+              steps={state.steps}
+              // The checked answer's own citations are what the footnote list prints, so the count
+              // must agree with them: a follow-up that only re-reads an earlier source announces
+              // no `source` event and would otherwise read "0 sources" above the answer.
+              sourceCount={state.answer?.citations.length ?? state.sources.length}
+            />
 
             {state.interrupted ? (
               <div
@@ -387,6 +395,17 @@ export function AskSheet({
                 <p className="text-[13px] leading-[1.55] text-ink">{errorCopy(shownError)}</p>
                 {shownError.code === "daily_cap" ? (
                   <MatchingItems sources={state.sources} />
+                ) : null}
+                {shownError.code === "dropped" ? (
+                  // A dropped answer has no server payload, and a follow-up's re-fetch can fail
+                  // too: the block carries the retry itself, or the reader retypes the question.
+                  <button
+                    type="button"
+                    onClick={() => void sendQuestion(state.question, { tiers: state.tiers })}
+                    className="mt-2 inline-flex h-8 items-center rounded-[2px] border border-rule-2 bg-card px-3 text-[12px] text-ink hover:border-accent"
+                  >
+                    Ask it again
+                  </button>
                 ) : null}
               </div>
             ) : state.interrupted ? null : (

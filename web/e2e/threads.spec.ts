@@ -124,13 +124,63 @@ test("coming back to the page leaves a healthy stream running", async ({ page, r
   await ask(page, "What would break this approach?");
   const sheet = page.getByRole("dialog");
   await expect(sheet.getByTestId("caret")).toBeVisible();
+  const read = page.waitForRequest("**/api/threads/**");
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  // The return does read the thread, and finds no finished turn for this question.
+  expect((await read).url()).toContain("/api/threads/");
 
   // Still streaming after the return, and the answer arrives instead of being killed.
   await expect(sheet.getByTestId("caret")).toBeVisible();
   await expect(sheet.getByTestId("interrupted")).toHaveCount(0);
   await expect(sheet.getByTestId("answer").locator("sup")).toHaveCount(1, { timeout: 15_000 });
   await expect(sheet.getByTestId("turns-chip")).toHaveText("2 turns");
+});
+
+test("returning to a reopened conversation does not duplicate its last turn", async ({ page }) => {
+  await openSheet(page);
+  const sheet = page.getByRole("dialog");
+  await sheet.getByRole("button", { name: "Recent", exact: true }).click();
+  await sheet
+    .getByTestId("recent-threads")
+    .getByRole("button", { name: /What do recent papers say about memory for long-running/ })
+    .click();
+  await expect(sheet.getByTestId("turns-chip")).toHaveText("3 turns");
+  await expect(sheet.getByTestId("turn-1")).toBeVisible();
+  await expect(sheet.getByTestId("turn-2")).toBeVisible();
+
+  const reads: string[] = [];
+  page.on("request", (request) => {
+    if (/\/api\/threads\//.test(request.url())) reads.push(request.url());
+  });
+  // An iPhone locks and unlocks on every look: each return used to move the last turn into the
+  // earlier ones as well. A finished conversation has nothing to recover, so nothing is read.
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await expect(sheet.getByTestId("asked-question")).toHaveText("What are the limitations?");
+  await expect(sheet.getByTestId("turn-1")).toHaveCount(1);
+  await expect(sheet.getByTestId("turn-2")).toHaveCount(1);
+  await expect(sheet.locator('[data-testid^="turn-"]')).toHaveCount(2);
+  // Give a stray read the time to appear before asserting there was none.
+  await page.waitForTimeout(300);
+  expect(reads).toEqual([]);
+});
+
+test("a refused follow-up keeps its error when the reader comes back", async ({ page, request }) => {
+  await openSheet(page);
+  await firstTurn(page);
+  // The daily cap is spent: a return must not turn that into "That answer was interrupted",
+  // which would tell the reader to retry something that cannot succeed until it resets.
+  await setScenario(request, "daily_cap", { keepThreads: true });
+  await ask(page, "What would break this approach?");
+  const sheet = page.getByRole("dialog");
+  await expect(sheet.getByTestId("ask-error")).toContainText("The daily model limit is spent", {
+    timeout: 15_000,
+  });
+
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await expect(sheet.getByTestId("ask-error")).toContainText("The daily model limit is spent");
+  await expect(sheet.getByTestId("ask-error")).toBeVisible();
+  await expect(sheet.getByTestId("interrupted")).toHaveCount(0);
 });
 
 test("a return to the page adopts the turn the server finished", async ({ page, request }) => {
@@ -182,6 +232,55 @@ test("a return to the page adopts the turn the server finished", async ({ page, 
   // The adopted answer is stored: the sheet says nothing it cannot know about a filter.
   await expect(sheet.getByTestId("asked-question")).toHaveText("What would break this approach?");
   await expect(sheet.getByText("peer-reviewed only")).toHaveCount(0);
+});
+
+test("a dropped follow-up whose thread read fails still offers the retry", async ({
+  page,
+  request,
+}) => {
+  await openSheet(page);
+  await firstTurn(page);
+  await setScenario(request, "thread_drop", { keepThreads: true });
+  // The re-fetch that would say what the server finished fails too: without the block's own
+  // retry the reader has to retype the question.
+  await page.route("**/api/threads/**", (route) =>
+    route.fulfill({ status: 500, json: { detail: "threads are unavailable" } }),
+  );
+
+  await ask(page, "What would break this approach?");
+  const sheet = page.getByRole("dialog");
+  const block = sheet.getByTestId("ask-error");
+  await expect(block).toContainText("The connection dropped.");
+  await expect(sheet.getByTestId("interrupted")).toHaveCount(0);
+  await expect(sheet.getByTestId("composer")).toHaveValue("");
+
+  await page.unroute("**/api/threads/**");
+  await setScenario(request, "normal", { keepThreads: true });
+  await block.getByRole("button", { name: "Ask it again" }).click();
+  await expect(sheet.getByTestId("answer").locator("sup")).toHaveCount(1);
+  const sent = await lastAsk(request);
+  expect(sent).toMatchObject({ question: "What would break this approach?" });
+  expect(typeof sent.thread_id).toBe("string");
+});
+
+test("the trace counts the sources the answer cites", async ({ page }) => {
+  await openSheet(page);
+  await firstTurn(page);
+  const sheet = page.getByRole("dialog");
+  // A follow-up that only re-reads an earlier paper announces no `source` event of its own; the
+  // count must still agree with the footnotes the answer carries.
+  await page.route("**/api/ask", (route) =>
+    route.fulfill({
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+      body: `event: step\ndata: ${JSON.stringify({ round: 1, ms: 12, new_sources: 0 })}\n\nevent: answer\ndata: ${JSON.stringify(ANSWER)}\n\n`,
+    }),
+  );
+  await ask(page, "And how was it measured?");
+  const trace = sheet.getByTestId("trace");
+  await expect(trace).toBeVisible();
+  await expect(trace).toContainText("1 source");
+  await expect(trace).not.toContainText("0 sources");
 });
 
 test("recent threads reopen a conversation", async ({ page }) => {
@@ -272,6 +371,22 @@ test("the sheet body is a live region and the Recent list is a disclosure", asyn
   // No menu roles: the list is an ordinary disclosure of buttons.
   await expect(sheet.getByRole("menu")).toHaveCount(0);
   await expect(sheet.getByTestId("recent-threads").locator("button").first()).toBeVisible();
+});
+
+test("tab from Recent reaches the list before the close button", async ({ page }, testInfo) => {
+  test.skip(
+    !testInfo.project.name.includes("chromium"),
+    "desktop keyboard focus order is checked in Chromium",
+  );
+  await openSheet(page);
+  const sheet = page.getByRole("dialog");
+  const recent = sheet.getByRole("button", { name: "Recent", exact: true });
+  await recent.click();
+  const list = sheet.getByTestId("recent-threads");
+  await expect(list.locator("button").first()).toBeVisible();
+  // The list follows its trigger in the document, so Tab lands in it instead of on Close.
+  await page.keyboard.press("Tab");
+  await expect(list.locator("button").first()).toBeFocused();
 });
 
 test("the conversation keeps its chips and composer on the phone", async ({ page }, testInfo) => {

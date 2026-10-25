@@ -5,6 +5,8 @@ import {
   AskController,
   footnoteNumbers,
   INITIAL_ASK_STATE,
+  type AnswerPayload,
+  type AskErrorCode,
   type AskState,
 } from "./use-ask";
 
@@ -48,7 +50,7 @@ function controllerFor(body: ReadableStream<Uint8Array>, status = 200) {
 
 const THREAD = "55555555-5555-4555-8555-555555555555";
 
-const ANSWER = {
+const ANSWER: AnswerPayload = {
   text: "Coding agents are measured on real repository bugs [S1].",
   search_mode: "hybrid",
   supported: true,
@@ -96,6 +98,24 @@ describe("the ask reducer", () => {
     state = askReducer(state, { type: "event", event: "source", data: source });
     state = askReducer(state, { type: "event", event: "source", data: source });
     expect(state.sources).toHaveLength(1);
+  });
+
+  it("a finished answer clears an interruption", () => {
+    // A thread read can mark a question interrupted just as the answer arrives; the answer is
+    // what the server checked, so the interrupted line goes.
+    let state: AskState = askReducer(INITIAL_ASK_STATE, {
+      type: "start",
+      question: "q",
+      at: "2026-11-04T09:00:00Z",
+      threadId: "55555555-5555-4555-8555-555555555555",
+      filter: "all tiers",
+      tiers: null,
+    });
+    state = askReducer(state, { type: "recover", turns: [] });
+    expect(state.interrupted).toBe(true);
+    state = askReducer(state, { type: "event", event: "answer", data: ANSWER });
+    expect(state.interrupted).toBe(false);
+    expect(state.status).toBe("done");
   });
 });
 
@@ -289,6 +309,38 @@ describe("the ask controller", () => {
     await secondRun;
   });
 
+  it("a frame from a superseded stream does not land on the newer request", async () => {
+    // The old request's reader can still deliver one buffered frame after it was replaced. Both
+    // the check after the response and the check inside the loop are what keep it out.
+    const first = controllable();
+    const second = controllable();
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(first.body))
+      .mockResolvedValueOnce(new Response(second.body));
+    const controller = new AskController({ fetchImpl, watchdogMs: 45_000 });
+
+    const firstRun = controller.ask("first");
+    await vi.advanceTimersByTimeAsync(0);
+    const secondRun = controller.ask("second");
+    await vi.advanceTimersByTimeAsync(0);
+
+    first.push(frame("token", { text: "the older request" }));
+    first.push(frame("answer", ANSWER));
+    await vi.advanceTimersByTimeAsync(0);
+    const state = controller.getState();
+    expect(state.text).toBe("");
+    expect(state.answer).toBeNull();
+    expect(state.question).toBe("second");
+    expect(state.status).toBe("streaming");
+
+    first.close();
+    await firstRun;
+    expect(controller.getState().status).toBe("streaming");
+    second.close();
+    await secondRun;
+  });
+
   it("a superseded response that arrives late does not touch the newer request", async () => {
     // Response headers can arrive after the newer ask aborted this one.
     let resolveFirst!: (response: Response) => void;
@@ -414,7 +466,7 @@ describe("the ask controller", () => {
   });
 });
 
-function turn(n: number, question: string, answer: unknown = ANSWER) {
+function turn(n: number, question: string, answer: AnswerPayload = ANSWER) {
   return {
     n,
     question,
@@ -754,5 +806,273 @@ describe("the ask controller with threads", () => {
     const controller = new AskController({ fetchImpl, watchdogMs: 45_000 });
     await controller.recover();
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("coming back to an opened conversation does not duplicate its last turn", async () => {
+    // An iPhone locks and unlocks on every glance, and each return used to move the shown turn
+    // into the earlier ones as well. A finished sheet has nothing to recover.
+    const fetchImpl = routedFetch({
+      [`/api/threads/${THREAD}`]: () =>
+        Response.json({
+          id: THREAD,
+          title: "q1",
+          turns: [turn(1, "q1"), turn(2, "q2"), turn(3, "q3")],
+        }),
+    });
+    const controller = new AskController({ fetchImpl, watchdogMs: 45_000 });
+    await controller.openThread(THREAD);
+
+    await controller.recover();
+    await controller.recover();
+    const state = controller.getState();
+    expect(state.status).toBe("done");
+    expect(state.turns.map((one) => one.n)).toEqual([1, 2]);
+    expect(state.question).toBe("q3");
+    expect(state.turnCount).toBe(3);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("coming back after an adopted answer does not duplicate it either", async () => {
+    let turns = [turn(1, "q1")];
+    const fetchImpl = routedFetch({
+      [`/api/threads/${THREAD}`]: () => Response.json({ id: THREAD, title: "q1", turns }),
+    });
+    const controller = new AskController({ fetchImpl, watchdogMs: 45_000 });
+    await controller.openThread(THREAD);
+
+    const stalled = controllable();
+    fetchImpl.mockImplementationOnce(async () => new Response(stalled.body));
+    const run = controller.ask("q2");
+    await vi.advanceTimersByTimeAsync(0);
+    turns = [...turns, turn(2, "q2")];
+    await controller.recover();
+    stalled.close();
+    await run;
+    expect(controller.getState().status).toBe("done");
+
+    const calls = fetchImpl.mock.calls.length;
+    await controller.recover();
+    await controller.recover();
+    const state = controller.getState();
+    expect(state.turns.map((one) => one.n)).toEqual([1]);
+    expect(state.question).toBe("q2");
+    expect(fetchImpl.mock.calls.length).toBe(calls);
+  });
+
+  it.each([
+    "daily_cap",
+    "budget",
+    "model_unavailable",
+    "internal",
+    "deadline",
+    "rate_limited",
+    "busy",
+    "unauthorized",
+    "unavailable",
+  ] as const)("a %s error survives a return to the page", async (code: AskErrorCode) => {
+    // A refused follow-up is final, not interrupted: telling the reader to ask again while the
+    // daily cap is spent, or the server is busy, loses the copy and the matching items that say
+    // why. The return does not even read the thread.
+    const fetchImpl = routedFetch({
+      [`/api/threads/${THREAD}`]: () =>
+        Response.json({ id: THREAD, title: "q1", turns: [turn(1, "q1")] }),
+    });
+    const controller = new AskController({ fetchImpl, watchdogMs: 45_000 });
+    await controller.openThread(THREAD);
+
+    const stream = controllable();
+    fetchImpl.mockImplementationOnce(async () => new Response(stream.body));
+    const run = controller.ask("q2");
+    await vi.advanceTimersByTimeAsync(0);
+    stream.push(frame("error", { code, message: "refused" }));
+    stream.close();
+    await run;
+    expect(controller.getState().status).toBe("error");
+
+    const calls = fetchImpl.mock.calls.length;
+    await controller.recover();
+    const state = controller.getState();
+    expect(state.status).toBe("error");
+    expect(state.error?.code).toBe(code);
+    expect(state.interrupted).toBe(false);
+    expect(fetchImpl.mock.calls.length).toBe(calls);
+  });
+
+  it("a stored turn for a live request replaces the stream and stops it", async () => {
+    // The server finished the answer after the phone stopped hearing it: adopting it is what
+    // makes stopping the stream safe, and no later frame may overwrite the checked answer.
+    let turns = [turn(1, "q1")];
+    const fetchImpl = routedFetch({
+      [`/api/threads/${THREAD}`]: () => Response.json({ id: THREAD, title: "q1", turns }),
+    });
+    const controller = new AskController({ fetchImpl, watchdogMs: 45_000 });
+    await controller.openThread(THREAD);
+
+    const live = controllable();
+    let signal: AbortSignal | null = null;
+    fetchImpl.mockImplementationOnce(async (_url: string | URL | Request, init?: RequestInit) => {
+      signal = init?.signal ?? null;
+      return new Response(live.body);
+    });
+    const run = controller.ask("q2");
+    await vi.advanceTimersByTimeAsync(0);
+    turns = [...turns, turn(2, "q2")];
+    await controller.recover();
+    expect(signal).not.toBeNull();
+    expect(signal!.aborted).toBe(true);
+    expect(controller.getState().status).toBe("done");
+
+    live.push(frame("token", { text: "late words from the stream" }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(controller.getState().text).toBe(ANSWER.text);
+    live.close();
+    await run;
+    expect(controller.getState().status).toBe("done");
+  });
+
+  it("adopting a turn takes the thread's turns, not the ones the sheet held", () => {
+    // The controller only adopts when the sheet's count lines up, but the contract is the
+    // thread's: the turns the server stored are what a reader sees above the adopted answer.
+    const held: AskState = {
+      ...INITIAL_ASK_STATE,
+      status: "dropped",
+      question: "q4",
+      askedAt: "2026-11-04T04:00:00Z",
+      threadId: "55555555-5555-4555-8555-555555555555",
+      turnCount: 3,
+      expected: 4,
+      turns: [
+        { id: "saved-1", n: 1, question: "q1", answer: ANSWER, askedAt: "2026-11-04T01:00:00Z" },
+      ],
+    };
+    const adopted = askReducer(held, {
+      type: "adopted",
+      turns: [turn(1, "q1"), turn(2, "q2"), turn(3, "q3"), turn(4, "q4")],
+    });
+    expect(adopted.turns.map((one) => one.n)).toEqual([1, 2, 3]);
+    expect(adopted.turn).toBe(4);
+    expect(adopted.turnCount).toBe(4);
+    expect(adopted.status).toBe("done");
+    expect(adopted.interrupted).toBe(false);
+  });
+
+  it("a recovered conversation counts its turns by number after a skipped turn", async () => {
+    // Turn 2's payload no longer validates, so the route leaves it out; the next question is still
+    // numbered by the highest stored n.
+    let turns = [turn(1, "q1")];
+    const fetchImpl = routedFetch({
+      [`/api/threads/${THREAD}`]: () => Response.json({ id: THREAD, title: "q1", turns }),
+    });
+    const controller = new AskController({ fetchImpl, watchdogMs: 45_000 });
+    await controller.openThread(THREAD);
+
+    const stalled = controllable();
+    fetchImpl.mockImplementationOnce(async () => new Response(stalled.body));
+    const run = controller.ask("q2");
+    await vi.advanceTimersByTimeAsync(0);
+    stalled.close();
+    await run;
+    expect(controller.getState().status).toBe("dropped");
+
+    turns = [turn(1, "q1"), turn(3, "q3")];
+    await controller.recover();
+    const state = controller.getState();
+    expect(state.status).toBe("dropped");
+    expect(state.interrupted).toBe(true);
+    expect(state.turnCount).toBe(3);
+    expect(state.turns.map((one) => one.n)).toEqual([1, 3]);
+  });
+
+  it("a thread read that lands after the sheet closed leaves it closed", async () => {
+    // The reader closed the sheet while a recovery read was in flight: the read must not turn the
+    // cleared sheet into a dropped one.
+    let release!: () => void;
+    const gated = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let reads = 0;
+    const stalled = controllable();
+    const fetchImpl = routedFetch({
+      "/api/ask": () => new Response(stalled.body),
+      [`/api/threads/${THREAD}`]: async () => {
+        reads += 1;
+        if (reads > 1) await gated;
+        return Response.json({ id: THREAD, title: "q1", turns: [turn(1, "q1")] });
+      },
+    });
+    const controller = new AskController({ fetchImpl, watchdogMs: 45_000 });
+    await controller.openThread(THREAD);
+    const run = controller.ask("q2");
+    await vi.advanceTimersByTimeAsync(0);
+    stalled.close();
+    await run;
+    expect(controller.getState().status).toBe("dropped");
+
+    const read = controller.recover();
+    controller.abort();
+    release();
+    await read;
+    expect(controller.getState().status).toBe("idle");
+    expect(controller.getState().question).toBe("");
+  });
+
+  it("closing the sheet while a conversation loads leaves the sheet closed", async () => {
+    let release!: () => void;
+    const gated = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const fetchImpl = routedFetch({
+      [`/api/threads/${THREAD}`]: async () => {
+        await gated;
+        return Response.json({ id: THREAD, title: "q1", turns: [turn(1, "q1")] });
+      },
+    });
+    const controller = new AskController({ fetchImpl, watchdogMs: 45_000 });
+    const opening = controller.openThread(THREAD);
+    controller.abort();
+    release();
+    await opening;
+    expect(controller.getState().threadId).toBeNull();
+    expect(controller.getState().status).toBe("idle");
+  });
+
+  it("opening a second conversation wins over a read still in flight", async () => {
+    const other = "77777777-7777-4777-8777-777777777777";
+    let release!: () => void;
+    const gated = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const fetchImpl = routedFetch({
+      [`/api/threads/${THREAD}`]: async () => {
+        await gated;
+        return Response.json({ id: THREAD, title: "q1", turns: [turn(1, "q1")] });
+      },
+      [`/api/threads/${other}`]: () =>
+        Response.json({ id: other, title: "other", turns: [turn(1, "another question")] }),
+    });
+    const controller = new AskController({ fetchImpl, watchdogMs: 45_000 });
+    const first = controller.openThread(THREAD);
+    await vi.advanceTimersByTimeAsync(0);
+    await controller.openThread(other);
+    release();
+    await first;
+    expect(controller.getState().threadId).toBe(other);
+    expect(controller.getState().question).toBe("another question");
+  });
+
+  it("a conversation with an unreadable turn still counts its turns by number", async () => {
+    // The route skips a stored turn whose payload no longer validates; the next request is
+    // numbered by the highest stored n, not by how many readable turns came back.
+    const fetchImpl = routedFetch({
+      [`/api/threads/${THREAD}`]: () =>
+        Response.json({ id: THREAD, title: "q1", turns: [turn(1, "q1"), turn(3, "q3")] }),
+    });
+    const controller = new AskController({ fetchImpl, watchdogMs: 45_000 });
+    await controller.openThread(THREAD);
+    const state = controller.getState();
+    expect(state.turnCount).toBe(3);
+    expect(state.expected).toBe(4);
+    expect(state.turns.map((one) => one.n)).toEqual([1]);
+    expect(state.question).toBe("q3");
   });
 });

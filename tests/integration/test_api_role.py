@@ -241,6 +241,28 @@ def _migration(number: str) -> Any:
     return module
 
 
+def test_the_thread_migration_runs_the_grant_it_defines() -> None:
+    # The test above runs `grant_statement()` by hand, so a migration whose `upgrade()` stopped
+    # executing it would pass there and deny the API on the server. The DDL is stubbed: what is
+    # under test is that the grant is one of the statements the upgrade executes.
+    migration = _migration("0008_threads")
+    executed: list[str] = []
+
+    class Recorder:
+        def create_table(self, *args: object, **kwargs: object) -> None:
+            return None
+
+        def create_index(self, *args: object, **kwargs: object) -> None:
+            return None
+
+        def execute(self, statement: object) -> None:
+            executed.append(str(statement))
+
+    migration.op = Recorder()
+    migration.upgrade()
+    assert executed == [migration.grant_statement()]
+
+
 def test_the_thread_grants_cover_what_the_api_writes(engine: Engine) -> None:
     # Migration 0008: the API creates a thread and updates it as turns arrive, inserts each
     # finished turn from its own sequence, and can do nothing else with either table. The

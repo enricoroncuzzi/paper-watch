@@ -244,6 +244,16 @@ function isThisRequest(state: AskState, last: WireTurn | undefined): last is Wir
 }
 
 /**
+ * The thread's own count of finished turns: the highest stored `n`, not how many turns came back.
+ *
+ * The route skips a stored turn whose payload no longer validates, and numbering the next request
+ * from the readable count would collide with the unique `(thread_id, n)`.
+ */
+function storedCount(wire: WireTurn[], fallback: number): number {
+  return wire.at(-1)?.n ?? fallback;
+}
+
+/**
  * The server finished this request's turn after the stream died: its checked answer replaces the
  * streamed text, and the turns before it are the thread's other finished ones.
  */
@@ -255,7 +265,7 @@ function adopt(state: AskState, wire: WireTurn[]): AskState {
     status: "done",
     interrupted: false,
     turns: wire.slice(0, -1).map(conversationTurn),
-    turnCount: wire.length,
+    turnCount: last.n,
     turn: last.n,
     expected: last.n + 1,
     answer: last.answer,
@@ -278,7 +288,7 @@ function applyRecovery(state: AskState, wire: WireTurn[]): AskState {
     status: state.answer === null ? "dropped" : state.status,
     interrupted: state.answer === null && state.question !== "",
     turns: wire.map(conversationTurn),
-    turnCount: wire.length,
+    turnCount: storedCount(wire, state.turnCount),
   };
 }
 
@@ -290,7 +300,7 @@ function openConversation(threadId: string, wire: WireTurn[]): AskState {
     status: "done",
     threadId,
     turn: last.n,
-    turnCount: wire.length,
+    turnCount: last.n,
     expected: last.n + 1,
     turns: wire.slice(0, -1).map(conversationTurn),
     question: last.question,
@@ -502,10 +512,16 @@ export class AskController {
    * to the page does not abort anything. It reads the thread when there is one, adopts the turn
    * only when the server finished *this* request (its words and its number), and otherwise leaves
    * the stream alone; a dead connection still ends through the reader error or the watchdog.
+   *
+   * Only a streaming or dropped answer has anything to recover. A finished or refused one is
+   * already what the server stored: reading it again would move a reopened conversation's last
+   * turn into the earlier ones as well, and turn a follow-up's daily cap or busy error into
+   * "interrupted" on every look at the phone.
    */
   recover = async (): Promise<void> => {
-    const threadId = this.state.threadId;
+    const { status, threadId } = this.state;
     if (!threadId) return;
+    if (status !== "streaming" && status !== "dropped") return;
     const generation = this.generation;
     const fetchImpl = this.options.fetchImpl ?? fetch;
     try {

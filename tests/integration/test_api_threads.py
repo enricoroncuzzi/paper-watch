@@ -349,6 +349,8 @@ def test_ask_about_an_item_starts_a_thread_with_it_as_s1(
         row = Repository(session).thread(thread_id)
     assert row is not None
     assert row.registry[0]["item_id"] == str(ids["swe"])
+    # One alias, and it is S1: the item is the turn's only source until the answer searches.
+    assert [ref["alias"] for ref in row.registry] == ["S1"]
     # The stored turn is the reader's own question, never the prompt the item block built.
     assert row.turns[0].question == "what does this paper measure?"
 
@@ -493,14 +495,22 @@ def test_a_follow_up_on_an_item_keeps_one_s1(
         final("It measured coding agents on real repository bugs [S1]."),
     )
     app_deps = deps(db_session, models, write_factory)
-    thread_id = events(ask(app_deps, {"question": "q1"}).text)[-1][1]["id"]
+    first = events(ask(app_deps, {"question": "q1"}).text)
+    thread_id = first[-1][1]["id"]
 
-    events(
+    second = events(
         ask(
             app_deps,
             {"question": FOLLOW_UP, "thread_id": thread_id, "item_id": str(ids["mem"])},
         ).text
     )
+    # The block is what `item_id` adds to the prompt; without it the follow-up simply continues the
+    # conversation, so the model must not be told to look at an item this turn was not about.
+    follow_up_prompt = " ".join(
+        str(message.content)
+        for message in models[0].model.seen[-1]  # type: ignore[attr-defined]
+    )
+    assert "The reader is asking about" not in follow_up_prompt
     with write_factory() as session:
         row = Repository(session).thread(UUID(thread_id))
     assert row is not None
@@ -508,7 +518,7 @@ def test_a_follow_up_on_an_item_keeps_one_s1(
     # `mem` was not pre-registered as S1: S1 is still the paper the thread's first search found.
     assert by_alias["S1"] == str(ids["swe"])
     assert list(by_alias) == [f"S{i}" for i in range(1, len(by_alias) + 1)]
-    assert str(ids["mem"]) not in {ref["item_id"] for ref in row.registry if ref["alias"] == "S1"}
+    assert second[-1][0] == "thread"
 
 
 def test_an_alias_from_two_turns_ago_is_still_citable(
