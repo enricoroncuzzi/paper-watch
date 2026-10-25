@@ -33,9 +33,11 @@ function romeDate(daysAgo, nowMs) {
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
-  }).formatToParts(new Date(nowMs - daysAgo * 24 * 60 * 60 * 1000));
+  }).formatToParts(new Date(nowMs));
   const value = (type) => Number(parts.find((part) => part.type === type).value);
-  return { year: value("year"), month: value("month"), day: value("day") };
+  // Count back on the calendar, not in 24-hour steps: a Rome day lasts 23 or 25 hours at a DST change.
+  const date = new Date(Date.UTC(value("year"), value("month") - 1, value("day") - daysAgo));
+  return { year: date.getUTCFullYear(), month: date.getUTCMonth() + 1, day: date.getUTCDate() };
 }
 
 /** The instant of 00:00 Rome on that date. Two passes settle the offset across a DST change. */

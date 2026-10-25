@@ -80,6 +80,15 @@ describe("formatting", () => {
     expect(runDayLabel("2026-10-23T23:30:00Z", now)).toBe("Today");
   });
 
+  it("labels yesterday's run across a 23-hour and a 25-hour Rome day", () => {
+    expect(runDayLabel("2026-03-29T12:00:00+02:00", new Date("2026-03-30T00:30:00+02:00"))).toBe(
+      "Yesterday",
+    );
+    expect(runDayLabel("2026-10-24T12:00:00+02:00", new Date("2026-10-25T23:13:00+01:00"))).toBe(
+      "Yesterday",
+    );
+  });
+
   it("writes the waiting follow-up line", () => {
     expect(
       followupLine({
