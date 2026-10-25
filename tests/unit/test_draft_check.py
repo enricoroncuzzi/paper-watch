@@ -225,24 +225,6 @@ def test_the_first_person_word_is_required_in_the_point_of_view() -> None:
     assert kinds(draft, pov="The harness tested this on the traces.") == ["first_person"]
 
 
-def test_the_widened_experience_verbs_are_claims() -> None:
-    for sentence in (
-        "We trained it.",
-        "We reproduced it.",
-        "We replicated it.",
-        "We fine-tuned it.",
-        "We adopted it.",
-        "We integrated it.",
-        "We developed it.",
-        "We launched it.",
-        "We wrote it.",
-    ):
-        assert kinds(replace(GOOD, body=GOOD.body + " " + sentence), pov="") == ["first_person"], (
-            sentence
-        )
-
-
-# S1: the prompt's 25-word quote limit is a rule the check enforces.
 def test_a_quote_over_twenty_five_words_is_flagged() -> None:
     quote = (
         "Replaying exact tool results and dropping the ones that no longer matter cut tokens "
@@ -353,16 +335,6 @@ def test_a_repeated_invented_number_is_one_note() -> None:
 def test_the_notes_are_ordered_number_then_link() -> None:
     draft = replace(GOOD, body=GOOD.body + " It gains 77 points. More at https://example.com/x")
     assert kinds(draft) == ["number", "link"]
-
-
-def test_we_our_and_us_are_first_person() -> None:
-    for sentence in ("We built it.", "Our harness tested it.", "It let us ship it."):
-        assert kinds(replace(GOOD, body=GOOD.body + " " + sentence)) == ["first_person"], sentence
-
-
-def test_ship_deploy_and_measure_are_experience_verbs() -> None:
-    for sentence in ("We shipped it.", "We deployed it.", "We measured it."):
-        assert kinds(replace(GOOD, body=GOOD.body + " " + sentence)) == ["first_person"], sentence
 
 
 def test_a_lab_post_without_an_organisation_is_not_flagged_for_attribution() -> None:
@@ -505,270 +477,6 @@ def test_the_language_code_rule_is_shared_with_the_cli() -> None:
 
 # N1/N2: the round 2 reviewer's 52-case table, kept as the test so each bypass and each honest
 # form stays covered. "flag" is a draft claim the point of view does not make; "pass" is honest.
-B1_CASES: list[tuple[str, str, str, str]] = [
-    (
-        "would test -> I tested",
-        "I would test this on our 300-step traces.",
-        "I tested this on our traces.",
-        "flag",
-    ),
-    (
-        "haven't tested -> I tested",
-        "I haven't tested this yet, but the idea is interesting.",
-        "I tested it.",
-        "flag",
-    ),
-    ("never built -> We built", "We never built anything like this.", "We built it too.", "flag"),
-    (
-        "positive: I tested it",
-        "I tested it on our 300-step traces.",
-        "I tested this on our traces.",
-        "pass",
-    ),
-    (
-        "first-person word required",
-        "The harness tested it on 300-step traces.",
-        "I tested this on our traces.",
-        "flag",
-    ),
-    ("we'd test -> we tested", "We'd test this on our traces.", "We tested this.", "flag"),
-    ("I'll test -> I tested", "I'll test it next week.", "I tested it.", "flag"),
-    ("I'll have tested -> I tested", "I'll have tested it by Friday.", "I tested it.", "flag"),
-    (
-        "I've been testing -> I've been testing (honest)",
-        "I've been testing this on our traces for a week.",
-        "I've been testing this on our traces.",
-        "pass",
-    ),
-    (
-        "I've been testing -> I tested (honest)",
-        "I've been testing this on our traces for a week.",
-        "I tested this on our traces.",
-        "pass",
-    ),
-    ("I had tested -> I tested", "I had tested it before.", "I tested it.", "pass"),
-    ("I tested nothing -> I tested it", "I tested nothing so far.", "I tested it.", "flag"),
-    ("I tested none of it", "I tested none of it.", "I tested it.", "flag"),
-    ("question: Have I tested this?", "Have I tested this? Not yet.", "I tested it.", "flag"),
-    ("question: Did I build one? ", "Should I have built one?", "I built one.", "flag"),
-    (
-        "conditional: if I had tested",
-        "If I had tested it, I would say more.",
-        "I tested it.",
-        "flag",
-    ),
-    ("conditional: unless", "Unless I tested it, I cannot say.", "I tested it.", "flag"),
-    (
-        "conditional: once I've tested",
-        "Once I've tested it I will post numbers.",
-        "I tested it.",
-        "flag",
-    ),
-    ("whether I tested", "Whether I tested it is beside the point.", "I tested it.", "flag"),
-    ("wish I had tested", "I wish I had tested it.", "I tested it.", "flag"),
-    ("may have tested", "I may have tested it once.", "I tested it.", "flag"),
-    ("ought to have tested", "I ought to have tested it.", "I tested it.", "flag"),
-    ("without having tested", "I am writing without having tested it.", "I tested it.", "flag"),
-    ("no / none / nothing built", "I built no such thing.", "I built it.", "flag"),
-    (
-        "supporting + negating sentence",
-        "I tested it on our traces. I never built the harness.",
-        "I built the harness.",
-        "flag",
-    ),
-    (
-        "supporting + negating sentence (same stem, diff sentence)",
-        "I tested it on our traces. I have not tested it on prod.",
-        "I tested it on our traces.",
-        "pass",
-    ),
-    (
-        "supporting + negating same sentence (compound, honest)",
-        "I tested it on our traces, but I haven't tried prod.",
-        "I tested it on our traces.",
-        "pass",
-    ),
-    (
-        "compound honest: built + want to test",
-        "I built a harness and want to test this on it.",
-        "I built a harness.",
-        "pass",
-    ),
-    (
-        "compound honest: built, would test",
-        "I built a replay harness, so I would test this on it.",
-        "I built a replay harness.",
-        "pass",
-    ),
-    (
-        "third-party subject: authors tested",
-        "I think the authors tested it on too few tasks.",
-        "I tested it on too few tasks.",
-        "flag",
-    ),
-    (
-        "third-party subject: they built",
-        "I like that they built a small harness.",
-        "We built a small harness.",
-        "flag",
-    ),
-    (
-        "my colleague built",
-        "My colleague built a similar thing.",
-        "I built a similar thing.",
-        "flag",
-    ),
-    ("i.e. as first person", "The authors tested it (i.e. on 40 tasks).", "I tested it.", "flag"),
-    (
-        "used to (habitual)",
-        "I used to think summaries were fine.",
-        "I used it in production.",
-        "flag",
-    ),
-    (
-        "present progressive: I'm testing",
-        "I'm testing this on our traces right now.",
-        "I'm testing this on our traces.",
-        "pass",
-    ),
-    (
-        "present: we run it in production",
-        "We run it in production.",
-        "We run it in production.",
-        "pass",
-    ),
-    ("present: I use it daily", "I use it daily.", "I use it daily.", "pass"),
-    ("I've tested", "I've tested it on our traces.", "I've tested it on our traces.", "pass"),
-    ("we tried", "We tried it last week on 300 traces.", "We tried this on our traces.", "pass"),
-    (
-        "we have shipped",
-        "We have shipped a similar buffer.",
-        "We shipped a similar buffer.",
-        "pass",
-    ),
-    ("we ran / have run", "We have run it twice.", "We ran it.", "pass"),
-    ("I ran", "I ran it twice.", "We have run it twice.", "pass"),
-    ("fine-tuned", "I fine-tuned a model with it.", "I fine-tuned a model with it.", "pass"),
-    ("wrote -> written", "I wrote the harness myself.", "I have written the harness.", "pass"),
-    ("my team ... tested", "My team tested it on our traces.", "My team tested it.", "pass"),
-    (
-        "pov with newline and no punctuation",
-        "I tested it on our traces\nI would like to try prod",
-        "I tested it on our traces.",
-        "pass",
-    ),
-    (
-        "pov bullets",
-        "- I built the harness\n- I want to test this on it",
-        "I built the harness.",
-        "pass",
-    ),
-    ("curly apostrophe: I haven\u2019t", "I haven\u2019t tested this.", "I tested it.", "flag"),
-    ("uppercase", "I HAVEN'T TESTED THIS.", "I tested it.", "flag"),
-    ("contraction I'd tested", "I'd tested it before.", "I'd tested it.", "pass"),
-    ("I'd have built (hypothetical)", "I'd have built it differently.", "I built it.", "flag"),
-    ("US country false positive (draft side)", "I tested it.", "A US lab built this.", "pass"),
-]
-
-
-@pytest.mark.parametrize(
-    ("label", "pov", "draft_sentence", "expect"),
-    B1_CASES,
-    ids=[case[0] for case in B1_CASES],
-)
-def test_the_first_person_table(label: str, pov: str, draft_sentence: str, expect: str) -> None:
-    draft = replace(GOOD, body=GOOD.body + " " + draft_sentence)
-    flagged = [
-        flag.kind
-        for flag in check_draft(draft, SOURCE, pov=pov).flags
-        if flag.kind == "first_person"
-    ]
-    assert ("flag" if flagged else "pass") == expect, label
-
-
-# N4: every marker withholds support on its own, and the new rules are tested directly.
-@pytest.mark.parametrize(
-    "pov",
-    [
-        "I have not tested it.",
-        "I want to test it.",
-        "I plan to test it.",
-        "I am going to test it.",
-        "I might test it.",
-        "I could test it.",
-        "I should test it.",
-        "I hope to test it.",
-        "I have not tested it yet.",
-        "I'll test it.",
-        "I'd have tested it.",
-        "I tested nobody's work.",
-        "Perhaps I tested it.",
-        "Maybe I tested it.",
-        "I may have tested it.",
-        "I ought to have tested it.",
-        "I wish I had tested it.",
-        "Without testing it I cannot say.",
-        "Unless I tested it, I cannot say.",
-        "Whether I tested it is beside the point.",
-        "I tested none of it.",
-        "I tested nothing.",
-        "I built no such thing.",
-        "I never tested it.",
-        "Did I test it?",
-    ],
-)
-def test_each_marker_withholds_support(pov: str) -> None:
-    draft = replace(GOOD, body=GOOD.body + " I tested it.")
-    flagged = [
-        flag.kind
-        for flag in check_draft(draft, SOURCE, pov=pov).flags
-        if flag.kind == "first_person"
-    ]
-    assert flagged == ["first_person"], pov
-
-
-def test_a_present_point_of_view_does_not_license_a_past_claim() -> None:
-    assert kinds(replace(GOOD, body=GOOD.body + " I tested it."), pov="I test it daily.") == [
-        "first_person"
-    ]
-    assert kinds(replace(GOOD, body=GOOD.body + " I test it daily."), pov="I test it daily.") == []
-
-
-def test_a_marker_in_one_clause_does_not_withhold_another() -> None:
-    draft = replace(GOOD, body=GOOD.body + " I built a harness.")
-    assert kinds(draft, pov="I built a harness and want to test this on it.") == []
-    tested = replace(GOOD, body=GOOD.body + " I tested it.")
-    assert kinds(tested, pov="I tested it, but I haven't tried prod.") == []
-
-
-@pytest.mark.parametrize(
-    "verb",
-    [
-        "trained",
-        "reproduced",
-        "replicated",
-        "fine-tuned",
-        "adopted",
-        "integrated",
-        "developed",
-        "launched",
-        "wrote",
-    ],
-)
-def test_each_widened_verb_is_supported_by_its_past_form(verb: str) -> None:
-    draft = replace(GOOD, body=GOOD.body + f" I {verb} it.")
-    assert kinds(draft, pov=f"I {verb} it.") == []
-
-
-def test_the_perfect_run_form_is_supported() -> None:
-    assert (
-        kinds(replace(GOOD, body=GOOD.body + " I ran it twice."), pov="I have run it twice.") == []
-    )
-    assert (
-        kinds(replace(GOOD, body=GOOD.body + " We have run it twice."), pov="I ran it twice.") == []
-    )
-
-
 def test_a_twenty_five_word_quote_passes() -> None:
     quote = (
         "Replaying exact tool results and dropping the ones that no longer matter cut tokens "
@@ -834,3 +542,76 @@ def test_a_common_lab_word_does_not_name_the_lab(
     assert kinds(named, source) == [], org
     unnamed = replace(GOOD, hook="A memory layer.", body=unnamed_sentence)
     assert kinds(unnamed, source) == ["attribution"], org
+
+
+# The owner's rule (2026-10-25): a first-person claim passes only when the owner wrote that
+# clause in the point of view. These are the round 3 bypasses, the honest cases and the edges.
+def test_a_thinking_of_testing_point_of_view_does_not_license_a_claim() -> None:
+    draft = replace(GOOD, body=GOOD.body + " I tested this on our 300-step traces.")
+    assert kinds(draft, pov="I'm thinking of testing this on our 300-step traces.") == [
+        "first_person"
+    ]
+
+
+def test_a_third_party_point_of_view_does_not_license_a_claim() -> None:
+    draft = replace(GOOD, body=GOOD.body + " I tested it on too few tasks.")
+    assert kinds(draft, pov="I think they tested it on too few tasks.") == ["first_person"]
+
+
+def test_a_modal_point_of_view_does_not_license_a_claim() -> None:
+    draft = replace(GOOD, body=GOOD.body + " We run it in production.")
+    assert kinds(draft, pov="We can run it in production.") == ["first_person"]
+
+
+def test_the_owner_sentence_passes_with_other_capitals_and_punctuation() -> None:
+    draft = replace(GOOD, body=GOOD.body + " I BUILT and tested it, on our traces")
+    assert kinds(draft, pov="I built and tested it on our traces.") == []
+
+
+def test_a_reworded_first_person_claim_is_flagged() -> None:
+    draft = replace(GOOD, body=GOOD.body + " I tested it on our traces.")
+    assert kinds(draft, pov="I tested it on our 300-step traces.") == ["first_person"]
+
+
+def test_a_cut_at_a_clause_boundary_passes() -> None:
+    # The owner wrote "I built and tested it"; the draft keeps the first clause as written.
+    assert kinds(replace(GOOD, body=GOOD.body + " I built"), pov="I built and tested it.") == []
+
+
+def test_a_source_quote_in_first_person_is_not_the_owners_claim() -> None:
+    source = replace(SOURCE, text=TEXT + " We evaluated this on 40 long-horizon tasks.")
+    draft = replace(
+        GOOD,
+        body=GOOD.body + ' The authors write "we evaluated this on 40 long-horizon tasks".',
+    )
+    assert kinds(draft, source) == []
+
+
+def test_i_e_and_a_capital_us_are_not_first_person() -> None:
+    assert kinds(replace(GOOD, body=GOOD.body + " The results are mixed (i.e. on 40 tasks).")) == []
+    assert kinds(replace(GOOD, body=GOOD.body + " A US lab built this.")) == []
+
+
+def test_each_first_person_pronoun_is_detected() -> None:
+    for clause in (
+        "me and the harness",
+        "my harness",
+        "mine",
+        "myself",
+        "we",
+        "us",
+        "our harness",
+        "ours",
+        "ourselves",
+        "I'm",
+        "we've",
+    ):
+        assert kinds(replace(GOOD, body=GOOD.body + " " + clause + "."), pov="") == [
+            "first_person"
+        ], clause
+
+
+def test_the_system_prompt_asks_for_the_owners_words_and_third_person_elsewhere() -> None:
+    system = str(draft_messages(SOURCE, pov="I tested it.", language="en")[0].content)
+    assert "word for word" in system
+    assert "third person" in system

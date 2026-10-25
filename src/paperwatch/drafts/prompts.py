@@ -11,7 +11,7 @@ from collections.abc import Mapping
 from paperwatch.agent.prompts import source_block
 
 # Stored on every draft, so the prompt a saved draft was written under is never a guess.
-DRAFT_PROMPT_VERSION = "d1"
+DRAFT_PROMPT_VERSION = "d2"
 # The same bound as the summary writer: a feed stores a lab post whole, and an unclipped article
 # would overrun the draft call's token budget on every click.
 DRAFT_TEXT_MAX_CHARS = 6000
@@ -37,9 +37,9 @@ Reply with JSON only, no prose and no code fence, with exactly these four keys:
 - "hook" is the first line, one or two sentences that make a reader stop. "body" is two or three
   short paragraphs. Write plain text: no markdown, no bullet lists and no headings.
 - Write in English when the requested language is en; otherwise write in the requested language.
-- Use the first person only for what the owner says in the <point_of_view> block. Never say he
-  built, tested, ran, shipped, deployed, implemented, benchmarked or used something he did not
-  write there.
+- Use the first person only by reusing the owner's <point_of_view> sentences word for word. You
+  may cut a sentence at a clause boundary, but never reword it. Write everything else in the
+  third person.
 - Every number, quote and link must come from the <source> blocks or the point of view. Quote at
   most 25 words at a time.
 - A lab post is the lab's own claim: name the lab and attribute it, as in "OpenAI reports ...".

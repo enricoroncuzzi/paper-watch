@@ -61,62 +61,17 @@ _URL = re.compile(
     r"https?://[^\s<>\"')]+|\bwww\.[^\s<>\"')]+|\b(?:[a-z0-9-]+\.)+[a-z]{2,}/[^\s<>\"')]+",
     re.IGNORECASE,
 )
+# A first person as a reader writes it. "us" is lower case only, so "A US lab" stays a country,
+# and a bare "i" is not the "i" of "i.e.".
 _FIRST_PERSON = re.compile(
-    r"\b(?:i|i'm|i've|i'd|i'll|my|mine|we|we're|we've|we'd|we'll|our|ours)\b"
+    r"\b(?:i(?!\.)|i'm|i've|i'd|i'll|me|my|mine|myself|we|we're|we've|we'd|we'll|our|ours|"
+    r"ourselves)\b",
+    re.IGNORECASE,
 )
-# "us" is a first person only in lower case: "A US lab" is a country, not the owner.
 _LOWER_US = re.compile(r"\bus\b")
-# A first-person subject standing right before the verb it supports: "I", "we", their
-# contractions, or a possessive with its noun ("my team", "our traces").
-_SUBJECT = re.compile(
-    r"\b(?:(?P<pronoun>i|we)(?:'ve|'d|'m|'re|'ll)?|"
-    r"(?P<possessive>my|our)\s+(?P<noun>\w+))(?![a-z0-9])"
-)
-# The experiences a draft may not invent: each stem's forms for the draft side, and its simple
-# present for telling a present claim from a past one.
-_EXPERIENCE_VERBS: tuple[tuple[str, re.Pattern[str], re.Pattern[str]], ...] = tuple(
-    (stem, re.compile(rf"\b(?:{forms})\b"), re.compile(rf"\b(?:{present})\b"))
-    for stem, forms, present in (
-        ("build", "build|builds|building|built", "build|builds"),
-        ("test", "test|tests|tested|testing", "test|tests"),
-        ("try", "try|tries|tried|trying", "try|tries"),
-        ("use", "use|uses|used|using", "use|uses"),
-        ("run", "run|runs|ran|running", "run|runs"),
-        ("ship", "ship|ships|shipped|shipping", "ship|ships"),
-        ("deploy", "deploy|deploys|deployed|deploying", "deploy|deploys"),
-        ("implement", "implement|implements|implemented|implementing", "implement|implements"),
-        ("benchmark", "benchmark|benchmarks|benchmarked|benchmarking", "benchmark|benchmarks"),
-        ("evaluate", "evaluate|evaluates|evaluated|evaluating", "evaluate|evaluates"),
-        ("measure", "measure|measures|measured|measuring", "measure|measures"),
-        ("train", "train|trains|training|trained", "train|trains"),
-        ("reproduce", "reproduce|reproduces|reproducing|reproduced", "reproduce|reproduces"),
-        ("replicate", "replicate|replicates|replicating|replicated", "replicate|replicates"),
-        (
-            "fine-tune",
-            "fine-tune|fine-tunes|fine-tuning|fine-tuned|fine tuned",
-            "fine-tune|fine-tunes|fine tune|fine tunes",
-        ),
-        ("adopt", "adopt|adopts|adopting|adopted", "adopt|adopts"),
-        ("integrate", "integrate|integrates|integrating|integrated", "integrate|integrates"),
-        ("develop", "develop|develops|developing|developed", "develop|develops"),
-        ("launch", "launch|launches|launching|launched", "launch|launches"),
-        ("write", "write|writes|writing|wrote|written", "write|writes"),
-    )
-)
-_VERB_BY_STEM = {stem: (loose, present) for stem, loose, present in _EXPERIENCE_VERBS}
-# A clause that only intends, negates or doubts an experience does not license a claim that it
-# already happened. Checked per clause, so one clause's marker cannot withhold another's support.
-_INTENT_OR_NEGATION = re.compile(
-    r"\b(?:not|never|would|will|want to|plan to|going to|might|could|should|hope to|if|yet|"
-    r"no|none|nothing|nobody|without|unless|whether|wish|may|maybe|perhaps|ought)\b"
-    r"|n't|'ll|'d have"
-)
-# The words a verb may be separated from its subject by: hyphens stay in one token, so a
-# "fine-tuned" is one form.
-_VERB_WORD = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
-# The clause boundaries that keep a marker local. "and"/"but" join clauses and a full stop ends
-# one, so "I built a harness and want to test it" supports the build.
-_CLAUSE_SPLIT = re.compile(r"[\n;,.]|\bbut\b|\band\b")
+# Clause boundaries: a sentence end, a newline, ; : , or a spaced dash. A hyphen inside a word
+# is not a boundary.
+_CLAUSE_SPLIT = re.compile(r"(?<=[.!?])\s+|[\n;:,\u2013\u2014]|\s+-\s+")
 
 # A verb that turns a sentence into a report of someone else's claim.
 _ATTRIBUTION_VERB = re.compile(
@@ -233,7 +188,7 @@ def check_draft(draft: DraftText, source: DraftSource, *, pov: str) -> DraftChec
     _check_numbers(body_text, evidence, counts, found)
     _check_quotes(text, folded_store, folded_pov, counts, found)
     _check_links(draft, text, source, folded_pov, counts, found)
-    _check_first_person(text, pov, counts, found)
+    _check_first_person(text, pov, folded_store, counts, found)
     _check_attribution(text, source, counts, found)
     _check_preprint_numbers(body_text, source, counts, found)
     _check_early_notice(text, source, counts, found)
@@ -356,67 +311,53 @@ def _check_links(
 def _check_first_person(
     text: str,
     pov: str,
+    folded_store: str,
     counts: dict[FlagKind, list[int]],
     found: dict[FlagKind, list[DraftFlag]],
 ) -> None:
-    clauses = _pov_clauses(pov)
-    for sentence in _sentences(text):
-        folded = _normalise(sentence)
-        if not _has_first_person(sentence, folded):
-            continue
-        verbs = _draft_verbs(folded)
-        if not verbs:
+    """A first-person clause passes only when the owner wrote it in the point of view.
+
+    The owner's rule (2026-10-25) is a word-for-word one: the model may cut an owner's sentence
+    at a clause boundary but may not reword it. A verbatim quote of the item is the authors'
+    voice, so it is not a first-person claim here; the quote rule already checks it.
+    """
+    pov_key = _clause_key(pov)
+    for clause in _clauses(_without_source_quotes(text, folded_store)):
+        if not (_FIRST_PERSON.search(clause) or _LOWER_US.search(clause)):
             continue
         counts["first_person"][0] += 1
-        subject = _first_subject(folded)
-        unsupported = [
-            stem
-            for stem, present in verbs.items()
-            if subject is None
-            or not _pov_supports(stem, clauses, subject=subject, draft_present=present)
-        ]
-        if not unsupported:
+        key = _clause_key(clause)
+        if key and re.search(rf"(?<!\w){re.escape(key)}(?!\w)", pov_key) is not None:
             counts["first_person"][1] += 1
             continue
         found["first_person"].append(
             DraftFlag(
                 "first_person",
-                sentence,
-                f"The draft says you {unsupported[0]} something, but your point of view does "
-                "not say so.",
+                clause,
+                "The draft speaks in first person here, but your point of view does not say "
+                "this word for word.",
             )
         )
 
 
-def _has_first_person(sentence: str, folded: str) -> bool:
-    # "us" counts only in lower case: "A US lab" is a country, not the owner.
-    return _FIRST_PERSON.search(folded) is not None or _LOWER_US.search(sentence) is not None
+def _clauses(text: str) -> list[str]:
+    return [part.strip() for part in _CLAUSE_SPLIT.split(text) if part.strip()]
 
 
-def _draft_verbs(folded: str) -> dict[str, bool]:
-    """Each experience stem's first form in a sentence, and whether it is a simple present."""
-    forms: dict[str, bool] = {}
-    for stem, loose, present in _EXPERIENCE_VERBS:
-        match = loose.search(folded)
-        if match is None:
-            continue
-        before = folded[: match.start()].split()
-        perfect = bool(before) and before[-1] in ("have", "has", "had")
-        forms[stem] = present.fullmatch(match.group(0)) is not None and not perfect
-    return forms
+def _clause_key(value: str) -> str:
+    """The words of a clause: case, punctuation and whitespace do not change what was written."""
+    folded = _normalise(value)
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", folded).split())
 
 
-def _first_subject(folded: str) -> tuple[str, str | None] | None:
-    match = _SUBJECT.search(folded)
-    if match is None:
-        return None
-    if match.group("pronoun"):
-        return ("pronoun", None)
-    return ("possessive", match.group("noun"))
+def _without_source_quotes(text: str, folded_store: str) -> str:
+    """Drop a quoted span verbatim in the stored text: its first person is the authors'."""
 
+    def replace(match: re.Match[str]) -> str:
+        span = match.group(1) if match.group(1) is not None else match.group(2)
+        return " " if _normalise(span) in folded_store else match.group(0)
 
-def _pov_clauses(pov: str) -> list[str]:
-    return [_normalise(part) for part in _CLAUSE_SPLIT.split(pov) if part.strip()]
+    return _QUOTE.sub(replace, text)
 
 
 def _check_attribution(
@@ -595,45 +536,6 @@ def _links(text: str) -> list[str]:
         for match in _URL.finditer(text)
         if match.group(0).rstrip(".,;:!?)]'")
     ]
-
-
-def _pov_supports(
-    stem: str,
-    clauses: list[str],
-    *,
-    subject: tuple[str, str | None],
-    draft_present: bool,
-) -> bool:
-    """Whether a point-of-view clause makes this claim itself, with the same subject and tense."""
-    loose, present = _VERB_BY_STEM[stem]
-    for clause in clauses:
-        if _INTENT_OR_NEGATION.search(clause) is not None or clause.rstrip().endswith("?"):
-            continue
-        for match in _SUBJECT.finditer(clause):
-            if not _same_subject(match, subject):
-                continue
-            words = _VERB_WORD.findall(clause[match.end() :])
-            for skip in range(3):
-                if skip >= len(words):
-                    break
-                form = words[skip]
-                if loose.fullmatch(form) is None:
-                    continue
-                # "used to" is a habit, not an experience.
-                if form == "used" and words[skip + 1 : skip + 2] == ["to"]:
-                    continue
-                perfect = any(word in ("have", "has", "had") for word in words[:skip])
-                is_present = present.fullmatch(form) is not None and not perfect
-                if is_present == draft_present:
-                    return True
-    return False
-
-
-def _same_subject(match: re.Match[str], subject: tuple[str, str | None]) -> bool:
-    kind, noun = subject
-    if match.group("pronoun"):
-        return kind == "pronoun"
-    return kind == "possessive" and match.group("noun") == noun
 
 
 def _url_key(url: str) -> str:

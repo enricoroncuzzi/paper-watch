@@ -311,7 +311,7 @@ def test_a_draft_is_generated_saved_and_checked(db_session: Session) -> None:
     [saved] = drafts(db_session)
     assert saved.pov == POV
     assert saved.model == "vendor/model:free"
-    assert saved.prompt_version == "d1"
+    assert saved.prompt_version == "d2"
     assert saved.inputs["early"] is False
     assert saved.inputs["summary"]["result"]["quote"].startswith("cut tokens per task")
     assert saved.check["counts"]["number"] == [3, 3]
