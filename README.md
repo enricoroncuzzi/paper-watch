@@ -14,11 +14,12 @@ hand. Paper Watch never posts to LinkedIn itself.
 It is also a deliberate learning project: every technology it uses has a load-bearing job in the
 code and a short lesson in [`docs/learn/`](docs/learn/).
 
-Status: M0 to M2 are done, the daily ingestion has run on a shared VPS since 2026-10-22, and
-M3 is in progress: the API is built to be public (credential gate, limits, its own user unit
-behind a tunnel) and the page follows ([`docs/deploy/vps.md`](docs/deploy/vps.md)). The page's
-Corpus section browses every admitted item and opens one with its tier history, its signal series,
-its stored text and its 30-second summary.
+Status: M0 to M3 are done. The daily ingestion has run on a shared VPS since 2026-10-22, and M3
+puts the product on the web: the API runs on that VPS behind a credential gate and a tunnel, and a
+private Next.js page signs one reader in with GitHub and reads it over HTTPS. The page shows the
+last run, the weekly picks and the Rising shelf, the LinkedIn drafts and the stored conversations,
+and browses every admitted item with its tier history, its signal series, its stored text and its
+30-second summary.
 
 ## Quickstart
 
@@ -88,9 +89,25 @@ uv run paperwatch qa-eval   # replay recorded answers through the checker; no ke
 # Put PW_OPENROUTER_API_KEY in .env first (a free key from openrouter.ai; never commit it).
 uv run paperwatch ask "what is new on agent memory?" --live   # stream one answer; it prints a thread id
 uv run paperwatch ask "and how was it measured?" --thread ID --live   # continue that conversation
-uv run paperwatch serve --live                                # the API: /ask, /threads, /suggestions, /items, /runs
-uv run paperwatch suggest --live                              # the ranked picks and the Rising shelf
-uv run paperwatch draft ITEM_ID --live                        # one checked LinkedIn draft, with its notes
+```
+
+The chat model is an OpenRouter free model by default, with Groq as an optional fallback
+(`PW_GROQ_API_KEY` and `PW_GROQ_CHAT_MODEL`); embedding and relevance classification stay local, so
+only the question and the retrieved abstracts and lab posts leave the machine. `ask` needs
+`--live`, the same as the other commands that touch a real service. Every answer stays within
+`PW_CHAT_MAX_CALLS_PER_DAY` (800, counted from UTC midnight) and `PW_CHAT_MAX_TOKENS_PER_ANSWER`,
+and the real usage of every call is stored in the `chat_calls` table.
+
+**CV line (true as of M2):** Built a LangGraph agent with tool use and citation-checked answers
+over the corpus.
+
+## M3: the page
+
+```bash
+uv run paperwatch serve --live         # the API on 127.0.0.1:8000; docs/api/README.md lists the routes
+uv run paperwatch suggest --live       # the ranked picks and the Rising shelf
+uv run paperwatch draft ITEM_ID --live   # one checked LinkedIn draft, with its notes
+
 # With PW_API_AUTH=hmac and a 32+ character PW_API_HMAC_SECRET in .env, each token works once:
 curl -N -X POST localhost:8000/ask \
   -H "authorization: Bearer $(uv run paperwatch api-token --live)" \
@@ -98,30 +115,34 @@ curl -N -X POST localhost:8000/ask \
   -d '{"question": "which papers evaluate coding agents?"}'
 ```
 
-The chat model is an OpenRouter free model by default, with Groq as an optional fallback
-(`PW_GROQ_API_KEY` and `PW_GROQ_CHAT_MODEL`); embedding and relevance classification stay local, so
-only the question and the retrieved abstracts and lab posts leave the machine. `ask` needs
-`--live`, the same as the other commands that touch a real service. `serve` listens on
-`127.0.0.1:8000` only. Every route but `GET /healthz` needs a credential (`PW_API_AUTH=oidc` for a
-Vercel OIDC token, or `hmac` with a token from `paperwatch api-token --live`), and `PW_API_PUBLIC_HOST`
-names the tunnel host the gate accepts; keep the API behind the tunnel rather than on a public
-interface. The API holds no embedding model: a child process loads it when a question arrives and
-exits when idle, and while the ingestion runs the API answers by keyword and says so
-([lesson 16](docs/learn/16-memory-on-a-shared-server.md)).
+The API runs on the shared VPS behind a userspace tunnel and answers only its owner: every route
+but `GET /healthz` needs a credential (`PW_API_AUTH=oidc` for a Vercel OIDC token, or `hmac` with a
+single-use token from `paperwatch api-token --live`), a loopback or `PW_API_PUBLIC_HOST` host, no
+`Origin`, and a body under 16 KB. It listens on `127.0.0.1:8000` by default and warns on any other
+bind, holds no embedding model (a child process loads it when a question arrives and exits when
+idle), and answers by keyword while the ingestion runs
+([lesson 16](docs/learn/16-memory-on-a-shared-server.md)). `docs/api/README.md` documents the
+routes and the event stream; `docs/learn/13` explains how the stream works.
 
-`docs/api/README.md` documents the event stream and the client rules; `docs/learn/13` explains how
-the stream works. Every answer stays within `PW_CHAT_MAX_CALLS_PER_DAY` (800, counted from UTC
-midnight) and `PW_CHAT_MAX_TOKENS_PER_ANSWER`, and the real usage of every call is stored in the
-`chat_calls` table.
+The page in [`web/`](web/) is the only caller: its server checks the GitHub session on every
+section and holds the API's address and token, so the browser sees neither. One page holds the
+today strip, the picks and the Rising shelf, Drafts, the Corpus table and Runs, with an item page,
+a run detail and the ask sheet, whose Recent list reads the stored conversations back. The weekly
+picks are ranked on request from `config/suggestions.yaml`, and a card's summary is checked against
+its stored text before it is shown. A LinkedIn draft is one model call from the item's stored text
+and your point of view, checked by code and saved in the same request; regenerating makes a new
+draft and never edits the old one.
 
-**CV line (true as of M2):** Built a LangGraph agent with tool use and citation-checked answers
-over the corpus.
+**CV line (true as of M3):** Built a private Next.js page on Vercel in front of a credential-gated
+API published through a userspace tunnel, with ranked picks and code-checked LinkedIn drafts.
 
 ## Documentation
 
 - [`docs/deploy/vps.md`](docs/deploy/vps.md): running the daily ingestion, the API and its tunnel
   as capped systemd user units on the shared VPS, and browsing the corpus from a desktop client
   over an SSH tunnel.
+- [`web/README.md`](web/README.md): the page, its environment, its gates and the fake API they run
+  against.
 - [`docs/learn/`](docs/learn/): one lesson per technology, starting with
   [how to read this repo](docs/learn/00-how-to-read-this-repo.md).
 - [`docs/adr/`](docs/adr/): architecture decision records.
