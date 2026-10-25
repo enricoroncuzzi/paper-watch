@@ -402,7 +402,7 @@ def test_the_pov_never_reaches_the_logs(
     db_session: Session, caplog: pytest.LogCaptureFixture
 ) -> None:
     # The point of view is the captain's own text: it is stored with the draft and sent only to the
-    # provider that refuses training. Not a log line, not a refusal body, not an exception message.
+    # one provider. Not a log line, not a refusal body, not an exception message.
     phrase = "quartz-zebra-4417-my-own-harness"
     first = seed_item(db_session, "replay")
     second = seed_item(db_session, "refusal", published_at=NOW - timedelta(days=2))
@@ -442,11 +442,10 @@ def test_the_pov_never_reaches_the_logs(
     assert TITLE not in captured
     for response in (ok, refused, unusable):
         assert phrase not in response.text
-    # The refusal is the fixed sentence, and it names the setting that fixes the usual cause, so
-    # the owner can act on it without the provider's own text (which can echo the point of view).
+    # The refusal is the fixed, cause-neutral sentence, never the provider's own text (which can
+    # echo the point of view).
     assert refused.json()["message"] == (
-        "No endpoint that refuses training on inputs serves the draft model, so the draft was not "
-        "generated. Set PW_DRAFT_MODEL to a model that has one."
+        "The model did not answer, so the draft was not generated. Try again later."
     )
 
 
@@ -486,7 +485,7 @@ def test_a_provider_refusal_fails_without_a_fallback(db_session: Session) -> Non
 
     assert response.status_code == 503
     assert response.json()["code"] == "model_unavailable"
-    # The point of view may only go to a provider that refuses training, so there is no second try.
+    # The point of view goes to one provider only, so there is no second try.
     assert fallback.seen == []
     # An attempt that reached the provider was spent, even though it produced no draft.
     assert calls.failed == 1 and calls.filled == 0
@@ -780,7 +779,7 @@ class _DraftProvider(BaseHTTPRequestHandler):
         return  # the server's own access line is noise in a test
 
 
-def test_the_real_draft_chain_denies_data_collection_and_logs_nothing(
+def test_the_real_draft_chain_runs_on_the_chat_model_and_logs_nothing(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     # The configured ChatOpenAI object is tested in test_chat.py; this drives the real client, so
@@ -836,7 +835,8 @@ def test_the_real_draft_chain_denies_data_collection_and_logs_nothing(
     body = json.loads(_DraftProvider.bodies[0])
     # No PW_DRAFT_MODEL on this server, so the draft chain falls back to the chat model.
     assert body["model"] == CHAT_MODEL
-    assert body["provider"] == {"data_collection": "deny"}
+    # The owner accepted training on the draft prompt, so no provider block travels with it.
+    assert "provider" not in body
     # The point of view may go to this provider (that is the feature), but never to a log line.
     assert phrase in json.dumps(body)
     captured = json.dumps(logs, default=str) + caplog.text

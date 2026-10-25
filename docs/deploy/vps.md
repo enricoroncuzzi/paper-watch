@@ -582,10 +582,9 @@ chmod 600 ~/.config/paperwatch/api.env
   instead; `paperwatch api-token --live` mints a token.
 - `PW_API_PUBLIC_HOST` is the tunnel's hostname (section 16); without it the gate accepts loopback
   names only and the tunnel's `Host` gets 400.
-- `PW_DRAFT_MODEL` is the draft chain's own model; unset means the chat model. Drafts ask
-  OpenRouter to route only to an endpoint that refuses training on inputs, and a model whose only
-  endpoint trains returns a 404, so every draft answers `model_unavailable`. Set this to a model
-  that has an endpoint which refuses training; never turn the denial off instead.
+- `PW_DRAFT_MODEL` is the optional draft model override; unset means the chat model. A draft sends
+  no training opt-out, so the free provider may train on and retain its prompt, point of view
+  included.
 - The model cache is the same directory the ingestion uses, so the 180 MB model is downloaded once.
 
 Install the unit, the slice and the ingestion drop-in, then start it:

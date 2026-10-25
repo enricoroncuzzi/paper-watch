@@ -14,8 +14,8 @@ export function draftFailureMessage(status: number, body: unknown): string {
     if (payload.code === "daily_cap" && typeof payload.retry_at === "string") {
       return `${payload.message} It resets at ${formatRome(payload.retry_at)} Europe/Rome.`;
     }
-    // model_unavailable and unusable are shown as the API wrote them, including the privacy
-    // refusal sentence, so the page cannot soften a promise about the point of view.
+    // model_unavailable and unusable are shown as the API wrote them, so the page never claims a
+    // cause the API did not name.
     return payload.message;
   }
   if (status === 429) {

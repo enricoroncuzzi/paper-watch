@@ -146,7 +146,7 @@ test("an empty point of view is allowed", async ({ page }) => {
   await expect(dialog.getByTestId("pov-preview")).toBeVisible();
 });
 
-test("the privacy refusal message is shown as is", async ({ page, request }) => {
+test("the model refusal message is shown as is", async ({ page, request }) => {
   await setScenario(request, "draft_refused");
   await page.reload();
 
@@ -155,9 +155,8 @@ test("the privacy refusal message is shown as is", async ({ page, request }) => 
   await dialog.getByRole("button", { name: "Generate draft" }).click();
 
   await expect(dialog.getByTestId("pov-error")).toContainText(
-    "No endpoint that refuses training on inputs serves the draft model",
+    "The model did not answer, so the draft was not generated. Try again later.",
   );
-  await expect(dialog.getByTestId("pov-error")).toContainText("PW_DRAFT_MODEL");
   await expect(dialog.getByTestId("pov-preview")).toHaveCount(0);
 });
 

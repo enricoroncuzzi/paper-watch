@@ -11,13 +11,7 @@ from uuid import UUID
 import pytest
 
 from paperwatch.drafts.check import check_draft
-from paperwatch.drafts.generate import (
-    NO_COMPLIANT_MODEL,
-    DraftSource,
-    DraftText,
-    _parse,
-    draft_messages,
-)
+from paperwatch.drafts.generate import DraftSource, DraftText, _parse, draft_messages
 from paperwatch.drafts.prompts import clean_language
 
 TITLE = "Replay Buffers Beat Summaries for Long-Running Coding Agents"
@@ -91,13 +85,6 @@ def first_person(draft: DraftText, source: DraftSource = SOURCE, *, pov: str = P
         for flag in check_draft(draft, source, pov=pov).flags
         if flag.kind == "first_person"
     ]
-
-
-def test_the_refusal_sentence_names_the_setting_that_fixes_it() -> None:
-    # The live failure: the shared chat model had no endpoint that refuses training, so every
-    # draft was refused. The sentence tells the owner which setting to point at such a model.
-    assert "PW_DRAFT_MODEL" in NO_COMPLIANT_MODEL
-    assert "training" in NO_COMPLIANT_MODEL
 
 
 def test_a_clean_draft_has_no_flags() -> None:

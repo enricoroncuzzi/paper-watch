@@ -61,7 +61,7 @@ def test_model_settings_read_from_environment(
 def test_the_draft_model_comes_from_its_own_variable(
     monkeypatch: pytest.MonkeyPatch, build_settings: Callable[[], Settings]
 ) -> None:
-    # The server sets one variable to give drafts a model whose endpoint refuses training.
+    # The server may set one variable to give drafts a model other than the chat model.
     monkeypatch.setenv("PW_DRAFT_MODEL", "vendor/draft:free")
     assert build_settings().draft_model == "vendor/draft:free"
 

@@ -85,12 +85,11 @@ def make_chat_models(
 ) -> list[ChatModel]:
     """Build the provider chain, primary first: OpenRouter, then Groq when fully configured.
 
-    `purpose="draft"` builds one model, OpenRouter only, with `provider.data_collection: "deny"`,
-    using `settings.draft_model` when it is set: the shared chat model can have no endpoint that
-    refuses training, and a draft would then fail on every call.
-    A draft carries the owner's own point of view, and the per-request denial is what makes a
-    provider that would train on it refuse the call instead of receiving the text. There is no
-    fallback on purpose: a silent second provider would break exactly that promise (design 15, Q6).
+    `purpose="draft"` builds one model, OpenRouter only, using `settings.draft_model` when it is set
+    and `settings.chat_model` otherwise. A draft asks for no training opt-out: the free provider may
+    train on and retain the prompt, point of view included, which the owner accepted so that the
+    free chat model can serve drafts (ADR 0015). There is no fallback on purpose: the point of view
+    goes to the one provider the owner chose, never to a second one configured for answers.
     """
     if not settings.openrouter_api_key:
         # Named as the env var, not the field: the reader has to know what to put in .env.
@@ -128,11 +127,6 @@ def make_chat_models(
                     "HTTP-Referer": "https://github.com/enricoroncuzzi/paper-watch",
                     "X-Title": "Paper Watch",
                 },
-                # OpenRouter forwards this to every endpoint it routes to; an endpoint that trains
-                # on inputs then declines the request rather than see the owner's words.
-                extra_body=(
-                    {"provider": {"data_collection": "deny"}} if purpose == "draft" else None
-                ),
             ),
         )
     ]
