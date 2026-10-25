@@ -712,8 +712,9 @@ every hour; 72 hours means it has to run under `tmux` on a machine that does not
 ```
 
 The defaults are the soak's: `--hours` 72, `--interval` 300, `--stream-window` 300,
-`--stream-every` 3600, `--max-time` 20 and `--log ~/paperwatch-soak.log`. The log stays outside the
-repository: it carries the public hostname. A sleeping Mac is a gap in the soak, not a tunnel
+`--stream-every` 3600, `--max-time` 20, `--heartbeat` 15 (it must match the stream server's
+`--heartbeat` in the unit) and `--log ~/paperwatch-soak.log`. The log stays outside the repository:
+it carries the public hostname. A sleeping Mac is a gap in the soak, not a tunnel
 failure, and it shows up as a longer gap between probes in the summary.
 
 Afterwards, read the numbers back:
@@ -738,8 +739,8 @@ the break: `drops=` counts them and `outage=` is the seconds from the last frame
 the first frame after the reconnect. A connection that stays open but carries no frame for about
 three heartbeats is abandoned and counted as a drop the same way, and silence from the last frame
 to the end of the window counts as a gap. That is the recovery time the two-minute rule is about,
-read to within one heartbeat. A run starts with a stream, so a short run of its own is the easiest way to
-time it:
+read to within one heartbeat. A run starts with a stream, so a short run of its own is the easiest
+way to time it:
 
 ```bash
 ./deploy/vps/tunnel-soak.sh run https://<PW_API_PUBLIC_HOST> \
@@ -754,8 +755,8 @@ systemctl --user restart paperwatch-tunnel
 The stream line reads `result=fail` with `why=drop` and the recovery in `outage=`; a stream that
 was still down when its window closed reads `why=unrecovered`, and its `outage=` runs to the end of
 the window. That log fails its verdict on purpose, because the restart is a drop, so read its
-`longest outage` line, not its verdict. In the 72-hour soak itself a dropped or unrecovered stream is
-a failed stream, and any failed stream fails the verdict.
+`longest outage` line, not its verdict. In the 72-hour soak itself a dropped or unrecovered stream
+is a failed stream, and any failed stream fails the verdict.
 
 ### Removing the mapping
 
