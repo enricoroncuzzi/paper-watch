@@ -3,6 +3,7 @@ import type { Session } from "next-auth";
 
 import { signOut } from "@/auth";
 import { CommandPalette } from "@/components/CommandPalette";
+import { MastheadNav } from "@/components/MastheadNav";
 import { ThemeToggle } from "@/components/ThemeToggle";
 
 async function signOutAction() {
@@ -16,10 +17,7 @@ function initials(session: Session): string {
   return (parts[0]?.[0] ?? "?") + (parts[1]?.[0] ?? parts[0]?.[1] ?? "");
 }
 
-/**
- * The masthead carries only the sections this release has: Corpus arrives with its slice. The
- * avatar opens a small menu with the sign-out.
- */
+/** The masthead carries only the sections this release has. The avatar opens the sign-out. */
 export function Masthead({ session }: { session: Session }) {
   const image = session.user?.image;
   const label = session.user?.name ?? session.githubId ?? "the owner";
@@ -31,37 +29,7 @@ export function Masthead({ session }: { session: Session }) {
       >
         Paper Watch
       </Link>
-      <nav
-        aria-label="Sections"
-        className="order-3 flex w-full gap-4 text-[12px] text-ink-2 sm:order-none sm:w-auto"
-      >
-        <Link
-          href="/#picks"
-          aria-current="true"
-          className="relative flex min-h-11 min-w-11 items-center justify-center text-ink sm:min-h-0 sm:min-w-0 sm:py-0.5"
-        >
-          This week
-          <span aria-hidden="true" className="absolute inset-x-0 bottom-1 h-[1.5px] bg-accent" />
-        </Link>
-        <Link
-          href="/#rising"
-          className="flex min-h-11 min-w-11 items-center justify-center hover:text-ink sm:min-h-0 sm:min-w-0"
-        >
-          Rising
-        </Link>
-        <Link
-          href="/#drafts"
-          className="flex min-h-11 min-w-11 items-center justify-center hover:text-ink sm:min-h-0 sm:min-w-0"
-        >
-          Drafts
-        </Link>
-        <Link
-          href="/#runs"
-          className="flex min-h-11 min-w-11 items-center justify-center hover:text-ink sm:min-h-0 sm:min-w-0"
-        >
-          Runs
-        </Link>
-      </nav>
+      <MastheadNav />
       <div className="ml-auto flex items-center gap-1.5 text-[11.5px] text-ink-3">
         <span className="hidden items-center gap-1.5 rounded-full border border-rule px-2 py-0.5 text-[10.5px] text-ink-2 sm:flex">
           <svg

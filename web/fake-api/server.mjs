@@ -33,6 +33,59 @@ function linkedinText(draft) {
   return parts.join("\n").trim();
 }
 
+// The corpus the fake serves: the fixture's rows, in the API's own order (newest published
+// first), filtered and sliced the way the real route does. Cursors stay opaque to the page.
+function corpusRows() {
+  return [...fixture("corpus").items].sort((a, b) =>
+    a.published_at === b.published_at
+      ? a.id < b.id
+        ? 1
+        : -1
+      : a.published_at < b.published_at
+        ? 1
+        : -1,
+  );
+}
+
+function corpusOffset(value) {
+  if (!value) return 0;
+  try {
+    const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
+    const offset = Number(parsed.o);
+    return Number.isInteger(offset) && offset > 0 ? offset : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function corpusCursor(offset) {
+  return Buffer.from(JSON.stringify({ k: "newest", o: offset }), "utf8").toString("base64url");
+}
+
+// Every corpus row has an item page: the three hand-written fixtures are the interesting cases,
+// and the rest are built from the row itself so a reader (or a test) can open any row.
+function detailFor(id) {
+  const specials = ["item-detail", "item-detail-hostile", "item-detail-early"].map(fixture);
+  const special = specials.find((entry) => entry.id === id);
+  if (special) return special;
+  const row = fixture("corpus").items.find((item) => item.id === id);
+  if (!row) return null;
+  return {
+    ...row,
+    early: row.basis === "lab_author",
+    authors: ["Ada Lovelace"],
+    url: `https://example.org/paper/${row.id}`,
+    text: `${row.title}. The stored abstract of this item, kept in the fake API so the page has something to read.`,
+    github_repo: null,
+    project_page: null,
+    org: null,
+    tier_history: [],
+    signals: [],
+    summary: null,
+    drafts: [],
+  };
+}
+
 function resetDrafts() {
   drafts = fixture("drafts").drafts.map((draft) => ({ ...draft }));
   draftedItemIds = new Set();
@@ -323,6 +376,59 @@ async function handle(request, response) {
     }
     // Dated like its row in the Runs list, so the heading's day matches the scenario.
     json(response, 200, runAt(detail, scenario === "yesterday" ? 1 : 0));
+    return;
+  }
+
+  if (path === "/items" && request.method === "GET") {
+    if (scenario === "error") {
+      json(response, 500, { detail: "internal server error" });
+      return;
+    }
+    if (scenario === "empty") {
+      json(response, 200, fixture("corpus-empty"));
+      return;
+    }
+    const q = (url.searchParams.get("q") ?? "").trim().toLowerCase();
+    const tier = url.searchParams.get("tier");
+    const source = url.searchParams.get("source");
+    const profile = url.searchParams.get("profile");
+    const limit = Math.min(Number(url.searchParams.get("limit") ?? 25), 50);
+    const offset = corpusOffset(url.searchParams.get("cursor"));
+    const rows = corpusRows().filter(
+      (item) =>
+        (!tier || item.tier === tier) &&
+        (!source || item.source === source) &&
+        (!profile || item.profile === profile) &&
+        (!q || item.title.toLowerCase().includes(q)),
+    );
+    const total = rows.length;
+    json(response, 200, {
+      items: rows.slice(offset, offset + limit),
+      next_cursor: offset + limit < total ? corpusCursor(offset + limit) : null,
+      total,
+    });
+    return;
+  }
+
+  if (path.startsWith("/items/")) {
+    if (scenario === "error") {
+      json(response, 500, { detail: "internal server error" });
+      return;
+    }
+    const id = path.slice("/items/".length);
+    // FastAPI refuses a path id that is not a UUID with 422 before the route runs.
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+      json(response, 422, {
+        detail: [{ type: "uuid_parsing", loc: ["path", "item_id"], msg: "Input should be a valid UUID" }],
+      });
+      return;
+    }
+    const detail = detailFor(id);
+    if (!detail) {
+      json(response, 404, { detail: "item not found" });
+      return;
+    }
+    json(response, 200, detail);
     return;
   }
 
