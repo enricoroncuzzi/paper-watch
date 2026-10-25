@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.0](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.10.2...paperwatch-v0.11.0) (2026-10-25)
+
+
+### Features
+
+* **drafts:** add checked LinkedIn drafts from a pick and the owner's point of view ([#68](https://github.com/enricoroncuzzi/paper-watch/issues/68)) ([fe42ed7](https://github.com/enricoroncuzzi/paper-watch/commit/fe42ed754b8150402194ab6b78a64e8ed9472281))
+
 ## [0.10.2](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.10.1...paperwatch-v0.10.2) (2026-10-24)
 
 
