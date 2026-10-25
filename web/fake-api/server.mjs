@@ -61,6 +61,8 @@ const SCENARIOS = new Set([
   "draft_refused",
   "draft_cap",
   "draft_slow",
+  "drafts_ellipsis",
+  "draft_detail_failed",
 ]);
 
 function fixture(name) {
@@ -288,6 +290,10 @@ const server = createServer(async (request, response) => {
       json(response, 200, fixture("drafts-empty"));
       return;
     }
+    if (scenario === "drafts_ellipsis") {
+      json(response, 200, fixture("drafts-ellipsis"));
+      return;
+    }
     json(response, 200, { drafts });
     return;
   }
@@ -355,6 +361,10 @@ const server = createServer(async (request, response) => {
   }
 
   if (/^\/drafts\/[0-9a-f-]+$/.test(path) && request.method === "GET") {
+    if (scenario === "draft_detail_failed") {
+      json(response, 500, { detail: "internal server error" });
+      return;
+    }
     const id = path.split("/")[2];
     const found = drafts.find((draft) => draft.id === id);
     if (!found) {

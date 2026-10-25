@@ -57,9 +57,10 @@ export function DraftCard({ draft }: { draft: Draft }) {
     try {
       const response = await fetch(`/api/drafts/${draft.id}`, { cache: "no-store" });
       if (!response.ok) {
-        const body = await response.json().catch(() => null);
+        // A failed point-of-view load is not a failed generation: its own sentence, not the
+        // generation wording ("that item is no longer in the corpus", "could not be generated").
         setDetailFailed(true);
-        setError(draftFailureMessage(response.status, body));
+        setError("The point of view could not be loaded. Try again.");
         return;
       }
       setDetail((await response.json()) as DraftDetail);
@@ -140,7 +141,7 @@ export function DraftCard({ draft }: { draft: Draft }) {
             {!open &&
             preview.truncated &&
             index === paragraphs.length - 1 &&
-            !/[.!?]$/.test(paragraph)
+            !/[.!?]["')”]*$/.test(paragraph)
               ? "..."
               : ""}
           </p>

@@ -123,7 +123,9 @@ export function PovDialog({
             // Focus returns to whatever opened the dialog, so a keyboard user does not restart at
             // the top of the page.
             event.preventDefault();
-            if (returnFocus?.isConnected) {
+            // A saved draft always takes the heading: the refresh that removes the opener may
+            // land after this runs, so a connected opener here is not a safe target.
+            if (draft === null && returnFocus?.isConnected) {
               returnFocus.focus();
               return;
             }

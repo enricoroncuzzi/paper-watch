@@ -128,8 +128,9 @@ _ATTRIBUTION_CUE = re.compile(
     r"\b(?:reports?|reported|says?|said|claims?|claimed|announces?|announced|writes?|wrote|"
     r"describes?|described|according to|the authors|preprints?)\b"
 )
-# Words that do not name a lab on their own. "AI" stays out: it is a name in config/feeds.yaml,
-# and a word-boundary match already keeps it from matching "said".
+# Words that do not name a lab on their own. A label made only of these ("Temporal", "Modal",
+# "AI") needs the whole label directly before an attribution verb; a label with a distinctive
+# token ("Arize AI", "Mistral AI", "Microsoft Agent Framework") is named by that token.
 _LAB_STOP_WORDS = frozenset(
     {
         "the",
@@ -149,6 +150,32 @@ _LAB_STOP_WORDS = frozenset(
         "lab",
     }
 )
+_LAB_COMMON_WORDS = frozenset(
+    {
+        "ai",
+        "agent",
+        "agents",
+        "framework",
+        "frameworks",
+        "temporal",
+        "modal",
+        "model",
+        "models",
+        "data",
+        "system",
+        "systems",
+        "platform",
+        "platforms",
+        "tool",
+        "tools",
+    }
+)
+# The verbs that turn a name into an attribution, spelled out so the common-label rule can
+# require one directly after the label.
+_ATTRIBUTION_WORDS = (
+    "reports?|reported|says?|said|claims?|claimed|announces?|announced|writes?|wrote|"
+    "describes?|described"
+)
 _EARLY = re.compile(r"\bearly\b")
 _NOT_YET_REVIEWED = re.compile(
     r"not yet independently reviewed|not (?:yet )?peer[- ]reviewed|"
@@ -164,7 +191,6 @@ _TRANSLATION = str.maketrans(
         "\u201c": '"',
         "\u201d": '"',
         "\u2010": "-",
-        "\u2011": "-",
         "\u2013": "-",
         "\u2014": "-",
         "\u2212": "-",
@@ -406,21 +432,29 @@ def _check_attribution(
         # name, and inventing the requirement would flag every such draft.
         return
     counts["attribution"][0] = 1
-    # Any non-stop-word token of the label names the lab: "Google DeepMind" accepts "DeepMind
-    # reports", and "OpenAI, Inc." accepts "OpenAI reports". Punctuation is not part of a name,
-    # and a word boundary keeps "AI" from being found inside "said".
-    names = [
-        token
-        for token in re.findall(r"[a-z0-9]+", _normalise(source.org))
-        if token not in _LAB_STOP_WORDS
-    ]
-    if not names:
+    # A distinctive token of the label names the lab: "Google DeepMind" accepts "DeepMind
+    # reports", and "OpenAI, Inc." accepts "OpenAI reports". A label made only of common words
+    # ("Temporal", "Modal") would otherwise match "Temporal reasoning papers claim ...", so it
+    # needs the whole label directly before an attribution verb.
+    tokens = re.findall(r"[a-z0-9]+", _normalise(source.org))
+    if not any(token not in _LAB_STOP_WORDS for token in tokens):
+        # A label made only of function words ("The") names no lab.
         return
+    names = [
+        token for token in tokens if token not in _LAB_STOP_WORDS and token not in _LAB_COMMON_WORDS
+    ]
+    label = " ".join(tokens)
     for sentence in _sentences(text):
         folded = _normalise(sentence)
-        named = any(
-            re.search(rf"(?<!\w){re.escape(name)}(?!\w)", folded) is not None for name in names
-        )
+        if names:
+            named = any(
+                re.search(rf"(?<!\w){re.escape(name)}(?!\w)", folded) is not None for name in names
+            )
+        else:
+            named = (
+                re.search(rf"(?<!\w){re.escape(label)}\s+(?:{_ATTRIBUTION_WORDS})\b", folded)
+                is not None
+            )
         if named and _ATTRIBUTION_VERB.search(folded) is not None:
             counts["attribution"][1] = 1
             return

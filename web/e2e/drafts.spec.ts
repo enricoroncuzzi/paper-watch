@@ -201,32 +201,29 @@ test("the Drafts link stops below the masthead", async ({ page }) => {
   expect(Math.abs(gap!)).toBeLessThanOrEqual(1);
 });
 
-test("the saved and chars chips share a baseline", async ({ page }) => {
+test("the saved and chars chips use one font and share a baseline", async ({ page }) => {
   await page.getByTestId("draft-card").first().waitFor();
-  const delta = await page.evaluate(() => {
+  const result = await page.evaluate(() => {
     const card = document.querySelector('[data-testid="draft-card"]');
     if (!card) return null;
     const chips = [...card.querySelectorAll("span")].filter((element) =>
       element.className.includes("h-[21px]"),
     );
-    if (chips.length < 2) return null;
-    const baseline = (element: Element) => {
-      const style = getComputedStyle(element);
-      const context = document.createElement("canvas").getContext("2d");
-      if (!context) return 0;
-      context.font = `${style.fontSize} ${style.fontFamily}`;
-      const range = document.createRange();
-      range.selectNodeContents(element);
-      return (
-        range.getBoundingClientRect().top + context.measureText("H").actualBoundingBoxAscent
-      );
-    };
     const [first, second] = chips;
     if (!first || !second) return null;
-    return Math.abs(baseline(first) - baseline(second));
+    const textBottom = (element: Element) => {
+      const range = document.createRange();
+      range.selectNodeContents(element);
+      return range.getBoundingClientRect().bottom;
+    };
+    return {
+      fonts: [getComputedStyle(first).fontFamily, getComputedStyle(second).fontFamily],
+      delta: Math.abs(textBottom(first) - textBottom(second)),
+    };
   });
-  expect(delta).not.toBeNull();
-  expect(delta!).toBeLessThanOrEqual(0.5);
+  expect(result).not.toBeNull();
+  expect(result!.fonts[0]).toBe(result!.fonts[1]);
+  expect(result!.delta).toBeLessThanOrEqual(0.1);
 });
 
 async function generateAndClose(page: import("@playwright/test").Page, scope: import("@playwright/test").Locator) {
@@ -248,6 +245,58 @@ test("after a saved compact draft, focus lands on the Drafts heading", async ({ 
 
 test("after a saved rising draft, focus lands on the Drafts heading", async ({ page }) => {
   await generateAndClose(page, page.getByTestId("rising-card").first());
+});
+
+test("closing the dialog returns focus to the button that opened it", async ({ page }) => {
+  await openDialog(page);
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("pov-dialog")).toBeHidden();
+  const opener = page
+    .getByTestId("lead-pick")
+    .getByRole("button", { name: `LinkedIn post preview: ${LEAD_TITLE}` });
+  await expect.poll(() => opener.evaluate((element) => element === document.activeElement)).toBe(
+    true,
+  );
+});
+
+test("a body keeps one paragraph per blank line", async ({ page }) => {
+  const cards = page.getByTestId("drafts-section").getByTestId("draft-card");
+  await expect(cards.nth(1).getByTestId("draft-paragraph")).toHaveCount(2);
+});
+
+test("a cut body ends with dots only when it has no full stop", async ({ page, request }) => {
+  await setScenario(request, "drafts_ellipsis");
+  await page.reload();
+  const cards = page.getByTestId("drafts-section").getByTestId("draft-card");
+  await expect(cards.nth(0).getByTestId("draft-paragraph").last()).toContainText("...");
+  // A closing quote after the full stop is still a sentence end, so no dots follow it.
+  await expect(cards.nth(1).getByTestId("draft-paragraph").last()).not.toContainText("...");
+});
+
+test("a failed detail fetch says the point of view could not load", async ({ page, request }) => {
+  await setScenario(request, "draft_detail_failed");
+  await page.reload();
+  const card = page.getByTestId("draft-card").first();
+  await card.getByRole("button", { name: /^Open draft:/ }).click();
+  await expect(card).toContainText("Could not load the point of view.");
+  await expect(card).toContainText("The point of view could not be loaded. Try again.");
+  // The generation wording must not describe a read that failed.
+  await expect(card).not.toContainText("The draft could not be generated");
+});
+
+test("a saved draft takes focus to Drafts before the refresh lands", async ({ page }) => {
+  // The refresh that removes the opener can arrive seconds after the dialog closes: a saved
+  // draft always goes to the heading, even while the opener is still connected.
+  await page.route("**/*_rsc=*", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 2500));
+    await route.continue();
+  });
+  const dialog = await openDialog(page);
+  await dialog.getByRole("button", { name: "Generate draft" }).click();
+  await expect(dialog.getByTestId("pov-preview")).toBeVisible();
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await expect.poll(() => page.evaluate(() => document.activeElement?.id)).toBe("drafts-title");
 });
 
 test("the dialog is full screen on the phone", async ({ page }, testInfo) => {

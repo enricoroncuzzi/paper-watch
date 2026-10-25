@@ -47,6 +47,7 @@ FIXTURE_MODELS: dict[str, type[BaseModel]] = {
     "suggestions-javascript": SuggestionsData,
     "drafts": DraftsData,
     "drafts-empty": DraftsData,
+    "drafts-ellipsis": DraftsData,
     "draft-detail": DraftDetail,
     "draft-created": DraftData,
     "draft-flagged": DraftData,

@@ -794,3 +794,43 @@ def test_unicode_hyphens_in_the_source_still_back_a_quote() -> None:
         source = replace(SOURCE, text=TEXT + f" The long{mark}horizon tasks are hard.")
         draft = replace(GOOD, body=GOOD.body + ' They say "the long-horizon tasks are hard".')
         assert kinds(draft, source) == [], mark
+
+
+@pytest.mark.parametrize(
+    ("org", "named_sentence", "unnamed_sentence"),
+    [
+        (
+            "Arize AI",
+            "Arize reports a replay buffer helps.",
+            "Many AI teams say replay buffers help.",
+        ),
+        (
+            "Mistral AI",
+            "Mistral reports a replay buffer helps.",
+            "Many AI teams say replay buffers help.",
+        ),
+        (
+            "Microsoft Agent Framework",
+            "Microsoft reports a replay buffer helps.",
+            "Agent builders say replay buffers help.",
+        ),
+        (
+            "Temporal",
+            "Temporal reports a replay buffer helps.",
+            "Temporal reasoning papers claim replay buffers help.",
+        ),
+        (
+            "Modal",
+            "Modal reports a replay buffer helps.",
+            "Modal logic papers claim replay buffers help.",
+        ),
+    ],
+)
+def test_a_common_lab_word_does_not_name_the_lab(
+    org: str, named_sentence: str, unnamed_sentence: str
+) -> None:
+    source = replace(SOURCE, tier="lab_blog", org=org)
+    named = replace(GOOD, hook="A memory layer.", body=named_sentence)
+    assert kinds(named, source) == [], org
+    unnamed = replace(GOOD, hook="A memory layer.", body=unnamed_sentence)
+    assert kinds(unnamed, source) == ["attribution"], org
