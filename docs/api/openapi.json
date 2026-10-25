@@ -447,7 +447,7 @@
             }
           },
           "503": {
-            "description": "No draft was generated: the daily cap (`retry_at`), no compliant provider, or a reply that could not be read as a draft.",
+            "description": "No draft was generated: the daily cap (`retry_at`), a model that did not answer, or a reply that could not be read as a draft.",
             "content": {
               "application/json": {
                 "schema": {
@@ -621,7 +621,7 @@
             }
           },
           "503": {
-            "description": "No draft was generated: the daily cap (`retry_at`), no compliant provider, or a reply that could not be read as a draft.",
+            "description": "No draft was generated: the daily cap (`retry_at`), a model that did not answer, or a reply that could not be read as a draft.",
             "content": {
               "application/json": {
                 "schema": {

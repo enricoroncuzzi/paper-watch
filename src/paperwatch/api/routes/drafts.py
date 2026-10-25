@@ -448,7 +448,7 @@ _DRAFT_RESPONSES: dict[int | str, dict[str, Any]] = {
     503: {
         "model": DraftError,
         "description": (
-            "No draft was generated: the daily cap (`retry_at`), no compliant provider, or a "
+            "No draft was generated: the daily cap (`retry_at`), a model that did not answer, or a "
             "reply that could not be read as a draft."
         ),
     },
