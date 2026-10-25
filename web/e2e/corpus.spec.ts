@@ -87,9 +87,10 @@ test("the selection follows a pointer that moves over the table", async ({ page 
   const rows = corpus.getByTestId("corpus-row");
   await interactive(page, corpus);
 
-  // A real move selects the row under the pointer. A row is never selected by content moving
-  // under a still pointer (mousemove, not mouseenter), which is what made Load more steal it.
-  // A reader can only point at a row that is on screen, so each row is scrolled into view first.
+  // A real move selects the row under the pointer. This one test cannot tell a move from a
+  // synthesised event (a real move fires both); the resting-pointer test below is the guard that
+  // a scroll under a still pointer never takes the selection. A reader can only point at a row
+  // that is on screen, so each row is scrolled into view first.
   async function point_at(index: number) {
     const row = rows.nth(index);
     await row.scrollIntoViewIfNeeded();
@@ -101,6 +102,35 @@ test("the selection follows a pointer that moves over the table", async ({ page 
   await point_at(3);
   await point_at(5);
   await expect(rows.nth(3)).not.toHaveAttribute("data-selected", "true");
+});
+
+test("a pointer resting on the table does not take the selection back when j scrolls", async ({
+  page,
+}, testInfo) => {
+  test.skip(testInfo.project.name.includes("iphone"), "no hovering pointer on a touch device");
+  // A short window, so the table scrolls as the selection walks down it.
+  await page.setViewportSize({ width: 1440, height: 520 });
+  const corpus = page.getByTestId("corpus-section");
+  const rows = corpus.getByTestId("corpus-row");
+  await interactive(page, corpus);
+  await corpus.scrollIntoViewIfNeeded();
+
+  // Rest the pointer on row 1 and leave it there: two moves, so a real position is recorded.
+  const box = await rows.nth(1).boundingBox();
+  expect(box).not.toBeNull();
+  if (box) {
+    await page.mouse.move(box.x + 30, box.y + box.height / 2);
+    await page.mouse.move(box.x + 34, box.y + box.height / 2);
+  }
+  await expect(rows.nth(1)).toHaveAttribute("data-selected", "true");
+
+  for (let step = 2; step <= 9; step += 1) {
+    await page.keyboard.press("j");
+    await expect(rows.nth(step)).toHaveAttribute("data-selected", "true");
+    // WebKit delivers a synthetic mousemove a moment after a scroll; the selection must hold.
+    await page.waitForTimeout(200);
+    await expect(rows.nth(step)).toHaveAttribute("data-selected", "true");
+  }
 });
 
 test("the corpus filters by tier and searches", async ({ page }) => {
@@ -461,7 +491,7 @@ test("a click that opens another tab leaves the mark where it is", async ({ page
   // A cmd-click opens the link in a background tab: this page did not navigate, so its mark stays.
   const [opened] = await Promise.all([
     context.waitForEvent("page"),
-    nav.getByRole("link", { name: "Rising" }).click({ modifiers: ["Meta"] }),
+    nav.getByRole("link", { name: "Rising" }).click({ modifiers: ["ControlOrMeta"] }),
   ]);
   await opened.close();
   expect(page.url()).toBe(url);

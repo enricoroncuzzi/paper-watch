@@ -24,7 +24,7 @@ export function MastheadNav() {
     function onClick(event: MouseEvent) {
       const anchor = (event.target as Element | null)?.closest?.("a[href]");
       if (!anchor) return;
-      const hash = sectionHashFromClick(
+      const target = sectionHashFromClick(
         {
           href: anchor.getAttribute("href"),
           target: anchor.getAttribute("target"),
@@ -36,7 +36,7 @@ export function MastheadNav() {
         },
         window.location,
       );
-      if (hash) setHash(hash);
+      if (target) setHash(target);
     }
     document.addEventListener("click", onClick);
     return () => {

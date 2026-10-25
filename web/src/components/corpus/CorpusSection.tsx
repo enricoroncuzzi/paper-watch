@@ -50,6 +50,19 @@ export function CorpusSection({ initial }: { initial: CorpusData }) {
     setSelected(next);
   }, []);
 
+  // The last position a real pointer move reported. A scroll under a resting pointer makes WebKit
+  // send a synthetic mousemove at the same coordinates; only a changed position selects a row.
+  const pointer = useRef<{ x: number; y: number } | null>(null);
+  const selectFromPointer = useCallback(
+    (index: number, x: number, y: number) => {
+      const last = pointer.current;
+      if (last && last.x === x && last.y === y) return;
+      pointer.current = { x, y };
+      select(index);
+    },
+    [select],
+  );
+
   // The page as the ref sees it: an append merges into it without waiting for a render.
   const pageRef = useRef(page);
   // The Load more button that was pressed, so focus stays put when the reader has moved on.
@@ -291,7 +304,7 @@ export function CorpusSection({ initial }: { initial: CorpusData }) {
                 index={index}
                 selected={index === selected}
                 focusRef={index === focusAfter ? takeFocus : undefined}
-                onSelect={() => select(index)}
+                onSelect={(x, y) => selectFromPointer(index, x, y)}
               />
             ))}
           </tbody>

@@ -47,7 +47,8 @@ export function CorpusRow({
   selected: boolean;
   // Set on the first row an append adds, so that row takes focus as it mounts.
   focusRef?: (node: HTMLAnchorElement | null) => void;
-  onSelect: () => void;
+  // The pointer's client position, so the section can tell a move from a scroll (S1b).
+  onSelect: (x: number, y: number) => void;
 }) {
   return (
     <tr
@@ -56,8 +57,9 @@ export function CorpusRow({
       data-selected={selected ? "true" : undefined}
       // mousemove, not mouseenter: WebKit fires a synthetic mouseenter when the rows move under a
       // still pointer (Load more appends and focus scrolls), which would select a row nobody
-      // pointed at. A move is the only thing that means "the reader is pointing here".
-      onMouseMove={onSelect}
+      // pointed at. The position goes up with it, because WebKit also sends a synthetic mousemove
+      // at the old coordinates when the page scrolls under a resting pointer.
+      onMouseMove={(event) => onSelect(event.clientX, event.clientY)}
       className={selected ? "bg-accent-soft/60" : "transition-colors hover:bg-card"}
     >
       <td className={`${CELL} title-cell`}>
