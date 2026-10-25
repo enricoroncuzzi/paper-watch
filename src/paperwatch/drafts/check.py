@@ -69,9 +69,18 @@ _FIRST_PERSON = re.compile(
     re.IGNORECASE,
 )
 _LOWER_US = re.compile(r"\bus\b")
-# A sentence ends after . ! ? (with any closing quote or bracket) or at a newline. A comma or a
-# dash does not end one: the owner's whole sentence is the unit the check compares.
-_SENTENCE_END = re.compile(r'(?<=[.!?])\s+|(?<=[.!?]["\')\]\u201d\u2019])\s+|\n')
+# A sentence ends after . ! ? (with any closing quote or bracket) or an ellipsis, and at a newline.
+# A comma or a dash does not end one; neither does an abbreviation: a full stop before a lower-case
+# letter or after a single capital initial does not end a sentence. Closing characters a model puts
+# after the stop, including markdown bold, may be one or two in a row.
+_CLOSERS = "\"')\\]\u201d\u2019*"
+_SENTENCE_END = re.compile(
+    rf"(?<![A-Z]\.)(?<=[.!?])\s+(?![a-z])"
+    rf"|(?<=[.!?][{_CLOSERS}])\s+(?![a-z])"
+    rf"|(?<=[.!?][{_CLOSERS}][{_CLOSERS}])\s+(?![a-z])"
+    r"|(?<=\u2026)\s+"
+    r"|\n"
+)
 
 # A verb that turns a sentence into a report of someone else's claim.
 _ATTRIBUTION_VERB = re.compile(
@@ -345,17 +354,14 @@ def _check_first_person(
         )
 
 
-def _piece_spans(
-    pattern: re.Pattern[str], text: str, start: int = 0, end: int | None = None
-) -> list[tuple[int, int]]:
-    """The trimmed (start, end) of each piece `pattern` splits the range into."""
-    stop = len(text) if end is None else end
+def _piece_spans(pattern: re.Pattern[str], text: str) -> list[tuple[int, int]]:
+    """The trimmed (start, end) of each piece `pattern` splits the text into."""
     pieces: list[tuple[int, int]] = []
-    at = start
-    for match in pattern.finditer(text, start, stop):
+    at = 0
+    for match in pattern.finditer(text):
         pieces.append((at, match.start()))
         at = match.end()
-    pieces.append((at, stop))
+    pieces.append((at, len(text)))
     spans: list[tuple[int, int]] = []
     for piece_start, piece_end in pieces:
         while piece_start < piece_end and text[piece_start].isspace():
@@ -383,8 +389,10 @@ def _split_sentences(text: str) -> list[str]:
 
 
 def _sentence_key(value: str) -> str:
-    """The words of a sentence: case, punctuation and whitespace do not change what was written."""
-    return " ".join(re.sub(r"\W+", " ", _normalise(value)).split())
+    """The words of a sentence: case, punctuation, whitespace and a list marker do not change it."""
+    # A list marker is the writer's layout, not a word of the sentence.
+    unmarked = re.sub(r"^(?:\d+|[a-z])[).]\s+", "", _normalise(value))
+    return " ".join(re.sub(r"\W+", " ", unmarked).split())
 
 
 def _owner_wrote(key: str, owner: list[str]) -> bool:
@@ -401,25 +409,32 @@ def _owner_wrote(key: str, owner: list[str]) -> bool:
 
 
 def _blanked(text: str, folded_store: str) -> str:
-    """Blank the spans whose first person is not the owner's: every URL and a verbatim quote.
+    """Blank the spans whose first person is not the owner's: a verbatim quote and every URL.
 
-    A URL is vetted by the link rule, and a quote of `MIN_QUOTE_WORDS` or more words that is in
-    the stored text is the authors' voice, which the quote rule already checks. A shorter span is
-    not a quote the quote rule checks, so it must not hide a pronoun: `"We" shipped it` is still
-    the owner speaking. The blank keeps the length, so a flagged sentence can be shown with the
-    reader's own words and punctuation.
+    A quote of `MIN_QUOTE_WORDS` or more words that is in the stored text is the authors' voice,
+    which the quote rule already checks; a URL is vetted by the link rule. A shorter span is not a
+    quote the quote rule checks, so it must not hide a pronoun: `"We" shipped it` is still the
+    owner speaking. Quotes are blanked before URLs, so a URL inside a quote does not stop the quote
+    being verbatim. The closing punctuation stays and the blank keeps the length, so a flagged
+    sentence is shown with the reader's own words and a sentence that ends in a URL still ends
+    there.
     """
 
     def blank(match: re.Match[str]) -> str:
-        return " " * len(match.group(0))
+        url = match.group(0)
+        link = url.rstrip(".,;:!?)]'")
+        return " " * len(link) + url[len(link) :]
 
     def quote(match: re.Match[str]) -> str:
+        whole = match.group(0)
         span = _normalise(match.group(1) if match.group(1) is not None else match.group(2))
         if len(span.split()) >= MIN_QUOTE_WORDS and span in folded_store:
-            return " " * len(match.group(0))
-        return match.group(0)
+            # The full stop and its closing quote stay, so the sentence still ends there.
+            tail = whole[-2:] if whole[-2] in ".!?" else ""
+            return " " * (len(whole) - len(tail)) + tail
+        return whole
 
-    return _QUOTE.sub(quote, _URL.sub(blank, text))
+    return _URL.sub(blank, _QUOTE.sub(quote, text))
 
 
 def _check_attribution(

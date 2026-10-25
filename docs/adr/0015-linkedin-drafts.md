@@ -44,10 +44,14 @@ with other text. A verbatim quote of the item is the authors' voice, not the own
 post must name the lab next to an attribution verb; a non-peer-reviewed item must attribute every
 sentence that carries a number; an early item must say it is early or not yet reviewed; a run of
 twelve copied words outside a quote is flagged. Each failure is a numbered note on the draft, so
-the reader sees which claim to fix. The check recognises the English first-person pronouns only: a
-draft written in another language, a claim that drops its pronoun ("Tested it on 300 traces"),
+the reader sees which claim to fix. The check recognises the English first-person pronouns only:
+a draft written in another language, a claim that drops its pronoun ("Tested it on 300 traces"),
 `Let's` and a capitalised `Us` are not seen, and a trimmed or blended owner sentence is flagged by
-design.
+design. Detection is loose in the other direction too: `I/O`, a `Stage I` label and a `We-` team
+name read as first person, while a pronoun split by a homoglyph, a zero-width or soft-hyphen
+character, or underscores is not seen. A sentence ends at a full stop followed by a space, not
+before a lower-case letter and not after a single capital initial, so `Dr.` and `No.` can still
+end one.
 
 **Generating saves, and the item leaves the picks.** There is no separate save step, so a draft the
 model wrote cannot be lost to a second click; the same request records the `drafted` suggestion

@@ -553,8 +553,8 @@ def test_a_common_lab_word_does_not_name_the_lab(
     assert kinds(unnamed, source) == ["attribution"], org
 
 
-# The owner's rule (2026-10-25): a first-person claim passes only when the owner wrote that
-# clause in the point of view. These are the round 3 bypasses, the honest cases and the edges.
+# The owner's rule (2026-10-25): a first-person sentence passes only when the owner wrote that
+# sentence in the point of view. These are the round 3 bypasses, the honest cases and the edges.
 def test_a_thinking_of_testing_point_of_view_does_not_license_a_claim() -> None:
     draft = replace(GOOD, body=GOOD.body + " I tested this on our 300-step traces.")
     assert kinds(draft, pov="I'm thinking of testing this on our 300-step traces.") == [
@@ -666,6 +666,167 @@ def test_an_owner_sentence_passes(pov: str, claim: str) -> None:
     assert first_person(replace(GOOD, body=GOOD.body + " " + claim), pov=pov) == []
 
 
+# SF-1: a URL or a quote that ends a sentence keeps its full stop, so the owner's next sentence is
+# still a whole sentence of its own.
+@pytest.mark.parametrize(
+    "claim",
+    [
+        "Paper: https://arxiv.org/abs/2601.01234. I tested it on our traces.",
+        "Paper: https://arxiv.org/abs/2601.01234! I tested it on our traces.",
+        "More at www.example.org. I tested it on our traces.",
+        "More at example.org/blog/post. I tested it on our traces.",
+        'More at "https://arxiv.org/abs/2601.01234." I tested it on our traces.',
+        'The authors ask "Is the benchmark small enough?" I tested it on our traces.',
+    ],
+)
+def test_a_sentence_after_a_url_is_still_whole(claim: str) -> None:
+    draft = replace(GOOD, body=GOOD.body + " " + claim)
+    assert first_person(draft, pov="I tested it on our traces.") == []
+
+
+def test_a_quote_that_ends_a_sentence_keeps_its_full_stop() -> None:
+    source = replace(SOURCE, text=TEXT + " We evaluated this on 40 long-horizon tasks.")
+    quote = "we evaluated this on 40 long-horizon tasks."
+    for claim in (
+        f'The authors write "{quote}" I tested it on our traces.',
+        f"The authors write \u201c{quote}\u201d I tested it on our traces.",
+    ):
+        draft = replace(GOOD, body=GOOD.body + " " + claim)
+        assert first_person(draft, source, pov="I tested it on our traces.") == [], claim
+
+
+def test_a_source_quote_with_a_url_inside_is_the_authors_voice() -> None:
+    sentence = "We released the code at https://github.com/example/replay-buffers and welcome PRs"
+    source = replace(SOURCE, text=TEXT + " " + sentence + ".")
+    draft = replace(GOOD, body=GOOD.body + f' The authors write "{sentence}".')
+    assert first_person(draft, source, pov="I tested it on our traces.") == []
+
+
+def test_an_owner_sentence_that_ends_in_a_quote_keeps_the_next_sentence() -> None:
+    source = replace(SOURCE, text=TEXT + " We evaluated this on 40 long-horizon tasks.")
+    pov = 'I like "we evaluated this on 40 long-horizon tasks." I tested it.'
+    assert first_person(replace(GOOD, body=GOOD.body + " I tested it."), source, pov=pov) == []
+
+
+# SF-2: an abbreviation is not a sentence end, so a trimmed owner sentence is checked as a whole.
+@pytest.mark.parametrize(
+    ("pov", "claim"),
+    [
+        ("I tested it, e.g. on our own traces.", "I tested it, e.g. on third-party traces."),
+        (
+            "I tested it on the small set vs. the big set.",
+            "I tested it on the small set vs. nothing at all.",
+        ),
+        ("I tested it on U.S. English traces.", "I tested it on U.S. production traces."),
+        (
+            "I tested it on traces, logs, etc. and nothing broke.",
+            "I tested it on traces, logs, etc. and everything broke.",
+        ),
+        ("I tested it... and it failed.", "I tested it... and it passed."),
+        (
+            "I tested it with J. R. Smith on our traces.",
+            "I tested it with J. R. Jones on our traces.",
+        ),
+    ],
+)
+def test_an_abbreviation_does_not_end_a_sentence(pov: str, claim: str) -> None:
+    assert first_person(replace(GOOD, body=GOOD.body + " " + claim), pov=pov) == [claim]
+
+
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        "I tested it, e.g. on our own traces.",
+        "I tested it on the small set vs. the big set.",
+        "I tested it on U.S. English traces.",
+        "I tested it on traces, logs, etc. and nothing broke.",
+        "I tested it with J. R. Smith on our traces.",
+        "I tested it 3.5 times on our traces.",
+        "I tested v2.0 on our traces.",
+        'I said "we ship it." Then I tested it.',
+    ],
+)
+def test_a_sentence_with_an_abbreviation_or_a_closer_is_whole(sentence: str) -> None:
+    assert first_person(replace(GOOD, body=GOOD.body + " " + sentence), pov=sentence) == []
+
+
+@pytest.mark.parametrize(
+    "pov",
+    [
+        "I tested it (on our traces.) I stopped.",
+        "I tested it [on our traces.] I stopped.",
+        "I said 'we ship it.' I stopped.",
+        "I said \u2018we ship it.\u2019 I stopped.",
+        "I said \u201cwe ship it.\u201d I stopped.",
+    ],
+)
+def test_each_closer_after_a_full_stop_ends_a_sentence(pov: str) -> None:
+    assert first_person(replace(GOOD, body=GOOD.body + " I stopped."), pov=pov) == []
+
+
+@pytest.mark.parametrize(
+    "pov",
+    ['I tested it (and said "go.") I stopped.', "I tested it.** I stopped."],
+)
+def test_two_closers_after_a_full_stop_end_a_sentence(pov: str) -> None:
+    assert first_person(replace(GOOD, body=GOOD.body + " I stopped."), pov=pov) == []
+
+
+def test_an_ellipsis_ends_a_sentence() -> None:
+    # The owner's ellipsis is a sentence end, so a draft may use either punctuation for that end.
+    pov = "I tested it\u2026 and it failed."
+    assert (
+        first_person(replace(GOOD, body=GOOD.body + " I tested it. And it failed."), pov=pov) == []
+    )
+
+
+# SF-3: the rows the round 6 mutants showed were unpinned.
+def test_us_inside_a_word_is_not_first_person() -> None:
+    draft = replace(GOOD, body=GOOD.body + " The status is open, thus the focus stays.")
+    assert first_person(draft, pov="Interesting.") == []
+
+
+def test_an_html_escaped_or_full_width_pronoun_is_found() -> None:
+    for sentence in ("&#73; shipped it.", "\uff55\uff53 shipped it."):
+        assert first_person(replace(GOOD, body=GOOD.body + " " + sentence), pov="Interesting.") == [
+            sentence
+        ]
+
+
+def test_a_run_of_three_owner_sentences_passes() -> None:
+    pov = "I built it. I tested it. I shipped it."
+    draft = replace(GOOD, body=GOOD.body + " I built it, I tested it, I shipped it.")
+    assert first_person(draft, pov=pov) == []
+
+
+def test_the_owner_may_copy_a_sentence_that_quotes_the_source() -> None:
+    source = replace(SOURCE, text=TEXT + " We evaluated this on 40 long-horizon tasks.")
+    sentence = 'I like "we evaluated this on 40 long-horizon tasks."'
+    assert first_person(replace(GOOD, body=GOOD.body + " " + sentence), source, pov=sentence) == []
+
+
+def test_the_note_after_a_url_is_the_readers_own_words() -> None:
+    draft = replace(GOOD, body=GOOD.body + " Paper: https://arxiv.org/abs/2601.01234. I stole it.")
+    assert first_person(draft, pov="Interesting.") == ["I stole it."]
+
+
+def test_a_flagged_sentence_is_trimmed_in_the_note() -> None:
+    draft = replace(GOOD, body=GOOD.body + "\nThe harness is small\n   I stole it   \n")
+    assert first_person(draft, pov="Interesting.") == ["I stole it"]
+
+
+@pytest.mark.parametrize(
+    ("pov", "claim"),
+    [
+        ("1) I built it\n2) I tested it", "I tested it."),
+        ("a) I built it\nb) I tested it", "I tested it."),
+        ("1. I built it\n2. I tested it", "I tested it."),
+    ],
+)
+def test_a_list_marker_is_not_an_owners_word(pov: str, claim: str) -> None:
+    assert first_person(replace(GOOD, body=GOOD.body + " " + claim), pov=pov) == []
+
+
 # R4-3: the pronoun test runs on the folded text, and only "i.e." is not the pronoun.
 @pytest.mark.parametrize(
     "claim",
@@ -768,7 +929,7 @@ def test_i_e_and_a_capital_us_are_not_first_person() -> None:
 
 
 def test_each_first_person_pronoun_is_detected() -> None:
-    for clause in (
+    for sentence in (
         "me and the harness",
         "my harness",
         "mine",
@@ -781,9 +942,9 @@ def test_each_first_person_pronoun_is_detected() -> None:
         "I'm",
         "we've",
     ):
-        assert kinds(replace(GOOD, body=GOOD.body + " " + clause + "."), pov="") == [
+        assert kinds(replace(GOOD, body=GOOD.body + " " + sentence + "."), pov="") == [
             "first_person"
-        ], clause
+        ], sentence
 
 
 # R4-5: the lab name and the common-word label match on whole words, and a name without an
