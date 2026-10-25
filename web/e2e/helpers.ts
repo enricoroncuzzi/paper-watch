@@ -1,8 +1,10 @@
 import { expect, type APIRequestContext, type Page } from "@playwright/test";
 
+import { API_URL } from "./servers";
+
 /** The fake API's scenario switch, so a test picks the state the page renders. */
 export async function setScenario(request: APIRequestContext, name: string): Promise<void> {
-  const response = await request.post("http://127.0.0.1:8787/__scenario", {
+  const response = await request.post(`${API_URL}/__scenario`, {
     data: { name },
     headers: { authorization: "Bearer e2e" },
   });

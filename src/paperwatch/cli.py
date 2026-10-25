@@ -7,8 +7,8 @@ import threading
 import time
 import unicodedata
 import uuid
-from collections.abc import Callable
-from contextlib import closing
+from collections.abc import Callable, Iterator
+from contextlib import closing, contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -202,7 +202,8 @@ def _upgrade_schema(url: str) -> None:
     command.upgrade(cfg, "head")
 
 
-def _with_throwaway_database[T](run: Callable[[Session], T]) -> T:
+@contextmanager
+def _throwaway_database() -> Iterator[Session]:
     # A rolled-back seed leaves dead HNSW entries behind, so dozens of runs on one database slowly
     # change the vector branch's answers and can end in a false regression. Each eval run gets its
     # own database, so the index always starts clean and is dropped in the finally.
@@ -230,7 +231,7 @@ def _with_throwaway_database[T](run: Callable[[Session], T]) -> T:
         try:
             session = make_session_factory(engine)()
             try:
-                return run(session)
+                yield session
             finally:
                 session.rollback()
                 session.close()
@@ -244,6 +245,11 @@ def _with_throwaway_database[T](run: Callable[[Session], T]) -> T:
             typer.echo(f"warning: could not drop throwaway database {name}: {exc}", err=True)
         finally:
             admin.dispose()
+
+
+def _with_throwaway_database[T](run: Callable[[Session], T]) -> T:
+    with _throwaway_database() as session:
+        return run(session)
 
 
 @app.callback()
