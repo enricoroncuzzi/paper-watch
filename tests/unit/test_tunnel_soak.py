@@ -370,12 +370,14 @@ def test_the_soak_stream_sends_heartbeat_frames() -> None:
 class _DroppingStream(BaseHTTPRequestHandler):
     """A stream whose first connection breaks, as a tunnel restart breaks it.
 
-    The first connection sends frames for a second and closes. Every later one answers 503 (the
-    tunnel is still coming back) until `refusals` have been answered, then streams again; with
-    `refusals=None` it never comes back.
+    The first connection sends frames for a second and closes, or with `stall` goes silent and
+    keeps the socket open, as a connection to an ingress that lost its tunnel does. Every later one
+    answers 503 (the tunnel is still coming back) until `refusals` have been answered, then streams
+    again; with `refusals=None` it never comes back.
     """
 
     refusals: int | None = 1
+    stall = False
     connections = 0
 
     def do_GET(self) -> None:  # http.server's spelling, not ours
@@ -396,13 +398,18 @@ class _DroppingStream(BaseHTTPRequestHandler):
                 time.sleep(0.2)
         except (BrokenPipeError, ConnectionResetError):
             return
+        if attempt == 1 and cls.stall:
+            time.sleep(30)
 
     def log_message(self, *_args: object) -> None:
         pass
 
 
-def _stream_line(tmp_path: Path, api_stub: str, refusals: int | None) -> str:
-    handler = type("Stream", (_DroppingStream,), {"refusals": refusals, "connections": 0})
+def _stream_line(
+    tmp_path: Path, api_stub: str, refusals: int | None, *, stall: bool = False, window: int = 7
+) -> str:
+    attrs = {"refusals": refusals, "stall": stall, "connections": 0}
+    handler = type("Stream", (_DroppingStream,), attrs)
     server, port = _serve(handler)
     log = tmp_path / "soak.log"
     probe = subprocess.Popen(  # noqa: S603 (a fixed script path, no shell)
@@ -418,7 +425,7 @@ def _stream_line(tmp_path: Path, api_stub: str, refusals: int | None) -> str:
             "--interval",
             "1",
             "--stream-window",
-            "7",
+            str(window),
             "--stream-every",
             "3600",
             "--heartbeat",
@@ -467,6 +474,37 @@ def test_a_stream_that_never_comes_back_is_unrecovered(tmp_path: Path, api_stub:
     assert int(fields["outage"]) >= 4, fields
 
     result = _summary(_write_log(tmp_path, [line], name="unrecovered.log"))
+    assert result.returncode == 1
+    assert "verdict: FAIL - 1 failed streams" in result.stdout
+
+
+def test_a_stalled_stream_is_abandoned_and_its_recovery_timed(
+    tmp_path: Path, api_stub: str
+) -> None:
+    # A silent connection that never closes would otherwise hold the window to its end and read ok.
+    # Three heartbeats of silence (3 s at --heartbeat 1) plus curl's five-second speed average
+    # abandon it, then the reconnect streams.
+    fields = _fields(_stream_line(tmp_path, api_stub, refusals=0, stall=True, window=16))
+    assert fields["result"] == "fail"
+    assert fields["why"] == "drop"
+    assert fields["drops"] == "1"
+    # The outage is timed from the last frame, so it covers the stall, the pause and the reconnect.
+    assert 3 <= int(fields["outage"]) <= 14, fields
+    assert int(fields["frames"]) > 6, fields
+
+
+def test_a_stalled_stream_that_never_comes_back_is_unrecovered(
+    tmp_path: Path, api_stub: str
+) -> None:
+    line = _stream_line(tmp_path, api_stub, refusals=None, stall=True, window=14)
+    fields = _fields(line)
+    assert fields["why"] == "unrecovered"
+    assert fields["drops"] == "1"
+    # The outage runs from the last frame at about one second to the window's end at fourteen.
+    assert int(fields["outage"]) >= 10, fields
+    assert int(fields["gap"]) >= 10, fields
+
+    result = _summary(_write_log(tmp_path, [line], name="stalled.log"))
     assert result.returncode == 1
     assert "verdict: FAIL - 1 failed streams" in result.stdout
 

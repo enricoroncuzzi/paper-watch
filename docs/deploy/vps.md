@@ -735,8 +735,10 @@ one.
 Restart the tunnel agent while a stream is running. The restart closes the stream's connection, so
 the probe reconnects every second or so while the window has time left, and the stream line records
 the break: `drops=` counts them and `outage=` is the seconds from the last frame before the drop to
-the first frame after the reconnect. That is the recovery time the two-minute rule is about, read
-to within one heartbeat. A run starts with a stream, so a short run of its own is the easiest way to
+the first frame after the reconnect. A connection that stays open but carries no frame for about
+three heartbeats is abandoned and counted as a drop the same way, and silence from the last frame
+to the end of the window counts as a gap. That is the recovery time the two-minute rule is about,
+read to within one heartbeat. A run starts with a stream, so a short run of its own is the easiest way to
 time it:
 
 ```bash

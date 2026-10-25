@@ -157,9 +157,11 @@ http_probe() {
 # stream ends because curl's own --max-time reaches the window's end. One that ends earlier is a
 # drop: the probe reconnects while the window has time left, and the outage is the time from the
 # last frame before the drop to the first frame after it, which is the restart's recovery time.
+# A connection that stays open but goes silent for three heartbeats (plus curl's few seconds of
+# speed averaging) is abandoned as a drop too; the outage is still timed from its last frame.
 stream_probe() {
     local headers=$TMP/stream.headers code=000 attempt frames=0 gap=0 last= started end left
-    local drops=0 down_since= outage=0 ms why= line
+    local drops=0 down_since= outage=0 ms why= line stall=$((HEARTBEAT * 3))
     started=$SECONDS
     end=$((started + STREAM_WINDOW))
     while :; do
@@ -183,7 +185,7 @@ stream_probe() {
                     ;;
             esac
         done < <(curl -sS -N --connect-timeout 10 --max-time "$left" \
-            -D "$headers" -o - "$STREAM_URL" 2>/dev/null)
+            --speed-limit 1 --speed-time "$stall" -D "$headers" -o - "$STREAM_URL" 2>/dev/null)
         attempt=$(header_code "$headers")
         [ "$code" != "000" ] || code=$attempt
         # SECONDS counts whole seconds, so only an end more than a second early is a drop.
@@ -198,6 +200,10 @@ stream_probe() {
     if [ -n "$down_since" ] && [ $((SECONDS - down_since)) -gt "$outage" ]; then
         outage=$((SECONDS - down_since))
     fi
+    # Silence from the last frame to the window's end is a gap like any other.
+    if [ -n "$last" ] && [ $((SECONDS - last)) -gt "$gap" ]; then
+        gap=$((SECONDS - last))
+    fi
     ms=$(((SECONDS - started) * 1000))
     if [ "$code" = "000" ]; then
         why=handshake
@@ -205,8 +211,7 @@ stream_probe() {
         why=unrecovered
     elif [ "$drops" -gt 0 ]; then
         why=drop
-    elif [ "$gap" -ge $((HEARTBEAT * 8)) ]; then
-        # Eight heartbeats of silence inside a stream that stayed up is a break, not a stall.
+    elif [ "$gap" -ge "$stall" ]; then
         why=gap
     fi
     stamp_now
