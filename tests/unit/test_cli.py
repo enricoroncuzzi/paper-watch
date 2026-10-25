@@ -612,6 +612,23 @@ def test_ask_prints_answer_sources_and_flags(monkeypatch: pytest.MonkeyPatch) ->
     assert "warning: uncited_claim: Most agents forget everything" in result.output
 
 
+def ask_deps(monkeypatch: pytest.MonkeyPatch, *, found: bool = True) -> object:
+    """The deps `ask --thread` needs without a database: a session and a thread lookup answer."""
+
+    class Repo:
+        def __init__(self, session: object) -> None:
+            self._session = session
+
+        def thread(self, thread_id: object) -> object | None:
+            return object() if found else None
+
+    monkeypatch.setattr(cli, "Repository", Repo)
+    return SimpleNamespace(
+        session_factory=lambda: SimpleNamespace(close=lambda: None),
+        read_session_factory=None,
+    )
+
+
 def test_ask_continues_a_thread(monkeypatch: pytest.MonkeyPatch) -> None:
     thread = uuid4()
     seen: dict[str, object] = {}
@@ -627,13 +644,26 @@ def test_ask_continues_a_thread(monkeypatch: pytest.MonkeyPatch) -> None:
         yield AnswerEvent(answer_with("Coding agents are scored on real bugs [S1]."))
         yield ThreadEvent(thread, 4)
 
-    monkeypatch.setattr(cli, "live_deps", lambda s, verifier: object())
+    app_deps = ask_deps(monkeypatch)
+    monkeypatch.setattr(cli, "live_deps", lambda s, verifier: app_deps)
     monkeypatch.setattr(cli, "run_question", stream)
     result = CliRunner().invoke(app, ["ask", "q", "--thread", str(thread), "--live"])
     assert result.exit_code == 0
     assert seen["thread_id"] == thread
     # The id goes to stderr, so a piped answer stays just the answer.
     assert f"thread {thread} turn 4" in result.stderr
+
+
+def test_ask_with_an_unknown_thread_says_so(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A mistyped id is a setup mistake: exit 2 with the id, not an answer that failed.
+    thread = uuid4()
+    app_deps = ask_deps(monkeypatch, found=False)
+    monkeypatch.setattr(cli, "live_deps", lambda s, verifier: app_deps)
+    monkeypatch.setattr(cli, "run_question", boom)
+    result = CliRunner().invoke(app, ["ask", "q", "--thread", str(thread), "--live"])
+    assert result.exit_code == 2
+    assert f"thread not found: {thread}" in result.stderr
+    assert result.stdout == ""
 
 
 def test_ask_prints_the_thread_a_new_answer_started(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -909,6 +909,13 @@ def ask(
         tiers=frozenset(tier) if tier else None,
         profiles=frozenset(profile) if profile else None,
     )
+    if thread is not None:
+        # A mistyped id is a setup mistake, not a failed answer: say so and stop before the stream.
+        reader = deps.read_session_factory or deps.session_factory
+        with closing(reader()) as session:
+            if Repository(session).thread(thread) is None:
+                typer.echo(f"thread not found: {thread}", err=True)
+                raise typer.Exit(2)
     streamed: list[str] = []
     answer: CheckedAnswer | None = None
     saved_thread: tuple[uuid.UUID, int] | None = None

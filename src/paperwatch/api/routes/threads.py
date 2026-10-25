@@ -10,13 +10,16 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
+import structlog
 from fastapi import APIRouter, HTTPException, Query, Security
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from sqlalchemy.orm import Session
 
 from paperwatch.api.payloads import AnswerData
 from paperwatch.api.responses import BEARER, GATE_RESPONSES, Refusal
 from paperwatch.store.repository import Repository
+
+log = structlog.get_logger()
 
 # The Recent menu shows a short list; a larger page is a client bug, not a reader's need.
 THREAD_LIST_LIMIT = 20
@@ -95,24 +98,30 @@ def make_threads_router(session_factory: Callable[[], Session]) -> APIRouter:
         return ThreadDetailData(
             id=row.id,
             title=row.title,
-            turns=[
-                ThreadTurnData(
-                    n=turn.n,
-                    question=turn.question,
-                    answer=_answer(turn.answer),
-                    search_mode=turn.search_mode,
-                    created_at=turn.created_at,
-                )
-                for turn in row.turns
-            ],
+            turns=[turn_data for stored in row.turns if (turn_data := _turn(stored)) is not None],
         )
 
     return router
 
 
-def _answer(payload: Any) -> AnswerData:
-    """The stored `AnswerData`, validated: a row written by an older contract stays readable."""
-    return AnswerData.model_validate(payload)
+def _turn(stored: Any) -> ThreadTurnData | None:
+    """One stored turn, or None when its payload no longer validates.
+
+    A row written by an older contract (a field since removed or renamed) must not fail the whole
+    conversation: the readable turns are still what the reader came back for.
+    """
+    try:
+        answer = AnswerData.model_validate(stored.answer)
+    except ValidationError as exc:
+        log.warning("thread_turn_unreadable", error_type=type(exc).__name__)
+        return None
+    return ThreadTurnData(
+        n=stored.n,
+        question=stored.question,
+        answer=answer,
+        search_mode=stored.search_mode,
+        created_at=stored.created_at,
+    )
 
 
 __all__ = [

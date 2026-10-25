@@ -497,6 +497,12 @@ async function handle(request, response) {
       refused(response, 429);
       return;
     }
+    if (lastAsk.thread_id && !threads.some((one) => one.id === lastAsk.thread_id)) {
+      // The real API refuses an unknown thread before its stream starts, so the page can see the
+      // same 404 here instead of the fake quietly starting a second conversation.
+      json(response, 404, { detail: "thread not found" });
+      return;
+    }
     if (scenario === "thread_drop" && lastAsk.thread_id) {
       // A follow-up whose connection dies: the server cancels it, so nothing is stored.
       await serveStream("drop", response, request, lastAsk);

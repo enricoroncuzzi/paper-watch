@@ -376,6 +376,7 @@ def stream_answer(
     cancel: threading.Event | None = None,
     registry: SourceRegistry | None = None,
     history: Sequence[tuple[str, str]] = (),
+    skip_sources: int = 0,
 ) -> Generator[AgentEvent, None, None]:
     """Yield tool calls, sources and tokens as they happen, then exactly one `AnswerEvent`.
 
@@ -389,6 +390,10 @@ def stream_answer(
 
     `history` is a thread's earlier `(question, answer)` turns, oldest first: they reach the model
     before this question, and the graph's first-call guard counts from this turn's question.
+
+    `skip_sources` is how many aliases the registry already held when the answer started (a
+    follow-up's restored aliases): they are citable but are not sources this answer found, so they
+    are not announced again as `source` events nor counted in `step.new_sources`.
     """
     state = _initial_state(question, history)
     config = _run_config(cancel)
@@ -400,8 +405,9 @@ def stream_answer(
     )
     # The page shows sources as they are found and the time each tool round took, so the stream
     # carries them next to the tool calls. `seen` counts the aliases already sent: the registry is
-    # the source of truth, and it keeps an item's alias across rounds.
-    seen = 0
+    # the source of truth, and it keeps an item's alias across rounds. A follow-up starts at its
+    # restored aliases, so the page counts only what this turn added.
+    seen = skip_sources
     round_number = 0
     round_started: float | None = None
     # Closed explicitly, not left to garbage collection: closing the graph's stream joins its worker

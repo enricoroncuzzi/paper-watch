@@ -869,6 +869,19 @@ def test_an_answer_over_the_budget_leaves_no_history() -> None:
     assert bound_history([("q1", "x" * 6001)]) == []
 
 
+def test_an_answer_of_exactly_the_budget_is_kept() -> None:
+    # The boundary is inclusive: 6,000 characters fit and 6,001 do not.
+    assert bound_history([("q1", "x" * 6000)]) == [("q1", "x" * 6000)]
+    assert bound_history([("q1", "x" * 6001)]) == []
+
+
+def test_an_oversized_middle_turn_takes_the_older_ones_with_it() -> None:
+    # Everything older than a turn that does not fit is dropped, not skipped over: a gap would
+    # replay an answer without the turn it followed.
+    turns = [("q1", "a" * 100), ("q2", "b" * 7000), ("q3", "c" * 100)]
+    assert bound_history(turns) == [("q3", "c" * 100)]
+
+
 def test_a_registry_survives_the_json_a_thread_stores(
     db_session: Session, seed_items: Seed
 ) -> None:

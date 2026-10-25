@@ -72,6 +72,8 @@ describe("the ask reducer", () => {
       question: "q",
       at: "2026-11-04T09:00:00Z",
       threadId: null,
+      filter: "all tiers",
+      tiers: null,
     });
     state = askReducer(state, { type: "event", event: "token", data: { text: "draft words" } });
     expect(state.text).toBe("draft words");
@@ -87,6 +89,8 @@ describe("the ask reducer", () => {
       question: "q",
       at: "2026-11-04T09:00:00Z",
       threadId: null,
+      filter: "all tiers",
+      tiers: null,
     });
     const source = ANSWER.citations[0]!;
     state = askReducer(state, { type: "event", event: "source", data: source });
@@ -491,6 +495,53 @@ describe("the ask controller with threads", () => {
     await secondRun;
   });
 
+  it("a third turn keeps the conversation in order", async () => {
+    const fetchImpl = vi.fn();
+    const controller = new AskController({ fetchImpl, watchdogMs: 45_000 });
+    for (const n of [1, 2]) {
+      const stream = controllable();
+      fetchImpl.mockResolvedValueOnce(new Response(stream.body));
+      const run = controller.ask(`q${n}`);
+      await vi.advanceTimersByTimeAsync(0);
+      stream.push(frame("answer", ANSWER));
+      stream.push(frame("thread", { id: THREAD, turn: n }));
+      stream.close();
+      await run;
+    }
+    const third = controllable();
+    fetchImpl.mockResolvedValueOnce(new Response(third.body));
+    const thirdRun = controller.ask("q3");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(controller.getState().turns.map((one) => one.n)).toEqual([1, 2]);
+    expect(controller.getState().turnCount).toBe(2);
+    third.close();
+    await thirdRun;
+  });
+
+  it("an answer the server could not save still moves above the next question", async () => {
+    // No `thread` event: the write failed. The reader saw the answer, so it stays in the sheet.
+    const fetchImpl = vi.fn();
+    const controller = new AskController({ fetchImpl, watchdogMs: 45_000 });
+    const first = controllable();
+    fetchImpl.mockResolvedValueOnce(new Response(first.body));
+    const firstRun = controller.ask("q1");
+    await vi.advanceTimersByTimeAsync(0);
+    first.push(frame("answer", ANSWER));
+    first.close();
+    await firstRun;
+    expect(controller.getState().turn).toBeNull();
+
+    const second = controllable();
+    fetchImpl.mockResolvedValueOnce(new Response(second.body));
+    const secondRun = controller.ask("q2");
+    await vi.advanceTimersByTimeAsync(0);
+    const state = controller.getState();
+    expect(state.turns).toHaveLength(1);
+    expect(state.turns[0]).toMatchObject({ n: null, question: "q1", answer: ANSWER });
+    second.close();
+    await secondRun;
+  });
+
   it("the peer-reviewed chip sends the filter as tiers", async () => {
     const stream = controllable();
     const { fetchImpl, controller } = controllerFor(stream.body);
@@ -505,6 +556,8 @@ describe("the ask controller with threads", () => {
       thread_id: THREAD,
       tiers: ["peer_reviewed"],
     });
+    expect(controller.getState().filter).toBe("peer-reviewed only");
+    expect(controller.getState().tiers).toEqual(["peer_reviewed"]);
     stream.close();
     await run;
   });
@@ -525,6 +578,9 @@ describe("the ask controller with threads", () => {
     expect(state.question).toBe("q3");
     expect(state.status).toBe("done");
     expect(state.answer).toEqual(ANSWER);
+    // A stored turn was asked before the sheet could know its filter, so it prints none.
+    expect(state.filter).toBeNull();
+    expect(state.expected).toBe(4);
   });
 
   it("recovering adopts the answer the server finished after the stream died", async () => {
@@ -551,9 +607,37 @@ describe("the ask controller with threads", () => {
     expect(state.answer).toEqual(ANSWER);
     expect(state.interrupted).toBe(false);
     expect(state.turns.map((one) => one.n)).toEqual([1]);
+    expect(state.turnCount).toBe(2);
   });
 
-  it("recovering marks the question interrupted when the thread has no turn for it", async () => {
+  it("coming back to the page leaves a healthy stream running", async () => {
+    // A tab switch is not a dead connection: the thread has no turn for this question yet, so the
+    // stream must keep running and its answer must arrive normally.
+    const fetchImpl = routedFetch({
+      [`/api/threads/${THREAD}`]: () =>
+        Response.json({ id: THREAD, title: "q1", turns: [turn(1, "q1")] }),
+    });
+    const controller = new AskController({ fetchImpl, watchdogMs: 45_000 });
+    await controller.openThread(THREAD);
+
+    const live = controllable();
+    fetchImpl.mockImplementationOnce(async () => new Response(live.body));
+    const run = controller.ask("q2");
+    await vi.advanceTimersByTimeAsync(0);
+    await controller.recover();
+    expect(controller.getState().status).toBe("streaming");
+    expect(controller.getState().interrupted).toBe(false);
+
+    live.push(frame("token", { text: "still streaming" }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(controller.getState().text).toBe("still streaming");
+    live.push(frame("answer", ANSWER));
+    live.close();
+    await run;
+    expect(controller.getState().status).toBe("done");
+  });
+
+  it("recovering marks the question interrupted when the stream already ended", async () => {
     let turns = [turn(1, "q1")];
     const fetchImpl = routedFetch({
       [`/api/threads/${THREAD}`]: () => Response.json({ id: THREAD, title: "q1", turns }),
@@ -565,14 +649,104 @@ describe("the ask controller with threads", () => {
     fetchImpl.mockImplementationOnce(async () => new Response(stalled.body));
     const run = controller.ask("q2");
     await vi.advanceTimersByTimeAsync(0);
-    await controller.recover();
     stalled.close();
     await run;
+    expect(controller.getState().status).toBe("dropped");
+
+    await controller.recover();
     const state = controller.getState();
     expect(state.status).toBe("dropped");
     expect(state.interrupted).toBe(true);
     expect(state.question).toBe("q2");
     expect(state.turns.map((one) => one.n)).toEqual([1]);
+  });
+
+  it("a repeated question does not adopt the older answer", async () => {
+    // The peer-reviewed chip asks the same text again, so the text alone cannot identify the turn:
+    // the thread's turn 1 is the same question, and adopting it would show the unfiltered answer.
+    const turns = [turn(1, "the same question")];
+    const fetchImpl = routedFetch({
+      [`/api/threads/${THREAD}`]: () => Response.json({ id: THREAD, title: "q", turns }),
+    });
+    const controller = new AskController({ fetchImpl, watchdogMs: 45_000 });
+    await controller.openThread(THREAD);
+
+    const stalled = controllable();
+    fetchImpl.mockImplementationOnce(async () => new Response(stalled.body));
+    const run = controller.ask("the same question", { tiers: ["peer_reviewed"] });
+    await vi.advanceTimersByTimeAsync(0);
+    stalled.close();
+    await run;
+
+    await controller.recover();
+    const state = controller.getState();
+    expect(state.status).toBe("dropped");
+    expect(state.interrupted).toBe(true);
+    expect(state.answer).toBeNull();
+    expect(state.turnCount).toBe(1);
+    // The re-ask still knows which filter to send again.
+    expect(state.tiers).toEqual(["peer_reviewed"]);
+  });
+
+  it("a late thread read does not touch a newer request", async () => {
+    let release!: () => void;
+    const gated = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const live = controllable();
+    let reads = 0;
+    const fetchImpl = routedFetch({
+      "/api/ask": () => new Response(live.body),
+      [`/api/threads/${THREAD}`]: async () => {
+        reads += 1;
+        if (reads > 1) await gated;
+        return Response.json({ id: THREAD, title: "q1", turns: [turn(1, "q1")] });
+      },
+    });
+    const controller = new AskController({ fetchImpl, watchdogMs: 45_000 });
+    await controller.openThread(THREAD);
+
+    const read = controller.recover();
+    const run = controller.ask("q3");
+    await vi.advanceTimersByTimeAsync(0);
+    release();
+    await read;
+    const state = controller.getState();
+    expect(state.status).toBe("streaming");
+    expect(state.question).toBe("q3");
+    expect(state.interrupted).toBe(false);
+
+    live.push(frame("answer", ANSWER));
+    live.close();
+    await run;
+    expect(controller.getState().status).toBe("done");
+    expect(controller.getState().interrupted).toBe(false);
+  });
+
+  it("opening a thread ignores a read that lands after another request", async () => {
+    let release!: () => void;
+    const gated = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const live = controllable();
+    const fetchImpl = routedFetch({
+      "/api/ask": () => new Response(live.body),
+      [`/api/threads/${THREAD}`]: async () => {
+        await gated;
+        return Response.json({ id: THREAD, title: "q1", turns: [turn(1, "q1")] });
+      },
+    });
+    const controller = new AskController({ fetchImpl, watchdogMs: 45_000 });
+    const opening = controller.openThread(THREAD);
+
+    const run = controller.ask("q2");
+    await vi.advanceTimersByTimeAsync(0);
+    release();
+    await opening;
+    expect(controller.getState().question).toBe("q2");
+    expect(controller.getState().status).toBe("streaming");
+    live.close();
+    await run;
   });
 
   it("recovering without a thread does nothing", async () => {

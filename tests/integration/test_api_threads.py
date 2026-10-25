@@ -10,6 +10,7 @@ import json
 import threading
 import time
 from collections.abc import Callable, Iterator
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
@@ -22,6 +23,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 from structlog.testing import capture_logs
 
+from paperwatch.api import app as api
 from paperwatch.api.app import AgentDeps, create_app, run_question
 from paperwatch.api.auth import HmacVerifier, mint_hmac_token
 from paperwatch.api.limits import RequestLimiter
@@ -33,12 +35,13 @@ from paperwatch.config import (
     REQUESTS_PER_MINUTE,
     Settings,
 )
+from paperwatch.domain import Tier
 from paperwatch.llm.chat import ChatModel, ScriptedChatModel
 from paperwatch.llm.embedder import FakeEmbedder
 from paperwatch.retrieval.hybrid import Filters
 from paperwatch.store.db import make_session_factory
 from paperwatch.store.models import Thread, ThreadTurn
-from paperwatch.store.repository import Repository
+from paperwatch.store.repository import Repository, ThreadConflict
 from tests.conftest import AGENT_ROWS, SeedRow
 
 pytestmark = pytest.mark.integration
@@ -71,6 +74,13 @@ class MemoryChatCalls:
         return None
 
 
+class CappedCalls(MemoryChatCalls):
+    """A store whose daily cap is spent: the reservation is refused before the provider."""
+
+    def reserve_chat_call(self, *, at: datetime, provider: str, cap: int) -> tuple[int | None, int]:
+        return None, cap
+
+
 @pytest.fixture
 def write_factory(engine: Engine) -> Iterator[sessionmaker[Session]]:
     """A writable factory, as production has: the answer session is read-only by design."""
@@ -87,6 +97,7 @@ def deps(
     db_session: Session,
     models: list[ChatModel],
     write_factory: sessionmaker[Session] | None,
+    chat_calls: MemoryChatCalls | None = None,
     **settings: object,
 ) -> AgentDeps:
     return AgentDeps(
@@ -96,7 +107,7 @@ def deps(
         models=models,
         settings=Settings(_env_file=None, **settings),  # type: ignore[arg-type]
         clock=lambda: NOW,
-        chat_calls=MemoryChatCalls(),  # type: ignore[arg-type]
+        chat_calls=chat_calls or MemoryChatCalls(),  # type: ignore[arg-type]
         profile_names=frozenset(),
         verifier=HmacVerifier(TEST_SECRET, time.time),
         allowed_hosts=LOOPBACK_HOSTS,
@@ -290,6 +301,7 @@ def test_history_is_bounded_to_six_turns(
             answer={"text": "answer 1"},
             search_mode="hybrid",
             at=NOW,
+            expected_turns=0,
         )
         for n in range(2, 9):
             repo.save_thread_turn(
@@ -300,6 +312,7 @@ def test_history_is_bounded_to_six_turns(
                 answer={"text": f"answer {n}"},
                 search_mode="hybrid",
                 at=NOW,
+                expected_turns=n - 1,
             )
         session.commit()
     model = ScriptedChatModel(script=[final("An answer with no citation.")])
@@ -335,8 +348,9 @@ def test_ask_about_an_item_starts_a_thread_with_it_as_s1(
     with write_factory() as session:
         row = Repository(session).thread(thread_id)
     assert row is not None
-    assert [ref["alias"] for ref in row.registry] == ["S1"]
     assert row.registry[0]["item_id"] == str(ids["swe"])
+    # The stored turn is the reader's own question, never the prompt the item block built.
+    assert row.turns[0].question == "what does this paper measure?"
 
 
 def test_a_failed_turn_write_still_delivers_the_answer(
@@ -393,6 +407,7 @@ def test_the_thread_list_is_newest_first(
             answer={"text": "answer"},
             search_mode="hybrid",
             at=NOW,
+            expected_turns=0,
         )
         newer, _ = repo.save_thread_turn(
             thread_id=None,
@@ -402,6 +417,7 @@ def test_the_thread_list_is_newest_first(
             answer={"text": "answer"},
             search_mode="hybrid",
             at=NOW + timedelta(hours=1),
+            expected_turns=0,
         )
         session.commit()
     listed = get(deps(db_session, [], write_factory), "/threads").json()["threads"]
@@ -413,3 +429,257 @@ def test_an_unknown_thread_detail_is_404(
     db_session: Session, write_factory: sessionmaker[Session]
 ) -> None:
     assert get(deps(db_session, [], write_factory), f"/threads/{uuid4()}").status_code == 404
+
+
+def test_a_follow_up_announces_only_the_sources_it_added(
+    db_session: Session, write_factory: sessionmaker[Session], seed_items: Seed
+) -> None:
+    # The restored registry already holds the thread's old aliases: re-announcing them would make
+    # the page say "3 sources" for a turn that only re-read one paper.
+    seed_items(AGENT_ROWS)
+    # The follow-up's thread read closes the shared session, so the seed is committed first.
+    db_session.commit()
+    models = scripted(
+        call("search_corpus", query="SWE-bench coding agents"),
+        final(ANSWER),
+        call("get_item", 2, source_id="S1"),
+        final("It measured coding agents on real repository bugs [S1]."),
+    )
+    app_deps = deps(db_session, models, write_factory)
+    first = events(ask(app_deps, {"question": "q1"}).text)
+    issued = [data["id"] for name, data in first if name == "source"]
+    assert issued  # the first turn found something; the point is that the follow-up adds nothing
+    thread_id = first[-1][1]["id"]
+
+    second = events(ask(app_deps, {"question": FOLLOW_UP, "thread_id": thread_id}).text)
+    assert [data["id"] for name, data in second if name == "source"] == []
+    assert [data["new_sources"] for name, data in second if name == "step"] == [0]
+
+
+def test_the_cap_fallback_runs_on_a_follow_up(
+    db_session: Session, write_factory: sessionmaker[Session], seed_items: Seed
+) -> None:
+    # The design keeps the search results visible when the cap refuses an answer; a follow-up's
+    # restored registry is not a search this answer ran, so it must not suppress the fallback.
+    seed_items(AGENT_ROWS)
+    # The follow-up's thread read closes the shared session, so the seed is committed first.
+    db_session.commit()
+    models = scripted(call("search_corpus", query="SWE-bench coding agents"), final(ANSWER))
+    app_deps = deps(db_session, models, write_factory)
+    thread_id = events(ask(app_deps, {"question": "q1"}).text)[-1][1]["id"]
+
+    capped = deps(db_session, scripted(final(ANSWER)), write_factory, chat_calls=CappedCalls())
+    # The question has to match the corpus for the fallback search to find anything.
+    frames = events(
+        ask(capped, {"question": "how are coding agents measured?", "thread_id": thread_id}).text
+    )
+    names = [name for name, _ in frames]
+    assert "source" in names and names[-1] == "error"
+    assert dict(frames)["error"]["code"] == "daily_cap"
+
+
+def test_a_follow_up_on_an_item_keeps_one_s1(
+    db_session: Session, write_factory: sessionmaker[Session], seed_items: Seed
+) -> None:
+    # `item_id` pre-registers a source only for a new thread: a follow-up already has S1, and a
+    # second S1 would point the reader at two different papers.
+    ids = seed_items(AGENT_ROWS)
+    # The route's item check opens and closes its own session, so the seed must be out of this
+    # test session's savepoint for the check to see it (as the suggestions tests do).
+    db_session.commit()
+    models = scripted(
+        call("search_corpus", query="SWE-bench coding agents"),
+        final(ANSWER),
+        final("It measured coding agents on real repository bugs [S1]."),
+    )
+    app_deps = deps(db_session, models, write_factory)
+    thread_id = events(ask(app_deps, {"question": "q1"}).text)[-1][1]["id"]
+
+    events(
+        ask(
+            app_deps,
+            {"question": FOLLOW_UP, "thread_id": thread_id, "item_id": str(ids["mem"])},
+        ).text
+    )
+    with write_factory() as session:
+        row = Repository(session).thread(UUID(thread_id))
+    assert row is not None
+    by_alias = {ref["alias"]: ref["item_id"] for ref in row.registry}
+    # `mem` was not pre-registered as S1: S1 is still the paper the thread's first search found.
+    assert by_alias["S1"] == str(ids["swe"])
+    assert list(by_alias) == [f"S{i}" for i in range(1, len(by_alias) + 1)]
+    assert str(ids["mem"]) not in {ref["item_id"] for ref in row.registry if ref["alias"] == "S1"}
+
+
+def test_an_alias_from_two_turns_ago_is_still_citable(
+    db_session: Session, write_factory: sessionmaker[Session], seed_items: Seed
+) -> None:
+    # Turn 2 finds a new paper (S2) and its registry is saved with the turn; turn 3 cites S2 with
+    # no search of its own, and the check reads the same alias.
+    rows: list[SeedRow] = [
+        *AGENT_ROWS,
+        (
+            "quant",
+            "Watermark detection for generated text",
+            "A detector for re-encoded watermarks in model-generated text.",
+            Tier.VETTED_PREPRINT,
+        ),
+    ]
+    ids = seed_items(rows)
+    # The follow-up's thread read closes the shared session, so the seed is committed first.
+    db_session.commit()
+    models = scripted(
+        call("search_corpus", query="SWE-bench coding agents"),
+        final(ANSWER),
+        # Turn 2 finds a paper turn 1 never saw, so it issues the next alias (S4).
+        call("search_corpus", 2, query="watermark detection generated text"),
+        final("Watermarks survive re-encoding of generated text [S4]."),
+        final("It measured coding agents on real repository bugs [S4]."),
+    )
+    app_deps = deps(db_session, models, write_factory)
+    thread_id = events(ask(app_deps, {"question": "q1"}).text)[-1][1]["id"]
+    second = events(ask(app_deps, {"question": "q2", "thread_id": thread_id}).text)
+    assert dict(second)["answer"]["citations"][0]["id"] == "S4"
+
+    third = events(ask(app_deps, {"question": "q3", "thread_id": thread_id}).text)
+    answer = dict(third)["answer"]
+    assert answer["supported"] is True
+    assert [citation["id"] for citation in answer["citations"]] == ["S4"]
+    assert answer["citations"][0]["item_id"] == str(ids["quant"])
+    with write_factory() as session:
+        row = Repository(session).thread(UUID(thread_id))
+    assert row is not None
+    assert [ref["alias"] for ref in row.registry] == ["S1", "S2", "S3", "S4"]
+
+
+def test_a_long_first_question_is_clipped_to_the_title(
+    db_session: Session, write_factory: sessionmaker[Session]
+) -> None:
+    question = "what do these papers measure " * 5
+    app_deps = deps(db_session, scripted(final("An answer with no citation.")), write_factory)
+    frames = events(ask(app_deps, {"question": question}).text)
+    with write_factory() as session:
+        row = Repository(session).thread(UUID(frames[-1][1]["id"]))
+    assert row is not None
+    assert row.title == question.strip()[:80]
+    assert row.turns[0].question == question.strip()
+
+
+def test_a_stale_turn_is_refused_so_two_follow_ups_cannot_lose_a_registry(
+    write_factory: sessionmaker[Session],
+) -> None:
+    # Both answers started from a thread with one turn. The second save would overwrite the first
+    # one's registry, and its stored answer would cite an alias that now means another paper, so it
+    # is refused instead: the answer is still delivered, the turn is not stored.
+    with write_factory() as session:
+        repo = Repository(session)
+        thread_id, _ = repo.save_thread_turn(
+            thread_id=None,
+            title="q1",
+            registry=[{"alias": "S1", "item_id": str(uuid4())}],
+            question="q1",
+            answer={"text": "a1"},
+            search_mode="hybrid",
+            at=NOW,
+            expected_turns=0,
+        )
+        session.commit()
+    with write_factory() as newer, write_factory() as older:
+        Repository(newer).save_thread_turn(
+            thread_id=thread_id,
+            title="",
+            registry=[{"alias": "S1", "item_id": str(uuid4())}],
+            question="q2",
+            answer={"text": "a2"},
+            search_mode="hybrid",
+            at=NOW,
+            expected_turns=1,
+        )
+        newer.commit()
+        with pytest.raises(ThreadConflict):
+            Repository(older).save_thread_turn(
+                thread_id=thread_id,
+                title="",
+                registry=[{"alias": "S2", "item_id": str(uuid4())}],
+                question="q3",
+                answer={"text": "a3"},
+                search_mode="hybrid",
+                at=NOW,
+                expected_turns=1,
+            )
+
+
+def test_a_stale_follow_up_is_refused_and_still_answers(
+    db_session: Session,
+    write_factory: sessionmaker[Session],
+    seed_items: Seed,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # An answer can load a thread and then find that another answer stored a turn. Its registry
+    # predates that turn, so saving it would make the earlier turn's citations point elsewhere:
+    # the save is refused, and the reader still gets the answer.
+    seed_items(AGENT_ROWS)
+    db_session.commit()
+    models = scripted(
+        call("search_corpus", query="SWE-bench coding agents"),
+        final(ANSWER),
+        final("It measured coding agents on real repository bugs [S1]."),
+    )
+    app_deps = deps(db_session, models, write_factory)
+    thread_id = events(ask(app_deps, {"question": "q1"}).text)[-1][1]["id"]
+
+    loaded = api._load_thread
+
+    def stale(deps: AgentDeps, tid: UUID) -> object:
+        row = loaded(deps, tid)
+        return replace(row, turns=()) if row is not None else None
+
+    monkeypatch.setattr(api, "_load_thread", stale)
+    with capture_logs() as logs:
+        frames = events(ask(app_deps, {"question": FOLLOW_UP, "thread_id": thread_id}).text)
+    assert frames[-1][0] == "answer"
+    assert "thread" not in {name for name, _ in frames}
+    [failure] = [entry for entry in logs if entry["event"] == "thread_save_failed"]
+    assert failure["error_type"] == "ThreadConflict"
+    with write_factory() as session:
+        row = Repository(session).thread(UUID(thread_id))
+    assert row is not None
+    assert len(row.turns) == 1
+
+
+def test_a_turn_that_is_no_longer_readable_does_not_break_the_thread_read(
+    db_session: Session, write_factory: sessionmaker[Session]
+) -> None:
+    with write_factory() as session:
+        thread_id, _ = Repository(session).save_thread_turn(
+            thread_id=None,
+            title="q1",
+            registry=[],
+            question="q1",
+            answer={},
+            search_mode="hybrid",
+            at=NOW,
+            expected_turns=0,
+        )
+        session.commit()
+    response = get(deps(db_session, [], write_factory), f"/threads/{thread_id}")
+    assert response.status_code == 200
+    assert response.json()["turns"] == []
+
+
+def test_run_question_with_an_unknown_thread_is_an_error_event(
+    db_session: Session, write_factory: sessionmaker[Session]
+) -> None:
+    # The route refuses an unknown thread with a 404 before the stream; this is the race where it
+    # is deleted in between, which must not become a new conversation under a different id.
+    model = ScriptedChatModel(script=[final(ANSWER)])
+    received = list(
+        run_question(
+            deps(db_session, [ChatModel("openrouter", model)], write_factory),
+            "q",
+            Filters(),
+            thread_id=uuid4(),
+        )
+    )
+    assert [type(event).__name__ for event in received] == ["ErrorEvent"]
+    assert model.seen == []

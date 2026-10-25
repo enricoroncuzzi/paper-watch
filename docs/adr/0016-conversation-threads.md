@@ -1,6 +1,6 @@
 # 16. Conversation memory is our own two tables, with one registry per thread
 
-Date: 2026-11-04
+Date: 2026-10-25
 
 ## Status
 

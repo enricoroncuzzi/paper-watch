@@ -2,7 +2,7 @@
 
 Revision ID: 0008
 Revises: 0007
-Create Date: 2026-11-04
+Create Date: 2026-10-25
 
 """
 
@@ -18,6 +18,16 @@ revision: str = "0008"
 down_revision: str | None = "0007"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
+
+# What the API role may write, named once: the role test loads this module and runs
+# `grant_statement()`, so a grant dropped from here fails in the test instead of on the server.
+GRANTED_INSERT = ("threads", "thread_turns")
+GRANTED_UPDATE = ("threads",)
+GRANTED_SEQUENCES = ("thread_turns_id_seq",)
+
+
+def grant_statement() -> str:
+    return grant_api_writes(GRANTED_INSERT, update=GRANTED_UPDATE, sequences=GRANTED_SEQUENCES)
 
 
 def upgrade() -> None:
@@ -51,13 +61,7 @@ def upgrade() -> None:
     )
     # The API creates a thread, updates its registry and updated_at, and appends turns. The grant
     # comes from the migration, so the captain has no new admin step. The role is absent in CI.
-    op.execute(
-        grant_api_writes(
-            ["threads", "thread_turns"],
-            update=["threads"],
-            sequences=["thread_turns_id_seq"],
-        )
-    )
+    op.execute(grant_statement())
 
 
 def downgrade() -> None:

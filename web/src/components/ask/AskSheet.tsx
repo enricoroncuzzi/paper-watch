@@ -70,22 +70,25 @@ function MatchingItems({ sources }: { sources: SourceRef[] }) {
 
 /** A finished turn, above the current one: its question, its checked answer and its sources. */
 function PastTurn({
+  id,
   n,
   question,
   askedAt,
   text,
   sources,
 }: {
-  n: number;
+  id: string;
+  // Null for an answer the server could not save: it still belongs above the next question.
+  n: number | null;
   question: string;
   askedAt: string;
   text: string;
   sources: SourceRef[];
 }) {
   const numbers = footnoteNumbers(sources);
-  const prefix = `turn-${n}-`;
+  const prefix = `turn-${id}-`;
   return (
-    <section data-testid={`turn-${n}`} className="mb-8 border-b border-rule pb-7">
+    <section data-testid={`turn-${n ?? "unsaved"}`} className="mb-8 border-b border-rule pb-7">
       <h2 className="mb-2 max-w-[32ch] font-serif text-[19px] leading-[1.35] tracking-[-0.01em]">
         {question}
       </h2>
@@ -150,20 +153,22 @@ export function AskSheet({
   async function sendQuestion(question: string, options: AskOptions = {}) {
     const trimmed = question.trim();
     if (!trimmed || streaming) return;
+    const threadId = options.threadId ?? state.threadId;
     // The composer empties at send time, so it never repeats the question shown above the answer,
-    // and whatever the reader types while the answer streams is theirs to keep. A failed ask puts
-    // the question back, but only when nothing else has been typed since.
+    // and whatever the reader types while the answer streams is theirs to keep.
     setDraft("");
     setRecentOpen(false);
     const status = await ask(trimmed, {
       // An item only registers on a new thread; the API ignores it on a follow-up.
-      itemId: state.threadId ? null : (options.itemId ?? item?.id ?? null),
-      threadId: options.threadId ?? state.threadId,
+      itemId: threadId ? null : (options.itemId ?? item?.id ?? null),
+      threadId,
       tiers: options.tiers,
     });
-    if (status === "error" || status === "dropped") {
-      setDraft((current) => (current === "" ? trimmed : current));
-    }
+    // A failure puts the question back only when nothing else has been typed since, and only when
+    // no block above already offers to send it again: a follow-up's drop ends in the adopted
+    // answer or in the interrupted line, and a dropped first question has no thread to recover.
+    const refill = status === "error" || (status === "dropped" && !threadId);
+    if (refill) setDraft((current) => (current === "" ? trimmed : current));
   }
 
   function onKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -190,13 +195,12 @@ export function AskSheet({
     void recover();
   }, [state.status, recover]);
 
-  // iOS Safari freezes a backgrounded tab, so its stream can be dead long before the watchdog
-  // fires: a return to the page reads the thread back and shows whatever the server finished.
+  // A hidden tab says nothing about its stream: a desktop tab switch of a second leaves a healthy
+  // answer running. `recover` reads the thread when there is one and aborts only after adopting a
+  // turn the server finished, so a live stream is never killed by coming back to the page.
   useEffect(() => {
     function onVisibilityChange() {
-      if (document.visibilityState === "visible" && state.status === "streaming") {
-        void recover();
-      }
+      if (document.visibilityState === "visible") void recover();
     }
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () => document.removeEventListener("visibilitychange", onVisibilityChange);
@@ -227,7 +231,7 @@ export function AskSheet({
           }}
           className="fixed inset-0 z-[91] flex h-[100dvh] w-full flex-col overflow-hidden border border-rule bg-card shadow-[var(--shadow)] sm:inset-auto sm:left-1/2 sm:top-1/2 sm:h-[min(88dvh,880px)] sm:w-[min(880px,94vw)] sm:-translate-x-1/2 sm:-translate-y-1/2"
         >
-          <header className="flex flex-none items-center gap-3 border-b border-rule px-5 py-3 sm:px-6">
+          <header className="relative flex flex-none items-center gap-3 border-b border-rule px-5 py-3 sm:px-6">
             <Dialog.Title className="font-serif text-[17px] tracking-[-0.01em]">
               Ask the corpus
             </Dialog.Title>
@@ -243,30 +247,24 @@ export function AskSheet({
                 {state.turnCount} turn{state.turnCount === 1 ? "" : "s"}
               </span>
             ) : null}
-            <div className="relative ml-auto flex items-center gap-1.5">
+            <div className="ml-auto flex items-center gap-1.5">
               <button
                 ref={recentButton}
                 type="button"
                 aria-expanded={recentOpen}
-                aria-haspopup="menu"
+                aria-controls="recent-threads"
                 onClick={() => setRecentOpen((current) => !current)}
-                className={`inline-flex h-11 items-center gap-1.5 rounded-[2px] border px-2.5 text-[11.5px] hover:text-ink sm:h-[26px] ${
-                  recentOpen
-                    ? "border-accent text-ink"
-                    : "border-rule-2 text-ink-2 hover:border-accent"
-                }`}
+                // The hit area stays the phone's 44 px; the visible control inside it is smaller.
+                className="grid h-11 min-w-11 place-items-center px-2 text-ink-2 hover:text-ink sm:h-[26px] sm:min-w-0 sm:px-0"
               >
-                Recent
+                <span
+                  className={`inline-flex h-[26px] items-center rounded-[2px] border px-2.5 text-[11.5px] ${
+                    recentOpen ? "border-accent text-ink" : "border-rule-2 hover:border-accent"
+                  }`}
+                >
+                  Recent
+                </span>
               </button>
-              {recentOpen ? (
-                <RecentThreads
-                  onPick={(threadId) => {
-                    setRecentOpen(false);
-                    void openThread(threadId);
-                  }}
-                  onDismiss={closeRecent}
-                />
-              ) : null}
               <Dialog.Close
                 aria-label="Close the sheet"
                 className="grid h-11 w-11 place-items-center rounded-full text-ink-3 hover:bg-card-2 hover:text-ink"
@@ -284,9 +282,26 @@ export function AskSheet({
                 </svg>
               </Dialog.Close>
             </div>
+            {recentOpen ? (
+              <RecentThreads
+                id="recent-threads"
+                opener={recentButton}
+                onPick={(threadId) => {
+                  setRecentOpen(false);
+                  void openThread(threadId);
+                }}
+                onDismiss={closeRecent}
+              />
+            ) : null}
           </header>
 
-          <div ref={body} className="min-h-0 flex-1 overflow-auto px-5 py-6 sm:px-9">
+          <div
+            ref={body}
+            // The body is the reading sheet's live region: a new answer, a check note and an
+            // interrupted line reach a screen reader without moving focus.
+            aria-live="polite"
+            className="min-h-0 flex-1 overflow-auto px-5 py-6 sm:px-9"
+          >
             {item ? (
               <p
                 data-testid="asking-about"
@@ -298,7 +313,8 @@ export function AskSheet({
 
             {state.turns.map((turn) => (
               <PastTurn
-                key={turn.n}
+                key={turn.id}
+                id={turn.id}
                 n={turn.n}
                 question={turn.question}
                 askedAt={turn.askedAt}
@@ -320,8 +336,12 @@ export function AskSheet({
                   <span>you</span>
                   <span>·</span>
                   <span>{formatRome(state.askedAt)} Europe/Rome</span>
-                  <span>·</span>
-                  <span>all tiers · all topics</span>
+                  {state.filter ? (
+                    <>
+                      <span>·</span>
+                      <span>{state.filter} · all topics</span>
+                    </>
+                  ) : null}
                 </p>
               </>
             ) : state.turns.length === 0 ? (
@@ -351,7 +371,7 @@ export function AskSheet({
                 </p>
                 <button
                   type="button"
-                  onClick={() => void sendQuestion(state.question)}
+                  onClick={() => void sendQuestion(state.question, { tiers: state.tiers })}
                   className="mt-2 inline-flex h-8 items-center rounded-[2px] border border-rule-2 bg-card px-3 text-[12px] text-ink hover:border-accent"
                 >
                   Ask it again

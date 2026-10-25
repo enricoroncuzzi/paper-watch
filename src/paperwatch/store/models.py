@@ -377,8 +377,9 @@ class ThreadTurn(Base):
 
     __tablename__ = "thread_turns"
     __table_args__ = (
-        # Two turns of one thread can never share a number, so a concurrent follow-up fails loudly
-        # instead of silently renumbering the conversation.
+        # Two turns of one thread can never share a number. This is the last line of defence, not
+        # the guard against a concurrent follow-up: two racing answers would get different numbers
+        # and the loser would silently overwrite the thread's registry (S5, `ThreadConflict`).
         UniqueConstraint("thread_id", "n", name="uq_thread_turns_thread_n"),
     )
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)

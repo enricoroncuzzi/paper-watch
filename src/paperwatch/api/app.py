@@ -526,6 +526,10 @@ def run_question(
     # Created before the graph so the cap fallback below can see what the answer had already found.
     registry = SourceRegistry()
     history: list[tuple[str, str]] = []
+    # How many aliases the thread already held, and how many turns it held, when this answer
+    # loaded it: both are what tell this answer's own work apart from the conversation's history.
+    restored_sources = 0
+    expected_turns = 0
     try:
         if thread_id is not None:
             # The route checks the thread first, so an unknown id is a 404 before the stream; this
@@ -536,6 +540,8 @@ def run_question(
                 yield ErrorEvent("internal", INTERNAL_MESSAGE)
                 return
             registry = SourceRegistry.from_refs([ref_from_json(ref) for ref in saved.registry])
+            restored_sources = len(registry.refs())
+            expected_turns = len(saved.turns)
             history = bound_history(
                 [(turn.question, str(turn.answer.get("text", ""))) for turn in saved.turns]
             )
@@ -594,7 +600,14 @@ def run_question(
         # next search; the prewarm and the open-answer window only matter for a hybrid answer.
         hybrid = decision.mode == "hybrid"
         with _answer_window(deps.embedder, hybrid=hybrid):
-            stream = stream_answer(graph, prompt, cancel, registry, history=history)
+            stream = stream_answer(
+                graph,
+                prompt,
+                cancel,
+                registry,
+                history=history,
+                skip_sources=restored_sources,
+            )
             # Not `yield from`: closing a generator suspended in a yield-from closes the
             # sub-generator before this frame can set the flag, so the flag is set first.
             for event in stream:
@@ -604,7 +617,13 @@ def run_question(
                     # one transaction on the writable factory; a failure is logged by type and the
                     # stream ends without a thread event, so the answer still reaches the reader.
                     stored = _save_turn(
-                        deps, thread_id, question, event.answer, search_log, registry
+                        deps,
+                        thread_id,
+                        question,
+                        event.answer,
+                        search_log,
+                        registry,
+                        expected_turns,
                     )
                     if stored is not None:
                         stored_id, turn = stored
@@ -617,7 +636,9 @@ def run_question(
         # The sheet stays useful: one search still runs, so the reader sees candidate sources
         # beside the message about the reset time (section 15's call).
         embedder = deps.embedder if deps.search_mode.current().mode == "hybrid" else None
-        yield from _cap_fallback(deps, session, embedder, question, filters, registry)
+        yield from _cap_fallback(
+            deps, session, embedder, question, filters, registry, restored_sources
+        )
         yield ErrorEvent("daily_cap", str(exc), retry_at=_next_midnight(deps.clock()))
     except BudgetExceeded as exc:
         yield ErrorEvent("budget", str(exc))
@@ -669,6 +690,7 @@ def _save_turn(
     answer: CheckedAnswer,
     search_log: SearchLog,
     registry: SourceRegistry,
+    expected_turns: int,
 ) -> tuple[UUID, int] | None:
     """Store one finished turn and the thread's registry; None when it could not be stored.
 
@@ -692,6 +714,7 @@ def _save_turn(
                 answer=payload.model_dump(mode="json"),
                 search_mode=payload.search_mode,
                 at=deps.clock(),
+                expected_turns=expected_turns,
             )
             session.commit()
     except Exception as exc:  # noqa: BLE001 - the answer is already the reader's
@@ -744,13 +767,18 @@ def _cap_fallback(
     question: str,
     filters: Filters,
     registry: SourceRegistry,
+    restored_sources: int,
 ) -> Generator[SourceEvent, None, None]:
     """One plain search when the daily cap refuses the answer before any source was found.
+
+    "Already found" means this answer added sources, not that the registry is non-empty: a
+    follow-up's registry starts with the thread's aliases, and the design keeps the search results
+    visible on the daily-cap error.
 
     A failure here is logged by type and skipped: the cap error is what the client needs, and a
     search that cannot run must not replace it with a traceback.
     """
-    if registry.refs():
+    if len(registry.refs()) > restored_sources:
         return
     try:
         with _read_scope(deps, session) as active:

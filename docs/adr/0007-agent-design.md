@@ -4,7 +4,8 @@ Date: 2026-10-20
 
 ## Status
 
-Accepted
+Accepted. The single-turn paragraph is superseded by [ADR 0016](0016-conversation-threads.md),
+which lets one run carry a thread's earlier turns; everything else here still holds.
 
 ## Context
 

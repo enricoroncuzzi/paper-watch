@@ -50,7 +50,10 @@ export type AskStatus = "idle" | "streaming" | "done" | "error" | "dropped";
 
 /** One finished turn of the conversation, as the sheet re-renders it above the current one. */
 export type ConversationTurn = {
-  n: number;
+  // A stable key for React and the footnote anchors: the server's number, or the moment an
+  // answer that could not be saved was asked. `n` alone would collide in that case.
+  id: string;
+  n: number | null;
   question: string;
   answer: AnswerPayload;
   askedAt: string;
@@ -85,8 +88,16 @@ export type AskState = {
   turn: number | null;
   // The finished turns the thread holds, so the header chip can count them.
   turnCount: number;
+  // The turn number this request will get. A repeated question (the peer-reviewed chip) must not
+  // adopt an older answer with the same text, so adoption checks this as well as the text.
+  expected: number | null;
   // True when the server has no finished turn for the question the sheet asked.
   interrupted: boolean;
+  // The tiers line under the question, as the request asked for them; null when a stored turn is
+  // shown and the filter it was asked with is not known.
+  filter: string | null;
+  // The filter itself, so "Ask it again" re-sends what was asked rather than everything.
+  tiers: string[] | null;
   tools: ToolPayload[];
   steps: StepPayload[];
   sources: SourceRef[];
@@ -122,7 +133,10 @@ export const INITIAL_ASK_STATE: AskState = {
   threadId: null,
   turn: null,
   turnCount: 0,
+  expected: null,
   interrupted: false,
+  filter: null,
+  tiers: null,
   tools: [],
   steps: [],
   sources: [],
@@ -133,18 +147,28 @@ export const INITIAL_ASK_STATE: AskState = {
 };
 
 export type AskAction =
-  | { type: "start"; question: string; at: string; threadId: string | null }
+  | {
+      type: "start";
+      question: string;
+      at: string;
+      threadId: string | null;
+      filter: string | null;
+      tiers: string[] | null;
+    }
   | { type: "event"; event: string; data: unknown }
   | { type: "dropped" }
   | { type: "abort" }
   // The thread's finished turns, read back after a dropped stream or a return to the page.
   | { type: "recover"; turns: WireTurn[] }
+  // The server finished this request's turn after the stream died: show its checked answer.
+  | { type: "adopted"; turns: WireTurn[] }
   // A conversation the reader picked in the Recent menu.
   | { type: "open"; threadId: string; turns: WireTurn[] };
 
 /** One stored turn as the sheet renders it. */
 function conversationTurn(turn: WireTurn): ConversationTurn {
   return {
+    id: `saved-${turn.n}`,
     n: turn.n,
     question: turn.question,
     answer: turn.answer,
@@ -152,32 +176,46 @@ function conversationTurn(turn: WireTurn): ConversationTurn {
   };
 }
 
+/** The tiers line the sheet prints: the two the sheet can send are the only two it can show. */
+export function filterLabel(tiers: string[] | null): string | null {
+  if (tiers === null) return "all tiers";
+  return tiers.includes("peer_reviewed") ? "peer-reviewed only" : "all tiers";
+}
+
 /** The reducer is exported so the stream logic is tested without rendering a component. */
 export function askReducer(state: AskState, action: AskAction): AskState {
   switch (action.type) {
     case "start": {
       // A finished current turn joins the earlier ones, so a follow-up reads as a conversation
-      // instead of replacing what came before it.
-      const turns =
-        state.answer !== null && state.turn !== null && state.askedAt !== null
+      // instead of replacing what came before it. An answer the server could not save still moves
+      // up: it happened, and the reader saw it.
+      const finished =
+        state.answer !== null && state.askedAt !== null
           ? [
-              ...state.turns,
               {
+                id:
+                  state.turn !== null
+                    ? `saved-${state.turn}`
+                    : `local-${state.askedAt}`,
                 n: state.turn,
                 question: state.question,
                 answer: state.answer,
                 askedAt: state.askedAt,
               },
             ]
-          : state.turns;
+          : [];
       return {
         ...INITIAL_ASK_STATE,
         status: "streaming",
         question: action.question,
         askedAt: action.at,
-        turns,
+        turns: [...state.turns, ...finished],
         threadId: action.threadId,
-        turnCount: Math.max(state.turnCount, turns.length),
+        turnCount: state.turnCount,
+        // The turn this request will be: a thread that holds N finished turns numbers this N+1.
+        expected: state.turnCount + 1,
+        filter: action.filter,
+        tiers: action.tiers,
       };
     }
     case "dropped":
@@ -188,31 +226,52 @@ export function askReducer(state: AskState, action: AskAction): AskState {
       return applyEvent(state, action.event, action.data);
     case "recover":
       return applyRecovery(state, action.turns);
+    case "adopted":
+      return adopt(state, action.turns);
     case "open":
       return openConversation(action.threadId, action.turns);
   }
 }
 
+/** Whether a stored turn is the one this request asked for: same words and same number. */
+function isThisRequest(state: AskState, last: WireTurn | undefined): last is WireTurn {
+  return (
+    last !== undefined &&
+    state.question !== "" &&
+    last.question === state.question &&
+    last.n === state.expected
+  );
+}
+
 /**
- * A thread read back: the server's finished turns are the truth about what it checked. When the
- * question the sheet asked is among them, its answer is adopted (the stream may have died while
- * the server kept writing); when it is not, the reader is told the answer was interrupted.
+ * The server finished this request's turn after the stream died: its checked answer replaces the
+ * streamed text, and the turns before it are the thread's other finished ones.
+ */
+function adopt(state: AskState, wire: WireTurn[]): AskState {
+  const last = wire.at(-1);
+  if (last === undefined) return state;
+  return {
+    ...state,
+    status: "done",
+    interrupted: false,
+    turns: wire.slice(0, -1).map(conversationTurn),
+    turnCount: wire.length,
+    turn: last.n,
+    expected: last.n + 1,
+    answer: last.answer,
+    text: last.answer.text,
+    sources: last.answer.citations,
+    // `filter` and `tiers` stay: this is still the request the sheet sent, so it knows them.
+  };
+}
+
+/**
+ * A thread read back after a dropped stream: the server's finished turns are the truth about what
+ * it checked. The matching turn is adopted by `adopt`; without one, the reader is told the answer
+ * was interrupted. A stream that is still running is left alone (see `recover`).
  */
 function applyRecovery(state: AskState, wire: WireTurn[]): AskState {
-  const last = wire.at(-1);
-  if (last !== undefined && state.question !== "" && last.question === state.question) {
-    return {
-      ...state,
-      status: "done",
-      interrupted: false,
-      turns: wire.slice(0, -1).map(conversationTurn),
-      turnCount: wire.length,
-      turn: last.n,
-      answer: last.answer,
-      text: last.answer.text,
-      sources: last.answer.citations,
-    };
-  }
+  if (isThisRequest(state, wire.at(-1))) return adopt(state, wire);
   return {
     ...state,
     // An answer already on screen stays: only the turns above it are refreshed.
@@ -232,6 +291,7 @@ function openConversation(threadId: string, wire: WireTurn[]): AskState {
     threadId,
     turn: last.n,
     turnCount: wire.length,
+    expected: last.n + 1,
     turns: wire.slice(0, -1).map(conversationTurn),
     question: last.question,
     askedAt: last.created_at,
@@ -264,8 +324,9 @@ function applyEvent(state: AskState, event: string, data: unknown): AskState {
     }
     case "answer": {
       const answer = data as AnswerPayload;
-      // The checked answer is authoritative: the streamed words can differ from it.
-      return { ...state, status: "done", answer, text: answer.text };
+      // The checked answer is authoritative: the streamed words can differ from it. It also ends
+      // any interruption a late thread read left behind: this request did finish.
+      return { ...state, status: "done", answer, text: answer.text, interrupted: false };
     }
     case "error": {
       const error = data as { code: AskErrorCode; message: string; retry_at?: string | null };
@@ -310,6 +371,10 @@ export class AskController {
   private readonly listeners = new Set<() => void>();
   private inFlight: AbortController | null = null;
   private timer: ReturnType<typeof setTimeout> | null = null;
+  // Bumped whenever a newer ask, a newer open or an abort takes over. Every continuation after an
+  // await compares it before it touches state, so a late read or a superseded stream cannot land
+  // on the request the reader is looking at now.
+  private generation = 0;
 
   constructor(
     private readonly options: {
@@ -351,6 +416,7 @@ export class AskController {
   }
 
   ask = async (question: string, options: AskOptions = {}): Promise<AskStatus> => {
+    const generation = (this.generation += 1);
     this.stopWatchdog();
     this.inFlight?.abort();
     const controller = new AbortController();
@@ -358,11 +424,14 @@ export class AskController {
     // A follow-up continues the conversation the sheet already holds unless the caller names
     // another thread; the chips do, and an ordinary send does not.
     const threadId = options.threadId ?? this.state.threadId;
+    const tiers = options.tiers && options.tiers.length > 0 ? options.tiers : null;
     this.dispatch({
       type: "start",
       question,
       at: new Date().toISOString(),
       threadId,
+      filter: filterLabel(tiers),
+      tiers,
     });
     // The clock starts before the request: a tunnel that stalls before the response headers is a
     // dead connection too, and every received byte resets it below.
@@ -386,7 +455,7 @@ export class AskController {
       });
       // A newer ask replaced this one while its headers were in flight: the response belongs to a
       // request nobody is waiting for, and writing its status would land on the newer answer.
-      if (this.inFlight !== controller) return this.state.status;
+      if (generation !== this.generation) return this.state.status;
       if (!response.ok || !response.body) {
         const payload = (await response.json().catch(() => ({}))) as {
           kind?: string;
@@ -394,7 +463,7 @@ export class AskController {
         };
         // The body read can outlive the request, and its abort is swallowed by the `catch` above:
         // a superseded refusal must not turn the newer request into an error.
-        if (this.inFlight !== controller) return this.state.status;
+        if (generation !== this.generation) return this.state.status;
         this.set({ ...this.state, status: "error", error: errorFor(response.status, payload) });
         return this.state.status;
       }
@@ -403,12 +472,15 @@ export class AskController {
       for await (const event of parseSse(response.body, () => {
         if (this.inFlight === controller) this.startWatchdog(controller);
       })) {
+        // A superseded stream can still deliver a buffered frame; it belongs to the request it
+        // replaced, so the event is dropped with it.
+        if (generation !== this.generation) break;
         this.dispatch({ type: "event", event: event.event, data: event.data });
       }
       // A stream that ends without an `answer` or an `error` lost its connection. A superseded
       // stream can still end normally (a queued frame, a proxy flush), and its `dropped` belongs
       // to the request it replaced, not to the newer one still streaming.
-      if (this.inFlight === controller) this.dispatch({ type: "dropped" });
+      if (generation === this.generation) this.dispatch({ type: "dropped" });
     } catch {
       // An abort is the user's own doing; anything else is a connection that died.
       if (!controller.signal.aborted) this.dispatch({ type: "dropped" });
@@ -423,37 +495,47 @@ export class AskController {
   };
 
   /**
-   * What the server finished for this conversation, after the client lost the stream.
+   * What the server finished for this request, read after a dropped stream or a return to the page.
    *
-   * A frozen tab (iOS Safari) can return with its stream long dead and its watchdog never fired,
-   * so a return to the page is treated as a lost connection first, then the thread is read back.
-   * Without a thread there is nothing to read: the ask never reached the server's store.
+   * A hidden tab says nothing about whether its stream is alive: on a desktop a tab switch of one
+   * second, and on iOS Safari a frozen timer, can both leave a healthy stream running. So a return
+   * to the page does not abort anything. It reads the thread when there is one, adopts the turn
+   * only when the server finished *this* request (its words and its number), and otherwise leaves
+   * the stream alone; a dead connection still ends through the reader error or the watchdog.
    */
   recover = async (): Promise<void> => {
-    if (this.state.status === "streaming") {
-      this.stopWatchdog();
-      this.inFlight?.abort();
-      this.inFlight = null;
-      this.dispatch({ type: "dropped" });
-    }
     const threadId = this.state.threadId;
     if (!threadId) return;
+    const generation = this.generation;
     const fetchImpl = this.options.fetchImpl ?? fetch;
     try {
       const response = await fetchImpl(`/api/threads/${threadId}`, { cache: "no-store" });
       if (!response.ok) return;
       const detail = (await response.json()) as { turns: WireTurn[] };
-      // The sheet can have moved on while this read was in flight; a late read must not replace
-      // the conversation the reader is looking at now.
-      if (this.state.threadId !== threadId) return;
+      // A newer ask or an opened conversation took over while this read was in flight.
+      if (generation !== this.generation) return;
+      if (isThisRequest(this.state, detail.turns.at(-1))) {
+        // The server finished the answer the client stopped hearing: adopting it is what makes
+        // the abort below safe, because the answer is no longer only in the stream.
+        this.generation += 1;
+        this.stopWatchdog();
+        this.inFlight?.abort();
+        this.inFlight = null;
+        this.dispatch({ type: "adopted", turns: detail.turns });
+        return;
+      }
+      // A healthy stream is left to finish; only a stream that already ended is told it was
+      // interrupted.
+      if (this.state.status === "streaming") return;
       this.dispatch({ type: "recover", turns: detail.turns });
     } catch {
-      // A failed re-fetch leaves the dropped state: the reader can ask the question again.
+      // A failed re-fetch leaves the state as it was: the reader can ask the question again.
     }
   };
 
   /** Open a stored conversation from the Recent menu. */
   openThread = async (threadId: string): Promise<void> => {
+    const generation = (this.generation += 1);
     this.stopWatchdog();
     this.inFlight?.abort();
     this.inFlight = null;
@@ -462,6 +544,7 @@ export class AskController {
       const response = await fetchImpl(`/api/threads/${threadId}`, { cache: "no-store" });
       if (!response.ok) return;
       const detail = (await response.json()) as { turns: WireTurn[] };
+      if (generation !== this.generation) return;
       this.dispatch({ type: "open", threadId, turns: detail.turns });
     } catch {
       // The menu keeps the conversation it had.
@@ -469,6 +552,7 @@ export class AskController {
   };
 
   abort = (): void => {
+    this.generation += 1;
     this.stopWatchdog();
     this.inFlight?.abort();
     this.inFlight = null;

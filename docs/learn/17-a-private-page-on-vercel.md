@@ -69,9 +69,15 @@ model call and the chips cost nothing to invent.
 A dropped stream does not end the conversation. The controller asks `GET /api/threads/{id}` and
 shows what the server finished: the answer is adopted when the thread saved it, and when the thread
 has no turn for the question the sheet says the answer was interrupted and offers to ask it again.
-The same read runs when `visibilitychange` says the page is visible again, because iOS Safari freezes
-a backgrounded tab and its watchdog timer with it. Both requests go through a route handler, which
-checks the session and holds the credential like the ask proxy does.
+Adoption needs the turn's number as well as its words, because a chip re-asks the same question:
+otherwise the unfiltered answer to the first ask would be shown as the answer to the filtered one.
+
+Returning to the page runs that read too, because iOS Safari freezes a backgrounded tab and its
+watchdog timer with it, but it never aborts the stream: a tab switch is not a dead connection. Only
+the read that adopts a finished turn stops the stream, because the answer is then no longer only in
+the stream. A live stream with no stored turn yet is left to finish, and a dead one still ends
+through the reader error or the 45-second watchdog. Both the ask proxy and the thread reads are
+route handlers, which check the session and hold the credential on the server.
 
 ## Stored text stays text
 

@@ -132,6 +132,15 @@ class DraftRow:
     counts: Mapping[str, tuple[int, int]]
 
 
+class ThreadConflict(RuntimeError):
+    """A turn cannot be saved because the thread changed after this answer loaded it.
+
+    Two answers racing on one thread would each rewrite the registry from the aliases it started
+    with, so the later save would make the earlier turn's citations point at other papers. The
+    refusal is logged (the answer is already delivered) and the turn is not stored.
+    """
+
+
 @dataclass(frozen=True)
 class ThreadTurnRow:
     """One stored turn as the API and the page read it back."""
@@ -1225,13 +1234,16 @@ class Repository:
         answer: Mapping[str, object],
         search_mode: str,
         at: datetime,
+        expected_turns: int,
     ) -> tuple[uuid.UUID, int]:
         """Append one finished turn, creating the thread when there is none.
 
         The registry is rewritten with every alias the thread has now, so a follow-up that added
         sources makes them citable in the turn after it too. The thread row is locked for the
-        duration, so two answers racing on one thread number their turns instead of both reading
-        the same `max(n)`.
+        duration, and `expected_turns` is the number of turns the answer saw when it loaded the
+        thread: a thread that grew since then belongs to another answer's registry, so this save is
+        refused rather than overwriting it (the unique `(thread_id, n)` cannot catch that, because
+        the two turns receive different numbers).
         """
         stored = [dict(ref) for ref in registry]
         if thread_id is None:
@@ -1249,6 +1261,18 @@ class Repository:
             existing = self._s.get(Thread, thread_id, with_for_update=True)
             if existing is None:
                 raise LookupError("thread not found")
+            held = (
+                self._s.scalar(
+                    select(func.count())
+                    .select_from(ThreadTurn)
+                    .where(ThreadTurn.thread_id == thread_id)
+                )
+                or 0
+            )
+            if held > expected_turns:
+                raise ThreadConflict(
+                    f"the thread holds {held} turns, the answer saw {expected_turns}"
+                )
             existing.source_registry = stored
             existing.updated_at = at
         n = (
