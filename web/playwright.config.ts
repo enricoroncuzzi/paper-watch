@@ -23,7 +23,9 @@ export default defineConfig({
   },
   projects: [
     { name: "chromium", use: { ...devices["Desktop Chrome"] } },
-    { name: "webkit", use: { ...devices["Desktop Safari"] } },
+    // The main-flow smoke test runs on the two devices the owner reads the page on, the desktop
+    // and the iPhone; the iPhone 15 project already covers WebKit, so it is not run a third time.
+    { name: "webkit", testIgnore: /main-flow\.spec\.ts/, use: { ...devices["Desktop Safari"] } },
     { name: "webkit-iphone", use: { ...devices["iPhone 15"] } },
   ],
   webServer: [
