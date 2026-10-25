@@ -92,8 +92,9 @@ call from the same daily cap and counts against the same per-client limit as an 
 `{code, message, retry_at}` with `code` one of:
 
 - `daily_cap`: the free tier's calls are spent until `retry_at` (UTC midnight);
-- `model_unavailable`: no model that refuses training on inputs answered. There is no fallback,
-  because the point of view may only go to a provider with `data_collection: "deny"`;
+- `model_unavailable`: the draft model did not answer (a timeout, a rate limit or a provider
+  error). There is no fallback: the point of view goes to one OpenRouter model, the chat model or
+  the optional `PW_DRAFT_MODEL` override;
 - `unusable`: the reply was not the JSON draft structure, or it was over the answer budget.
 
 A `404` is an item that is not admitted, or a draft that is not stored; a `422` is stored text

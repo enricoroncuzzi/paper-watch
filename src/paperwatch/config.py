@@ -247,6 +247,10 @@ class Settings(BaseSettings):
     # chat call refuses to start rather than failing deep inside an HTTP request.
     openrouter_api_key: SecretStr | None = None
     chat_model: str = CHAT_MODEL
+    # An optional override for the draft chain's model; unset means `chat_model`. A draft sends no
+    # training opt-out, so the provider may train on and retain its prompt, point of view included,
+    # which the owner accepted (ADR 0015).
+    draft_model: str | None = None
     # Groq answers only when both the key and a model id are set: Groq's free models change too
     # often to pin a default here, and a guessed id would fail on every fallback attempt.
     groq_api_key: SecretStr | None = None

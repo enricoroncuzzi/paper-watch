@@ -1,9 +1,9 @@
 """One chat call that turns a stored item and the owner's point of view into a draft.
 
-The chain is the draft chain from `llm/chat.py`: OpenRouter with `provider.data_collection: "deny"`
-and no fallback. This module makes exactly one call per draft and no retry, because a second call
-would spend the day's budget on a reply the check has already been able to judge. A reply that is
-not the JSON the prompt asked for is `DraftUnusable`, and nothing is saved.
+The chain is the draft chain from `llm/chat.py`: one OpenRouter model and no fallback. This module
+makes exactly one call per draft and no retry, because a second call would spend the day's budget
+on a reply the check has already been able to judge. A reply that is not the JSON the prompt asked
+for is `DraftUnusable`, and nothing is saved.
 
 Nothing here logs the point of view, the prompt or the draft text: a log line names the item, the
 model, the flag counts and the timing only.
@@ -33,11 +33,10 @@ log = structlog.get_logger()
 # The `drafts.model` column width. A provider may name a routed variant longer than the one asked
 # for, and a usage write that does not fit would lose the whole draft.
 DRAFT_MODEL_MAX_CHARS = 128
-# The one sentence a provider refusal becomes: the client gets a reason it can show, and the
-# provider's own error text (which can echo the prompt) never reaches a log or a response.
-NO_COMPLIANT_MODEL = (
-    "No model that refuses training on inputs answered, so the draft was not generated."
-)
+# The one sentence a provider failure becomes: the client gets a reason it can show, and the
+# provider's own error text (which can echo the prompt) never reaches a log or a response. It names
+# no cause, because a timeout, a rate limit and a missing model all end here.
+NO_ANSWER_MESSAGE = "The model did not answer, so the draft was not generated. Try again later."
 # A model may wrap JSON in a fence even when told not to, so one fence is stripped before parsing.
 _FENCE = re.compile(r"^```[a-zA-Z]*\s*\n")
 
@@ -91,7 +90,7 @@ def generate_draft(
     a cap decision propagates so the route can say what happened.
     """
     if not models:
-        raise ModelUnavailable(NO_COMPLIANT_MODEL)
+        raise ModelUnavailable(NO_ANSWER_MESSAGE)
     # One model, and only the first: the draft chain is built without a fallback on purpose.
     model = models[0]
     # Outside the try: a cap decision is not provider trouble, and another provider would spend
@@ -100,7 +99,7 @@ def generate_draft(
     started = time.monotonic()
     try:
         message = model.model.invoke(draft_messages(source, pov, language))
-    except Exception as exc:  # noqa: BLE001 - any provider error means no compliant answer
+    except Exception as exc:  # noqa: BLE001 - any provider error means no answer
         try:
             guard.after_failure(model.provider, reservation)
         except Exception as store_exc:  # noqa: BLE001 - never hide the provider error
@@ -116,7 +115,7 @@ def generate_draft(
             provider=model.provider,
             error_type=type(exc).__name__,
         )
-        raise ModelUnavailable(NO_COMPLIANT_MODEL) from None
+        raise ModelUnavailable(NO_ANSWER_MESSAGE) from None
     guard.after_call(model.provider, message, reservation)
     answered = _answered_model(message, model)
     parsed = _parse(str(message.content))

@@ -5,6 +5,7 @@ import subprocess
 import sys
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
+from typing import Literal
 
 import pytest
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
@@ -97,6 +98,8 @@ def test_settings_defaults() -> None:
     assert (s.chat_max_calls_per_day, s.chat_max_tokens_per_answer) == (800, 60_000)
     assert s.chat_max_output_tokens == 4096
     assert s.openrouter_api_key is None and s.groq_api_key is None
+    # Unset, so a draft uses the chat model; the server may name a different one.
+    assert s.draft_model is None
 
 
 def test_missing_openrouter_key_is_refused() -> None:
@@ -422,20 +425,42 @@ def test_a_model_id_longer_than_the_column_is_clipped() -> None:
     assert len(str(repo.recorded[0]["model"])) == CHAT_CALL_MODEL_MAX_CHARS
 
 
-def test_draft_models_deny_data_collection_and_skip_groq() -> None:
-    # A draft carries the captain's own point of view, so it may only go to a provider that refuses
-    # training on its inputs (design 15, Q6). A fallback chain would silently break that promise,
-    # and a second provider configured in the environment must not be reached at all.
+def test_draft_models_are_one_openrouter_model_and_skip_groq() -> None:
+    # A draft carries the captain's own point of view, so it goes to one provider only: a second
+    # provider configured in the environment for answers must not be reached at all.
     models = make_chat_models(
         keyed(groq_api_key="g", groq_chat_model="some-model"), purpose="draft"
     )
     [draft] = models
     assert draft.provider == "openrouter"
     assert draft.model.openai_api_base == OPENROUTER_BASE_URL
-    assert draft.model.extra_body == {"provider": {"data_collection": "deny"}}
 
 
-def test_answer_models_carry_no_data_collection_deny() -> None:
-    # The OpenAI-compatible clients accept extra_body everywhere; only the draft chain opts in.
-    [primary] = make_chat_models(keyed())
+def test_draft_and_answer_models_send_no_provider_block() -> None:
+    # The owner accepted that the free provider may train on the draft prompt (ADR 0015), so a
+    # draft's wire body is an answer's: no `provider` block, no data-collection rule.
+    purposes: tuple[Literal["answer", "draft"], ...] = ("answer", "draft")
+    for purpose in purposes:
+        [model] = make_chat_models(keyed(), purpose=purpose)
+        assert model.model.extra_body is None
+        payload = model.model._get_request_payload([HumanMessage("q")])
+        assert "provider" not in payload
+
+
+def test_draft_models_use_the_draft_model_when_set() -> None:
+    [draft] = make_chat_models(keyed(draft_model="vendor/draft:free"), purpose="draft")
+    assert draft.model.model_name == "vendor/draft:free"
+    payload = draft.model._get_request_payload([HumanMessage("q")])
+    assert payload["model"] == "vendor/draft:free"
+
+
+def test_draft_models_use_the_chat_model_when_unset() -> None:
+    [draft] = make_chat_models(keyed(), purpose="draft")
+    assert draft.model.model_name == CHAT_MODEL
+
+
+def test_answer_models_ignore_the_draft_model() -> None:
+    # The draft setting is the draft's alone: an answer keeps the model the QA eval measured.
+    [primary] = make_chat_models(keyed(draft_model="vendor/draft:free"))
+    assert primary.model.model_name == CHAT_MODEL
     assert primary.model.extra_body is None

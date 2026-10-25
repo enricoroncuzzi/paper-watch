@@ -16,8 +16,8 @@ trains on inputs or any log line at all.
 
 Design section 8 fixes the flow: one call per click, a fixed reply structure, and a check shown as
 numbered notes. Section 15 (Q6) and section 16.3 (captain) fix the privacy: the per-request
-`provider.data_collection: "deny"`, no fallback, and nothing personal logged or committed. This
-records the choices the design left to the builder.
+`provider.data_collection: "deny"`, no fallback, and nothing personal logged or committed; the
+owner later dropped the denial (below). This records the choices the design left to the builder.
 
 ## Decision
 
@@ -27,12 +27,21 @@ reply with no usable structure is a 503 `unusable` and saves nothing: a second c
 the free tier on a reply the check can already judge, and a half-written draft in Drafts is worse
 than an error. `DRAFT_PROMPT_VERSION` is stored with every draft.
 
-**OpenRouter only, with data collection denied, and no fallback.** `make_chat_models(settings,
-purpose="draft")` builds one model with `extra_body={"provider": {"data_collection": "deny"}}`.
-The point of view may only go to a provider that refuses training, so a silent second provider
-would break the promise; a failing call is the honest outcome. The provider's own error text can
-echo the prompt, so it is reduced to its type in the log and to one fixed sentence in the
-response.
+**OpenRouter only, one model, and no fallback.** `make_chat_models(settings, purpose="draft")`
+builds one OpenRouter model, like the answer chain's primary, and never Groq. The point of view
+goes to the one provider the owner chose, so a silent second provider would break the promise; a
+failing call is the honest outcome. The provider's own error text can echo the prompt, so it is
+reduced to its type in the log and to one fixed, cause-neutral sentence in the response ("The model
+did not answer, so the draft was not generated. Try again later.").
+
+**The owner accepted that the free provider may train on the draft prompt.** This supersedes the
+first version's per-request `provider.data_collection: "deny"`. On 0.11.0 the default `:free` chat
+model had no endpoint that satisfied the denial, so OpenRouter answered 404 and every draft ended
+in `model_unavailable`. The owner chose to run drafts on the free chat model without the opt-out:
+the provider may train on and retain the whole prompt, point of view included. Nothing personal is
+logged or committed, as before. `settings.draft_model` (`PW_DRAFT_MODEL`) stays as an optional
+override of the draft model, unset means `settings.chat_model`, and the answer chain never reads
+it.
 
 **The check is code over the saved text, and it never fixes anything.** Every number must be in the
 title, the stored text, a checked summary quote or the point of view; every quoted span of at

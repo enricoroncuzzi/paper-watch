@@ -1403,7 +1403,7 @@ export interface operations {
                     "application/json": components["schemas"]["RateLimited"];
                 };
             };
-            /** @description No draft was generated: the daily cap (`retry_at`), no compliant provider, or a reply that could not be read as a draft. */
+            /** @description No draft was generated: the daily cap (`retry_at`), a model that did not answer, or a reply that could not be read as a draft. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -1486,7 +1486,7 @@ export interface operations {
                     "application/json": components["schemas"]["RateLimited"];
                 };
             };
-            /** @description No draft was generated: the daily cap (`retry_at`), no compliant provider, or a reply that could not be read as a draft. */
+            /** @description No draft was generated: the daily cap (`retry_at`), a model that did not answer, or a reply that could not be read as a draft. */
             503: {
                 headers: {
                     [name: string]: unknown;

@@ -612,7 +612,7 @@ def draft(
         summary = repo.summaries([parsed]).get(parsed)
         source = draft_source(item, summary, config)
         # The same guard and chain the API uses: a CLI draft spends the same daily free calls, and
-        # its point of view may only go to a provider that refuses training.
+        # its point of view goes to the same one provider.
         guard = _suggestion_guard(ChatCallLog(make_session_factory(usage_engine)), s)
         text, model = generate_draft(
             make_chat_models(s, purpose="draft"), guard, source, pov=pov, language=language

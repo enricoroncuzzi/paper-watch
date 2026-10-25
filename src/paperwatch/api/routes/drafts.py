@@ -29,7 +29,7 @@ from paperwatch.config import Settings
 from paperwatch.drafts.check import DraftCheck, check_draft
 from paperwatch.drafts.generate import (
     DRAFT_PROMPT_VERSION,
-    NO_COMPLIANT_MODEL,
+    NO_ANSWER_MESSAGE,
     DraftSource,
     DraftText,
     DraftUnusable,
@@ -296,7 +296,7 @@ class DraftService:
                 "daily_cap", CAP_MESSAGE, retry_at=_next_midnight(self._clock())
             ) from exc
         except ModelUnavailable as exc:
-            raise DraftRefused("model_unavailable", NO_COMPLIANT_MODEL) from exc
+            raise DraftRefused("model_unavailable", NO_ANSWER_MESSAGE) from exc
         except DraftUnusable as exc:
             raise DraftRefused("unusable", UNUSABLE_MESSAGE) from exc
         except BudgetExceeded as exc:
@@ -448,7 +448,7 @@ _DRAFT_RESPONSES: dict[int | str, dict[str, Any]] = {
     503: {
         "model": DraftError,
         "description": (
-            "No draft was generated: the daily cap (`retry_at`), no compliant provider, or a "
+            "No draft was generated: the daily cap (`retry_at`), a model that did not answer, or a "
             "reply that could not be read as a draft."
         ),
     },
