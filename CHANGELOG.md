@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.1](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.12.0...paperwatch-v0.12.1) (2026-10-25)
+
+
+### Bug Fixes
+
+* **drafts:** add a draft model setting and drop the training opt-out ([#72](https://github.com/enricoroncuzzi/paper-watch/issues/72)) ([1708594](https://github.com/enricoroncuzzi/paper-watch/commit/17085941a78973778fbb306f0cfc4d47b877c8cb))
+
 ## [0.12.0](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.11.0...paperwatch-v0.12.0) (2026-10-25)
 
 
