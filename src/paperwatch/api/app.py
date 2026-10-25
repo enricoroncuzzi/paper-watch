@@ -206,7 +206,7 @@ class AgentDeps:
     # The suggestions page's ranking cache and summary queue. Unset builds the default one from
     # this deps object; a test hands in its own so the queue never starts a real thread.
     suggestions: SuggestionService | None = None
-    # The draft chain, OpenRouter only with data collection denied. Unset builds it lazily from
+    # The draft chain, one OpenRouter model and no fallback. Unset builds it lazily from
     # the settings, so a test or the contract build needs no key until a draft is asked for.
     draft_models: list[ChatModel] | None = None
     # The drafts service. Unset builds the default one; a test hands in its own scripted models.
@@ -343,7 +343,7 @@ def live_deps(settings: Settings, verifier: Verifier) -> AgentDeps:
         # takes one short connection there rather than a fourth pool's worth of memory.
         write_session_factory=factory,
         # Built here with the answer chain: without an OpenRouter key the app refuses to start,
-        # and the draft chain is the one-model chain data collection denied.
+        # and the draft chain is one OpenRouter model (PW_DRAFT_MODEL or the chat model).
         draft_models=make_chat_models(settings, purpose="draft"),
     )
 
