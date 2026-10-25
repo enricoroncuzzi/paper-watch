@@ -290,7 +290,7 @@ def make_items_router(
                 text=item.text,
                 github_repo=item.github_repo,
                 project_page=item.project_page,
-                org=item.org,
+                org=item.candidate.org,
                 tier_history=[
                     TierChangeData(
                         from_tier=change.from_tier,

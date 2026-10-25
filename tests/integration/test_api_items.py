@@ -435,6 +435,20 @@ def test_an_item_without_a_summary_or_drafts_says_null(db_session: Session) -> N
     assert [change["from_tier"] for change in detail["tier_history"]] == [None]
 
 
+def test_a_lab_feed_post_names_its_lab_as_the_organisation(db_session: Session) -> None:
+    api = client(db_session)
+    item_id = seed(
+        db_session,
+        "lab-post",
+        title="A lab post",
+        body="The lab's own write-up.",
+        source="feed",
+        tier=Tier.LAB_BLOG,
+        basis=AdmissionBasis.FEED,
+    )
+    assert page_of(api.get(f"/items/{item_id}"))["org"] == "Ada Lovelace"
+
+
 def test_a_candidate_item_is_404(db_session: Session) -> None:
     api = client(db_session)
     repo = Repository(db_session)

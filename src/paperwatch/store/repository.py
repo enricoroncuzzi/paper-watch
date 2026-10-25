@@ -232,7 +232,6 @@ class CorpusItemDetail:
     text: str
     github_repo: str | None
     project_page: str | None
-    org: str | None
     # The page's `early` flag comes from the same candidate the ranking and a draft use, so the
     # dialog's warning cannot drift from what the draft itself will say.
     candidate: Candidate
@@ -1544,7 +1543,6 @@ class Repository:
             text=row.text or "",
             github_repo=row.github_repo,
             project_page=row.project_page,
-            org=row.hf_org,
             candidate=_candidate(row),
         )
 
