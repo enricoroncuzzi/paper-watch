@@ -571,15 +571,19 @@ export class AskController {
     const fetchImpl = this.options.fetchImpl ?? fetch;
     try {
       const response = await fetchImpl(`/api/threads/${threadId}`, { cache: "no-store" });
-      if (!response.ok) return false;
-      const detail = (await response.json()) as { turns: WireTurn[] };
-      if (generation !== this.generation) return false;
-      this.dispatch({ type: "open", threadId, turns: detail.turns });
-      return true;
+      if (response.ok) {
+        const detail = (await response.json()) as { turns: WireTurn[] };
+        if (generation !== this.generation) return false;
+        this.dispatch({ type: "open", threadId, turns: detail.turns });
+        return true;
+      }
     } catch {
-      // The menu keeps the conversation it had.
-      return false;
+      // Handled below, as a refused read is.
     }
+    // The sheet keeps the conversation it had; an answer the pick stopped mid-stream is dropped,
+    // so it offers the retry instead of streaming with nothing behind it.
+    if (generation === this.generation) this.dispatch({ type: "dropped" });
+    return false;
   };
 
   abort = (): void => {

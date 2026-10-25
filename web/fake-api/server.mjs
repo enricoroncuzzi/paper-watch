@@ -109,6 +109,7 @@ const SCENARIOS = new Set([
   "drafts_ellipsis",
   "draft_detail_failed",
   "thread_drop",
+  "thread_slow",
 ]);
 
 function fixture(name) {
@@ -221,6 +222,9 @@ async function serveStream(name, response, request, ask) {
   if (last?.event === "answer" && ask) {
     // Only a finished answer is stored, and its `thread` event is the stream's last frame, exactly
     // as the real API orders them.
+    // `thread_slow` holds the stored turn back, so a test can act between the answer and it.
+    if (scenario === "thread_slow") await sleep(1500);
+    if (aborted || response.writableEnded || response.destroyed) return;
     const thread = saveTurn(ask, last.data);
     response.write(
       `event: thread\ndata: ${JSON.stringify({ id: thread.id, turn: thread.turns.length })}\n\n`,
@@ -508,7 +512,10 @@ async function handle(request, response) {
       await serveStream("drop", response, request, lastAsk);
       return;
     }
-    const name = scenario === "normal" || scenario === "empty" ? "normal" : scenario;
+    const name =
+      scenario === "normal" || scenario === "empty" || scenario === "thread_slow"
+        ? "normal"
+        : scenario;
     await serveStream(name, response, request, lastAsk);
     return;
   }

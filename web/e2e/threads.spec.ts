@@ -382,6 +382,66 @@ test("opening a recent conversation lets go of the item", async ({ page, request
   expect(typeof sent.thread_id).toBe("string");
 });
 
+test("a follow-up waits for the thread event that follows the answer", async ({
+  page,
+  request,
+}) => {
+  await setScenario(request, "thread_slow");
+  await openSheet(page);
+  await ask(page, "What do coding agents measure?");
+  const sheet = page.getByRole("dialog");
+  await expect(sheet.getByTestId("answer").locator("sup")).toHaveCount(1);
+
+  // The answer is on screen, but the conversation it belongs to is not named yet: no way of
+  // sending a follow-up may start a second, history-less thread in that gap.
+  const chip = sheet.getByRole("button", { name: "What are the limitations?" });
+  await expect(chip).toBeDisabled();
+  await expect(sheet.getByRole("button", { name: "Send the question" })).toBeDisabled();
+  await sheet.getByTestId("composer").fill("And how was it measured?");
+  await sheet.getByTestId("composer").press("ControlOrMeta+Enter");
+  await expect(sheet.getByTestId("asked-question")).toHaveText("What do coding agents measure?");
+  await expect(sheet.getByTestId("composer")).toHaveValue("And how was it measured?");
+  await expect(sheet.getByTestId("turns-chip")).toHaveCount(0);
+
+  await expect(sheet.getByTestId("turns-chip")).toHaveText("1 turn");
+  await expect(chip).toBeEnabled();
+  await chip.click();
+  await expect(sheet.getByTestId("asked-question")).toHaveText("What are the limitations?");
+  const sent = await lastAsk(request);
+  expect(typeof sent.thread_id).toBe("string");
+});
+
+test("a recent pick whose read fails while an answer streams offers the retry", async ({
+  page,
+  request,
+}) => {
+  await setScenario(request, "slow");
+  await openSheet(page);
+  await ask(page, "What do coding agents measure?");
+  const sheet = page.getByRole("dialog");
+  await expect(sheet.getByTestId("caret")).toBeVisible();
+
+  await page.route(
+    (url) => /\/api\/threads\/[^/]+$/.test(url.pathname),
+    (route) => route.fulfill({ status: 500, json: { detail: "threads are unavailable" } }),
+  );
+  await sheet.getByRole("button", { name: "Recent", exact: true }).click();
+  await sheet
+    .getByTestId("recent-threads")
+    .getByRole("button", { name: /What do recent papers say about memory for long-running/ })
+    .click();
+
+  // The pick stopped the stream: the sheet says so and offers the retry instead of spinning.
+  const block = sheet.getByTestId("ask-error");
+  await expect(block).toContainText("The connection dropped.");
+  await expect(sheet.getByTestId("caret")).toHaveCount(0);
+  await expect(sheet.getByRole("button", { name: "What are the limitations?" })).toBeEnabled();
+  await setScenario(request, "normal");
+  await block.getByRole("button", { name: "Ask it again" }).click();
+  await expect(sheet.getByTestId("answer").locator("sup")).toHaveCount(1);
+  expect(await lastAsk(request)).toMatchObject({ question: "What do coding agents measure?" });
+});
+
 test("the trace counts the sources the answer cites", async ({ page }) => {
   await openSheet(page);
   await firstTurn(page);

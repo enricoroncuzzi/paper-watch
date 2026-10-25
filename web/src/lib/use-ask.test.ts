@@ -842,6 +842,58 @@ describe("the ask controller with threads", () => {
     expect(controller.getState().streamOpen).toBe(false);
   });
 
+  it.each([
+    ["answers 500", () => Response.json({ detail: "gone" }, { status: 500 })],
+    [
+      "rejects",
+      () => {
+        throw new TypeError("network down");
+      },
+    ],
+  ])(
+    "a failed pick while an answer streams leaves that answer dropped, not streaming (%s)",
+    async (_label, read) => {
+      const live = controllable();
+      const fetchImpl = routedFetch({
+        "/api/ask": () => new Response(live.body),
+        [`/api/threads/${THREAD}`]: read,
+      });
+      const controller = new AskController({ fetchImpl, watchdogMs: 45_000 });
+      const run = controller.ask("q1");
+      await vi.advanceTimersByTimeAsync(0);
+      live.push(frame("token", { text: "half an answer" }));
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(await controller.openThread(THREAD)).toBe(false);
+      const state = controller.getState();
+      // The pick stopped the stream: the sheet offers the retry instead of spinning forever.
+      expect(state.status).toBe("dropped");
+      expect(state.question).toBe("q1");
+      expect(state.streamOpen).toBe(false);
+      live.close();
+      await run;
+      expect(controller.getState().status).toBe("dropped");
+    },
+  );
+
+  it("a failed pick after a finished answer keeps that answer", async () => {
+    const live = controllable();
+    const fetchImpl = routedFetch({
+      "/api/ask": () => new Response(live.body),
+      [`/api/threads/${THREAD}`]: () => Response.json({ detail: "gone" }, { status: 500 }),
+    });
+    const controller = new AskController({ fetchImpl, watchdogMs: 45_000 });
+    const run = controller.ask("q1");
+    await vi.advanceTimersByTimeAsync(0);
+    live.push(frame("answer", ANSWER));
+    live.close();
+    await run;
+
+    expect(await controller.openThread(THREAD)).toBe(false);
+    expect(controller.getState().status).toBe("done");
+    expect(controller.getState().answer?.text).toBe(ANSWER.text);
+  });
+
   it("opening a thread ignores a read that lands after another request", async () => {
     let release!: () => void;
     const gated = new Promise<void>((resolve) => {
