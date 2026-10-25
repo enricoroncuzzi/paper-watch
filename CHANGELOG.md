@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.0](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.11.0...paperwatch-v0.12.0) (2026-10-25)
+
+
+### Features
+
+* conversation threads with follow-up questions and recovery of interrupted answers ([#70](https://github.com/enricoroncuzzi/paper-watch/issues/70)) ([43af6ed](https://github.com/enricoroncuzzi/paper-watch/commit/43af6ed4925690eb61509cc28bd0b7129e2227d9))
+
 ## [0.11.0](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.10.2...paperwatch-v0.11.0) (2026-10-25)
 
 
