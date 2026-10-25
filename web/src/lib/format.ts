@@ -41,8 +41,12 @@ export function runDayLabel(startedAt: string, now: Date = new Date()): string {
       day: "2-digit",
     }).format(date);
   const runDay = dayOf(new Date(startedAt));
-  if (runDay === dayOf(now)) return "Today";
-  if (runDay === dayOf(new Date(now.getTime() - 24 * 60 * 60 * 1000))) return "Yesterday";
+  const today = dayOf(now);
+  if (runDay === today) return "Today";
+  // The day before on the calendar, not 24 hours back: a Rome day lasts 23 or 25 hours at a DST change.
+  const yesterday = new Date(`${today}T00:00:00Z`);
+  yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+  if (runDay === yesterday.toISOString().slice(0, 10)) return "Yesterday";
   return formatDay(startedAt);
 }
 

@@ -123,12 +123,15 @@ def _service_section(unit: Path) -> list[str]:
 
 API_UNIT = REPO_ROOT / "deploy" / "vps" / "paperwatch-api.service"
 TUNNEL_UNIT = REPO_ROOT / "deploy" / "vps" / "paperwatch-tunnel.service"
+SOAK_UNIT = REPO_ROOT / "deploy" / "vps" / "paperwatch-soak-stream.service"
 SLICE_FILE = REPO_ROOT / "deploy" / "vps" / "paperwatch.slice"
 INGEST_DROP_IN = REPO_ROOT / "deploy" / "vps" / "paperwatch-ingest.service.d" / "slice.conf"
 
 
 @pytest.mark.parametrize(
-    "unit", [UNIT, BACKUP_UNIT, API_UNIT, TUNNEL_UNIT], ids=["ingest", "backup", "api", "tunnel"]
+    "unit",
+    [UNIT, BACKUP_UNIT, API_UNIT, TUNNEL_UNIT, SOAK_UNIT],
+    ids=["ingest", "backup", "api", "tunnel", "soak-stream"],
 )
 def test_each_unit_refuses_to_gain_privileges(unit: Path) -> None:
     # The units run code from the account's home. None needs a setuid or setgid binary, so the
@@ -200,6 +203,16 @@ def test_the_api_binds_loopback_only() -> None:
     [line] = [line for line in _service_section(API_UNIT) if line.startswith("ExecStart=")]
     assert "--host 127.0.0.1" in line
     assert "/home/paperwatch/.local/bin/uv run --frozen --no-dev paperwatch serve --live" in line
+
+
+def test_the_soak_stream_binds_loopback_only() -> None:
+    # The stream is published by the tunnel's second mapping for the soak only, so the server
+    # itself never listens on the machine's other interfaces.
+    [line] = [line for line in _service_section(SOAK_UNIT) if line.startswith("ExecStart=")]
+    argv = shlex.split(line.split("=", 1)[1])
+    assert Path(argv[1]).name == "soak-stream.py"
+    assert argv[argv.index("--host") + 1] == "127.0.0.1"
+    assert argv[argv.index("--port") + 1] == "8443"
 
 
 def test_the_guide_shows_how_to_read_the_unit_security_score() -> None:

@@ -21,6 +21,9 @@ const CLOCKS = [
   // The two DST nights themselves, just after the change.
   "2026-03-29T03:01:00+02:00",
   "2026-10-25T02:01:00+01:00",
+  // The day after a 23-hour day, and late on a 25-hour day: 24 hours back is not yesterday there.
+  "2026-03-30T00:30:00+02:00",
+  "2026-10-25T23:13:00+01:00",
 ];
 
 describe("the fake API's run dates", () => {
