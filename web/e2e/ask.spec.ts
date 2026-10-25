@@ -94,9 +94,14 @@ test("a dropped stream shows connection lost", async ({ page, request }) => {
   await openSheet(page);
   await ask(page, "What do coding agents measure?");
 
-  await expect(page.getByTestId("ask-error")).toContainText("The connection dropped. Ask again.");
-  // A dropped ask puts the question back, so the reader can send it again without retyping.
-  await expect(page.getByTestId("composer")).toHaveValue("What do coding agents measure?");
+  const block = page.getByTestId("ask-error");
+  await expect(block).toContainText("The connection dropped.");
+  // The block carries the retry, so the question is not dumped into the composer as well.
+  await expect(page.getByTestId("composer")).toHaveValue("");
+  await setScenario(request, "normal");
+  await block.getByRole("button", { name: "Ask it again" }).click();
+  await expect(page.getByTestId("answer").locator("sup")).toHaveCount(1);
+  await expect(block).toHaveCount(0);
 });
 
 test("a rate-limited ask shows the wait", async ({ page, request }) => {

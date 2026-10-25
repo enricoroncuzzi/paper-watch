@@ -57,6 +57,35 @@ to `unavailable`, and a timeout or refused connection also to `unavailable`. A s
 copy for its kind instead of the page failing. Reads time out at ten seconds and are never cached
 (`cache: "no-store"`): a cached run list would show yesterday's ingestion as today's.
 
+## A conversation on the page
+
+The sheet holds one thread (`web/src/lib/use-ask.ts`): the finished turns above the current one, the
+thread id the server returned with the last answer, and the current question with its stream. A
+follow-up sends that id, so the API replays the thread's last turns and keeps its source aliases, and
+the reply's footnote numbers stay per answer. Three fixed chips sit under the composer; the
+peer-reviewed one re-asks the last question with `tiers: ["peer_reviewed"]`, so a filter is not a
+model call and the chips cost nothing to invent.
+
+The thread ends when the sheet closes: the controller starts clean, so "Ask about it" on a card
+always opens a new thread about that item, which the API registers as `S1`. A conversation picked
+from Recent is read back with `GET /api/threads/{id}` and lets go of the item, so a follow-up there
+never claims to be about a different paper. A follow-up also waits for the stream to end, not only
+for the answer: the `thread` event that carries the id and the turn number comes after the server's
+write, and a send in that gap would start a second, history-less thread.
+
+A dropped stream does not end the conversation. The controller asks `GET /api/threads/{id}` and
+shows what the server finished: the answer is adopted when the thread saved it, and when the thread
+has no turn for the question the sheet says the answer was interrupted and offers to ask it again.
+Adoption needs the turn's number as well as its words, because a chip re-asks the same question:
+otherwise the unfiltered answer to the first ask would be shown as the answer to the filtered one.
+
+Returning to the page runs that read too, because iOS Safari freezes a backgrounded tab and its
+watchdog timer with it, but it never aborts the stream: a tab switch is not a dead connection. Only
+the read that adopts a finished turn stops the stream, because the answer is then no longer only in
+the stream. A live stream with no stored turn yet is left to finish, and a dead one still ends
+through the reader error or the 45-second watchdog. Both the ask proxy and the thread reads are
+route handlers, which check the session and hold the credential on the server.
+
 ## Stored text stays text
 
 React escapes what it renders, so a title with HTML in it is characters on the page. The one place a
@@ -72,7 +101,12 @@ a Hugging Face project page crafted to look like another site.
 `FAKE_API_PORT`, or with `PW_E2E_FAKE_API_PORT` for the suite). It accepts
 only `Authorization: Bearer e2e`, serves `fixtures/<name>.json` for the read routes, streams
 `streams/<scenario>.json` for `POST /ask`, and takes `POST /__scenario` so a Playwright test can pick
-`normal`, `empty`, `error`, `unhealthy`, `followup`, `text_only`, `slow` or `drop`. Tests run one
+`normal`, `empty`, `error`, `unhealthy`, `followup`, `text_only`, `slow`, `drop`, `thread_drop` or
+`thread_slow` (the `thread` event held back, so a test can act between it and the answer).
+It keeps the conversations a test created: a finished answer appends a turn and the stream ends with
+the `thread` event, `GET /threads` and `GET /threads/{id}` read them back, and `keepThreads: true`
+on a scenario switch lets one test ask, then change how the next stream behaves. `GET /__last_ask`
+is the test seam for what the page sent (a follow-up's thread and the chip's filter). Tests run one
 worker, so the global scenario is safe.
 
 `tests/unit/test_web_fake_api_fixtures.py` validates every fixture against the API's pydantic

@@ -24,7 +24,9 @@ reference. `docs/learn/15` explains the gate and what each status code means.
 | `POST /drafts/{draft_id}/regenerate` | Re-run the stored inputs and point of view; 201, with `regenerated_from` set. |
 | `GET /drafts?limit=50` | `{"drafts": [Draft]}`, newest first; the list leaves out the point of view. |
 | `GET /drafts/{draft_id}` | One `DraftDetail`: the same fields plus `pov`. |
-| `POST /ask` | One question, streamed as server-sent events. |
+| `GET /threads?limit=20` | `{"threads": [ThreadSummary]}`, newest conversation first; `limit` is 1 to 20. |
+| `GET /threads/{thread_id}` | One `ThreadDetail` (`{id, title, turns}`), or 404. |
+| `POST /ask` | One question, streamed as server-sent events. With `thread_id`, a follow-up. |
 
 ## Runs and the today strip
 
@@ -98,6 +100,23 @@ A `404` is an item that is not admitted, or a draft that is not stored; a `422` 
 under `min_text_chars` or a request field out of bounds. The point of view is stored with its
 draft, returned only by `GET /drafts/{draft_id}`, and never logged at any level.
 
+## Threads
+
+A conversation is our own two tables, not a LangGraph checkpointer (ADR 0016). `POST /ask` with
+`thread_id` continues one; without it, the answer starts a thread. Only finished answers are
+stored, so an answer that was aborted, dropped or failed leaves nothing behind. `ThreadSummary` is
+`{id, title, turns, updated_at}`, where `title` is the first question (at most 80 characters) and
+`turns` counts the finished ones. `ThreadDetail` is `{id, title, turns}` with each turn as
+`{n, question, answer, search_mode, created_at}`, oldest first, and `answer` is exactly the
+`AnswerData` the stream sent, so a re-fetch shows what was checked.
+
+A follow-up sends the thread's last six finished turns (and at most 6,000 characters of their
+answers) to the model, oldest dropped first. The thread's source registry is persisted with it and
+never trimmed, so `S1` from the first answer is still citable in the fifth: `HISTORY_NOTE` tells the
+model that, and `get_item` re-reads a source before a detail is relied on. A follow-up's `item_id`
+is ignored; on a new thread it is registered as `S1` as before. An unknown `thread_id` is a 404
+before the stream starts, so no model call is spent on it.
+
 ## Limits
 
 `POST /ask` spends a free-tier model call, so it is limited per client: 6 requests a minute and 100
@@ -118,12 +137,13 @@ same way; nothing else about the stream changes.
 ## The event stream
 
 `POST /ask` takes `{"question": "...", "tiers": [...], "profiles": [...], "since": "YYYY-MM-DD",
-"item_id": "..."}` (all optional except the question) and answers with `text/event-stream`. Every event is one `event:` line
+"item_id": "...", "thread_id": "..."}` (all optional except the question) and answers with
+`text/event-stream`. Every event is one `event:` line
 and one `data:` line holding a JSON object. The event payloads are Pydantic models (`ToolData`,
-`StepData`, `SourceData`, `TokenData`, `NoticeData`, `AnswerData`, `ErrorData`), and the committed
-contract's `text/event-stream` media type is an `itemSchema` for one parsed event: the `event` name
-(one of the seven below) and `data`, a JSON string whose `contentSchema` is the `anyOf` of those
-payloads. A client parses the `data:` line alone, which is what it will find:
+`StepData`, `SourceData`, `TokenData`, `NoticeData`, `AnswerData`, `ThreadData`, `ErrorData`), and
+the committed contract's `text/event-stream` media type is an `itemSchema` for one parsed event:
+the `event` name (one of the eight below) and `data`, a JSON string whose `contentSchema` is the
+`anyOf` of those payloads. A client parses the `data:` line alone, which is what it will find:
 
 - `tool` with `{"name", "args"}`, emitted when the model calls one of the read-only corpus tools;
 - `step` with `{"round", "ms", "new_sources"}`, emitted when a tool round finishes: its number, how
@@ -138,6 +158,9 @@ payloads. A client parses the `data:` line alone, which is what it will find:
   the mode that produced it, its sources (`{"id", "item_id", "title", "url", "tier", "basis"}`) and
   any flags (`{"kind", "sentence", "detail"}`). It is the last event unless an `error` follows.
   `id` is the per-answer alias (`S1`, `S2`, ...) the answer cites;
+- `thread` with `{"id", "turn"}`, after a finished answer: the thread it was stored in and that
+  turn's number. A follow-up sends this `id` back as `thread_id`, and a client re-fetches it after
+  a dropped stream. A failed or aborted answer stores nothing and sends no `thread` event;
 - `error` with `{"code", "message", "retry_at"}`, where `code` is `daily_cap`, `budget`,
   `model_unavailable`, `internal` or `deadline`, and `retry_at` is the reset time for `daily_cap`
   (else null). It ends the stream, and the HTTP status is still 200: the stream had started.
@@ -163,7 +186,8 @@ received bytes, so the comment is enough to tell thinking from a dead connection
 - On a `NO_SUPPORT` answer the `flags` list is empty and the flags are logged server-side: they
   describe model text the reader never saw.
 - A dropped stream is not an error in the answer: the server cancels it. A client shows a
-  connection lost state after 45 seconds without bytes, and asks again.
+  connection lost state after 45 seconds without bytes, and asks again. With a `thread_id`, it can
+  instead re-fetch `GET /threads/{thread_id}` and show the turns that did finish.
 
 A request without a valid credential answers 401 before anything is read; `docs/learn/15` lists
 the gate's other refusals. A request the gate lets through but that fails validation before the

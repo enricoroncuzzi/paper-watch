@@ -1,0 +1,72 @@
+{
+  "id": "44444444-4444-4444-8444-444444444401",
+  "title": "What do recent papers say about memory for long-running coding agents?",
+  "turns": [
+    {
+      "n": 1,
+      "question": "What do recent papers say about memory for long-running coding agents?",
+      "answer": {
+        "text": "Replay buffers are the strongest result for long-running coding agents: replaying exact tool results and dropping the ones that stop mattering cut tokens per task by 41% on 40 long-horizon tasks [S1].",
+        "search_mode": "hybrid",
+        "supported": true,
+        "citations": [
+          {
+            "id": "S1",
+            "item_id": "33333333-3333-4333-8333-333333333301",
+            "title": "Replay Buffers Beat Summaries for Long-Running Coding Agents",
+            "url": "https://arxiv.org/abs/2610.04412",
+            "tier": "peer_reviewed",
+            "basis": "venue"
+          }
+        ],
+        "flags": []
+      },
+      "search_mode": "hybrid",
+      "created_at": "2026-11-03T09:12:00Z"
+    },
+    {
+      "n": 2,
+      "question": "How was it measured?",
+      "answer": {
+        "text": "The authors compare against a summary-based baseline on 40 long-horizon coding tasks and report tokens per task and retries, with no loss in task success [S1]. Every task is Python, so the result is a reason to test the idea on your own harness, not to adopt it [S1].",
+        "search_mode": "hybrid",
+        "supported": true,
+        "citations": [
+          {
+            "id": "S1",
+            "item_id": "33333333-3333-4333-8333-333333333301",
+            "title": "Replay Buffers Beat Summaries for Long-Running Coding Agents",
+            "url": "https://arxiv.org/abs/2610.04412",
+            "tier": "peer_reviewed",
+            "basis": "venue"
+          }
+        ],
+        "flags": []
+      },
+      "search_mode": "hybrid",
+      "created_at": "2026-11-03T09:14:00Z"
+    },
+    {
+      "n": 3,
+      "question": "What are the limitations?",
+      "answer": {
+        "text": "The benchmark is small and every task is Python, so the gain is measured on one language and one harness shape [S1]. The paper does not report a run over several days, which is where a replay buffer's storage cost would matter most [S1].",
+        "search_mode": "hybrid",
+        "supported": true,
+        "citations": [
+          {
+            "id": "S1",
+            "item_id": "33333333-3333-4333-8333-333333333301",
+            "title": "Replay Buffers Beat Summaries for Long-Running Coding Agents",
+            "url": "https://arxiv.org/abs/2610.04412",
+            "tier": "peer_reviewed",
+            "basis": "venue"
+          }
+        ],
+        "flags": []
+      },
+      "search_mode": "hybrid",
+      "created_at": "2026-11-03T09:16:00Z"
+    }
+  ]
+}

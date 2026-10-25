@@ -178,6 +178,15 @@ MAIN_PASS_MAX_AGE = timedelta(hours=3)
 # session is closed as soon as the tool returns.
 READ_POOL_SIZE = 4
 
+# Conversation memory (Task 40). A follow-up sees the last finished turns only, and at most this
+# much of their answers: the per-answer token cap bounds one answer, not a conversation, so the
+# history is bounded before it reaches the model. The registry is not bounded: every alias a
+# thread ever issued stays citable, which is what keeps S2 from turn 1 valid in turn 5.
+THREAD_HISTORY_TURNS = 6
+THREAD_HISTORY_CHARS = 6_000
+# A thread is named after its first question; the Recent menu shows one line, so it is clipped.
+THREAD_TITLE_MAX_CHARS = 80
+
 # The request gate (Task 26). 16 KB is far above the largest request the API takes (a points of
 # view box is capped at 2,000 characters), so a bigger body is a client bug or an attack.
 API_MAX_BODY_BYTES = 16_384

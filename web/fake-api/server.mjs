@@ -40,6 +40,51 @@ function resetDrafts() {
 
 resetDrafts();
 
+// The stored conversations. POST /ask appends a finished turn and serves the `thread` event; the
+// two read routes serve the Recent menu and the re-fetch after a dropped stream. A scenario switch
+// reseeds them unless it asks to keep them, so one test can ask, then change the stream behaviour.
+let threads = [];
+let lastAsk = null;
+
+function resetThreads() {
+  const seeded = fixture("thread");
+  const now = Date.now();
+  threads = [
+    {
+      ...seeded,
+      // The fixture's dates are fixed; the page labels them in Rome time, so they are relative.
+      turns: seeded.turns.map((turn, index) => ({
+        ...turn,
+        created_at: new Date(now - (seeded.turns.length - index) * 120_000).toISOString(),
+      })),
+      created_at: new Date(now - 600_000).toISOString(),
+      updated_at: new Date(now - 60_000).toISOString(),
+    },
+  ];
+}
+
+resetThreads();
+
+/** Append one finished answer to its thread, creating the thread for a first question. */
+function saveTurn(ask, answer) {
+  const question = String(ask.question ?? "").trim();
+  const now = new Date().toISOString();
+  let thread = ask.thread_id ? threads.find((one) => one.id === ask.thread_id) : undefined;
+  if (!thread) {
+    thread = { id: randomUUID(), title: question.slice(0, 80), turns: [], created_at: now };
+    threads.push(thread);
+  }
+  thread.turns.push({
+    n: thread.turns.length + 1,
+    question,
+    answer,
+    search_mode: answer.search_mode ?? "hybrid",
+    created_at: now,
+  });
+  thread.updated_at = now;
+  return thread;
+}
+
 const SCENARIOS = new Set([
   "normal",
   "empty",
@@ -63,6 +108,8 @@ const SCENARIOS = new Set([
   "draft_slow",
   "drafts_ellipsis",
   "draft_detail_failed",
+  "thread_drop",
+  "thread_slow",
 ]);
 
 function fixture(name) {
@@ -144,8 +191,17 @@ function runsFor(name) {
   return { runs: base };
 }
 
-async function serveStream(name, response) {
+async function serveStream(name, response, request, ask) {
   const frames = stream(name);
+  // A scenario where the client leaves mid-answer must not record the turn the real server would
+  // have stored: the request is aborted, and nothing after it is written.
+  let aborted = false;
+  request?.on("close", () => {
+    aborted = true;
+  });
+  response.on("error", () => {
+    aborted = true;
+  });
   response.writeHead(200, {
     "content-type": "text/event-stream",
     "cache-control": "no-cache, no-transform",
@@ -153,6 +209,7 @@ async function serveStream(name, response) {
   });
   for (const frame of frames) {
     await sleep(frame.delay_ms ?? 0);
+    if (aborted || response.writableEnded || response.destroyed) return;
     if (frame.comment) {
       // A comment line is the server's heartbeat: no event, no data, only bytes.
       response.write(`${frame.comment}\n\n`);
@@ -161,10 +218,22 @@ async function serveStream(name, response) {
     response.write(`event: ${frame.event}\ndata: ${JSON.stringify(frame.data)}\n\n`);
   }
   // `drop` ends here without an answer event, which is what a dead connection looks like.
+  const last = frames.at(-1);
+  if (last?.event === "answer" && ask) {
+    // Only a finished answer is stored, and its `thread` event is the stream's last frame, exactly
+    // as the real API orders them.
+    // `thread_slow` holds the stored turn back, so a test can act between the answer and it.
+    if (scenario === "thread_slow") await sleep(1500);
+    if (aborted || response.writableEnded || response.destroyed) return;
+    const thread = saveTurn(ask, last.data);
+    response.write(
+      `event: thread\ndata: ${JSON.stringify({ id: thread.id, turn: thread.turns.length })}\n\n`,
+    );
+  }
   response.end();
 }
 
-const server = createServer(async (request, response) => {
+async function handle(request, response) {
   const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "127.0.0.1"}`);
   const path = url.pathname;
 
@@ -184,6 +253,9 @@ const server = createServer(async (request, response) => {
     scenario = picked;
     suggestionRequests = 0;
     resetDrafts();
+    // A test that asks, then changes how the next stream behaves, keeps the turns it stored.
+    if (!JSON.parse(body || "{}").keepThreads) resetThreads();
+    lastAsk = null;
     json(response, 200, { scenario });
     return;
   }
@@ -382,17 +454,86 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  if (path === "/__last_ask" && request.method === "GET") {
+    // The test seam for what the page sent: the chip's filter and the follow-up's thread id.
+    json(response, 200, lastAsk ?? {});
+    return;
+  }
+
+  if (path === "/threads" && request.method === "GET") {
+    const list = [...threads]
+      .sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1))
+      .map((thread) => ({
+        id: thread.id,
+        title: thread.title,
+        turns: thread.turns.length,
+        updated_at: thread.updated_at,
+      }));
+    json(response, 200, { threads: list });
+    return;
+  }
+
+  const thread = /^\/threads\/([0-9a-f-]{36})$/.exec(path);
+  if (thread && request.method === "GET") {
+    const found = threads.find((one) => one.id === thread[1]);
+    if (!found) {
+      json(response, 404, { detail: "thread not found" });
+      return;
+    }
+    json(response, 200, { id: found.id, title: found.title, turns: found.turns });
+    return;
+  }
+
   if (path === "/ask" && request.method === "POST") {
+    let raw = "";
+    try {
+      for await (const chunk of request) raw += chunk;
+    } catch {
+      // A client that leaves while its body is being read is not a server failure.
+      return;
+    }
+    try {
+      lastAsk = JSON.parse(raw || "{}");
+    } catch {
+      lastAsk = {};
+    }
     if (scenario === "refused") {
       refused(response, 429);
       return;
     }
-    const name = scenario === "normal" || scenario === "empty" ? "normal" : scenario;
-    await serveStream(name, response);
+    if (lastAsk.thread_id && !threads.some((one) => one.id === lastAsk.thread_id)) {
+      // The real API refuses an unknown thread before its stream starts, so the page can see the
+      // same 404 here instead of the fake quietly starting a second conversation.
+      json(response, 404, { detail: "thread not found" });
+      return;
+    }
+    if (scenario === "thread_drop" && lastAsk.thread_id) {
+      // A follow-up whose connection dies: the server cancels it, so nothing is stored.
+      await serveStream("drop", response, request, lastAsk);
+      return;
+    }
+    const name =
+      scenario === "normal" || scenario === "empty" || scenario === "thread_slow"
+        ? "normal"
+        : scenario;
+    await serveStream(name, response, request, lastAsk);
     return;
   }
 
   json(response, 404, { detail: "not found" });
+}
+
+// One request can fail on its own without taking the fixture server down: a rejected handler would
+// be an unhandled rejection, which exits the process and turns every later test into ECONNREFUSED.
+const server = createServer((request, response) => {
+  handle(request, response).catch((error) => {
+    console.error("fake API request failed:", error);
+    if (!response.headersSent) {
+      json(response, 500, { detail: "fake API error" });
+      return;
+    }
+    response.destroy();
+  });
 });
 
 server.listen(PORT, "127.0.0.1", () => {

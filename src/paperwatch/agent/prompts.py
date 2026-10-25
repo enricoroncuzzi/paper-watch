@@ -25,6 +25,15 @@ FINAL_ROUND_NOTE = (
     "You have used all tool calls for this question. Answer now from the sources you already have."
 )
 
+# Added only when a follow-up carries earlier turns (Task 40). A thread keeps every alias it ever
+# issued, so an earlier answer's markers still name citable sources; the model cannot see an earlier
+# <source> block, though, so a detail needs re-reading before it is relied on.
+HISTORY_NOTE = (
+    "Earlier turns of this conversation are above. Their [S#] markers name sources you may still "
+    "cite in this answer. Before relying on a detail from an earlier answer, re-read that source "
+    "with get_item."
+)
+
 # Prepended to a search result while the semantic branch is paused (Task 28). It is tool output,
 # not a prompt, so `prompt_sha` does not change: the model's instructions are the same, and a QA
 # recording made before this note still replays under the same prompt.

@@ -183,7 +183,7 @@ def record(
                 answer_text=text,
                 sources=tuple(
                     RecordedSource(ref.alias, by_item[ref.item_id], ref.tier)
-                    for ref in registry.all()
+                    for ref in registry.refs()
                 ),
                 tools=tuple(tool_names),
                 tokens=ledger.tokens_used,

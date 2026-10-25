@@ -63,6 +63,7 @@ export function AskProvider({ children }: { children?: React.ReactNode }) {
           if (!next) setItem(null);
           setOpen(next);
         }}
+        onLeaveItem={() => setItem(null)}
       />
     </AskContext.Provider>
   );

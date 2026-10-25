@@ -43,20 +43,24 @@ the standing rules.
   migration 0007, and the page's dialog and Drafts section are `web/src/components/drafts/`
   (`docs/adr/0015-linkedin-drafts.md`). The point of view is stored with the draft and never logged.
 - `src/paperwatch/agent/` is the answering layer: the read-only corpus tools (`tools.py`) with
-  the per-answer `SourceRegistry` that issues the aliases S1, S2, ... (`sources.py`), the LangGraph
-  graph that loops model and tools (`graph.py`), and `citations.py`, which checks every finished
-  answer's citations against the sources those tools retrieved (`docs/learn/11`).
+  the `SourceRegistry` that issues the aliases S1, S2, ... (`sources.py`; a follow-up restores its
+  thread's aliases from `refs()`), the LangGraph graph that loops model and tools and replays a
+  thread's last turns (`graph.py`), and `citations.py`, which checks every finished answer's
+  citations against the sources those tools retrieved (`docs/learn/11`).
 - `src/paperwatch/api/` is the HTTP face: `gate.py` puts the credential, host, origin and size
   checks in front of `app.py` (`/healthz`, `/readyz`, `/status`, SSE `POST /ask`) and
   `run_question`, the one place an agent failure becomes an error event and the session is
   released; `auth.py` verifies the Vercel OIDC or HMAC token, `limits.py` bounds requests,
   `pacing.py` adds heartbeats and the deadline, `search_mode.py` decides hybrid or keyword-only and
   `contract.py` rewrites `docs/api/openapi.json` (`uv run python -m paperwatch.api.contract`).
-  The page's read routes (`/today`, `/runs`, `/runs/{id}`) are in `api/routes/runs.py`.
+  The page's read routes (`/today`, `/runs`, `/runs/{id}`) are in `api/routes/runs.py`, and a
+  thread's list and turns (`/threads`, `/threads/{id}`) in `api/routes/threads.py`; a finished
+  answer is stored as the thread's next turn on `AgentDeps.write_session_factory` (ADR 0016).
 - `web/` is the Next.js page and the only caller of the API: server components and route handlers
   check the GitHub session themselves (`web/src/auth.ts`), the API's address and token live only on
-  the server (`web/src/lib/api.ts`, `api-token.ts`), and `web/fake-api/` is the fixture server every
-  page test runs against (`docs/learn/17`).
+  the server (`web/src/lib/api.ts`, `api-token.ts`), the ask sheet keeps one conversation and reads
+  its thread back after a dropped stream (`web/src/lib/use-ask.ts`, `app/api/threads/`), and
+  `web/fake-api/` is the fixture server every page test runs against (`docs/learn/17`).
 - `evals/` holds the retrieval eval (`retrieval_eval.py`: recall@k, MRR, nDCG@k over the
   deterministic fake embedder) and the relevance eval (`relevance_eval.py`: classifier
   calibration and held-out scores), each with a committed baseline.

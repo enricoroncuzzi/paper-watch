@@ -342,3 +342,52 @@ class Draft(Base):
     # {"flags": [{kind, text, detail}], "counts": {kind: [checked, passed]}}, as the check found it.
     check: Mapped[dict[str, object]] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class Thread(Base):
+    """One conversation: its title, and the source aliases every turn may cite.
+
+    The registry is the reason this table exists rather than a LangGraph checkpointer: it holds
+    one ref per alias the thread ever issued, so `S2` from the first answer is still citable in the
+    fifth (design section 15, Q5). Only finished turns are stored, so a checkpointer's intermediate
+    steps never reach it.
+    """
+
+    __tablename__ = "threads"
+    __table_args__ = (
+        # The Recent menu reads newest first; Postgres does not index on its own.
+        Index("ix_threads_updated_at", "updated_at"),
+    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    # The first question, clipped: the Recent menu shows one line.
+    title: Mapped[str] = mapped_column(Text)
+    # [{"alias", "item_id", "title", "url", "tier", "basis", "published_at"}], newest turn last.
+    # Not `registry`: that name is the Declarative base's own, and shadowing it warns on every run.
+    source_registry: Mapped[list[dict[str, str]]] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class ThreadTurn(Base):
+    """One finished turn: the reader's question and the checked answer, exactly as it was sent.
+
+    `answer` is the `AnswerData` payload, so a re-fetch shows what the reader saw, without reading
+    the corpus again or re-checking citations the thread's registry already validated.
+    """
+
+    __tablename__ = "thread_turns"
+    __table_args__ = (
+        # Two turns of one thread can never share a number. This is the last line of defence, not
+        # the guard against a concurrent follow-up: two racing answers would get different numbers
+        # and the loser would silently overwrite the thread's registry (S5, `ThreadConflict`).
+        UniqueConstraint("thread_id", "n", name="uq_thread_turns_thread_n"),
+    )
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    thread_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("threads.id", ondelete="CASCADE"))
+    # 1 for the first question of the thread.
+    n: Mapped[int] = mapped_column(Integer)
+    # The reader's own words, never the prompt with the item block.
+    question: Mapped[str] = mapped_column(Text)
+    answer: Mapped[dict[str, object]] = mapped_column(JSON)
+    search_mode: Mapped[str] = mapped_column(String(16))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

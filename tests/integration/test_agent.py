@@ -30,11 +30,17 @@ from paperwatch.agent.graph import (
     ToolEvent,
     _may_run_tools,
     answer_question,
+    bound_history,
     build_agent,
     stream_answer,
 )
-from paperwatch.agent.prompts import FINAL_ROUND_NOTE, SYSTEM_PROMPT
-from paperwatch.agent.sources import SourceRegistry
+from paperwatch.agent.prompts import FINAL_ROUND_NOTE, HISTORY_NOTE, SYSTEM_PROMPT
+from paperwatch.agent.sources import (
+    SourceRef,
+    SourceRegistry,
+    ref_from_json,
+    ref_to_json,
+)
 from paperwatch.agent.tools import make_tools
 from paperwatch.config import MAX_TOOL_ROUNDS
 from paperwatch.llm.chat import (
@@ -668,6 +674,7 @@ def test_a_tool_call_never_routes_after_the_answer_round() -> None:
         "messages": [HumanMessage("q"), message],
         "rounds": MAX_TOOL_ROUNDS + 1,
         "answer": None,
+        "turn_start": 0,
     }
     assert not _may_run_tools(state)
     assert _may_run_tools({**state, "rounds": MAX_TOOL_ROUNDS})
@@ -738,3 +745,150 @@ def test_a_tool_round_ends_with_a_step_event(db_session: Session, seed_items: Se
         assert any(start < index for start in starts)
         between = [e for e in events[starts[step.round - 1] : index] if isinstance(e, SourceEvent)]
         assert len(between) == step.new_sources
+
+
+def refs_for(session: Session, ids: dict[str, UUID], *keys: str) -> list[SourceRef]:
+    """The refs a saved thread carries, taken from the stored items a search would return."""
+    details = Repository(session).admitted_details([ids[key] for key in keys])
+    registry = SourceRegistry()
+    for key in keys:
+        registry.register(details[ids[key]])
+    return registry.refs()
+
+
+def answer_from_stream(events: list[Any]) -> CheckedAnswer:
+    answers = [event.answer for event in events if isinstance(event, AnswerEvent)]
+    assert len(answers) == 1, "an answer stream ends with exactly one checked answer"
+    return answers[0]
+
+
+def test_a_graph_with_history_still_answers_once(db_session: Session) -> None:
+    # The guard is about the graph, not the message count: a second run on a reused graph must be
+    # refused even when both runs carry earlier turns.
+    model = ScriptedChatModel(script=[final("An answer with no citation.")])
+    graph = agent(db_session, model)
+    history = [("first question?", "first answer [S1].")]
+    list(stream_answer(graph, "second question?", history=history))
+    with pytest.raises(RuntimeError, match="one question"):
+        list(stream_answer(graph, "third question?", history=history))
+
+
+def test_a_follow_up_may_cite_an_alias_from_an_earlier_turn(
+    db_session: Session, seed_items: Seed
+) -> None:
+    # The thread's registry is loaded before the graph starts, so S2 from the first turn is a
+    # source this turn may cite without any tool returning it again.
+    ids = seed_items(AGENT_ROWS)
+    registry = SourceRegistry.from_refs(refs_for(db_session, ids, "swe", "mem"))
+    model = ScriptedChatModel(
+        script=[final("Agents that remember across sessions plan better [S2].")]
+    )
+    guard = CallGuard(Repository(db_session), Ledger(10_000), 800, lambda: NOW)
+    graph = build_agent(
+        [ChatModel("p0", model)], make_tools(db_session, FakeEmbedder(), registry), registry, guard
+    )
+    answer = answer_from_stream(
+        list(
+            stream_answer(
+                graph,
+                "does memory help?",
+                registry=registry,
+                history=[("what did you find?", "Coding agents are scored on real bugs [S1].")],
+            )
+        )
+    )
+    assert answer.supported
+    assert [citation.alias for citation in answer.citations] == ["S2"]
+    assert answer.citations[0].item_id == ids["mem"]
+
+
+def test_an_alias_the_thread_never_issued_is_still_flagged(
+    db_session: Session, seed_items: Seed
+) -> None:
+    # A registry restored from a thread is checked exactly like a fresh one: a thread that never
+    # issued S7 cannot make the model's S7 a citation.
+    ids = seed_items(AGENT_ROWS)
+    registry = SourceRegistry.from_refs(refs_for(db_session, ids, "swe"))
+    model = ScriptedChatModel(
+        script=[
+            final("Coding agents are scored on real bugs [S1]. Another lab beat it last week [S7].")
+        ]
+    )
+    guard = CallGuard(Repository(db_session), Ledger(10_000), 800, lambda: NOW)
+    graph = build_agent(
+        [ChatModel("p0", model)], make_tools(db_session, FakeEmbedder(), registry), registry, guard
+    )
+    answer = answer_from_stream(
+        list(stream_answer(graph, "q", registry=registry, history=[("q1", "an answer [S1].")]))
+    )
+    assert [flag.kind for flag in answer.flags] == ["unknown_source"]
+
+
+def test_history_reaches_the_model_before_the_question(db_session: Session) -> None:
+    model = ScriptedChatModel(script=[final("An answer with no citation.")])
+    list(
+        stream_answer(
+            agent(db_session, model),
+            "and then?",
+            history=[("first?", "first answer [S1].")],
+        )
+    )
+    sent = model.seen[0]
+    assert [type(message).__name__ for message in sent] == [
+        "SystemMessage",
+        "HumanMessage",
+        "AIMessage",
+        "HumanMessage",
+    ]
+    assert HISTORY_NOTE in str(sent[0].content)
+    assert [str(message.content) for message in sent[1:]] == [
+        "first?",
+        "first answer [S1].",
+        "and then?",
+    ]
+
+
+def test_a_single_turn_does_not_get_the_history_note(db_session: Session) -> None:
+    model = ScriptedChatModel(script=[final("An answer with no citation.")])
+    list(stream_answer(agent(db_session, model), "q"))
+    assert HISTORY_NOTE not in str(model.seen[0][0].content)
+
+
+def test_history_keeps_the_last_six_turns() -> None:
+    turns = [(f"q{n}", f"a{n}") for n in range(1, 9)]
+    assert bound_history(turns) == turns[-6:]
+
+
+def test_history_drops_the_oldest_answers_past_the_character_budget() -> None:
+    # The budget counts earlier answers only; the newest turns are the ones kept.
+    turns = [("q1", "x" * 4000), ("q2", "y" * 4000), ("q3", "z" * 100)]
+    assert bound_history(turns) == [("q2", "y" * 4000), ("q3", "z" * 100)]
+
+
+def test_an_answer_over_the_budget_leaves_no_history() -> None:
+    assert bound_history([("q1", "x" * 6001)]) == []
+
+
+def test_an_answer_of_exactly_the_budget_is_kept() -> None:
+    # The boundary is inclusive: 6,000 characters fit and 6,001 do not.
+    assert bound_history([("q1", "x" * 6000)]) == [("q1", "x" * 6000)]
+    assert bound_history([("q1", "x" * 6001)]) == []
+
+
+def test_an_oversized_middle_turn_takes_the_older_ones_with_it() -> None:
+    # Everything older than a turn that does not fit is dropped, not skipped over: a gap would
+    # replay an answer without the turn it followed.
+    turns = [("q1", "a" * 100), ("q2", "b" * 7000), ("q3", "c" * 100)]
+    assert bound_history(turns) == [("q3", "c" * 100)]
+
+
+def test_a_registry_survives_the_json_a_thread_stores(
+    db_session: Session, seed_items: Seed
+) -> None:
+    ids = seed_items(AGENT_ROWS)
+    refs = refs_for(db_session, ids, "swe", "mem")
+    restored = SourceRegistry.from_refs([ref_from_json(ref_to_json(ref)) for ref in refs])
+    # Aliases are kept exactly, so turn 5 can cite S2 from turn 1.
+    assert [ref.alias for ref in restored.refs()] == ["S1", "S2"]
+    assert restored.refs() == refs
+    assert restored.get("S2") == refs[1]

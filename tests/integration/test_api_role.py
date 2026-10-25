@@ -6,8 +6,10 @@ The test container has no `paperwatch_api`, so this test creates it (and the two
 block names) itself, as the container's superuser.
 """
 
+import importlib.util
 import re
 from pathlib import Path
+from typing import Any
 
 import pytest
 from sqlalchemy import text
@@ -227,3 +229,79 @@ def test_migration_0007_grants_the_api_insert_on_drafts() -> None:
     # the CI container has no paperwatch_api role to make a runtime check meaningful.
     text = (REPO_ROOT / "migrations" / "versions" / "0007_drafts.py").read_text()
     assert 'grant_api_writes(["drafts"])' in text
+
+
+def _migration(number: str) -> Any:
+    """The real migration module: the test checks what ships, not a copy of its arguments."""
+    path = REPO_ROOT / "migrations" / "versions" / f"{number}.py"
+    spec = importlib.util.spec_from_file_location(f"migration_{number}", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_thread_migration_runs_the_grant_it_defines() -> None:
+    # The test above runs `grant_statement()` by hand, so a migration whose `upgrade()` stopped
+    # executing it would pass there and deny the API on the server. The DDL is stubbed: what is
+    # under test is that the grant is one of the statements the upgrade executes.
+    migration = _migration("0008_threads")
+    executed: list[str] = []
+
+    class Recorder:
+        def create_table(self, *args: object, **kwargs: object) -> None:
+            return None
+
+        def create_index(self, *args: object, **kwargs: object) -> None:
+            return None
+
+        def execute(self, statement: object) -> None:
+            executed.append(str(statement))
+
+    migration.op = Recorder()
+    migration.upgrade()
+    assert executed == [migration.grant_statement()]
+
+
+def test_the_thread_grants_cover_what_the_api_writes(engine: Engine) -> None:
+    # Migration 0008: the API creates a thread and updates it as turns arrive, inserts each
+    # finished turn from its own sequence, and can do nothing else with either table. The
+    # statements come from the migration itself, so a grant dropped from it fails here.
+    migration = _migration("0008_threads")
+    statement = migration.grant_statement()
+    assert "GRANT INSERT ON threads, thread_turns TO paperwatch_api;" in statement
+    assert "GRANT UPDATE ON threads TO paperwatch_api;" in statement
+    assert "GRANT USAGE ON SEQUENCE thread_turns_id_seq TO paperwatch_api;" in statement
+
+    _roles(engine)
+    with engine.begin() as conn:
+        conn.exec_driver_sql(statement)
+
+    with engine.connect() as conn:
+        conn.execute(text("SET ROLE paperwatch_api"))
+        thread_id = conn.scalar(
+            text(
+                "INSERT INTO threads (id, title, source_registry, created_at, updated_at) "
+                "VALUES (gen_random_uuid(), 'first question', '[]', now(), now()) RETURNING id"
+            )
+        )
+        assert thread_id is not None
+        turn_id = conn.scalar(
+            text(
+                "INSERT INTO thread_turns (thread_id, n, question, answer, search_mode, "
+                "created_at) VALUES (:thread_id, 1, 'q', '{}', 'hybrid', now()) RETURNING id"
+            ),
+            {"thread_id": thread_id},
+        )
+        assert turn_id is not None
+        conn.execute(
+            text("UPDATE threads SET updated_at = now() WHERE id = :id"), {"id": thread_id}
+        )
+        conn.rollback()
+
+    for statement in ("DELETE FROM thread_turns", "DELETE FROM threads"):
+        with engine.connect() as conn:
+            conn.execute(text("SET ROLE paperwatch_api"))
+            with pytest.raises(SQLAlchemyError):
+                conn.execute(text(statement))
+            conn.rollback()
