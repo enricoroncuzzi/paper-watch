@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.14.0](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.13.0...paperwatch-v0.14.0) (2026-10-25)
+
+
+### Features
+
+* **deploy:** add the tunnel soak probe and SSE test stream ([#79](https://github.com/enricoroncuzzi/paper-watch/issues/79)) ([8d048a1](https://github.com/enricoroncuzzi/paper-watch/commit/8d048a1c0bb5166faa78d9a8bfe2e91879acd6c8))
+
+
+### Documentation
+
+* describe M3 as built ([#78](https://github.com/enricoroncuzzi/paper-watch/issues/78)) ([4f2e706](https://github.com/enricoroncuzzi/paper-watch/commit/4f2e70643cde4ebbaf3b1e9af3e7445d1000aae8))
+
 ## [0.13.0](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.12.1...paperwatch-v0.13.0) (2026-10-25)
 
 
