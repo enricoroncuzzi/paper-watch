@@ -67,15 +67,17 @@ the standing rules.
   `web/src/app/api/corpus/route.ts`, and `/items/[id]` renders one item and reuses the drafts
   dialog.
 - `evals/` holds the retrieval eval (`retrieval_eval.py`: recall@k, MRR, nDCG@k over the
-  deterministic fake embedder) and the relevance eval (`relevance_eval.py`: classifier
-  calibration and held-out scores), each with a committed baseline.
+  deterministic fake embedder), the relevance eval (`relevance_eval.py`: classifier
+  calibration and held-out scores) and the QA eval (`qa_eval.py`: recorded answers replayed
+  through the citation check), each with a committed baseline.
 - `config/` holds the hand-edited YAML (topic profiles, admission thresholds, feeds, suggestion
   weights),
   `deploy/vps/` the systemd user units, the shared slice, the ingestion drop-in and the two check
   scripts, `docs/adr/` records architecture decisions, `docs/learn/` explains each technology, and
   `docs/architecture.md` is the current unit map.
-- `src/paperwatch/cli.py` exposes `paperwatch ingest`, `paperwatch search`, `paperwatch ask`,
-  `paperwatch suggest`, `paperwatch serve` and `paperwatch eval`.
+- `src/paperwatch/cli.py` exposes `paperwatch ingest`, `paperwatch search`, `paperwatch suggest`,
+  `paperwatch draft`, `paperwatch ask`, `paperwatch serve`, `paperwatch api-token`,
+  `paperwatch eval` and `paperwatch qa-eval`.
 
 ## Standing rules
 
@@ -87,7 +89,7 @@ the standing rules.
   to apply them to another one (`llm/classifier.py`).
 - The default test suite mocks every HTTP call and never loads a real model; the CI `test`
   job runs exactly that suite (`-m 'not model'` in `pyproject.toml`). `paperwatch ingest`,
-  `paperwatch search`, `paperwatch ask` and `paperwatch serve` refuse to run without `--live`
+  `search`, `suggest`, `draft`, `ask`, `serve` and `api-token` refuse to run without `--live`
   (`cli.py`), and real-model tests are opt-in with `-m model`.
 - Tests must build settings from the test's own environment: pass `_env_file=None` and clear
   `PW_*` (the `build_settings` fixture in `tests/conftest.py`), so a developer's `.env`
@@ -120,9 +122,9 @@ the standing rules.
   `uv run mypy`. `uv run pre-commit install` adds ruff, gitleaks, hygiene checks, actionlint
   and zizmor to every commit.
 - `.github/workflows/ci.yml` runs `lint` (ruff), `typecheck` (mypy), `test` (pytest), `eval`
-  (`paperwatch eval` against a pgvector service container), `security` (pip-audit and gitleaks),
-  `workflow-lint` (actionlint and zizmor) and `web` (the page's npm gates and Playwright) on every
-  pull request and on push to `main`.
+  (`paperwatch eval` and `paperwatch qa-eval` against a pgvector service container), `security`
+  (pip-audit and gitleaks), `workflow-lint` (actionlint and zizmor) and `web` (the page's npm
+  gates and Playwright) on every pull request and on push to `main`.
   `codeql.yml` adds code scanning; `model-evals.yml` runs the `model` tests on model-affecting
   paths, weekly and by hand; `release-please.yml` maintains the release PR.
 - Local database: `docker compose up -d db`, then `uv run alembic upgrade head`. The
