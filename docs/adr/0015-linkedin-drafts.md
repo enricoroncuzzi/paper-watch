@@ -38,15 +38,16 @@ response.
 title, the stored text, a checked summary quote or the point of view; every quoted span of at
 least three words must be in the stored text or the point of view; every URL must be the item, its
 repository or project page, or one the owner wrote, and `source_link` must be the item's own link.
-A first-person clause is allowed only when the owner wrote it in his point of view, word for word:
-the model may cut an owner's sentence at a clause boundary but may not reword it, and a verbatim
-quote of the item is the authors' voice, not the owner's claim. A lab post must name the lab next
-to an attribution verb; a non-peer-reviewed item must attribute every sentence that carries a
-number; an early item must say it is early or not yet reviewed; a run of twelve copied words
-outside a quote is flagged. Each failure is a numbered note on the draft, so the reader sees which
-claim to fix. The check recognises the English first-person pronouns only: a draft written in
-another language, a claim that drops its pronoun ("Tested it on 300 traces"), `Let's` and a
-capitalised `Us` are not seen.
+A first-person sentence is allowed only when it is one of the owner's own sentences, word for
+word: the model may copy them unchanged, as separate sentences, but may not trim one or blend it
+with other text. A verbatim quote of the item is the authors' voice, not the owner's claim. A lab
+post must name the lab next to an attribution verb; a non-peer-reviewed item must attribute every
+sentence that carries a number; an early item must say it is early or not yet reviewed; a run of
+twelve copied words outside a quote is flagged. Each failure is a numbered note on the draft, so
+the reader sees which claim to fix. The check recognises the English first-person pronouns only: a
+draft written in another language, a claim that drops its pronoun ("Tested it on 300 traces"),
+`Let's` and a capitalised `Us` are not seen, and a trimmed or blended owner sentence is flagged by
+design.
 
 **Generating saves, and the item leaves the picks.** There is no separate save step, so a draft the
 model wrote cannot be lost to a second click; the same request records the `drafted` suggestion

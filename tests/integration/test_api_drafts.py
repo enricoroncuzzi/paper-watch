@@ -311,7 +311,7 @@ def test_a_draft_is_generated_saved_and_checked(db_session: Session) -> None:
     [saved] = drafts(db_session)
     assert saved.pov == POV
     assert saved.model == "vendor/model:free"
-    assert saved.prompt_version == "d2"
+    assert saved.prompt_version == "d3"
     assert saved.inputs["early"] is False
     assert saved.inputs["summary"]["result"]["quote"].startswith("cut tokens per task")
     assert saved.check["counts"]["number"] == [3, 3]
@@ -584,8 +584,9 @@ def test_a_flagged_draft_is_saved_as_written(db_session: Session) -> None:
     assert saved.check["flags"][0]["kind"] == "number"
 
 
-# The round 4 bypasses through the real route: the model writes the claim, the check decides, and
-# the draft is saved as written either way. Each row is (point of view, claim, must be flagged).
+# The first-person bypasses of review rounds 1 to 5 through the real route: the model writes the
+# claim, the check decides, and the draft is saved as written either way. Each row is (point of
+# view, claim, must be flagged).
 @pytest.mark.parametrize(
     ("pov", "claim", "flagged"),
     [
@@ -602,9 +603,11 @@ def test_a_flagged_draft_is_saved_as_written(db_session: Session) -> None:
         ("The replay idea is interesting.", '"I" tested it on 300 traces.', True),
         ("The replay idea is interesting.", "The authors tested it, and so did I.", True),
         ("The replay idea is interesting.", "\uff57\uff45 shipped it to production.", True),
+        ("I tested it.", "I tested it, but the authors report 41%.", True),
+        ("I tested it too.", "The authors report 41% on 40 coding tasks. I tested it too.", False),
     ],
 )
-def test_a_first_person_claim_is_checked_through_the_route(
+def test_a_first_person_sentence_is_checked_through_the_route(
     db_session: Session, pov: str, claim: str, flagged: bool
 ) -> None:
     item_id = seed_item(db_session)
@@ -617,7 +620,7 @@ def test_a_first_person_claim_is_checked_through_the_route(
     body = response.json()
     notes = [note for note in body["flags"] if note["kind"] == "first_person"]
     assert bool(notes) is flagged
-    # The note names the claim and the draft keeps the model's words.
+    # The note is the whole sentence and the draft keeps the model's words.
     if flagged:
         assert notes[0]["text"] in body["body"]
     assert claim in body["body"]

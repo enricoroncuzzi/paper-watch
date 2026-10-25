@@ -1,8 +1,8 @@
 """The draft check: code, not a model, proves what a draft claims (Task 38).
 
 Every number, quote and link in the draft must come from the stored title or text, a checked
-summary quote, or the owner's own point of view. Every first-person claim must be one of the
-owner's own clauses, word for word. A lab post must name the lab, a preprint's numbers must be
+summary quote, or the owner's own point of view. Every first-person sentence must be one of the
+owner's own sentences, word for word. A lab post must name the lab, a preprint's numbers must be
 attributed to its authors, an early item must say so, and a long passage copied from the article
 is flagged rather than silently accepted.
 
@@ -69,25 +69,9 @@ _FIRST_PERSON = re.compile(
     re.IGNORECASE,
 )
 _LOWER_US = re.compile(r"\bus\b")
-# A sentence ends after . ! ? or at a newline. A clause ends at ; : , a dash or a spaced hyphen; a
-# hyphen inside a word is not a boundary.
-_SENTENCE_END = re.compile(r"(?<=[.!?])\s+|\n")
-_CLAUSE_SPLIT = re.compile(r"[;:,\u2013\u2014]|\s+-\s+")
-# A clause that starts with one of these has a subject of its own, so it does not carry the first
-# person of the clause before it ("I tested it, but the authors report 41%"). Any other clause
-# ("I built a harness, tested it on 300 traces") is the same speaker going on.
-_OWN_SUBJECT = frozenset(
-    {
-        *("the", "a", "an", "this", "that", "these", "those", "it", "its", "they", "their"),
-        *("them", "he", "she", "his", "her", "there", "here", "who", "which", "what"),
-        *("when", "where", "while", "because", "since", "although", "though", "if", "so"),
-        *("yet", "but", "or", "nor", "not", "no", "both", "many", "some", "most"),
-        *("all", "each", "every", "one", "two"),
-    }
-)
-# The owner's own clauses also end before "and" / "but", which stays with the clause it starts, so
-# a draft may cut "I built and tested it" after "built".
-_OWNER_SPLIT = re.compile(_CLAUSE_SPLIT.pattern + r"|\s(?=(?:and|but)\s)", re.IGNORECASE)
+# A sentence ends after . ! ? (with any closing quote or bracket) or at a newline. A comma or a
+# dash does not end one: the owner's whole sentence is the unit the check compares.
+_SENTENCE_END = re.compile(r'(?<=[.!?])\s+|(?<=[.!?]["\')\]\u201d\u2019])\s+|\n')
 
 # A verb that turns a sentence into a report of someone else's claim.
 _ATTRIBUTION_VERB = re.compile(
@@ -331,53 +315,34 @@ def _check_first_person(
     counts: dict[FlagKind, list[int]],
     found: dict[FlagKind, list[DraftFlag]],
 ) -> None:
-    """A first-person claim passes only when the owner wrote it in the point of view.
+    """A first-person sentence passes only when the owner wrote that sentence, word for word.
 
-    The owner's rule (2026-10-25) is a word-for-word one: the model may cut an owner's sentence
-    at a clause boundary but may not reword it. A clause passes only when it is one of the
-    owner's clauses, or a run of neighbouring ones; a sentence passes whole when it is such a run
-    (the draft may add or drop a comma). The first person carries into the clauses after it that
-    have no subject of their own. A verbatim quote of the item is the authors' voice, so it is not
-    a first-person claim here; the quote rule already checks it.
+    The owner's rule (2026-10-25) is a whole-sentence one: the model may copy the owner's
+    sentences unchanged, as separate sentences, but may not trim one or blend it with other text.
+    A sentence passes when its words equal one owner sentence or a run of neighbouring ones, since
+    a line wrap in the point of view may split one sentence in two. A verbatim quote of the item is
+    the authors' voice, so it is not a first-person claim here; the quote rule already checks it.
     """
-    owner = [key for key in map(_clause_key, _owner_clauses(pov)) if key]
-    dropped = _without_source_quotes(text, folded_store)
-    for start, end in _piece_spans(_SENTENCE_END, dropped):
-        claims = _first_person_spans(dropped, start, end)
-        if not claims:
+    owner = [
+        key for key in map(_sentence_key, _split_sentences(_blanked(pov, folded_store))) if key
+    ]
+    blanked = _blanked(text, folded_store)
+    for start, end in _piece_spans(_SENTENCE_END, blanked):
+        sentence = blanked[start:end]
+        if not _is_first_person(sentence):
             continue
-        if _owner_wrote(_clause_key(dropped[start:end]), owner):
-            counts["first_person"][0] += len(claims)
-            counts["first_person"][1] += len(claims)
+        counts["first_person"][0] += 1
+        if _owner_wrote(_sentence_key(sentence), owner):
+            counts["first_person"][1] += 1
             continue
-        for claim_start, claim_end in claims:
-            counts["first_person"][0] += 1
-            if _owner_wrote(_clause_key(dropped[claim_start:claim_end]), owner):
-                counts["first_person"][1] += 1
-                continue
-            found["first_person"].append(
-                DraftFlag(
-                    "first_person",
-                    text[claim_start:claim_end],
-                    "The draft speaks in first person here, but your point of view does not say "
-                    "this word for word.",
-                )
+        found["first_person"].append(
+            DraftFlag(
+                "first_person",
+                text[start:end],
+                "The draft speaks in first person here, but your point of view does not say "
+                "this word for word.",
             )
-
-
-def _first_person_spans(text: str, start: int, end: int) -> list[tuple[int, int]]:
-    """The clauses of the sentence at `text[start:end]` that speak as the owner."""
-    claims: list[tuple[int, int]] = []
-    speaking = False
-    for clause_start, clause_end in _piece_spans(_CLAUSE_SPLIT, text, start, end):
-        clause = text[clause_start:clause_end]
-        if _is_first_person(clause):
-            speaking = True
-        elif not speaking or _has_own_subject(clause):
-            speaking = False
-            continue
-        claims.append((clause_start, clause_end))
-    return claims
+        )
 
 
 def _piece_spans(
@@ -402,15 +367,8 @@ def _piece_spans(
     return spans
 
 
-def _has_own_subject(clause: str) -> bool:
-    words = _fold(clause).split()
-    while words and words[0].lower() in ("and", "then", "also"):
-        words = words[1:]
-    return not words or words[0][:1].isupper() or words[0].lower() in _OWN_SUBJECT
-
-
-def _is_first_person(clause: str) -> bool:
-    folded = _fold(clause)
+def _is_first_person(sentence: str) -> bool:
+    folded = _fold(sentence)
     return _FIRST_PERSON.search(folded) is not None or _LOWER_US.search(folded) is not None
 
 
@@ -419,26 +377,22 @@ def _fold(value: str) -> str:
     return unicodedata.normalize("NFKC", html.unescape(value)).translate(_TRANSLATION)
 
 
-def _owner_clauses(pov: str) -> list[str]:
-    return [
-        part.strip()
-        for sentence in _SENTENCE_END.split(pov)
-        for part in _OWNER_SPLIT.split(sentence)
-        if part.strip()
-    ]
+def _split_sentences(text: str) -> list[str]:
+    """Sentences as this rule splits them: after . ! ? and at a newline, not at a comma."""
+    return [text[start:end] for start, end in _piece_spans(_SENTENCE_END, text)]
 
 
-def _clause_key(value: str) -> str:
-    """The words of a clause: case, punctuation and whitespace do not change what was written."""
-    return " ".join(re.sub(r"[^a-z0-9]+", " ", _normalise(value)).split())
+def _sentence_key(value: str) -> str:
+    """The words of a sentence: case, punctuation and whitespace do not change what was written."""
+    return " ".join(re.sub(r"\W+", " ", _normalise(value)).split())
 
 
 def _owner_wrote(key: str, owner: list[str]) -> bool:
-    """Whether the words are one of the owner's clauses or a run of neighbouring ones."""
+    """Whether the words are one of the owner's sentences or a run of neighbouring ones."""
     for start in range(len(owner)):
         run = ""
-        for clause in owner[start:]:
-            run = f"{run} {clause}".strip()
+        for sentence in owner[start:]:
+            run = f"{run} {sentence}".strip()
             if run == key:
                 return True
             if not key.startswith(f"{run} "):
@@ -446,21 +400,26 @@ def _owner_wrote(key: str, owner: list[str]) -> bool:
     return False
 
 
-def _without_source_quotes(text: str, folded_store: str) -> str:
-    """Blank out a quote of three words or more that is verbatim in the stored text.
+def _blanked(text: str, folded_store: str) -> str:
+    """Blank the spans whose first person is not the owner's: every URL and a verbatim quote.
 
-    Its first person is the authors'. A shorter span is not a quote the quote rule checks, so it
-    must not hide a pronoun: `"We" shipped it` is still the owner speaking. The blank keeps the
-    length, so a flagged clause can be shown with the reader's own words around it.
+    A URL is vetted by the link rule, and a quote of `MIN_QUOTE_WORDS` or more words that is in
+    the stored text is the authors' voice, which the quote rule already checks. A shorter span is
+    not a quote the quote rule checks, so it must not hide a pronoun: `"We" shipped it` is still
+    the owner speaking. The blank keeps the length, so a flagged sentence can be shown with the
+    reader's own words and punctuation.
     """
 
-    def replace(match: re.Match[str]) -> str:
+    def blank(match: re.Match[str]) -> str:
+        return " " * len(match.group(0))
+
+    def quote(match: re.Match[str]) -> str:
         span = _normalise(match.group(1) if match.group(1) is not None else match.group(2))
         if len(span.split()) >= MIN_QUOTE_WORDS and span in folded_store:
             return " " * len(match.group(0))
         return match.group(0)
 
-    return _QUOTE.sub(replace, text)
+    return _QUOTE.sub(quote, _URL.sub(blank, text))
 
 
 def _check_attribution(
