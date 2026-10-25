@@ -105,6 +105,9 @@ export type AskState = {
   notice: NoticePayload | null;
   answer: AnswerPayload | null;
   error: AskError | null;
+  // True while a response stream is still open. The `thread` event that names the conversation
+  // follows the `answer`, so a follow-up waits for the stream to end, not only for the answer.
+  streamOpen: boolean;
 };
 
 export type AskOptions = {
@@ -144,6 +147,7 @@ export const INITIAL_ASK_STATE: AskState = {
   notice: null,
   answer: null,
   error: null,
+  streamOpen: false,
 };
 
 export type AskAction =
@@ -405,7 +409,7 @@ export class AskController {
   getState = (): AskState => this.state;
 
   private set(next: AskState): void {
-    this.state = next;
+    this.state = { ...next, streamOpen: this.inFlight !== null };
     for (const listener of this.listeners) listener();
   }
 
@@ -416,8 +420,9 @@ export class AskController {
   private startWatchdog(controller: AbortController): void {
     this.stopWatchdog();
     this.timer = setTimeout(() => {
-      if (this.state.status !== "streaming") return;
-      this.dispatch({ type: "dropped" });
+      // A stream that stalls after its answer is closed too: the answer stays, and the follow-ups
+      // it holds back are released when the stream ends.
+      if (this.state.status === "streaming") this.dispatch({ type: "dropped" });
       controller.abort();
     }, this.options.watchdogMs ?? WATCHDOG_MS);
   }
@@ -501,6 +506,7 @@ export class AskController {
       if (this.inFlight === controller) {
         this.stopWatchdog();
         this.inFlight = null;
+        this.set(this.state);
       }
     }
     return this.state.status;
@@ -555,21 +561,24 @@ export class AskController {
     }
   };
 
-  /** Open a stored conversation from the Recent menu. */
-  openThread = async (threadId: string): Promise<void> => {
+  /** Open a stored conversation from the Recent menu; true once it is the one on screen. */
+  openThread = async (threadId: string): Promise<boolean> => {
     const generation = (this.generation += 1);
     this.stopWatchdog();
     this.inFlight?.abort();
     this.inFlight = null;
+    this.set(this.state);
     const fetchImpl = this.options.fetchImpl ?? fetch;
     try {
       const response = await fetchImpl(`/api/threads/${threadId}`, { cache: "no-store" });
-      if (!response.ok) return;
+      if (!response.ok) return false;
       const detail = (await response.json()) as { turns: WireTurn[] };
-      if (generation !== this.generation) return;
+      if (generation !== this.generation) return false;
       this.dispatch({ type: "open", threadId, turns: detail.turns });
+      return true;
     } catch {
       // The menu keeps the conversation it had.
+      return false;
     }
   };
 
@@ -588,7 +597,7 @@ export function useAsk(): {
   ask: (question: string, options?: AskOptions) => Promise<AskStatus>;
   abort: () => void;
   recover: () => Promise<void>;
-  openThread: (threadId: string) => Promise<void>;
+  openThread: (threadId: string) => Promise<boolean>;
 } {
   const controller = useMemo(() => new AskController(), []);
   const state = useSyncExternalStore(

@@ -23,6 +23,7 @@ function controllable() {
     body,
     push: (text: string) => inner.enqueue(encoder.encode(text)),
     close: () => inner.close(),
+    fail: (error: unknown) => inner.error(error),
   };
 }
 
@@ -233,7 +234,7 @@ describe("the ask controller", () => {
       .mockImplementationOnce(
         (_url: string, init: RequestInit) =>
           new Promise<Response>((_resolve, reject) => {
-            init.signal?.addEventListener("abort", () =>
+            init?.signal?.addEventListener("abort", () =>
               reject(new DOMException("The operation was aborted.", "AbortError")),
             );
           }),
@@ -379,6 +380,53 @@ describe("the ask controller", () => {
     stream.close();
     await run;
     expect(controller.getState().status).toBe("done");
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("the stream stays open after the answer until the thread event has arrived", async () => {
+    const stream = controllable();
+    const { controller } = controllerFor(stream.body);
+    const run = controller.ask("q");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(controller.getState().streamOpen).toBe(true);
+
+    // The answer is on screen, but the thread id that a follow-up continues is still in flight:
+    // the sheet must not take a follow-up yet, or it would start a second, history-less thread.
+    stream.push(frame("answer", ANSWER));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(controller.getState().status).toBe("done");
+    expect(controller.getState().streamOpen).toBe(true);
+
+    stream.push(frame("thread", { id: THREAD, turn: 1 }));
+    stream.close();
+    await run;
+    expect(controller.getState().threadId).toBe(THREAD);
+    expect(controller.getState().streamOpen).toBe(false);
+  });
+
+  it("a stream that stalls after its answer is closed by the watchdog", async () => {
+    const stream = controllable();
+    // A real fetch fails its body read when the request is aborted.
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      init?.signal?.addEventListener("abort", () =>
+        stream.fail(new DOMException("The operation was aborted.", "AbortError")),
+      );
+      return new Response(stream.body);
+    });
+    const controller = new AskController({ fetchImpl, watchdogMs: 45_000 });
+    const run = controller.ask("q");
+    await vi.advanceTimersByTimeAsync(0);
+    stream.push(frame("answer", ANSWER));
+    await vi.advanceTimersByTimeAsync(0);
+
+    await vi.advanceTimersByTimeAsync(45_000);
+    const init = fetchImpl.mock.calls[0]![1]!;
+    expect((init.signal as AbortSignal).aborted).toBe(true);
+    await run;
+    // The answer stays what it was; only the open stream that held the follow-ups back is gone.
+    expect(controller.getState().status).toBe("done");
+    expect(controller.getState().answer?.text).toBe(ANSWER.text);
+    expect(controller.getState().streamOpen).toBe(false);
     expect(vi.getTimerCount()).toBe(0);
   });
 
@@ -773,6 +821,25 @@ describe("the ask controller with threads", () => {
     await run;
     expect(controller.getState().status).toBe("done");
     expect(controller.getState().interrupted).toBe(false);
+  });
+
+  it("opening a thread whose read fails does not leave the stream it replaced open", async () => {
+    const live = controllable();
+    const fetchImpl = routedFetch({
+      "/api/ask": () => new Response(live.body),
+      [`/api/threads/${THREAD}`]: () => Response.json({ detail: "gone" }, { status: 500 }),
+    });
+    const controller = new AskController({ fetchImpl, watchdogMs: 45_000 });
+    const run = controller.ask("q1");
+    await vi.advanceTimersByTimeAsync(0);
+    live.push(frame("answer", ANSWER));
+    await vi.advanceTimersByTimeAsync(0);
+
+    await controller.openThread(THREAD);
+    expect(controller.getState().streamOpen).toBe(false);
+    live.close();
+    await run;
+    expect(controller.getState().streamOpen).toBe(false);
   });
 
   it("opening a thread ignores a read that lands after another request", async () => {

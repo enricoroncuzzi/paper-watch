@@ -119,11 +119,14 @@ export function AskSheet({
   open,
   item,
   onOpenChange,
+  onLeaveItem,
 }: {
   open: boolean;
   // Set when a card's "Ask about it" opened the sheet; the API registers the item as S1.
   item: { id: string; title: string } | null;
   onOpenChange: (open: boolean) => void;
+  // A conversation opened from Recent is not about the item, so the sheet stops naming it.
+  onLeaveItem: () => void;
 }) {
   const { state, ask, abort, recover, openThread } = useAsk();
   const [draft, setDraft] = useState("");
@@ -134,6 +137,9 @@ export function AskSheet({
   const askedQuestion = useRef<HTMLHeadingElement>(null);
 
   const streaming = state.status === "streaming";
+  // A follow-up waits for the stream to end: the `thread` event it continues arrives after the
+  // answer.
+  const busy = streaming || state.streamOpen;
   const hasConversation = state.turns.length > 0 || state.question !== "";
   const numbers = footnoteNumbers(state.answer?.citations ?? []);
   // The last question the chips can act on: the current one, else the newest finished turn.
@@ -152,7 +158,7 @@ export function AskSheet({
 
   async function sendQuestion(question: string, options: AskOptions = {}) {
     const trimmed = question.trim();
-    if (!trimmed || streaming) return;
+    if (!trimmed || busy) return;
     const threadId = options.threadId ?? state.threadId;
     // The composer empties at send time, so it never repeats the question shown above the answer,
     // and whatever the reader types while the answer streams is theirs to keep.
@@ -272,7 +278,9 @@ export function AskSheet({
                   opener={recentButton}
                   onPick={(threadId) => {
                     setRecentOpen(false);
-                    void openThread(threadId);
+                    void openThread(threadId).then((opened) => {
+                      if (opened) onLeaveItem();
+                    });
                   }}
                   onDismiss={closeRecent}
                 />
@@ -452,7 +460,7 @@ export function AskSheet({
                   <button
                     key={chip.label}
                     type="button"
-                    disabled={streaming || !hasConversation}
+                    disabled={busy || !hasConversation}
                     onClick={() => void sendQuestion(question, { tiers: chip.tiers })}
                     className="rounded-full border border-rule bg-card-2 px-[10px] py-[3px] text-[11.5px] text-ink-2 hover:border-accent hover:text-ink disabled:opacity-40"
                   >
@@ -483,7 +491,7 @@ export function AskSheet({
               <button
                 type="button"
                 onClick={() => void sendQuestion(draft)}
-                disabled={streaming || draft.trim() === ""}
+                disabled={busy || draft.trim() === ""}
                 aria-label="Send the question"
                 className="grid h-11 w-11 flex-none place-items-center rounded-[2px] bg-accent text-accent-ink disabled:opacity-40 sm:h-[30px] sm:w-[30px]"
               >

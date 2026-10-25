@@ -23,6 +23,9 @@ const ANSWER = {
   flags: [],
 };
 
+const LEAD_TITLE = "Replay Buffers Beat Summaries for Long-Running Coding Agents";
+const LEAD_ID = "33333333-3333-4333-8333-333333333301";
+
 async function openSheet(page: Page): Promise<void> {
   await page.getByRole("button", { name: /Ask the corpus/ }).click();
   await expect(page.getByRole("dialog")).toBeVisible();
@@ -325,6 +328,57 @@ test("a dropped follow-up whose thread read fails still offers the retry", async
   await expect(sheet.getByTestId("answer").locator("sup")).toHaveCount(1);
   const sent = await lastAsk(request);
   expect(sent).toMatchObject({ question: "What would break this approach?" });
+  expect(typeof sent.thread_id).toBe("string");
+});
+
+test("ask about it after a conversation starts a fresh one about the item", async ({
+  page,
+  request,
+}) => {
+  await openSheet(page);
+  await firstTurn(page);
+  const sheet = page.getByRole("dialog");
+  await sheet.getByRole("button", { name: "Close the sheet" }).click();
+  await expect(sheet).toHaveCount(0);
+
+  await page
+    .getByTestId("picks-section")
+    .getByTestId("lead-pick")
+    .getByRole("button", { name: /^Ask about it/ })
+    .click();
+  await expect(sheet.getByTestId("asking-about")).toContainText(LEAD_TITLE);
+  await ask(page, "What did they measure?");
+  await expect(sheet.getByTestId("answer").locator("sup")).toHaveCount(1);
+
+  // The question is about the item the banner names: a new thread that registers it as S1.
+  const sent = await lastAsk(request);
+  expect(sent).toEqual({ question: "What did they measure?", item_id: LEAD_ID });
+  await expect(sheet.locator('[data-testid^="turn-"]')).toHaveCount(0);
+  await expect(sheet.getByTestId("turns-chip")).toHaveText("1 turn");
+});
+
+test("opening a recent conversation lets go of the item", async ({ page, request }) => {
+  await page
+    .getByTestId("picks-section")
+    .getByTestId("lead-pick")
+    .getByRole("button", { name: /^Ask about it/ })
+    .click();
+  const sheet = page.getByRole("dialog");
+  await expect(sheet.getByTestId("asking-about")).toContainText(LEAD_TITLE);
+
+  await sheet.getByRole("button", { name: "Recent", exact: true }).click();
+  await sheet
+    .getByTestId("recent-threads")
+    .getByRole("button", { name: /What do recent papers say about memory for long-running/ })
+    .click();
+  await expect(sheet.getByTestId("turns-chip")).toHaveText("3 turns");
+  // The stored conversation is not about the card's item, so the sheet no longer says it is.
+  await expect(sheet.getByTestId("asking-about")).toHaveCount(0);
+
+  await ask(page, "Which of them is peer-reviewed?");
+  await expect(sheet.getByTestId("answer").locator("sup")).toHaveCount(1);
+  const sent = await lastAsk(request);
+  expect(sent).not.toHaveProperty("item_id");
   expect(typeof sent.thread_id).toBe("string");
 });
 
