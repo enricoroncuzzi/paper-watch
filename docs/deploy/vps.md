@@ -679,8 +679,8 @@ public path.
 `deploy/vps/tunnel-soak.sh` is the probe (`run`) and the arithmetic over its log (`summary`);
 `deploy/vps/soak-stream.py` is a heartbeat SSE test server that exists only for the soak, with
 `paperwatch-soak-stream.service` as its unit. The stream is what measures recovery: the five-minute
-probes confirm health only at their next tick, while a gap between heartbeats is a reading fine
-enough for the two-minute rule.
+probes confirm health only at their next tick, while the stream reconnects after a drop and times
+the break between heartbeats, a reading fine enough for the two-minute rule.
 
 Start the stream server on the server and publish it on 8443. Funnel allows 8443 alongside 443, so
 this is a second mapping and not a second hostname. The stream has no credential on purpose: it
@@ -725,33 +725,35 @@ Afterwards, read the numbers back:
 It prints the window, the probe counts, the failed handshakes (a probe that got no HTTP response
 at all: DNS, TCP or the TLS handshake failed), the stream count, the longest outage, the longest gap
 between probes, and `verdict: PASS` or `FAIL` with its reasons; the exit status is 1 on a `FAIL`.
-The pass rule is the soak's own: no failed handshake and no failed probe in the window, and no
-outage of two minutes or more. The probes can confirm an outage only at their next tick, so the
-stream's gap is the fine measurement and the probe outage is the coarse one.
+The pass rule is the soak's own: no failed handshake, no failed probe and no failed stream in the
+window, and no outage of two minutes or more. The probes can confirm an outage only at their next
+tick, so the stream's outage and gap are the fine measurement and the probe outage is the coarse
+one.
 
 ### The restart check
 
-Restart the tunnel agent while a stream is running, so the recovery is timed to the next heartbeat:
-
-```bash
-# during the hourly stream
-systemctl --user restart paperwatch-tunnel
-```
-
-The stream that was open ends early (`why=short`) or records the break as its `gap=`, and its frames
-resume within one heartbeat of the agent coming back. The probes read `ok` again at their next tick.
-If the hourly stream is not running, take the measurement with a short run of its own:
+Restart the tunnel agent while a stream is running. The restart closes the stream's connection, so
+the probe reconnects every second or so while the window has time left, and the stream line records
+the break: `drops=` counts them and `outage=` is the seconds from the last frame before the drop to
+the first frame after the reconnect. That is the recovery time the two-minute rule is about, read
+to within one heartbeat. A run starts with a stream, so a short run of its own is the easiest way to
+time it:
 
 ```bash
 ./deploy/vps/tunnel-soak.sh run https://<PW_API_PUBLIC_HOST> \
   --stream-url https://<PW_API_PUBLIC_HOST>:8443/events \
-  --interval 60 --stream-window 120 --stream-every 120 --hours 0 --log ~/restart-check.log
-# Ctrl-C after a few minutes, then read it:
+  --stream-every 300 --hours 0 --log ~/restart-check.log
+# on the server, within the first few minutes of the run:
+systemctl --user restart paperwatch-tunnel
+# after the probe=stream line appears, Ctrl-C, then read it:
 ./deploy/vps/tunnel-soak.sh summary ~/restart-check.log
 ```
 
-That log counts the restart's own handshake failures, so read its `longest outage` line, not its
-verdict: the line is the recovery time the two-minute rule is about.
+The stream line reads `result=fail` with `why=drop` and the recovery in `outage=`; a stream that
+was still down when its window closed reads `why=unrecovered`, and its `outage=` runs to the end of
+the window. That log fails its verdict on purpose, because the restart is a drop, so read its
+`longest outage` line, not its verdict. In the 72-hour soak itself a dropped or unrecovered stream is
+a failed stream, and any failed stream fails the verdict.
 
 ### Removing the mapping
 

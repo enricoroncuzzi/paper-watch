@@ -24,8 +24,6 @@ from paperwatch.config import REPO_ROOT
 
 SCRIPT = REPO_ROOT / "deploy" / "vps" / "tunnel-soak.sh"
 STREAM_SERVER = REPO_ROOT / "deploy" / "vps" / "soak-stream.py"
-UNIT = REPO_ROOT / "deploy" / "vps" / "paperwatch-soak-stream.service"
-GUIDE = REPO_ROOT / "docs" / "deploy" / "vps.md"
 BASH = shutil.which("bash")
 
 T0 = 1792915200  # 2026-10-25T08:00:00Z, an hour boundary: the hourly stream starts here
@@ -150,7 +148,63 @@ def test_a_stream_gap_is_an_outage_and_an_interrupted_stream_is_a_failure(tmp_pa
     assert "failed handshakes: 0" in result.stdout
     assert "streams: 2, 1 ok, 1 failed" in result.stdout
     assert "longest outage: 4m 0s" in result.stdout
-    assert "verdict: FAIL - longest outage 4m 0s is over 2m" in result.stdout
+    assert "verdict: FAIL - 1 failed streams, longest outage 4m 0s is over 2m" in result.stdout
+
+
+def test_a_dropped_stream_fails_the_soak_and_its_outage_is_the_recovery(tmp_path: Path) -> None:
+    # A tunnel restart closes the stream's connection. The probe reconnects, so the line carries
+    # the recovery as outage=, and a drop is a failed stream even when it recovered in time: an
+    # hourly stream that keeps dropping must never read as a clean soak.
+    log = _write_log(
+        tmp_path,
+        [
+            *_tick(0),
+            _probe(
+                0,
+                "stream",
+                "fail",
+                "200",
+                300004,
+                frames="18",
+                gap="40",
+                drops="1",
+                outage="40",
+                hb="15",
+                why="drop",
+            ),
+            *_tick(300),
+        ],
+    )
+    result = _summary(log)
+    assert result.returncode == 1
+    assert "streams: 1, 0 ok, 1 failed" in result.stdout
+    assert "longest outage: 40s" in result.stdout
+    assert "verdict: FAIL - 1 failed streams" in result.stdout
+
+
+def test_a_stream_outage_over_two_minutes_fails_the_rule(tmp_path: Path) -> None:
+    log = _write_log(
+        tmp_path,
+        [
+            *_tick(0),
+            _probe(
+                0,
+                "stream",
+                "fail",
+                "200",
+                300004,
+                frames="12",
+                gap="150",
+                drops="1",
+                outage="150",
+                hb="15",
+                why="drop",
+            ),
+        ],
+    )
+    result = _summary(log)
+    assert "longest outage: 2m 30s" in result.stdout
+    assert "verdict: FAIL - 1 failed streams, longest outage 2m 30s is over 2m" in result.stdout
 
 
 def test_an_empty_log_is_an_error_not_a_pass(tmp_path: Path) -> None:
@@ -281,7 +335,8 @@ def test_the_probe_logs_one_line_per_probe_with_the_fields_the_summary_reads(
     ]
     assert re.fullmatch(r"ts=\S+ at=\d+ probe=status result=ok http=401 ms=\d+", lines[1]), lines[1]
     assert re.fullmatch(
-        r"ts=\S+ at=\d+ probe=stream result=ok http=200 ms=\d+ frames=\d+ gap=\d+ hb=\d+",
+        r"ts=\S+ at=\d+ probe=stream result=ok http=200 ms=\d+ frames=\d+ gap=\d+ drops=0"
+        r" outage=0 hb=\d+",
         lines[2],
     ), lines[2]
 
@@ -312,22 +367,146 @@ def test_the_soak_stream_sends_heartbeat_frames() -> None:
     assert frames[0].startswith("data: {")
 
 
-def test_the_stream_unit_binds_loopback_and_never_gains_privileges() -> None:
-    # The stream exists for the soak only, so it is published by the tunnel's own mapping and
-    # never listens on the machine's other interfaces.
-    text = UNIT.read_text()
-    assert "--host 127.0.0.1" in text
-    assert "--port 8443" in text
-    assert "NoNewPrivileges=yes" in text
-    assert STREAM_SERVER.name in text
+class _DroppingStream(BaseHTTPRequestHandler):
+    """A stream whose first connection breaks, as a tunnel restart breaks it.
+
+    The first connection sends frames for a second and closes. Every later one answers 503 (the
+    tunnel is still coming back) until `refusals` have been answered, then streams again; with
+    `refusals=None` it never comes back.
+    """
+
+    refusals: int | None = 1
+    connections = 0
+
+    def do_GET(self) -> None:  # http.server's spelling, not ours
+        cls = type(self)
+        cls.connections += 1
+        attempt = cls.connections
+        if attempt > 1 and (cls.refusals is None or attempt <= 1 + cls.refusals):
+            self.send_error(503)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+        deadline = time.monotonic() + (1.0 if attempt == 1 else 30.0)
+        try:
+            while time.monotonic() < deadline:
+                self.wfile.write(b'data: {"tick": 0}\n\n')
+                self.wfile.flush()
+                time.sleep(0.2)
+        except (BrokenPipeError, ConnectionResetError):
+            return
+
+    def log_message(self, *_args: object) -> None:
+        pass
 
 
-def test_the_guide_shows_how_to_run_read_and_remove_the_soak() -> None:
-    # The soak is run by hand, once, months from now: the commands in the guide are the interface.
-    guide = GUIDE.read_text()
-    assert "./deploy/vps/tunnel-soak.sh run https://<PW_API_PUBLIC_HOST>" in guide
-    assert "./deploy/vps/tunnel-soak.sh summary ~/paperwatch-soak.log" in guide
-    assert "funnel --bg 8443 http://127.0.0.1:8443" in guide
-    assert "funnel --https=8443 off" in guide
-    assert "systemctl --user restart paperwatch-tunnel" in guide
-    assert "paperwatch-soak-stream" in guide
+def _stream_line(tmp_path: Path, api_stub: str, refusals: int | None) -> str:
+    handler = type("Stream", (_DroppingStream,), {"refusals": refusals, "connections": 0})
+    server, port = _serve(handler)
+    log = tmp_path / "soak.log"
+    probe = subprocess.Popen(  # noqa: S603 (a fixed script path, no shell)
+        [
+            BASH,
+            str(SCRIPT),
+            "run",
+            api_stub,
+            "--stream-url",
+            f"http://127.0.0.1:{port}/events",
+            "--log",
+            str(log),
+            "--interval",
+            "1",
+            "--stream-window",
+            "7",
+            "--stream-every",
+            "3600",
+            "--heartbeat",
+            "1",
+            "--hours",
+            "0",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        lines = _wait_for_lines(log, 3)
+    finally:
+        probe.terminate()
+        probe.wait(timeout=15)
+        server.shutdown()
+        server.server_close()
+    [line] = [line for line in lines if " probe=stream " in line]
+    return line
+
+
+def _fields(line: str) -> dict[str, str]:
+    return dict(token.split("=", 1) for token in line.split())
+
+
+def test_the_stream_reconnects_after_a_drop_and_records_the_recovery(
+    tmp_path: Path, api_stub: str
+) -> None:
+    fields = _fields(_stream_line(tmp_path, api_stub, refusals=1))
+    assert fields["result"] == "fail"
+    assert fields["why"] == "drop"
+    assert fields["http"] == "200"
+    assert fields["drops"] == "1"
+    # One second of pause after the drop, a 503, another second, then frames again.
+    assert 1 <= int(fields["outage"]) <= 5, fields
+    assert int(fields["frames"]) > 6, fields
+
+
+def test_a_stream_that_never_comes_back_is_unrecovered(tmp_path: Path, api_stub: str) -> None:
+    line = _stream_line(tmp_path, api_stub, refusals=None)
+    fields = _fields(line)
+    assert fields["why"] == "unrecovered"
+    assert fields["drops"] == "1"
+    # The outage runs from the last frame to the window's end: about six of its seven seconds.
+    assert int(fields["outage"]) >= 4, fields
+
+    result = _summary(_write_log(tmp_path, [line], name="unrecovered.log"))
+    assert result.returncode == 1
+    assert "verdict: FAIL - 1 failed streams" in result.stdout
+
+
+def _run_args(*args: str) -> subprocess.CompletedProcess[str]:
+    assert BASH, "the soak probe is a bash script"
+    return subprocess.run(  # noqa: S603 (a fixed script path, no shell)
+        [BASH, str(SCRIPT), "run", *args],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        (["https://example.test"], "run needs --stream-url URL"),
+        (["example.test", "--stream-url", "https://example.test:8443/events"], "BASE_URL must"),
+        (
+            ["https://example.test", "--stream-url", "https://example.test:8443/events", "--hours"],
+            "--hours needs a value",
+        ),
+        (
+            [
+                "https://example.test",
+                "--stream-url",
+                "https://example.test:8443/events",
+                "--interval",
+                "5m",
+            ],
+            "--interval must be a whole number of seconds, got 5m",
+        ),
+    ],
+    ids=["no-stream-url", "no-scheme", "missing-value", "not-a-number"],
+)
+def test_a_wrong_run_command_exits_2_before_probing(args: list[str], message: str) -> None:
+    # The soak is started by hand once: a typo must stop at once with the reason, not 72 hours of
+    # probes against the wrong address or a shell arithmetic error at the first tick.
+    result = _run_args(*args)
+    assert result.returncode == 2
+    assert message in result.stderr

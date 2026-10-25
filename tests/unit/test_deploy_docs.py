@@ -205,6 +205,16 @@ def test_the_api_binds_loopback_only() -> None:
     assert "/home/paperwatch/.local/bin/uv run --frozen --no-dev paperwatch serve --live" in line
 
 
+def test_the_soak_stream_binds_loopback_only() -> None:
+    # The stream is published by the tunnel's second mapping for the soak only, so the server
+    # itself never listens on the machine's other interfaces.
+    [line] = [line for line in _service_section(SOAK_UNIT) if line.startswith("ExecStart=")]
+    argv = shlex.split(line.split("=", 1)[1])
+    assert Path(argv[1]).name == "soak-stream.py"
+    assert argv[argv.index("--host") + 1] == "127.0.0.1"
+    assert argv[argv.index("--port") + 1] == "8443"
+
+
 def test_the_guide_shows_how_to_read_the_unit_security_score() -> None:
     # The number belongs to the deployed unit on the server, so the guide names the command and how
     # to read it rather than quoting a score that would go stale.

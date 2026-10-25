@@ -6,14 +6,15 @@
 #
 # `run` probes the public HTTPS address every five minutes: GET /healthz must answer 200 with
 # {"status":"ok"}, and GET /status must answer 401 without a credential. Once an hour it also holds
-# a five-minute stream against the soak-only test server (deploy/vps/soak-stream.py) and records
-# the frames it saw and the longest gap between them. The stream is the only measurement fine
+# a five-minute stream against the soak-only test server (deploy/vps/soak-stream.py), reconnects
+# when it drops, and records the frames it saw, the longest gap between them and the outage from
+# the last frame before a drop to the first one after it. The stream is the only measurement fine
 # enough to prove that a tunnel restart recovers in under two minutes: the five-minute probes can
 # only confirm health at their next tick.
 #
 # One line per probe goes to the log, and `summary` reads the pass rule back from it: no failed
-# handshake (curl reached no HTTP response at all), no failed probe, and every outage under two
-# minutes. The log is a flat list of key=value tokens so a human and awk can both read it.
+# handshake (curl reached no HTTP response at all), no failed probe or stream, and every outage
+# under two minutes. The log is a flat list of key=value tokens so a human and awk can both read it.
 #
 # bash rather than sh: timing a stream needs process substitution, which keeps the frame counters
 # in this shell while curl writes to a pipe. Both macOS and Linux have bash, and curl is the only
@@ -153,41 +154,67 @@ http_probe() {
 }
 
 # stream_probe holds the soak stream open for STREAM_WINDOW seconds and measures it. A healthy
-# stream ends because curl's own --max-time reaches the window; one that ends early (why=short) is
-# a break the probes would only confirm five minutes later.
+# stream ends because curl's own --max-time reaches the window's end. One that ends earlier is a
+# drop: the probe reconnects while the window has time left, and the outage is the time from the
+# last frame before the drop to the first frame after it, which is the restart's recovery time.
 stream_probe() {
-    local headers=$TMP/stream.headers code frames=0 gap=0 last= started elapsed ms why=
-    local line
-    : >"$headers"
+    local headers=$TMP/stream.headers code=000 attempt frames=0 gap=0 last= started end left
+    local drops=0 down_since= outage=0 ms why= line
     started=$SECONDS
-    while IFS= read -r line; do
-        case $line in
-            data:*)
-                frames=$((frames + 1))
-                if [ -n "$last" ] && [ $((SECONDS - last)) -gt "$gap" ]; then
-                    gap=$((SECONDS - last))
-                fi
-                last=$SECONDS
-                ;;
-        esac
-    done < <(curl -sS -N --connect-timeout 10 --max-time "$STREAM_WINDOW" \
-        -D "$headers" -o - "$STREAM_URL" 2>/dev/null)
-    elapsed=$((SECONDS - started))
-    code=$(header_code "$headers")
-    ms=$((elapsed * 1000))
+    end=$((started + STREAM_WINDOW))
+    while :; do
+        left=$((end - SECONDS))
+        [ "$left" -gt 0 ] || break
+        : >"$headers"
+        while IFS= read -r line; do
+            case $line in
+                data:*)
+                    frames=$((frames + 1))
+                    if [ -n "$down_since" ]; then
+                        if [ $((SECONDS - down_since)) -gt "$outage" ]; then
+                            outage=$((SECONDS - down_since))
+                        fi
+                        down_since=
+                    fi
+                    if [ -n "$last" ] && [ $((SECONDS - last)) -gt "$gap" ]; then
+                        gap=$((SECONDS - last))
+                    fi
+                    last=$SECONDS
+                    ;;
+            esac
+        done < <(curl -sS -N --connect-timeout 10 --max-time "$left" \
+            -D "$headers" -o - "$STREAM_URL" 2>/dev/null)
+        attempt=$(header_code "$headers")
+        [ "$code" != "000" ] || code=$attempt
+        # SECONDS counts whole seconds, so only an end more than a second early is a drop.
+        [ $((end - SECONDS)) -gt 1 ] || break
+        if [ -z "$down_since" ]; then
+            drops=$((drops + 1))
+            down_since=${last:-$started}
+        fi
+        # A refused connection returns at once: the pause keeps the retries from spinning.
+        sleep 1
+    done
+    if [ -n "$down_since" ] && [ $((SECONDS - down_since)) -gt "$outage" ]; then
+        outage=$((SECONDS - down_since))
+    fi
+    ms=$(((SECONDS - started) * 1000))
     if [ "$code" = "000" ]; then
         why=handshake
-    elif [ "$frames" -eq 0 ] || [ $((elapsed * 10)) -lt $((STREAM_WINDOW * 9)) ]; then
-        why=short
+    elif [ "$frames" -eq 0 ] || [ -n "$down_since" ]; then
+        why=unrecovered
+    elif [ "$drops" -gt 0 ]; then
+        why=drop
     elif [ "$gap" -ge $((HEARTBEAT * 8)) ]; then
         # Eight heartbeats of silence inside a stream that stayed up is a break, not a stall.
         why=gap
     fi
     stamp_now
+    set -- "frames=$frames" "gap=$gap" "drops=$drops" "outage=$outage" "hb=$HEARTBEAT"
     if [ -z "$why" ]; then
-        record stream ok "$code" "$ms" "frames=$frames" "gap=$gap" "hb=$HEARTBEAT"
+        record stream ok "$code" "$ms" "$@"
     else
-        record stream fail "$code" "$ms" "frames=$frames" "gap=$gap" "hb=$HEARTBEAT" "why=$why"
+        record stream fail "$code" "$ms" "$@" "why=$why"
     fi
 }
 
@@ -271,6 +298,7 @@ summary() {
             if (f["gap"] + 0 > 2 * (f["hb"] + 0) && f["gap"] + 0 > longest_outage) {
                 longest_outage = f["gap"] + 0
             }
+            if (f["outage"] + 0 > longest_outage) longest_outage = f["outage"] + 0
         }
         if (first_at == 0) {
             first_at = at
@@ -305,6 +333,9 @@ summary() {
         if (failed["healthz"] + failed["status"] > 0) {
             reasons = reasons (reasons == "" ? "" : ", ") failed["healthz"] + failed["status"] \
                 " failed probes"
+        }
+        if (failed["stream"] > 0) {
+            reasons = reasons (reasons == "" ? "" : ", ") failed["stream"] " failed streams"
         }
         if (longest_outage >= 120) {
             reasons = reasons (reasons == "" ? "" : ", ") "longest outage " \
