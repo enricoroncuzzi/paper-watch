@@ -66,6 +66,13 @@ the reply's footnote numbers stay per answer. Three fixed chips sit under the co
 peer-reviewed one re-asks the last question with `tiers: ["peer_reviewed"]`, so a filter is not a
 model call and the chips cost nothing to invent.
 
+The thread ends when the sheet closes: the controller starts clean, so "Ask about it" on a card
+always opens a new thread about that item, which the API registers as `S1`. A conversation picked
+from Recent is read back with `GET /api/threads/{id}` and lets go of the item, so a follow-up there
+never claims to be about a different paper. A follow-up also waits for the stream to end, not only
+for the answer: the `thread` event that carries the id and the turn number comes after the server's
+write, and a send in that gap would start a second, history-less thread.
+
 A dropped stream does not end the conversation. The controller asks `GET /api/threads/{id}` and
 shows what the server finished: the answer is adopted when the thread saved it, and when the thread
 has no turn for the question the sheet says the answer was interrupted and offers to ask it again.
@@ -94,7 +101,8 @@ a Hugging Face project page crafted to look like another site.
 `FAKE_API_PORT`, or with `PW_E2E_FAKE_API_PORT` for the suite). It accepts
 only `Authorization: Bearer e2e`, serves `fixtures/<name>.json` for the read routes, streams
 `streams/<scenario>.json` for `POST /ask`, and takes `POST /__scenario` so a Playwright test can pick
-`normal`, `empty`, `error`, `unhealthy`, `followup`, `text_only`, `slow`, `drop` or `thread_drop`.
+`normal`, `empty`, `error`, `unhealthy`, `followup`, `text_only`, `slow`, `drop`, `thread_drop` or
+`thread_slow` (the `thread` event held back, so a test can act between it and the answer).
 It keeps the conversations a test created: a finished answer appends a turn and the stream ends with
 the `thread` event, `GET /threads` and `GET /threads/{id}` read them back, and `keepThreads: true`
 on a scenario switch lets one test ask, then change how the next stream behaves. `GET /__last_ask`
