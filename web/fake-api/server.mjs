@@ -62,6 +62,30 @@ function corpusCursor(offset) {
   return Buffer.from(JSON.stringify({ k: "newest", o: offset }), "utf8").toString("base64url");
 }
 
+// Every corpus row has an item page: the three hand-written fixtures are the interesting cases,
+// and the rest are built from the row itself so a reader (or a test) can open any row.
+function detailFor(id) {
+  const specials = ["item-detail", "item-detail-hostile", "item-detail-early"].map(fixture);
+  const special = specials.find((entry) => entry.id === id);
+  if (special) return special;
+  const row = fixture("corpus").items.find((item) => item.id === id);
+  if (!row) return null;
+  return {
+    ...row,
+    early: row.basis === "lab_author",
+    authors: ["Ada Lovelace"],
+    url: `https://example.org/paper/${row.id}`,
+    text: `${row.title}. The stored abstract of this item, kept in the fake API so the page has something to read.`,
+    github_repo: null,
+    project_page: null,
+    org: null,
+    tier_history: [],
+    signals: [],
+    summary: null,
+    drafts: [],
+  };
+}
+
 function resetDrafts() {
   drafts = fixture("drafts").drafts.map((draft) => ({ ...draft }));
   draftedItemIds = new Set();
@@ -399,14 +423,7 @@ async function handle(request, response) {
       });
       return;
     }
-    // The ordinary item, one whose stored links are hostile (S9), and one that only reached
-    // Rising, so the dialog warns before a draft is generated.
-    const details = [
-      fixture("item-detail"),
-      fixture("item-detail-hostile"),
-      fixture("item-detail-early"),
-    ];
-    const detail = details.find((entry) => entry.id === id);
+    const detail = detailFor(id);
     if (!detail) {
       json(response, 404, { detail: "item not found" });
       return;

@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 
-import { currentSection, SECTIONS } from "@/lib/nav";
+import { currentSection, sectionHashFromClick, SECTIONS } from "@/lib/nav";
 
 /**
  * The section links. Which one is current depends on the path and the hash, so it is decided after
@@ -19,14 +19,24 @@ export function MastheadNav() {
     read();
     window.addEventListener("hashchange", read);
     // An in-page link is a client navigation: the hash changes without a hashchange event, so the
-    // mark is taken from the link the reader pressed. This also covers the strip's "Runs" link.
+    // mark is taken from the link the reader pressed. This also covers the strip's "Runs" link,
+    // and `sectionHashFromClick` keeps a click that opens a tab or another site from moving it.
     function onClick(event: MouseEvent) {
       const anchor = (event.target as Element | null)?.closest?.("a[href]");
       if (!anchor) return;
-      const href = anchor.getAttribute("href") ?? "";
-      const at = href.indexOf("#");
-      if (at === -1) return;
-      setHash(href.slice(at));
+      const hash = sectionHashFromClick(
+        {
+          href: anchor.getAttribute("href"),
+          target: anchor.getAttribute("target"),
+          button: event.button,
+          metaKey: event.metaKey,
+          ctrlKey: event.ctrlKey,
+          shiftKey: event.shiftKey,
+          altKey: event.altKey,
+        },
+        window.location,
+      );
+      if (hash) setHash(hash);
     }
     document.addEventListener("click", onClick);
     return () => {

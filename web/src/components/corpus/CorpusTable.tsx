@@ -54,7 +54,10 @@ export function CorpusRow({
       data-testid="corpus-row"
       data-row-index={index}
       data-selected={selected ? "true" : undefined}
-      onMouseEnter={onSelect}
+      // mousemove, not mouseenter: WebKit fires a synthetic mouseenter when the rows move under a
+      // still pointer (Load more appends and focus scrolls), which would select a row nobody
+      // pointed at. A move is the only thing that means "the reader is pointing here".
+      onMouseMove={onSelect}
       className={selected ? "bg-accent-soft/60" : "transition-colors hover:bg-card"}
     >
       <td className={`${CELL} title-cell`}>
