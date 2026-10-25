@@ -942,9 +942,13 @@ def test_no_new_request_starts_after_the_client_left_during_a_tool(
     from paperwatch.agent import tools as tools_mod
 
     started = threading.Event()
+    release = threading.Event()
 
     def search(*args: Any, **kwargs: Any) -> list[Any]:
         started.set()
+        # Hold the tool until the test has set `cancel`: without the wait the graph can start the
+        # next round before the flag is set, which is the race this test guards against.
+        assert release.wait(timeout=10), "the test never released the tool"
         return []
 
     monkeypatch.setattr(tools_mod, "hybrid_search", search)
@@ -967,6 +971,7 @@ def test_no_new_request_starts_after_the_client_left_during_a_tool(
     consumer.start()
     assert started.wait(timeout=10), "the tool never ran"
     cancel.set()
+    release.set()
     consumer.join(timeout=10)
     assert not consumer.is_alive()
     # Exactly the one request that made the tool call: the round after the tool was refused
