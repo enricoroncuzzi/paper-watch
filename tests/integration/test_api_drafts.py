@@ -584,6 +584,45 @@ def test_a_flagged_draft_is_saved_as_written(db_session: Session) -> None:
     assert saved.check["flags"][0]["kind"] == "number"
 
 
+# The round 4 bypasses through the real route: the model writes the claim, the check decides, and
+# the draft is saved as written either way. Each row is (point of view, claim, must be flagged).
+@pytest.mark.parametrize(
+    ("pov", "claim", "flagged"),
+    [
+        (
+            "I'm thinking of testing this on our 300-step traces.",
+            "I tested this on our 300-step traces.",
+            True,
+        ),
+        ("I tested it on our 300-step traces.", "I tested this on our 300-step traces.", True),
+        ("I tested it on our 300-step traces.", "I tested it on our 300-step traces.", False),
+        ("I built a harness.", "I built a harness, tested it on 300 traces and shipped it.", True),
+        ("I cannot say I tested it properly.", "I tested it properly.", True),
+        ("Have I tested this? Not yet.", "I tested this.", True),
+        ("The replay idea is interesting.", '"I" tested it on 300 traces.', True),
+        ("The replay idea is interesting.", "The authors tested it, and so did I.", True),
+        ("The replay idea is interesting.", "\uff57\uff45 shipped it to production.", True),
+    ],
+)
+def test_a_first_person_claim_is_checked_through_the_route(
+    db_session: Session, pov: str, claim: str, flagged: bool
+) -> None:
+    item_id = seed_item(db_session)
+    reply = {**REPLY, "body": REPLY["body"] + " " + claim}
+    api = client(db_session, draft_service(db_session, [scripted(reply)]))
+
+    response = api.post("/drafts", json={"item_id": str(item_id), "pov": pov})
+
+    assert response.status_code == 201
+    body = response.json()
+    notes = [note for note in body["flags"] if note["kind"] == "first_person"]
+    assert bool(notes) is flagged
+    # The note names the claim and the draft keeps the model's words.
+    if flagged:
+        assert notes[0]["text"] in body["body"]
+    assert claim in body["body"]
+
+
 def test_a_404_or_a_422_spends_no_limiter_slot(db_session: Session) -> None:
     good = seed_item(db_session)
     short = seed_item(db_session, "short", text="Too short to draft from.")

@@ -578,6 +578,182 @@ def test_a_cut_at_a_clause_boundary_passes() -> None:
     assert kinds(replace(GOOD, body=GOOD.body + " I built"), pov="I built and tested it.") == []
 
 
+# R4-1: an owner's hedge cannot be cut off. The point of view in each row says something narrower
+# than the claim, so the claim is not one of the owner's clauses.
+@pytest.mark.parametrize(
+    ("pov", "claim"),
+    [
+        ("I cannot say I tested it properly.", "I tested it properly."),
+        ("I doubt I tested it on enough traces.", "I tested it on enough traces."),
+        ("I wish I had built a harness for this.", "I had built a harness for this."),
+        ("If I tested it on our traces, I would know.", "I tested it on our traces."),
+        ("I am not sure we shipped it in time.", "We shipped it in time."),
+        ("Have I tested this? Not yet.", "I tested this."),
+        ("Did we ship it on time? Unclear.", "We ship it on time."),
+        ("Whether I tested it is beside the point.", "I tested it."),
+        ("Unless I tested it, I cannot say.", "I tested it."),
+        ("I hope we build one.", "We build one."),
+        ('The note says "I tested it" but I did not.', "I tested it."),
+    ],
+)
+def test_a_hedged_point_of_view_does_not_license_the_cut(pov: str, claim: str) -> None:
+    assert kinds(replace(GOOD, body=GOOD.body + " " + claim), pov=pov) == ["first_person"]
+
+
+# The honest side of R4-1: a cut at a clause boundary, a comma added or dropped, a lead-in word
+# and an owner sentence joined to the next are all still the owner's words.
+@pytest.mark.parametrize(
+    ("pov", "claim"),
+    [
+        ("I tested it on our traces, and it was slow.", "I tested it on our traces."),
+        ("I built the harness - it replays tool results.", "I built the harness."),
+        ("I built a harness, it replays tool results.", "I built a harness."),
+        ("I built and tested it.", "I built."),
+        ("I built and tested it on our traces.", "I built and tested it, on our traces."),
+        ("I tested it, on our traces.", "I tested it on our traces."),
+        ("I haven't tested this.", "I haven't tested this, but the authors report 41%."),
+        ("I tested it on our traces.", "Honestly, I tested it on our traces."),
+        ("I tested it. On our 300-step traces.", "I tested it on our 300-step traces."),
+    ],
+)
+def test_an_honest_cut_of_the_owners_sentence_passes(pov: str, claim: str) -> None:
+    assert kinds(replace(GOOD, body=GOOD.body + " " + claim), pov=pov) == []
+
+
+# R4-2: a clause that carries the subject of a first-person clause is the same speaker unless it
+# starts with a subject of its own.
+@pytest.mark.parametrize(
+    ("pov", "claim"),
+    [
+        ("I built a harness.", "I built a harness, tested it on 40 traces and shipped it."),
+        ("I built a harness.", "I built a harness; tested it on 40 traces."),
+        ("I built a harness.", "I built a harness - shipped it to prod last week."),
+        ("My team built a harness.", "My team built a harness, then deployed it in production."),
+    ],
+)
+def test_a_claim_that_rides_on_the_subject_is_checked(pov: str, claim: str) -> None:
+    assert kinds(replace(GOOD, body=GOOD.body + " " + claim), pov=pov) == ["first_person"]
+
+
+@pytest.mark.parametrize(
+    ("pov", "claim"),
+    [
+        ("I tested it.", "I tested it, but the authors report 41%."),
+        ("I tested it on our traces.", "I tested it on our traces, and the authors report 41%."),
+    ],
+)
+def test_a_third_party_after_the_comma_is_not_the_owner_speaking(pov: str, claim: str) -> None:
+    assert kinds(replace(GOOD, body=GOOD.body + " " + claim), pov=pov) == []
+
+
+# R4-3: the pronoun test runs on the folded text, and only "i.e." is not the pronoun.
+@pytest.mark.parametrize(
+    "claim",
+    [
+        "The authors tested it, and so did I.",
+        "\uff57\uff45 shipped it to production.",
+        "\U0001d43c tested it.",
+    ],
+)
+def test_the_pronoun_is_found_after_unicode_folding(claim: str) -> None:
+    assert kinds(replace(GOOD, body=GOOD.body + " " + claim), pov="Interesting.") == [
+        "first_person"
+    ]
+
+
+# R4-4: only a span the quote rule checks (three words or more, verbatim) may hide its pronoun.
+def test_a_one_word_quote_does_not_hide_the_pronoun() -> None:
+    for claim in ('"I" tested it on 40 traces.', '"We" shipped it to production.'):
+        assert kinds(replace(GOOD, body=GOOD.body + " " + claim), pov="Interesting.") == [
+            "first_person"
+        ], claim
+
+
+def test_a_quote_that_is_not_verbatim_keeps_its_pronoun() -> None:
+    source = replace(SOURCE, text=TEXT + " We evaluated this on 40 long-horizon tasks.")
+    draft = replace(GOOD, body=GOOD.body + ' The authors write "we evaluated this on 99 tasks".')
+    assert "first_person" in kinds(draft, source)
+
+
+def test_a_flagged_clause_shows_the_readers_own_words() -> None:
+    # The quote is the authors' and the claim around it is the owner's: the note shows the
+    # clause as the draft wrote it, quote and all.
+    source = replace(SOURCE, text=TEXT + " We evaluated this on 40 long-horizon tasks.")
+    draft = replace(
+        GOOD,
+        body=GOOD.body + ' They write "we evaluated this on 40 long-horizon tasks" and I agree.',
+    )
+    notes = [flag for flag in check_draft(draft, source, pov="Interesting.").flags]
+    [note] = [flag for flag in notes if flag.kind == "first_person"]
+    assert note.text == 'They write "we evaluated this on 40 long-horizon tasks" and I agree.'
+
+
+@pytest.mark.parametrize("separator", ["?", "!", ";", ":", ",", "\u2013", "\u2014", " - "])
+def test_each_clause_boundary_licenses_the_cut(separator: str) -> None:
+    pov = f"I built a harness{separator} it replays tool results."
+    assert kinds(replace(GOOD, body=GOOD.body + " I built a harness."), pov=pov) == []
+
+
+def test_a_hyphen_inside_a_word_is_not_a_clause_boundary() -> None:
+    # The owner wrote one clause; a cut inside "300-step" is not a boundary of it.
+    draft = replace(GOOD, body=GOOD.body + " I tested it on our 300.")
+    assert kinds(draft, pov="I tested it on our 300-step traces.") == ["first_person"]
+    verbatim = replace(GOOD, body=GOOD.body + " I tested it on our 300-step traces.")
+    assert kinds(verbatim, pov="I tested it on our 300-step traces.") == []
+
+
+def test_the_clause_matches_on_whole_words_only() -> None:
+    for claim in ("I test.", "I testedx."):
+        assert kinds(replace(GOOD, body=GOOD.body + " " + claim), pov="I tested it.") == [
+            "first_person"
+        ], claim
+
+
+def test_the_key_ignores_punctuation_but_not_the_words() -> None:
+    apostrophe = replace(GOOD, body=GOOD.body + " I don\u2019t trust the buffer.")
+    assert kinds(apostrophe, pov="I don't trust the buffer.") == []
+    # An apostrophe is punctuation too: the possessive and the plain word are the same words.
+    possessive = replace(GOOD, body=GOOD.body + " I tested the agents harness.")
+    assert kinds(possessive, pov="I tested the agents' harness.") == []
+    hyphen = replace(GOOD, body=GOOD.body + " I fine tuned the policy.")
+    assert kinds(hyphen, pov="I fine-tuned the policy.") == []
+
+
+def test_a_passing_clause_is_counted_as_passed() -> None:
+    # The lead-in word keeps the sentence from being one run of the owner's clauses, so the
+    # clause is checked and passes on its own.
+    check = check_draft(
+        replace(GOOD, body=GOOD.body + " Honestly, I tested it on our traces."),
+        SOURCE,
+        pov="I tested it on our traces.",
+    )
+    assert check.flags == ()
+    assert check.counts["first_person"] == (1, 1)
+
+
+def test_a_flagged_clause_counts_once_and_names_the_clause() -> None:
+    check = check_draft(
+        replace(GOOD, body=GOOD.body + " I tested it properly."),
+        SOURCE,
+        pov="I cannot say I tested it properly.",
+    )
+    assert check.counts["first_person"] == (1, 0)
+    [flag] = check.flags
+    assert flag.text == "I tested it properly."
+    assert flag.detail == (
+        "The draft speaks in first person here, but your point of view does not say this word "
+        "for word."
+    )
+
+
+def test_the_hook_and_the_hashtags_are_checked() -> None:
+    flagged = replace(GOOD, hook="I tested this for a week. The result was surprising.")
+    assert kinds(flagged, pov="Interesting.") == ["first_person"]
+    assert kinds(flagged, pov="I tested this for a week.") == []
+    tagged = replace(GOOD, hashtags=("agents", "we", "llm"))
+    assert kinds(tagged, pov="Interesting.") == ["first_person"]
+
+
 def test_a_source_quote_in_first_person_is_not_the_owners_claim() -> None:
     source = replace(SOURCE, text=TEXT + " We evaluated this on 40 long-horizon tasks.")
     draft = replace(
@@ -585,6 +761,12 @@ def test_a_source_quote_in_first_person_is_not_the_owners_claim() -> None:
         body=GOOD.body + ' The authors write "we evaluated this on 40 long-horizon tasks".',
     )
     assert kinds(draft, source) == []
+    curly = replace(
+        GOOD,
+        body=GOOD.body
+        + " The authors write \u201cwe evaluated this on 40 long-horizon tasks\u201d.",
+    )
+    assert kinds(curly, source) == []
 
 
 def test_i_e_and_a_capital_us_are_not_first_person() -> None:
@@ -611,7 +793,27 @@ def test_each_first_person_pronoun_is_detected() -> None:
         ], clause
 
 
+# R4-5: the lab name and the common-word label match on whole words, and a name without an
+# attribution verb does not name the lab.
+@pytest.mark.parametrize(
+    ("org", "body"),
+    [
+        ("Zep", "Zeppelin reports a replay buffer helps."),
+        ("Zep", "Prezep reports a replay buffer helps."),
+        ("Modal", "Nomodal reports a replay buffer helps."),
+        ("Arize AI", "Arize built a replay buffer."),
+    ],
+)
+def test_a_lab_name_must_stand_as_a_whole_word_before_an_attribution(org: str, body: str) -> None:
+    source = replace(SOURCE, tier="lab_blog", org=org)
+    draft = replace(GOOD, hook="A memory layer.", body=body)
+    assert kinds(draft, source) == ["attribution"]
+
+
 def test_the_system_prompt_asks_for_the_owners_words_and_third_person_elsewhere() -> None:
     system = str(draft_messages(SOURCE, pov="I tested it.", language="en")[0].content)
     assert "word for word" in system
     assert "third person" in system
+    # The prompt names the boundaries the check splits on, so the model cuts where it is checked.
+    for boundary in ("comma", "semicolon", "colon", "dash", "full stop"):
+        assert boundary in system, boundary

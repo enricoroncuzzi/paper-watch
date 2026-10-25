@@ -40,13 +40,13 @@ least three words must be in the stored text or the point of view; every URL mus
 repository or project page, or one the owner wrote, and `source_link` must be the item's own link.
 A first-person clause is allowed only when the owner wrote it in his point of view, word for word:
 the model may cut an owner's sentence at a clause boundary but may not reword it, and a verbatim
-quote of the item is the authors' voice, not the owner's claim. A lab post must name the lab next to an attribution
-verb; a non-peer-reviewed item must attribute every sentence that carries a number; an early item
-must say it is early or not yet reviewed; a run of twelve copied words outside a quote is flagged.
-Each failure is a numbered note on the draft, so the reader sees which claim to fix. The check
-is English-only, since it recognises the English first-person pronouns; there is no verb list,
-only the owner's own clauses, so a point of view in another language cannot license a claim and
-the claim is flagged instead of quietly passing.
+quote of the item is the authors' voice, not the owner's claim. A lab post must name the lab next
+to an attribution verb; a non-peer-reviewed item must attribute every sentence that carries a
+number; an early item must say it is early or not yet reviewed; a run of twelve copied words
+outside a quote is flagged. Each failure is a numbered note on the draft, so the reader sees which
+claim to fix. The check recognises the English first-person pronouns only: a draft written in
+another language, a claim that drops its pronoun ("Tested it on 300 traces"), `Let's` and a
+capitalised `Us` are not seen.
 
 **Generating saves, and the item leaves the picks.** There is no separate save step, so a draft the
 model wrote cannot be lost to a second click; the same request records the `drafted` suggestion

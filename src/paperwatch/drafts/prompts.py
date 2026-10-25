@@ -38,8 +38,8 @@ Reply with JSON only, no prose and no code fence, with exactly these four keys:
   short paragraphs. Write plain text: no markdown, no bullet lists and no headings.
 - Write in English when the requested language is en; otherwise write in the requested language.
 - Use the first person only by reusing the owner's <point_of_view> sentences word for word. You
-  may cut a sentence at a clause boundary, but never reword it. Write everything else in the
-  third person.
+  may cut a sentence at a clause boundary (a comma, semicolon, colon, dash or full stop), but
+  never reword it. Write everything else in the third person.
 - Every number, quote and link must come from the <source> blocks or the point of view. Quote at
   most 25 words at a time.
 - A lab post is the lab's own claim: name the lab and attribute it, as in "OpenAI reports ...".
