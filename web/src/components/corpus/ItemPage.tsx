@@ -242,7 +242,7 @@ export function ItemPage({ item }: { item: CorpusItemDetail }) {
             setPreviewOpen(true);
             return;
           }
-          // Keep the target for the closing frame, so Radix can return focus to the opener first.
+          // The opener stays, so Radix can return focus to its button after the dialog closes.
           setPreviewOpen(false);
         }}
         onSaved={() => router.refresh()}

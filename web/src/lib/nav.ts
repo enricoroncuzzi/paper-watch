@@ -1,5 +1,3 @@
-import Link from "next/link";
-
 const SECTIONS = [
   { id: "picks", href: "/#picks", label: "This week" },
   { id: "rising", href: "/#rising", label: "Rising" },

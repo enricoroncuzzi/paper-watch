@@ -37,13 +37,23 @@ export function CorpusSection({ initial }: { initial: CorpusData }) {
   const [text, setText] = useState("");
   const [filters, setFilters] = useState({ q: "", tier: "" });
   const [selected, setSelected] = useState(0);
+  // The same index in a ref: two key presses in one frame must step twice, not once, because a
+  // state updater re-reads the value React has not re-rendered yet.
+  const selectedRef = useRef(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<ApiErrorKind | null>(null);
   // The row index to focus after an append, so the reader lands on the first new row.
   const [focusAfter, setFocusAfter] = useState<number | null>(null);
   const first = useRef(true);
+  const select = useCallback((next: number) => {
+    selectedRef.current = next;
+    setSelected(next);
+  }, []);
+
   // The page as the ref sees it: an append merges into it without waiting for a render.
   const pageRef = useRef(page);
+  // The Load more button that was pressed, so focus stays put when the reader has moved on.
+  const loader = useRef<HTMLElement | null>(null);
   // Every request carries a number: a response that is no longer the newest one is dropped, so a
   // slow answer to an older query can never overwrite the table.
   const request = useRef(0);
@@ -73,7 +83,7 @@ export function CorpusSection({ initial }: { initial: CorpusData }) {
           pageRef.current = fresh;
           setPage(fresh);
           // A new query starts at the top; an appended page keeps the reader where they were.
-          setSelected(0);
+          select(0);
           return;
         }
         // A row can be served twice when the ranking shifts between pages (an ingestion lands
@@ -94,7 +104,7 @@ export function CorpusSection({ initial }: { initial: CorpusData }) {
         if (id === request.current) setLoading(false);
       }
     },
-    [],
+    [select],
   );
 
   // The server already rendered the first page: a reload on mount would only flash it.
@@ -115,15 +125,22 @@ export function CorpusSection({ initial }: { initial: CorpusData }) {
   }, [text]);
 
   // A ref on the first row an append adds: React calls it as that row mounts, so the reader lands
-  // there instead of at the top of the table (the Load more button unmounts under them).
+  // there instead of at the top of the table (the Load more button unmounts under them). Only when
+  // focus is still on the page or on the button, so a reader who moved to the search box mid-load
+  // keeps their caret.
   const takeFocus = useCallback((node: HTMLAnchorElement | null) => {
     if (!node) return;
+    const active = document.activeElement;
+    const onPage = active === null || active === document.body || active === loader.current;
+    if (!onPage) return;
     node.focus();
     node.scrollIntoView({ block: "nearest" });
   }, []);
 
   // One listener for the section's three keys, and only when the page itself has focus: a focused
-  // link, button, tab or field, or an open dialog, keeps its own Enter and its own letters.
+  // link, button, tab or field, or an open dialog, keeps its own Enter and its own letters. It is
+  // attached once and reads the rows and the selection from refs, because a listener that detaches
+  // and reattaches on every render can miss a press that lands in the gap.
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       if (document.querySelector("[role=dialog]")) return;
@@ -138,28 +155,29 @@ export function CorpusSection({ initial }: { initial: CorpusData }) {
         return;
       }
       if (event.key !== "j" && event.key !== "k" && event.key !== "Enter") return;
-      if (page.rows.length === 0) return;
+      const rows = pageRef.current.rows;
+      if (rows.length === 0) return;
       // Enter is ours only on the page itself: on a row link the browser activates the link, so a
       // keyboard reader who tabbed to another row opens that row, not the selection.
       if (event.key === "Enter" && !onPage) return;
       event.preventDefault();
       if (event.key === "Enter") {
-        const row = page.rows[selected];
+        const row = rows[selectedRef.current];
         if (row) router.push(`/items/${row.id}`);
         return;
       }
       const next =
         event.key === "j"
-          ? Math.min(selected + 1, page.rows.length - 1)
-          : Math.max(selected - 1, 0);
-      setSelected(next);
+          ? Math.min(selectedRef.current + 1, rows.length - 1)
+          : Math.max(selectedRef.current - 1, 0);
+      select(next);
       table.current
         ?.querySelector(`[data-row-index="${next}"] a`)
         ?.scrollIntoView({ block: "nearest" });
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [page.rows, selected, router]);
+  }, [router, select]);
 
   const shown = page.rows.length;
   // A capped search says so: "10 of 200+" is honest about a list nobody can page through.
@@ -273,7 +291,7 @@ export function CorpusSection({ initial }: { initial: CorpusData }) {
                 index={index}
                 selected={index === selected}
                 focusRef={index === focusAfter ? takeFocus : undefined}
-                onSelect={() => setSelected(index)}
+                onSelect={() => select(index)}
               />
             ))}
           </tbody>
@@ -291,7 +309,10 @@ export function CorpusSection({ initial }: { initial: CorpusData }) {
               type="button"
               disabled={loading}
               aria-label="Load more items"
-              onClick={() => void load({ ...filters, cursor: page.cursor, append: true })}
+              onClick={(event) => {
+                loader.current = event.currentTarget;
+                void load({ ...filters, cursor: page.cursor, append: true });
+              }}
               className="inline-flex h-11 items-center justify-center rounded-[2px] border border-rule-2 px-2.5 text-[11.5px] font-medium text-ink transition-colors hover:border-ink hover:bg-card disabled:opacity-60 sm:h-7"
             >
               {loading ? "Loading…" : "Load more"}

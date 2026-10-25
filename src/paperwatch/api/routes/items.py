@@ -98,8 +98,8 @@ class ItemDraftData(BaseModel):
 class CorpusItemDetail(CorpusItemData):
     """The row plus the text, the extras, the history and what was already written about it."""
 
-    # False when the item only reaches the Rising shelf; the dialog says so before generating,
-    # because the draft itself carries that sentence (Task 38).
+    # True when the item only reaches the Rising shelf: the dialog warns before generating, because
+    # the draft itself carries that sentence (Task 38).
     early: bool
     authors: list[str]
     url: str
@@ -192,10 +192,11 @@ def _since_midnight(day: date | None) -> datetime | None:
     return datetime(day.year, day.month, day.day, tzinfo=UTC) if day is not None else None
 
 
-def _has_control_chars(value: str) -> bool:
-    # psycopg refuses a NUL in a text parameter and the full-text parser has nothing to say about
-    # the rest, so a query carrying a control character is refused rather than answered with 500.
-    return any(ord(char) < 32 or ord(char) == 127 for char in value)
+def _clean_query(value: str) -> str:
+    # psycopg refuses a NUL in a text parameter, so that one character is the whole reason to
+    # refuse a query. A tab or a newline from a paste is a word separator, not an error.
+    spaced = "".join(" " if ord(char) < 32 or ord(char) == 127 else char for char in value)
+    return " ".join(spaced.split())
 
 
 def make_items_router(
@@ -225,9 +226,9 @@ def make_items_router(
         limit: Annotated[int, Query(ge=1, le=CORPUS_MAX_LIMIT)] = CORPUS_DEFAULT_LIMIT,
     ) -> CorpusData:
         # A blank search box is no search: the table shows the newest items instead of nothing.
-        search = q.strip() if q and q.strip() else None
-        if search is not None and _has_control_chars(search):
-            raise HTTPException(status_code=422, detail="q carries a control character")
+        if q is not None and "\x00" in q:
+            raise HTTPException(status_code=422, detail="q must not carry a NUL character")
+        search = _clean_query(q or "") or None
         if profile is not None and profile not in profile_names:
             # The names are the process's own, so a typo is refused here rather than answered with
             # an empty table that looks like a corpus without that topic.

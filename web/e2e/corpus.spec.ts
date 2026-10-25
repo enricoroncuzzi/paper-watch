@@ -61,8 +61,12 @@ test("load more appends the next page and keeps the reader's place", async ({ pa
   const rows = corpus.getByTestId("corpus-row");
   await expect(rows).toHaveCount(10);
 
-  // Select a row that is not the first one, so a reset would be visible.
-  await rows.nth(2).hover();
+  // Select a row that is not the first one, so a reset would be visible. The keyboard rather than
+  // a hover: WebKit's mouseenter timing under load made the hover form flaky, and the section has
+  // to be interactive before a key is sent.
+  await interactive(corpus);
+  await page.keyboard.press("j");
+  await page.keyboard.press("j");
   await expect(rows.nth(2)).toHaveAttribute("data-selected", "true");
 
   await corpus.getByRole("button", { name: "Load more items" }).click();
@@ -111,10 +115,31 @@ test("the corpus filters by tier and searches", async ({ page }) => {
   await expect(rows).toHaveCount(0);
 });
 
+// The section's keys are a client listener: pressing one before hydration is lost, so a test that
+// presses a key straight after sign-in first proves the section answers a click.
+async function interactive(corpus: import("@playwright/test").Locator) {
+  const toggle = corpus.getByRole("button", { name: "Vetted preprints" });
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-pressed", "true");
+  await corpus.getByRole("button", { name: "All" }).click();
+  await expect(corpus.getByRole("button", { name: "All" })).toHaveAttribute("aria-pressed", "true");
+  // The section's keys belong to the page, not to a control: end on the heading, whose click
+  // leaves focus on the body in every engine.
+  await corpus.getByRole("heading", { name: "The corpus" }).click();
+}
+
+/** Which row carries the selection, as an index, so a test never assumes a particular one. */
+async function selectedRow(rows: import("@playwright/test").Locator): Promise<number> {
+  return rows.evaluateAll((nodes) =>
+    nodes.findIndex((node) => node.getAttribute("data-selected") === "true"),
+  );
+}
+
 test("slash focuses the search and j k move the selection", async ({ page }) => {
   const corpus = page.getByTestId("corpus-section");
   const rows = corpus.getByTestId("corpus-row");
   const search = corpus.getByRole("searchbox", { name: "Search the corpus" });
+  await interactive(corpus);
 
   await page.keyboard.press("/");
   await expect(search).toBeFocused();
@@ -146,6 +171,7 @@ test("slash focuses the search and j k move the selection", async ({ page }) => 
 test("Enter stays with the control that has focus", async ({ page }) => {
   const corpus = page.getByTestId("corpus-section");
   const rows = corpus.getByTestId("corpus-row");
+  await interactive(corpus);
 
   // A tier toggle: Enter presses the toggle, not the selected row.
   await corpus.getByRole("button", { name: "Vetted preprints" }).focus();
@@ -164,11 +190,34 @@ test("Enter stays with the control that has focus", async ({ page }) => {
   await expect(rows).toHaveCount(12);
   expect(page.url()).not.toContain("/items/");
 
+  // A letter key is not the section's while a control has focus. Before the masthead link below,
+  // which navigates and lets the browser move focus to the fragment.
+  await corpus.getByRole("button", { name: "Peer reviewed" }).focus();
+  await expect(corpus.getByRole("button", { name: "Peer reviewed" })).toBeFocused();
+  const selectedBefore = await selectedRow(rows);
+  await page.keyboard.press("j");
+  await page.keyboard.press("k");
+  expect(await selectedRow(rows)).toBe(selectedBefore);
+  expect(page.url()).not.toContain("/items/");
+
   // A masthead link: Enter follows the link to its section.
   await page.getByRole("navigation").getByRole("link", { name: "Runs" }).focus();
   await page.keyboard.press("Enter");
   await expect(page).toHaveURL(/#runs$/);
   await expect(page).not.toHaveURL(/\/items\//);
+
+  // The Ask sheet: Enter in its box stays in the box.
+  await page.getByRole("button", { name: /^Ask the corpus/ }).click();
+  const sheet = page.getByRole("dialog");
+  await expect(sheet).toBeVisible();
+  const question = sheet.getByRole("textbox").first();
+  await question.focus();
+  const before = page.url();
+  await page.keyboard.press("Enter");
+  await expect(page).toHaveURL(before);
+  await expect(sheet).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(sheet).toHaveCount(0);
 
   // The draft dialog: Enter generates, and never navigates away from the page.
   await page.goto("/");
@@ -239,6 +288,56 @@ test("an item page shows its history and signals", async ({ page }) => {
   await expect(item).toContainText("Already in Drafts: 1");
 });
 
+test("a slow answer to an older query never overwrites the table", async ({ page }) => {
+  const corpus = page.getByTestId("corpus-section");
+  const rows = corpus.getByTestId("corpus-row");
+  const search = corpus.getByRole("searchbox", { name: "Search the corpus" });
+
+  // The first query matches nothing and its answer is held back, so it lands after the second
+  // query's answer: a table that took it would show "zzz" with no rows.
+  let stale = 0;
+  await page.route("**/api/corpus?*", async (route) => {
+    if (new URL(route.request().url()).searchParams.get("q") === "zzz") {
+      stale += 1;
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+    }
+    await route.continue();
+  });
+
+  await search.fill("zzz");
+  // Past the debounce, so the slow request is really in flight while the next one is typed.
+  await page.waitForTimeout(500);
+  await search.fill("watermark");
+  await expect(rows).toHaveCount(2);
+  await expect(corpus.getByRole("status")).toHaveText("Showing 2 of 2 · j k to move");
+
+  // The older answer has landed by now; a table that took it would show "wat" (no matches).
+  await page.waitForTimeout(2000);
+  expect(stale).toBeGreaterThan(0);
+  await expect(rows).toHaveCount(2);
+  await expect(corpus.getByRole("status")).toHaveText("Showing 2 of 2 · j k to move");
+});
+
+test("a load more that lands after the reader moved on keeps their focus", async ({ page }) => {
+  const corpus = page.getByTestId("corpus-section");
+  const rows = corpus.getByTestId("corpus-row");
+  const search = corpus.getByRole("searchbox", { name: "Search the corpus" });
+
+  // Hold the next page back, so the reader has time to move to the search box.
+  await page.route("**/api/corpus?*", async (route) => {
+    if (new URL(route.request().url()).searchParams.get("cursor")) {
+      await new Promise((resolve) => setTimeout(resolve, 1200));
+    }
+    await route.continue();
+  });
+
+  await corpus.getByRole("button", { name: "Load more items" }).click();
+  await search.click();
+  await expect(rows).toHaveCount(12);
+  // The new row mounts while the caret is in the box: the reader keeps it.
+  await expect(search).toBeFocused();
+});
+
 test("a stored link that is not http renders nothing at all", async ({ page }) => {
   await page.goto(`/items/${HOSTILE_ID}`);
   const item = page.getByTestId("item-page");
@@ -285,6 +384,23 @@ test("no masthead section is current on an item page", async ({ page }) => {
   const current = page.getByRole("navigation").locator("[aria-current='true']");
   await expect(current).toHaveCount(1);
   await expect(current).toHaveText("Corpus");
+});
+
+test("the masthead marks the section the reader clicked", async ({ page }) => {
+  const nav = page.getByRole("navigation");
+  // An in-page click is a client navigation: no hashchange fires, so the mark has to follow it.
+  await nav.getByRole("link", { name: "Corpus" }).click();
+  await expect(page).toHaveURL(/#corpus$/);
+  await expect(nav.locator("[aria-current='true']")).toHaveText("Corpus");
+
+  await nav.getByRole("link", { name: "Runs" }).click();
+  await expect(page).toHaveURL(/#runs$/);
+  await expect(nav.locator("[aria-current='true']")).toHaveText("Runs");
+
+  // The today strip's link is an in-page anchor too, and it means the same section.
+  await page.getByTestId("today-strip").getByRole("link").click();
+  await expect(page).toHaveURL(/#runs$/);
+  await expect(nav.locator("[aria-current='true']")).toHaveText("Runs");
 });
 
 test("the phone layout keeps the table inside the screen", async ({ page, request }, testInfo) => {

@@ -18,7 +18,21 @@ export function MastheadNav() {
     const read = () => setHash(window.location.hash);
     read();
     window.addEventListener("hashchange", read);
-    return () => window.removeEventListener("hashchange", read);
+    // An in-page link is a client navigation: the hash changes without a hashchange event, so the
+    // mark is taken from the link the reader pressed. This also covers the strip's "Runs" link.
+    function onClick(event: MouseEvent) {
+      const anchor = (event.target as Element | null)?.closest?.("a[href]");
+      if (!anchor) return;
+      const href = anchor.getAttribute("href") ?? "";
+      const at = href.indexOf("#");
+      if (at === -1) return;
+      setHash(href.slice(at));
+    }
+    document.addEventListener("click", onClick);
+    return () => {
+      window.removeEventListener("hashchange", read);
+      document.removeEventListener("click", onClick);
+    };
   }, [pathname]);
 
   const current = currentSection(pathname, hash);

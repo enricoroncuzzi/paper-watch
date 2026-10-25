@@ -282,11 +282,6 @@ def test_search_uses_the_text_branch_and_needs_no_model(db_session: Session) -> 
     assert page_of(api.get("/items?q=watermarks"))["total"] == 1
     assert page_of(api.get("/items?q=rotary+embeddings"))["items"] == []
 
-    # A search pages by offset inside its cursor, ranked, with the match count as its total.
-    first = page_of(api.get("/items?q=replay+buffer&limit=1"))
-    assert len(first["items"]) == 1
-    assert first["next_cursor"] is None
-
 
 def test_an_unknown_profile_is_422(db_session: Session) -> None:
     api = client(db_session, profiles=frozenset({"agentic-engineering"}))
@@ -510,11 +505,15 @@ def test_a_cursor_the_api_did_not_issue_is_422(db_session: Session) -> None:
         assert refused.status_code == 422, forged
 
 
-def test_a_control_character_in_the_query_is_422(db_session: Session) -> None:
+def test_only_a_nul_in_the_query_is_refused(db_session: Session) -> None:
     api = client(db_session)
     seed(db_session, "one", title="Replay buffer", body="A replay buffer.")
     # psycopg refuses a NUL in a text parameter, so the route must refuse it before the query.
     assert api.get("/items", params={"q": "\x00x"}).status_code == 422
+    # A tab or a newline from a paste separates words instead of failing the search.
+    for pasted in ("replay\tbuffer", "replay\nbuffer", "replay\x01buffer"):
+        found = page_of(api.get("/items", params={"q": pasted}))
+        assert [item["title"] for item in found["items"]] == ["Replay buffer"]
 
 
 def test_a_last_page_that_exactly_fills_the_limit_has_no_cursor(db_session: Session) -> None:
@@ -777,3 +776,41 @@ def test_an_item_that_is_not_pick_grade_is_early(db_session: Session) -> None:
 
     assert page_of(api.get(f"/items/{preprint}"))["early"] is True
     assert page_of(api.get(f"/items/{paper}"))["early"] is False
+
+
+def test_a_search_ranks_the_better_match_first_and_pages_in_that_order(
+    db_session: Session,
+) -> None:
+    api = client(db_session)
+    # The title is weighted above the body and a repeated term beats a single one, so the first
+    # item is the better match of the two by the ranking Postgres computes.
+    better = seed(
+        db_session,
+        "better",
+        title="Watermark removal, measured",
+        body="A watermark study of re-encoded watermarks and their removal.",
+        published_at=NOW - timedelta(days=1),
+        commit=False,
+    )
+    worse = seed(
+        db_session,
+        "worse",
+        title="An unrelated study of image metadata",
+        body="One sentence about a watermark in passing.",
+        published_at=NOW,
+        commit=False,
+    )
+    db_session.commit()
+
+    # Newest first would put `worse` first, so this order can only come from the rank.
+    page = page_of(api.get("/items?q=watermark"))
+    assert [item["id"] for item in page["items"]] == [str(better), str(worse)]
+    assert page["total"] == 2
+
+    # The same order through the cursor: paging must not re-sort a ranked search.
+    first = page_of(api.get("/items?q=watermark&limit=1"))
+    assert [item["id"] for item in first["items"]] == [str(better)]
+    assert first["next_cursor"] is not None
+    second = page_of(api.get(f"/items?q=watermark&limit=1&cursor={first['next_cursor']}"))
+    assert [item["id"] for item in second["items"]] == [str(worse)]
+    assert second["next_cursor"] is None

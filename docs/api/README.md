@@ -143,7 +143,8 @@ cached yet) and `drafts` (`[{id, created_at}]`, newest first). `early` is true w
 reaches the Rising shelf, which is the same flag the draft generator puts its "early work" sentence
 on, so the page can say so before generating. A `404` is an item that is not admitted; a `422` is an
 unknown profile, a cursor from the other branch, a cursor the API did not issue (including an offset
-past the cap), or a `q` carrying a control character.
+past the cap), or a `q` carrying a NUL (`\x00`), which Postgres cannot take as a text parameter. Other
+control characters in a query are treated as spaces.
 
 Both routes are read-only, open one short session per request and never touch a model, so they are
 safe to poll.
