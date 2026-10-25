@@ -183,22 +183,20 @@ test("the Drafts link stops below the masthead", async ({ page }) => {
   // The masthead is sticky: an anchor that puts the section under it hides the heading and its
   // rule. The header and scroll-padding-top share one custom property, and this asserts they meet.
   await page.getByRole("navigation", { name: "Sections" }).getByRole("link", { name: "Drafts" }).click();
-  // The scroll is smooth, so the first sample is not the landing: wait for scrollY to settle.
-  let previous = -1;
-  for (let index = 0; index < 50; index += 1) {
-    const current = await page.evaluate(() => window.scrollY);
-    if (current === previous) break;
-    previous = current;
-    await page.waitForTimeout(100);
-  }
-  const gap = await page.evaluate(() => {
-    const header = document.querySelector("header");
-    const section = document.querySelector("#drafts");
-    if (!header || !section) return null;
-    return Math.round(section.getBoundingClientRect().top - header.getBoundingClientRect().bottom);
-  });
-  expect(gap).not.toBeNull();
-  expect(Math.abs(gap!)).toBeLessThanOrEqual(1);
+  // The section mounts after the click and the scroll is smooth, so scrollY can hold still at 0
+  // before the scroll starts: poll the landing itself instead of waiting for scrollY to settle.
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const header = document.querySelector("header");
+        const section = document.querySelector("#drafts");
+        if (!header || !section) return null;
+        return Math.abs(
+          Math.round(section.getBoundingClientRect().top - header.getBoundingClientRect().bottom),
+        );
+      }),
+    )
+    .toBeLessThanOrEqual(1);
 });
 
 test("the saved and chars chips use one font and share a baseline", async ({ page }) => {

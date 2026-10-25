@@ -260,6 +260,18 @@ def test_eleven_copied_words_are_not_a_long_copy() -> None:
     assert kinds(replace(GOOD, body=copied)) == []
 
 
+def test_a_copied_run_names_exactly_the_words_copied() -> None:
+    # The note quotes the copied words and counts them: a twelve-word copy is twelve words, with
+    # no word repeated, and each later copied word adds one.
+    twelve = "Replaying exact tool results and dropping the ones that no longer matter"
+    [flag] = check_draft(replace(GOOD, body=f"Zebra {twelve} yak."), SOURCE, pov=POV).flags
+    assert flag.text == twelve.lower()
+    assert flag.detail.startswith("12 words copied")
+    [flag] = check_draft(replace(GOOD, body=f"Zebra {twelve} cut yak."), SOURCE, pov=POV).flags
+    assert flag.text == f"{twelve.lower()} cut"
+    assert flag.detail.startswith("13 words copied")
+
+
 def test_a_long_quote_is_not_also_a_copied_run() -> None:
     quote = "Replaying exact tool results and dropping the ones that no longer matter"
     assert len(quote.split()) == 12

@@ -562,8 +562,9 @@ def _check_long_copy(
         if gram in source_grams:
             if run == 0:
                 copied.append(list(gram))
+            else:
+                copied[-1].append(draft_words[index + LONG_COPY_WORDS - 1])
             run += 1
-            copied[-1].append(draft_words[index + LONG_COPY_WORDS - 1])
         else:
             run = 0
     for run_words in copied:
