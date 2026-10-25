@@ -247,6 +247,10 @@ class Settings(BaseSettings):
     # chat call refuses to start rather than failing deep inside an HTTP request.
     openrouter_api_key: SecretStr | None = None
     chat_model: str = CHAT_MODEL
+    # The draft chain's own model, because a model can have no endpoint that refuses training: a
+    # draft asks for `data_collection: "deny"` and OpenRouter routes it nowhere, so every draft
+    # would fail. Unset means `chat_model`, as an answer uses.
+    draft_model: str | None = None
     # Groq answers only when both the key and a model id are set: Groq's free models change too
     # often to pin a default here, and a guessed id would fail on every fallback attempt.
     groq_api_key: SecretStr | None = None

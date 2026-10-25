@@ -155,8 +155,9 @@ test("the privacy refusal message is shown as is", async ({ page, request }) => 
   await dialog.getByRole("button", { name: "Generate draft" }).click();
 
   await expect(dialog.getByTestId("pov-error")).toContainText(
-    "No model that refuses training on inputs answered, so the draft was not generated.",
+    "No endpoint that refuses training on inputs serves the draft model",
   );
+  await expect(dialog.getByTestId("pov-error")).toContainText("PW_DRAFT_MODEL");
   await expect(dialog.getByTestId("pov-preview")).toHaveCount(0);
 });
 

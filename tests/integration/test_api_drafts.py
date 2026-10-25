@@ -29,6 +29,7 @@ from paperwatch.api.routes.drafts import DraftService
 from paperwatch.api.routes.suggestions import SuggestionService
 from paperwatch.api.search_mode import ModeDecision
 from paperwatch.config import (
+    CHAT_MODEL,
     CONCURRENT_ANSWERS,
     LOOPBACK_HOSTS,
     PROFILES_PATH,
@@ -441,9 +442,11 @@ def test_the_pov_never_reaches_the_logs(
     assert TITLE not in captured
     for response in (ok, refused, unusable):
         assert phrase not in response.text
-    # The refusal keeps the provider's error type for the operator and nothing else.
+    # The refusal is the fixed sentence, and it names the setting that fixes the usual cause, so
+    # the owner can act on it without the provider's own text (which can echo the point of view).
     assert refused.json()["message"] == (
-        "No model that refuses training on inputs answered, so the draft was not generated."
+        "No endpoint that refuses training on inputs serves the draft model, so the draft was not "
+        "generated. Set PW_DRAFT_MODEL to a model that has one."
     )
 
 
@@ -831,6 +834,8 @@ def test_the_real_draft_chain_denies_data_collection_and_logs_nothing(
     assert [model.provider for model in models] == ["openrouter"]
     assert len(_DraftProvider.bodies) == 1
     body = json.loads(_DraftProvider.bodies[0])
+    # No PW_DRAFT_MODEL on this server, so the draft chain falls back to the chat model.
+    assert body["model"] == CHAT_MODEL
     assert body["provider"] == {"data_collection": "deny"}
     # The point of view may go to this provider (that is the feature), but never to a log line.
     assert phrase in json.dumps(body)

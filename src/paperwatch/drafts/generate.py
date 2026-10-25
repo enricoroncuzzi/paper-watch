@@ -34,9 +34,12 @@ log = structlog.get_logger()
 # for, and a usage write that does not fit would lose the whole draft.
 DRAFT_MODEL_MAX_CHARS = 128
 # The one sentence a provider refusal becomes: the client gets a reason it can show, and the
-# provider's own error text (which can echo the prompt) never reaches a log or a response.
+# provider's own error text (which can echo the prompt) never reaches a log or a response. It names
+# the setting that fixes the likely cause: the shared chat model's only endpoint may refuse
+# training, so the draft model needs one that does not (PW_DRAFT_MODEL).
 NO_COMPLIANT_MODEL = (
-    "No model that refuses training on inputs answered, so the draft was not generated."
+    "No endpoint that refuses training on inputs serves the draft model, so the draft was not "
+    "generated. Set PW_DRAFT_MODEL to a model that has one."
 )
 # A model may wrap JSON in a fence even when told not to, so one fence is stripped before parsing.
 _FENCE = re.compile(r"^```[a-zA-Z]*\s*\n")

@@ -1,5 +1,5 @@
 {
   "code": "model_unavailable",
-  "message": "No model that refuses training on inputs answered, so the draft was not generated.",
+  "message": "No endpoint that refuses training on inputs serves the draft model, so the draft was not generated. Set PW_DRAFT_MODEL to a model that has one.",
   "retry_at": null
 }

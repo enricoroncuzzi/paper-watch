@@ -97,6 +97,8 @@ def test_settings_defaults() -> None:
     assert (s.chat_max_calls_per_day, s.chat_max_tokens_per_answer) == (800, 60_000)
     assert s.chat_max_output_tokens == 4096
     assert s.openrouter_api_key is None and s.groq_api_key is None
+    # Unset, so a draft uses the chat model; the server may name a different one.
+    assert s.draft_model is None
 
 
 def test_missing_openrouter_key_is_refused() -> None:
@@ -438,4 +440,34 @@ def test_draft_models_deny_data_collection_and_skip_groq() -> None:
 def test_answer_models_carry_no_data_collection_deny() -> None:
     # The OpenAI-compatible clients accept extra_body everywhere; only the draft chain opts in.
     [primary] = make_chat_models(keyed())
+    assert primary.model.extra_body is None
+
+
+def test_draft_models_use_the_draft_model_when_set() -> None:
+    # A live draft failed because the shared chat model had no endpoint that refuses training, so
+    # a draft can name its own model. The privacy body and the one-model chain do not change.
+    [draft] = make_chat_models(keyed(draft_model="vendor/draft:free"), purpose="draft")
+    assert draft.provider == "openrouter"
+    assert draft.model.model_name == "vendor/draft:free"
+    assert draft.model.extra_body == {"provider": {"data_collection": "deny"}}
+
+
+def test_draft_models_fall_back_to_the_chat_model() -> None:
+    [draft] = make_chat_models(keyed(), purpose="draft")
+    assert draft.model.model_name == CHAT_MODEL
+    assert draft.model.extra_body == {"provider": {"data_collection": "deny"}}
+
+
+def test_the_draft_request_names_the_draft_model() -> None:
+    # The wire body's model id is the draft model, not the chat model; the integration test drives
+    # a real HTTP server for the deny body that travels with it.
+    [draft] = make_chat_models(keyed(draft_model="vendor/draft:free"), purpose="draft")
+    payload = draft.model._get_request_payload([HumanMessage("q")])
+    assert payload["model"] == "vendor/draft:free"
+
+
+def test_answer_models_ignore_the_draft_model() -> None:
+    # The draft setting is the draft's alone: an answer keeps the model the QA eval measured.
+    [primary] = make_chat_models(keyed(draft_model="vendor/draft:free"))
+    assert primary.model.model_name == CHAT_MODEL
     assert primary.model.extra_body is None

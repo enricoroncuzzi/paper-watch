@@ -85,7 +85,9 @@ def make_chat_models(
 ) -> list[ChatModel]:
     """Build the provider chain, primary first: OpenRouter, then Groq when fully configured.
 
-    `purpose="draft"` builds one model, OpenRouter only, with `provider.data_collection: "deny"`.
+    `purpose="draft"` builds one model, OpenRouter only, with `provider.data_collection: "deny"`,
+    using `settings.draft_model` when it is set: the shared chat model can have no endpoint that
+    refuses training, and a draft would then fail on every call.
     A draft carries the owner's own point of view, and the per-request denial is what makes a
     provider that would train on it refuse the call instead of receiving the text. There is no
     fallback on purpose: a silent second provider would break exactly that promise (design 15, Q6).
@@ -93,6 +95,8 @@ def make_chat_models(
     if not settings.openrouter_api_key:
         # Named as the env var, not the field: the reader has to know what to put in .env.
         raise ChatNotConfigured("PW_OPENROUTER_API_KEY is not set, so no chat model can be built")
+    # A draft may name its own model, and the answer chain never reads that setting.
+    draft_model = settings.draft_model if purpose == "draft" else None
     models = [
         ChatModel(
             "openrouter",
@@ -106,7 +110,7 @@ def make_chat_models(
             ChatOpenAI(
                 base_url=OPENROUTER_BASE_URL,
                 api_key=settings.openrouter_api_key.get_secret_value(),
-                model=settings.chat_model,
+                model=draft_model or settings.chat_model,
                 timeout=settings.chat_timeout_s,
                 # One response's output is capped: the timeout applies per read, not to a whole
                 # stream, so a generation that never stalls is otherwise bounded only by the

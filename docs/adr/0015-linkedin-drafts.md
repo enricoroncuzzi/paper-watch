@@ -34,6 +34,14 @@ would break the promise; a failing call is the honest outcome. The provider's ow
 echo the prompt, so it is reduced to its type in the log and to one fixed sentence in the
 response.
 
+**Drafts have their own model setting, never a relaxed privacy flag.** The chain's model id is
+`settings.draft_model` when it is set and `settings.chat_model` otherwise, and the answer chain
+never reads the draft setting. The shared chat model can have no endpoint that refuses training,
+and OpenRouter then refuses every draft: on 0.11.0 the default `:free` model returned 404 for the
+denial, so every draft ended in `model_unavailable`. The fix is a value (`PW_DRAFT_MODEL`) that
+names a model with a compliant endpoint, not a weaker `data_collection` rule. The refusal sentence
+names that setting, so the server's owner knows what to change.
+
 **The check is code over the saved text, and it never fixes anything.** Every number must be in the
 title, the stored text, a checked summary quote or the point of view; every quoted span of at
 least three words must be in the stored text or the point of view; every URL must be the item, its

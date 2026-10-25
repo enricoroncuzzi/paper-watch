@@ -561,6 +561,7 @@ umask 077
 cat > ~/.config/paperwatch/api.env <<'ENV'
 PW_DATABASE_URL=postgresql+psycopg://paperwatch_api@/paperwatch?host=/var/run/postgresql
 PW_OPENROUTER_API_KEY=
+PW_DRAFT_MODEL=
 PW_LOCAL_EMBEDDING_CACHE_DIR=/home/paperwatch/.cache/paperwatch-models
 PW_API_AUTH=oidc
 PW_VERCEL_OIDC_ISSUER=
@@ -581,6 +582,10 @@ chmod 600 ~/.config/paperwatch/api.env
   instead; `paperwatch api-token --live` mints a token.
 - `PW_API_PUBLIC_HOST` is the tunnel's hostname (section 16); without it the gate accepts loopback
   names only and the tunnel's `Host` gets 400.
+- `PW_DRAFT_MODEL` is the draft chain's own model; unset means the chat model. Drafts ask
+  OpenRouter to route only to an endpoint that refuses training on inputs, and a model whose only
+  endpoint trains returns a 404, so every draft answers `model_unavailable`. Set this to a model
+  that has an endpoint which refuses training; never turn the denial off instead.
 - The model cache is the same directory the ingestion uses, so the 180 MB model is downloaded once.
 
 Install the unit, the slice and the ingestion drop-in, then start it:

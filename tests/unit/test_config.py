@@ -58,6 +58,14 @@ def test_model_settings_read_from_environment(
     assert (s.local_embedding_cache_dir, s.local_embedding_batch) == ("/models", 4)
 
 
+def test_the_draft_model_comes_from_its_own_variable(
+    monkeypatch: pytest.MonkeyPatch, build_settings: Callable[[], Settings]
+) -> None:
+    # The server sets one variable to give drafts a model whose endpoint refuses training.
+    monkeypatch.setenv("PW_DRAFT_MODEL", "vendor/draft:free")
+    assert build_settings().draft_model == "vendor/draft:free"
+
+
 @pytest.mark.parametrize(
     ("name", "value"),
     [
