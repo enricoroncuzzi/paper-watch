@@ -117,7 +117,7 @@ log = structlog.get_logger()
 
 # The API contract's own version, not the package version: release-please bumps the package on
 # every release, and the committed docs/api/openapi.json must change only when the API does.
-API_VERSION = "0.7"
+API_VERSION = "0.8"
 
 # The fixed text of the `internal` event: the client gets something it can show, and the detail
 # (which could carry a provider body or stored text) stays in the server log.

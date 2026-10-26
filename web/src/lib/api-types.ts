@@ -1933,7 +1933,7 @@ export interface operations {
                     "application/json": components["schemas"]["Refusal"];
                 };
             };
-            /** @description An unknown profile, tier or cursor. */
+            /** @description An unknown profile or tier, or a cursor from another request. */
             422: {
                 headers: {
                     [name: string]: unknown;

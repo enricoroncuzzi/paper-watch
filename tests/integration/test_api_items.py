@@ -577,6 +577,98 @@ def test_a_cursor_from_the_other_branch_is_422(db_session: Session) -> None:
     assert api.get(f"/items?cursor={search}").status_code == 422
 
 
+def test_a_search_cursor_is_bound_to_its_query(db_session: Session) -> None:
+    api = client(db_session)
+    for i in range(3):
+        seed(
+            db_session,
+            f"bound-{i}",
+            title=f"Replay buffer {i}",
+            body="A replay buffer for coding agents.",
+            published_at=NOW - timedelta(hours=i),
+            commit=False,
+        )
+    seed(
+        db_session,
+        "watermark",
+        title="Detecting re-encoded watermarks",
+        body="A forensics approach to image watermarks.",
+        published_at=NOW - timedelta(hours=4),
+        commit=False,
+    )
+    db_session.commit()
+
+    cursor = page_of(api.get("/items?q=replay+buffer&limit=1"))["next_cursor"]
+    assert cursor
+    # The same search pages on, whatever whitespace the caller retyped: the cursor is bound to the
+    # cleaned query, not to the bytes of it.
+    same = page_of(
+        api.get("/items", params={"q": " replay   buffer ", "limit": 1, "cursor": cursor})
+    )
+    assert len(same["items"]) == 1
+    # Another search is another ranking: the same offset would land mid-way through a list the
+    # caller never saw.
+    refused = api.get("/items", params={"q": "watermark", "limit": 1, "cursor": cursor})
+    assert refused.status_code == 422
+    assert refused.json()["detail"] == "cursor does not match the request"
+    # A filter the cursor never carried is a different result set too.
+    assert (
+        api.get(
+            "/items", params={"q": "replay buffer", "tier": "lab_blog", "cursor": cursor}
+        ).status_code
+        == 422
+    )
+
+
+def test_a_newest_cursor_is_bound_to_its_filters(db_session: Session) -> None:
+    api = client(db_session)
+    for i in range(2):
+        seed(
+            db_session,
+            f"paper-{i}",
+            title=f"Paper {i}",
+            body="An abstract.",
+            tier=Tier.PEER_REVIEWED,
+            basis=AdmissionBasis.VENUE,
+            venue="ICLR 2027",
+            published_at=NOW - timedelta(hours=i),
+            commit=False,
+        )
+    seed(
+        db_session,
+        "blog",
+        title="A lab post",
+        body="The lab's own write-up.",
+        tier=Tier.LAB_BLOG,
+        source="feed",
+        basis=AdmissionBasis.FEED,
+        published_at=NOW - timedelta(hours=3),
+        commit=False,
+    )
+    db_session.commit()
+
+    cursor = page_of(api.get("/items", params={"tier": "peer_reviewed", "limit": 1}))["next_cursor"]
+    assert cursor
+    # The filters and the window are the walk's own: only the page size may change under it.
+    assert (
+        len(
+            page_of(
+                api.get("/items", params={"tier": "peer_reviewed", "limit": 2, "cursor": cursor})
+            )["items"]
+        )
+        == 1
+    )
+    for other in (
+        {"limit": 1, "cursor": cursor},
+        {"tier": "lab_blog", "limit": 1, "cursor": cursor},
+        {"tier": "peer_reviewed", "since": NOW.date().isoformat(), "limit": 1, "cursor": cursor},
+        {"tier": "peer_reviewed", "source": "feed", "limit": 1, "cursor": cursor},
+    ):
+        refused = api.get("/items", params=other)
+        assert refused.status_code == 422, other
+        assert refused.json()["detail"] == "cursor does not match the request"
+
+
 def test_a_blank_query_is_no_search(db_session: Session) -> None:
     api = client(db_session)
     seed(
