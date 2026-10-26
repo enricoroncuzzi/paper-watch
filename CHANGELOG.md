@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.1](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.14.0...paperwatch-v0.14.1) (2026-10-26)
+
+
+### Bug Fixes
+
+* **drafts:** split sentences after acronyms and share one splitter ([#81](https://github.com/enricoroncuzzi/paper-watch/issues/81)) ([f4dc747](https://github.com/enricoroncuzzi/paper-watch/commit/f4dc74746c3e5e1b8ae9e37398b777bf3c1840ec))
+
 ## [0.14.0](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.13.0...paperwatch-v0.14.0) (2026-10-25)
 
 
