@@ -368,6 +368,13 @@ def test_a_bare_domain_of_a_link_the_pov_wrote_is_allowed() -> None:
     assert kinds(draft, pov=pov) == []
 
 
+def test_a_bare_domain_the_pov_wrote_without_a_path_is_allowed() -> None:
+    # The flag says the domain is not one the owner wrote; a bare one in the point of view is.
+    pov = f"{POV} I first read about this on example.com."
+    draft = replace(GOOD, body=GOOD.body + " Notes are on example.com.")
+    assert kinds(draft, pov=pov) == []
+
+
 def test_a_file_name_and_an_abbreviation_are_not_domains() -> None:
     # A domain needs a real top-level domain: the check must not flag the scripts a draft names,
     # or the abbreviations an English sentence uses.
@@ -376,7 +383,20 @@ def test_a_file_name_and_an_abbreviation_are_not_domains() -> None:
 
 
 @pytest.mark.parametrize(
-    "code", ["torch.compile", "nn.Module", "np.array", "jax.jit", "model.to", "ASP.NET", "Node.js"]
+    "code",
+    [
+        "torch.compile",
+        "nn.Module",
+        "np.array",
+        "jax.jit",
+        "model.to",
+        "torch.int",
+        "ASP.NET",
+        "Node.js",
+        "libcudart.so",
+        "libtorch.so",
+        "requirements.in",
+    ],
 )
 def test_a_dotted_code_identifier_is_not_a_domain(code: str) -> None:
     # Dotted code is everywhere in this corpus, and it is not a link a reader follows: only a

@@ -7,7 +7,8 @@ import re
 # The top-level domains a research post links to. A curated set rather than "any two letters",
 # because dotted code is everywhere in this corpus: torch.compile, nn.Module, np.array, train.py
 # and model.to all look like hosts to a looser rule. A label that is also a common attribute or
-# file extension (.py, .sh, .md, .rs, .cc, .pl, .to, .at, .id, .info, .page, .cloud) is left out.
+# file extension (.py, .sh, .so, .md, .rs, .cc, .pl, .in, .int, .to, .at, .id, .info, .page,
+# .cloud) is left out, so libtorch.so, torch.int and requirements.in stay code.
 _TOP_LEVEL = (
     "com",
     "org",
@@ -15,7 +16,6 @@ _TOP_LEVEL = (
     "edu",
     "gov",
     "mil",
-    "int",
     "io",
     "ai",
     "dev",
@@ -25,7 +25,6 @@ _TOP_LEVEL = (
     "gg",
     "tv",
     "fm",
-    "so",
     "xyz",
     "tech",
     "blog",
@@ -55,7 +54,6 @@ _TOP_LEVEL = (
     "sg",
     "hk",
     "tw",
-    "in",
     "br",
 )
 # A host: dotted labels ending in one of those domains, written in lower case so "ASP.NET" stays a

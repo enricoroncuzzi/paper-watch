@@ -64,9 +64,11 @@ def test_a_url_in_an_interpretation_field_fails() -> None:
 def test_a_dotted_code_identifier_in_an_interpretation_field_passes() -> None:
     # torch.compile and nn.Module are code, not links: one of them must not fail a whole summary
     # and send the card back to the abstract's excerpt.
-    text = f"{TEXT} The planner is written with torch.compile and nn.Module."
+    text = f"{TEXT} The planner is written with torch.compile, nn.Module and libtorch.so."
     raw = good()
-    raw["why"]["text"] = "A planner built on torch.compile and nn.Module is easy to reuse."
+    raw["why"]["text"] = (
+        "A planner built on torch.compile, nn.Module and libtorch.so is easy to reuse."
+    )
     assert check_summary(raw, title=TITLE, text=text) == []
 
 

@@ -293,7 +293,7 @@ def _check_links(
         for url in (source.url, source.github_repo, source.project_page, *_links(folded_pov))
         if url
     }
-    allowed_hosts = {_host(url) for url in allowed}
+    allowed_hosts = {_host(url) for url in (*allowed, *_bare_domains(folded_pov))}
     flagged: set[str] = set()
     counts["link"][0] += 1
     key = _url_key(draft.source_link)
