@@ -3295,7 +3295,14 @@
             "title": "Id"
           },
           "turn": {
-            "type": "integer",
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Turn"
           }
         },
@@ -3305,7 +3312,7 @@
           "turn"
         ],
         "title": "ThreadData",
-        "description": "The `thread` event: the finished turn was stored, so the client can follow up."
+        "description": "The `thread` event: the conversation's id, and its finished turn when one is stored."
       },
       "ThreadDetailData": {
         "properties": {

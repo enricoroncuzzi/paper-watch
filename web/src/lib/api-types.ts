@@ -1021,7 +1021,7 @@ export interface components {
         };
         /**
          * ThreadData
-         * @description The `thread` event: the finished turn was stored, so the client can follow up.
+         * @description The `thread` event: the conversation's id, and its finished turn when one is stored.
          */
         ThreadData: {
             /**
@@ -1030,7 +1030,7 @@ export interface components {
              */
             id: string;
             /** Turn */
-            turn: number;
+            turn: number | null;
         };
         /**
          * ThreadDetailData

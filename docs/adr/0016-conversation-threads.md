@@ -37,12 +37,15 @@ turn: its number, the reader's question, the checked `AnswerData` payload, the s
 time, with a unique `(thread_id, n)`. The grant follows the same helper as the other M3 tables
 (`store/grants.py`), so the captain has no new admin step.
 
-**Only finished turns are stored.** The write happens after the `answer` event and only for a
-successful answer, in one transaction on a writable session factory (`AgentDeps.write_session_factory`),
-never on the answer's read-only session. A failure is logged as `thread_save_failed` with the error
-type only and the stream ends without a `thread` event: the reader keeps the checked answer
-either way. An aborted or failed answer stores nothing, so a re-fetch never shows a turn that was
-not checked.
+**Only finished turns are stored.** A new thread's row is created before the agent runs, in its own
+short write transaction on a writable session factory (`AgentDeps.write_session_factory`), and the
+stream's first `thread` event names it with `turn: null`. The turn itself is written after the
+`answer` event and only for a successful answer, never on the answer's read-only session. A failure
+is logged as `thread_save_failed` with the error type only and the stream ends without a finished
+`thread` event: the reader keeps the checked answer either way. An aborted or failed answer stores
+no turn, so a re-fetch never shows a turn that was not checked. The empty row stays readable by id
+with no turns, but `GET /threads` lists only threads with a finished turn, so Recent never shows a
+conversation that has not answered anything.
 
 **The registry is rewritten with every turn, and never trimmed.** Each saved turn carries the
 thread's current aliases, so a follow-up that adds sources makes them citable in the turn after it
@@ -69,8 +72,9 @@ again for the registry and history it needs.
 
 - `GET /threads` (newest first, with a turn count) and `GET /threads/{id}` (every finished turn)
   need no model and no limiter, so the page can re-fetch after a dropped stream for free.
-- The stream gains a `thread` event, `{"id", "turn"}`, as its last event on success; the contract
-  version moves to 0.6.
+- The stream gains a `thread` event, `{"id", "turn"}`: a new conversation receives it with
+  `turn: null` before the first token, and a successful answer ends the stream with the stored
+  turn's number. The contract version moves to 0.8.
 - A turn is immutable, like a draft: regenerating a follow-up is asking again, which makes it a new
   turn, so a stored turn's check result can never describe different text.
 - Storing the checked `AnswerData` means a re-fetch shows what the reader saw, without reading the

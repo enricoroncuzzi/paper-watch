@@ -436,7 +436,8 @@ test("a recent pick whose read fails while an answer streams offers the retry", 
   await expect(block).toContainText("The connection dropped.");
   await expect(sheet.getByTestId("caret")).toHaveCount(0);
   await expect(sheet.getByRole("button", { name: "What are the limitations?" })).toBeEnabled();
-  await setScenario(request, "normal");
+  // The first question's early thread already exists, so the switched scenario keeps it.
+  await setScenario(request, "normal", { keepThreads: true });
   await block.getByRole("button", { name: "Ask it again" }).click();
   await expect(sheet.getByTestId("answer").locator("sup")).toHaveCount(1);
   expect(await lastAsk(request)).toMatchObject({ question: "What do coding agents measure?" });

@@ -193,14 +193,15 @@ path and prints the notes.
 ## One conversation
 
 A thread is our own two tables, not a LangGraph checkpointer (ADR 0016). `POST /ask` without a
-`thread_id` starts one, and a finished answer is stored as the thread's next turn on the write
-session factory `AgentDeps` carries; an aborted, dropped or failed answer stores nothing. A
-follow-up sends the last six finished turns and at most 6,000 characters of their answers, and the
-thread's source registry is persisted with it, so `S1` from the first answer is still citable in
-the fifth. `GET /threads` is the Recent list and `GET /threads/{thread_id}` returns the finished
-turns, each `answer` exactly the checked payload the stream sent, so a re-fetch after a dropped
-stream shows what the server decided. The page's ask sheet keeps that conversation open across
-turns and does the re-fetch itself (`web/src/lib/use-ask.ts`).
+`thread_id` starts one, naming its row before the first token, and a finished answer is stored as
+the thread's next turn on the write session factory `AgentDeps` carries; an aborted, dropped or
+failed answer stores no turn. A follow-up sends the last six finished turns and at most 6,000
+characters of their answers, and the thread's source registry is persisted with it, so `S1` from
+the first answer is still citable in the fifth. `GET /threads` is the Recent list, which lists only
+threads with a finished turn, and `GET /threads/{thread_id}` returns the finished turns (or none for
+a named but unanswered thread), each `answer` exactly the checked payload the stream sent, so a
+re-fetch after a dropped stream shows what the server decided. The page's ask sheet keeps that
+conversation open across turns and does the re-fetch itself (`web/src/lib/use-ask.ts`).
 
 ## The corpus table
 

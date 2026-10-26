@@ -946,7 +946,9 @@ def ask(
                     )
                 elif isinstance(event, AnswerEvent):
                     answer = event.answer
-                elif isinstance(event, ThreadEvent):
+                elif isinstance(event, ThreadEvent) and event.turn is not None:
+                    # A new thread's early event has no finished turn yet: the id alone is not what
+                    # the next `ask --thread` needs, which is the turn this run stored.
                     saved_thread = (event.thread_id, event.turn)
                 elif isinstance(event, ErrorEvent):
                     if streamed:

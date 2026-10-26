@@ -173,9 +173,11 @@ def test_a_first_answer_creates_a_thread_and_sends_its_id(
             {"question": "how are coding agents evaluated?"},
         ).text
     )
+    # The thread is named before the agent runs, so the page holds an id from the first token.
+    assert frames[0] == ("thread", {"id": frames[0][1]["id"], "turn": None})
+    thread_id = UUID(frames[0][1]["id"])
     assert [name for name, _ in frames][-2:] == ["answer", "thread"]
-    thread_id = UUID(frames[-1][1]["id"])
-    assert frames[-1][1]["turn"] == 1
+    assert frames[-1][1] == {"id": str(thread_id), "turn": 1}
     with write_factory() as session:
         row = Repository(session).thread(thread_id)
     assert row is not None
@@ -183,6 +185,67 @@ def test_a_first_answer_creates_a_thread_and_sends_its_id(
     assert [(turn.n, turn.question) for turn in row.turns] == [
         (1, "how are coding agents evaluated?")
     ]
+
+
+def test_a_dropped_first_question_can_be_read_back_and_retried(
+    db_session: Session, write_factory: sessionmaker[Session]
+) -> None:
+    app_deps = deps(db_session, scripted(final("An answer with no citation.")), write_factory)
+    stream = run_question(app_deps, "what do they measure?", Filters())
+    early = next(stream)
+    assert isinstance(early, api.ThreadEvent)
+    assert early.turn is None
+    # The consumer left before the answer: the server stored no turn, but the thread it named
+    # before the first token still answers a read.
+    stream.close()
+
+    assert get(app_deps, "/threads").json()["threads"] == []
+    detail = get(app_deps, f"/threads/{early.thread_id}")
+    assert detail.status_code == 200
+    assert detail.json() == {
+        "id": str(early.thread_id),
+        "title": "what do they measure?",
+        "turns": [],
+    }
+    with write_factory() as session:
+        assert session.scalar(select(func.count()).select_from(ThreadTurn)) == 0
+
+    # The page's retry continues the thread it already holds, and the first finished turn lands.
+    frames = events(
+        ask(
+            app_deps,
+            {"question": "what do they measure?", "thread_id": str(early.thread_id)},
+        ).text
+    )
+    assert frames[-1][1] == {"id": str(early.thread_id), "turn": 1}
+    listed = get(app_deps, "/threads").json()["threads"]
+    assert [(row["id"], row["turns"]) for row in listed] == [(str(early.thread_id), 1)]
+
+
+def test_a_different_question_after_a_dropped_one_titles_the_thread(
+    db_session: Session, write_factory: sessionmaker[Session]
+) -> None:
+    app_deps = deps(
+        db_session,
+        scripted(final("An answer with no citation."), final("A second answer.")),
+        write_factory,
+    )
+    stream = run_question(app_deps, "the question that dropped", Filters())
+    early = next(stream)
+    assert isinstance(early, api.ThreadEvent)
+    stream.close()
+
+    # The reader asks something else on the empty thread: the list names what was answered.
+    ask(app_deps, {"question": "the question that finished", "thread_id": str(early.thread_id)})
+    listed = get(app_deps, "/threads").json()["threads"]
+    assert [(row["id"], row["title"]) for row in listed] == [
+        (str(early.thread_id), "the question that finished")
+    ]
+
+    # A follow-up never renames a thread that already has a finished turn.
+    ask(app_deps, {"question": FOLLOW_UP, "thread_id": str(early.thread_id)})
+    listed = get(app_deps, "/threads").json()["threads"]
+    assert [(row["title"], row["turns"]) for row in listed] == [("the question that finished", 2)]
 
 
 def test_a_follow_up_sends_the_earlier_turns_to_the_model(
@@ -260,7 +323,7 @@ def test_a_finished_answer_can_be_fetched_by_thread(
     assert listed[0]["title"] == "q1"
 
 
-def test_an_aborted_answer_stores_nothing(
+def test_an_aborted_first_question_leaves_no_listed_thread(
     db_session: Session, write_factory: sessionmaker[Session]
 ) -> None:
     cancel = threading.Event()
@@ -270,9 +333,13 @@ def test_an_aborted_answer_stores_nothing(
             deps(db_session, scripted(final(ANSWER)), write_factory), "q", Filters(), cancel
         )
     )
-    assert received == []
+    # The row exists so an interrupted page can read it or retry into it, but it is not a
+    # conversation until a finished turn names it.
+    assert [type(event).__name__ for event in received] == ["ThreadEvent"]
+    assert received[0].turn is None
+    assert get(deps(db_session, [], write_factory), "/threads").json()["threads"] == []
     with write_factory() as session:
-        assert session.scalar(select(func.count()).select_from(Thread)) == 0
+        assert session.scalar(select(func.count()).select_from(Thread)) == 1
         assert session.scalar(select(func.count()).select_from(ThreadTurn)) == 0
 
 
@@ -355,6 +422,43 @@ def test_ask_about_an_item_starts_a_thread_with_it_as_s1(
     assert row.turns[0].question == "what does this paper measure?"
 
 
+def test_a_dropped_ask_about_an_item_is_retried_with_it_as_s1(
+    db_session: Session, write_factory: sessionmaker[Session], seed_items: Seed
+) -> None:
+    ids = seed_items(AGENT_ROWS)
+    db_session.commit()
+    app_deps = deps(db_session, scripted(final(ANSWER)), write_factory)
+    stream = run_question(app_deps, "what does this paper measure?", Filters(), item_id=ids["swe"])
+    early = next(stream)
+    assert isinstance(early, api.ThreadEvent)
+    stream.close()
+
+    # The retry names the empty thread the early event created: it has no finished turn, so the
+    # item is still this conversation's S1 and its block still reaches the model.
+    models = scripted(final(ANSWER))
+    frames = events(
+        ask(
+            deps(db_session, models, write_factory),
+            {
+                "question": "what does this paper measure?",
+                "thread_id": str(early.thread_id),
+                "item_id": str(ids["swe"]),
+            },
+        ).text
+    )
+    assert frames[-1][1] == {"id": str(early.thread_id), "turn": 1}
+    prompt = " ".join(
+        str(message.content)
+        for message in models[0].model.seen[-1]  # type: ignore[attr-defined]
+    )
+    assert "The reader is asking about S1" in prompt
+    with write_factory() as session:
+        row = Repository(session).thread(early.thread_id)
+    assert row is not None
+    assert [(ref["alias"], ref["item_id"]) for ref in row.registry] == [("S1", str(ids["swe"]))]
+    assert row.turns[0].question == "what does this paper measure?"
+
+
 def test_a_failed_turn_write_still_delivers_the_answer(
     db_session: Session, seed_items: Seed
 ) -> None:
@@ -383,17 +487,19 @@ def test_a_caller_without_a_write_factory_saves_no_thread(
     assert "thread" not in dict(frames)
 
 
-def test_the_thread_event_is_the_last_frame_and_only_after_a_finished_answer(
+def test_a_failed_first_answer_names_the_thread_but_stores_no_turn(
     db_session: Session, write_factory: sessionmaker[Session], seed_items: Seed
 ) -> None:
     # A turn is stored only when the answer finished: a model failure ends the stream with an
-    # error event and no thread event, so a client never re-fetches a turn that is not there.
+    # error event and no finished thread event. The early event still holds the empty thread id.
     seed_items(AGENT_ROWS)
     models = scripted(RuntimeError("provider is down"))
     frames = events(ask(deps(db_session, models, write_factory), {"question": "q"}).text)
-    assert [name for name, _ in frames] == ["error"]
+    assert [name for name, _ in frames] == ["thread", "error"]
+    assert frames[0][1]["turn"] is None
     with write_factory() as session:
         assert session.scalar(select(func.count()).select_from(ThreadTurn)) == 0
+    assert get(deps(db_session, [], write_factory), "/threads").json()["threads"] == []
 
 
 def test_the_thread_list_is_newest_first(

@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { setScenario, signIn } from "./helpers";
+import { lastAsk, setScenario, signIn } from "./helpers";
 
 // Ask, end to end against the fake API: the pill, the sheet, the streamed trace and answer, the
 // citation superscripts, every error state and the phone layout.
@@ -89,19 +89,48 @@ test("keyword-only answers show the notice", async ({ page, request }) => {
   await expect(page.getByTestId("answer")).toContainText("Long-horizon agents plan better");
 });
 
-test("a dropped stream shows connection lost", async ({ page, request }) => {
+test("a dropped first question shows the interrupted line and keeps its thread", async ({
+  page,
+  request,
+}) => {
   await setScenario(request, "drop");
   await openSheet(page);
   await ask(page, "What do coding agents measure?");
 
-  const block = page.getByTestId("ask-error");
-  await expect(block).toContainText("The connection dropped.");
-  // The block carries the retry, so the question is not dumped into the composer as well.
-  await expect(page.getByTestId("composer")).toHaveValue("");
-  await setScenario(request, "normal");
-  await block.getByRole("button", { name: "Ask it again" }).click();
-  await expect(page.getByTestId("answer").locator("sup")).toHaveCount(1);
-  await expect(block).toHaveCount(0);
+  // The server named the thread before the first token, so the re-fetch reads it back even though
+  // no turn was stored: the sheet knows the question was interrupted, not merely that bytes stopped.
+  const sheet = page.getByRole("dialog");
+  await expect(sheet.getByTestId("interrupted")).toContainText(
+    "That answer was interrupted. Ask it again.",
+  );
+  await expect(sheet.getByTestId("turns-chip")).toHaveCount(0);
+  // The interrupted block carries the retry, so the question is not dumped into the composer too.
+  await expect(sheet.getByTestId("composer")).toHaveValue("");
+
+  await setScenario(request, "normal", { keepThreads: true });
+  await sheet.getByRole("button", { name: "Ask it again" }).click();
+  await expect(sheet.getByTestId("answer").locator("sup")).toHaveCount(1);
+  await expect(sheet.getByTestId("interrupted")).toHaveCount(0);
+  // The retry continues the thread the early event named instead of starting a second one.
+  const sent = await lastAsk(request);
+  expect(typeof sent.thread_id).toBe("string");
+});
+
+test("an aborted first question leaves no listed thread", async ({ page, request }) => {
+  await setScenario(request, "slow");
+  await openSheet(page);
+  await ask(page, "What would an aborted question measure?");
+  const sheet = page.getByRole("dialog");
+  await expect(sheet.getByTestId("caret")).toBeVisible();
+  await sheet.getByRole("button", { name: "Close the sheet" }).click();
+  await expect(sheet).toHaveCount(0);
+
+  // The empty row the early event created is not a conversation: Recent lists only finished turns.
+  await openSheet(page);
+  await sheet.getByRole("button", { name: "Recent", exact: true }).click();
+  const list = sheet.getByTestId("recent-threads");
+  await expect(list).toContainText("What do recent papers say about memory");
+  await expect(list).not.toContainText("What would an aborted question measure?");
 });
 
 test("a rate-limited ask shows the wait", async ({ page, request }) => {

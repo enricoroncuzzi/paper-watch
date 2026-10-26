@@ -106,8 +106,11 @@ draft, returned only by `GET /drafts/{draft_id}`, and never logged at any level.
 ## Threads
 
 A conversation is our own two tables, not a LangGraph checkpointer (ADR 0016). `POST /ask` with
-`thread_id` continues one; without it, the answer starts a thread. Only finished answers are
-stored, so an answer that was aborted, dropped or failed leaves nothing behind. `ThreadSummary` is
+`thread_id` continues one; without it, the answer starts a thread. A new thread's row is created
+before its first answer, so the stream can name its id up front; only finished turns are stored, so
+an answer that was aborted, dropped or failed leaves no turn behind. An empty thread is not listed
+by `GET /threads`, but `GET /threads/{id}` still returns it with `turns: []`, which is how an
+interrupted first question is recovered. `ThreadSummary` is
 `{id, title, turns, updated_at}`, where `title` is the first question (at most 80 characters) and
 `turns` counts the finished ones. `ThreadDetail` is `{id, title, turns}` with each turn as
 `{n, question, answer, search_mode, created_at}`, oldest first, and `answer` is exactly the
@@ -192,9 +195,11 @@ the `event` name (one of the eight below) and `data`, a JSON string whose `conte
   the mode that produced it, its sources (`{"id", "item_id", "title", "url", "tier", "basis"}`) and
   any flags (`{"kind", "sentence", "detail"}`). It is the last event unless an `error` follows.
   `id` is the per-answer alias (`S1`, `S2`, ...) the answer cites;
-- `thread` with `{"id", "turn"}`, after a finished answer: the thread it was stored in and that
-  turn's number. A follow-up sends this `id` back as `thread_id`, and a client re-fetches it after
-  a dropped stream. A failed or aborted answer stores nothing and sends no `thread` event;
+- `thread` with `{"id", "turn"}`. A new conversation receives it before the first token with
+  `turn: null`, so the page holds an id even if the stream dies before the answer. After a finished
+  answer it is sent again with the stored turn's number. A follow-up sends this `id` back as
+  `thread_id`, and a client re-fetches it after a dropped stream. A failed or aborted answer stores
+  no turn and sends no finished `thread` event; its empty thread is hidden from `GET /threads`;
 - `error` with `{"code", "message", "retry_at"}`, where `code` is `daily_cap`, `budget`,
   `model_unavailable`, `internal` or `deadline`, and `retry_at` is the reset time for `daily_cap`
   (else null). It ends the stream, and the HTTP status is still 200: the stream had started.
@@ -220,8 +225,9 @@ received bytes, so the comment is enough to tell thinking from a dead connection
 - On a `NO_SUPPORT` answer the `flags` list is empty and the flags are logged server-side: they
   describe model text the reader never saw.
 - A dropped stream is not an error in the answer: the server cancels it. A client shows a
-  connection lost state after 45 seconds without bytes, and asks again. With a `thread_id`, it can
-  instead re-fetch `GET /threads/{thread_id}` and show the turns that did finish.
+  connection lost state after 45 seconds without bytes, and asks again. With a `thread_id` (and a
+  new conversation's early `thread` event supplies one), it can instead re-fetch
+  `GET /threads/{thread_id}` and show the turns that did finish.
 
 A request without a valid credential answers 401 before anything is read; `docs/learn/15` lists
 the gate's other refusals. A request the gate lets through but that fails validation before the

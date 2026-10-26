@@ -101,6 +101,36 @@ describe("the ask reducer", () => {
     expect(state.sources).toHaveLength(1);
   });
 
+  it("a new thread's early event names it without inventing a turn", () => {
+    // The id arrives before the answer, so an interrupted first question can be read back; the
+    // turn and the count stay empty until the finished event arrives.
+    let state: AskState = askReducer(INITIAL_ASK_STATE, {
+      type: "start",
+      question: "q",
+      at: "2026-11-04T09:00:00Z",
+      threadId: null,
+      filter: "all tiers",
+      tiers: null,
+    });
+    state = askReducer(state, {
+      type: "event",
+      event: "thread",
+      data: { id: "55555555-5555-4555-8555-555555555555", turn: null },
+    });
+    expect(state.threadId).toBe("55555555-5555-4555-8555-555555555555");
+    expect(state.turn).toBeNull();
+    expect(state.turnCount).toBe(0);
+    expect(state.expected).toBe(1);
+
+    state = askReducer(state, {
+      type: "event",
+      event: "thread",
+      data: { id: "55555555-5555-4555-8555-555555555555", turn: 1 },
+    });
+    expect(state.turn).toBe(1);
+    expect(state.turnCount).toBe(1);
+  });
+
   it("a finished answer clears an interruption", () => {
     // A thread read can mark a question interrupted just as the answer arrives; the answer is
     // what the server checked, so the interrupted line goes.
@@ -1224,9 +1254,9 @@ describe("the ask controller with threads", () => {
     expect(state.question).toBe("q2");
   });
 
-  it("a first question with no thread reads nothing when the page returns", async () => {
-    // The thread id arrives with the first answer, so there is nothing to read yet: a return must
-    // not ask the API for the thread of a conversation it has not stored.
+  it("a first question not yet named reads nothing when the page returns", async () => {
+    // Before the early `thread` event there is nothing to read: a return must not ask the API for
+    // the thread of a conversation it has not been told the id of.
     const stream = controllable();
     const fetchImpl = vi.fn().mockResolvedValue(new Response(stream.body));
     const controller = new AskController({ fetchImpl, watchdogMs: 45_000 });
@@ -1236,6 +1266,37 @@ describe("the ask controller with threads", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     stream.close();
     await run;
+  });
+
+  it("a dropped first question keeps the early id and reads back the interruption", async () => {
+    // The server named the thread before the first token, then the stream died. The re-fetch finds
+    // no turn yet, so the sheet says the answer was interrupted and keeps the id a retry continues.
+    const fetchImpl = routedFetch({
+      [`/api/threads/${THREAD}`]: () => Response.json({ id: THREAD, title: "q1", turns: [] }),
+    });
+    const stream = controllable();
+    fetchImpl.mockResolvedValueOnce(new Response(stream.body));
+    const controller = new AskController({ fetchImpl, watchdogMs: 45_000 });
+    const run = controller.ask("q1");
+    await vi.advanceTimersByTimeAsync(0);
+    stream.push(frame("thread", { id: THREAD, turn: null }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(controller.getState().threadId).toBe(THREAD);
+    expect(controller.getState().turn).toBeNull();
+
+    stream.close();
+    await run;
+    expect(controller.getState().status).toBe("dropped");
+
+    await controller.recover();
+    const state = controller.getState();
+    expect(state.status).toBe("dropped");
+    expect(state.interrupted).toBe(true);
+    expect(state.question).toBe("q1");
+    expect(state.threadId).toBe(THREAD);
+    expect(state.turnCount).toBe(0);
+    expect(state.expected).toBe(1);
+    expect(state.answer).toBeNull();
   });
 
   it("a refusal that lands while the thread read is in flight stays a refusal", async () => {

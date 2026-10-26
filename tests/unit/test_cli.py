@@ -666,6 +666,27 @@ def test_ask_with_an_unknown_thread_says_so(monkeypatch: pytest.MonkeyPatch) -> 
     assert result.stdout == ""
 
 
+def test_ask_does_not_print_an_early_thread_event_without_a_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A new thread is named before the answer; only a stored turn is what `ask --thread` continues,
+    # so a failed first question must not print "thread ... turn None".
+    thread = uuid4()
+    monkeypatch.setattr(cli, "live_deps", lambda s, verifier: object())
+    monkeypatch.setattr(
+        cli,
+        "run_question",
+        scripted_run(
+            AnswerEvent(answer_with("Coding agents are scored on real bugs [S1].")),
+            ThreadEvent(thread, None),
+        ),
+    )
+    result = CliRunner().invoke(app, ["ask", "q", "--live"])
+    assert result.exit_code == 0
+    assert f"thread {thread}" not in result.stderr
+    assert "turn None" not in result.stderr
+
+
 def test_ask_prints_the_thread_a_new_answer_started(monkeypatch: pytest.MonkeyPatch) -> None:
     thread = uuid4()
     monkeypatch.setattr(cli, "live_deps", lambda s, verifier: object())
