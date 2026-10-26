@@ -934,18 +934,18 @@ def test_the_item_and_thread_checks_run_off_the_event_loop(
     # Both checks are blocking database reads. On the event loop a slow or paused database would
     # freeze every other request, so the route hands them to a worker thread.
     seen: dict[str, int] = {}
-    admitted, thread = Repository.admitted_item, Repository.thread
+    admitted, thread_exists = Repository.admitted_item, Repository.thread_exists
 
     def record_admitted(self: Repository, item_id: UUID) -> bool:
         seen["item"] = threading.get_ident()
         return admitted(self, item_id)
 
-    def record_thread(self: Repository, thread_id: UUID) -> Any:
+    def record_thread(self: Repository, thread_id: UUID) -> bool:
         seen["thread"] = threading.get_ident()
-        return thread(self, thread_id)
+        return thread_exists(self, thread_id)
 
     monkeypatch.setattr(Repository, "admitted_item", record_admitted)
-    monkeypatch.setattr(Repository, "thread", record_thread)
+    monkeypatch.setattr(Repository, "thread_exists", record_thread)
     app = create_app(deps(db_session, []))
 
     async def run() -> int:

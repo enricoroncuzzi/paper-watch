@@ -3,14 +3,18 @@
 The corpus has to accumulate every day, whatever the captain is building, so ingestion runs on
 the shared VPS ahead of M3 ([ADR 0009](../adr/0009-ingestion-runs-on-the-shared-vps.md)). The API
 joins it in M3 behind a tunnel ([ADR 0012](../adr/0012-the-api-on-the-shared-vps-behind-a-tunnel.md)),
-as a long-lived user unit with its own memory budget and a child embedding process
-([ADR 0013](../adr/0013-api-memory-child-embedder-and-keyword-only-mode.md)). Three systemd user
-services, all as the `paperwatch` account: the daily ingestion at 06:00 Europe/Rome, a nightly
-`pg_dump` backup at 05:15, and the API with its tunnel. The weekly shortlist, email alerts and the
-restore drill are not part of this deployment (M4).
+with its own memory budget and a child embedding process
+([ADR 0013](../adr/0013-api-memory-child-embedder-and-keyword-only-mode.md)). The daily ingestion
+at 06:00 Europe/Rome, the nightly `pg_dump` backup at 05:15 and the tunnel are systemd user units
+for the `paperwatch` account. The API is the exception: it runs as its own Unix account,
+`paperwatch-api`, which peer authentication maps to the least-privilege `paperwatch_api` role and
+nothing else ([ADR 0017](../adr/0017-the-api-under-its-own-unix-account.md)). The weekly
+shortlist, email alerts and the restore drill are not part of this deployment (M4).
 
-Everything here is a step for the `paperwatch` user. There is no root step: the database, the
-role, pgvector, the swap file and linger were set up by the captain before this guide starts.
+Everything here is a step for the `paperwatch` user, except the API's account, its unit and its
+env file: those are root's, and section 15 and section 18 say exactly which commands. The
+database, the roles, pgvector, the swap file and linger were set up by the captain before this
+guide starts.
 
 ## Server facts (verified 2026-10-22 over SSH as `paperwatch`)
 
@@ -375,7 +379,12 @@ inside it is caught by the next morning's check).
 
 systemd records 1 and 3 as a failed unit, which is deliberate: both deserve a look, and the morning
 check reports the failed unit too. The problems themselves are in
-`journalctl --user -u paperwatch-ingest`.
+`journalctl --user -u paperwatch-ingest`. The API is a system unit, so its journal is
+`journalctl -u paperwatch-api` (with `-f` to follow, and no `--user`).
+
+The API's journal keeps one access line per request with the method, the path and the status,
+but not the query string: a corpus search is `GET /items?q=...`, and the search text is the
+reader's, not the journal's (`src/paperwatch/logging.py` drops it).
 
 ## 11. Updating to a new release
 
@@ -386,6 +395,11 @@ git checkout paperwatch-vX.Y.Z
 uv sync --frozen --no-dev
 uv run --frozen --no-dev --env-file ~/.config/paperwatch/env alembic upgrade head
 ```
+
+The API serves its own checkout, `/home/paperwatch-api/paper-watch`, so a release is fetched twice:
+run the same `git fetch --tags`, `git checkout` and `uv sync --frozen --no-dev` there as the API's
+account, then `sudo systemctl restart paperwatch-api`. The migration stays the ingestion's alone,
+because that is the account with the owner role.
 
 The timers keep pointing at the same path, so the next run uses the new code and nothing needs
 re-enabling. Run `systemctl --user daemon-reload` only when a unit file itself changed (copy the
@@ -484,19 +498,21 @@ cluster's data directory:
 
 2. The identity map in `pg_ident.conf`, three lines under the same name. `peer` compares the
    accessing Unix account with the requested role unless a map is given, and a map accepts only the
-   system-user/role pairs it lists, so these lines are what restrict access to the Unix account
-   `paperwatch`. Leaving out the first line locks out the ingestion itself, which connects as
-   `paperwatch`:
+   system-user/role pairs it lists, so these lines are what restrict each role to one Unix account.
+   Leaving out the first line locks out the ingestion itself, which connects as `paperwatch`:
 
    ```
    # MAPNAME     SYSTEM-USERNAME  PG-USERNAME
    paperwatch    paperwatch       paperwatch
    paperwatch    paperwatch       paperwatch_ro
-   paperwatch    paperwatch       paperwatch_api
+   paperwatch    paperwatch-api   paperwatch_api
    ```
 
-   A password for each role is the alternative, and then the Beekeeper connection stops being
-   passwordless.
+   The API's line names a different Unix account, and the `paperwatch` account has no line for
+   `paperwatch_api` at all: the ingestion can never take the API's role, and the API can never take
+   the owner's ([ADR 0017](../adr/0017-the-api-under-its-own-unix-account.md)). That account is
+   created in section 15. A password for each role is the alternative, and then the Beekeeper
+   connection stops being passwordless.
 
 3. Reload Postgres so it re-reads both files (no restart needed), then check that the owner still
    gets in before you test the two new roles: a mistake in either file would otherwise lock the
@@ -541,28 +557,88 @@ while an ingestion is running.
 
 - `paperwatch eval`: it creates and drops its own throwaway database and needs the `vector`
   extension in it, which means `CREATEDB` and superuser. The role has neither, by design.
-- A second copy of the API: `paperwatch serve` runs as `paperwatch-api.service` (section 15) with
-  its own env file, and two copies would double the memory and split the per-client limiter.
-  `paperwatch ask` is an interactive command and may be used, with `--env-file
-  ~/.config/paperwatch/api.env` when it needs a chat key.
-- Docker, and anything outside `/home/paperwatch/`.
+- A second copy of the API: `paperwatch serve` runs as `paperwatch-api.service` (section 15) as
+  the `paperwatch-api` account with its own env file, and two copies would double the memory and
+  split the per-client limiter.
+- `paperwatch ask` is an interactive command and may be used, but the chat key now lives in the API
+  account's env file, which `paperwatch` cannot read. Run it as that account (root, the same
+  `--env-file` the unit uses):
+
+  ```bash
+  sudo -u paperwatch-api -- env HOME=/home/paperwatch-api \
+    /home/paperwatch-api/.local/bin/uv run --frozen --no-dev \
+    --env-file /home/paperwatch-api/.config/paperwatch/api.env paperwatch ask "your question" --live
+  ```
+- Docker, and anything outside `/home/paperwatch/` and `/home/paperwatch-api/`.
 
 ## 15. The API
 
-The API is a long-lived user unit on `127.0.0.1:8000` and refuses every request but
-`GET /healthz` without its credential (`docs/learn/15`); `/docs`, `/redoc` and `/openapi.json` are
-served behind the same credential. The tunnel in section 16 is the only way in.
+The API is a long-lived **system** unit on `127.0.0.1:8000`, running as its own Unix account
+`paperwatch-api`. It refuses every request but `GET /healthz` without its credential
+(`docs/learn/15`); `/docs`, `/redoc` and `/openapi.json` are served behind the same credential. The
+tunnel in section 16 is the only way in.
 
-Write its env file, separate from the ingestion's because it connects as a different role and
-needs a chat key the ingestion does not. The here-document is quoted so `$` stays literal:
+It is not the `paperwatch` account on purpose. Peer authentication maps `paperwatch-api` to
+`paperwatch_api` and nothing else, so a bug in a route, a dependency or the agent cannot write the
+corpus, read `~/backups`, or read the ingestion's env file, which holds the owner role's passwordless
+connection ([ADR 0017](../adr/0017-the-api-under-its-own-unix-account.md)). Everything below is
+root's step, because creating an account and installing a system unit need root; the list of what
+the captain does on an existing server, in order, is section 18.
+
+### 15.1 The account, its checkout and its model cache
+
+A system account with a home of its own and no login shell. `--create-home` writes the home 0750,
+owned by the account, which is what keeps the other account out of it:
 
 ```bash
+# as root
+useradd --system --create-home --home-dir /home/paperwatch-api \
+        --shell /usr/sbin/nologin paperwatch-api
+```
+
+The API serves its own checkout at the same release tag the ingestion serves. It is a second clone,
+not a shared one: sharing would put the ingestion's checkout readable by the API's account, and a
+release would have to touch one account's files from the other. The account installs its own `uv`
+and its own environment:
+
+```bash
+# as paperwatch-api: sudo -u paperwatch-api bash -l does not work with a nologin shell, so run the
+# commands one at a time, with HOME set
+sudo -u paperwatch-api -- env HOME=/home/paperwatch-api bash -c '
+  cd /home/paperwatch-api &&
+  git clone https://github.com/enricoroncuzzi/paper-watch paper-watch &&
+  cd paper-watch &&
+  git checkout paperwatch-vX.Y.Z &&
+  curl -LsSf https://astral.sh/uv/install.sh | sh &&
+  /home/paperwatch-api/.local/bin/uv sync --frozen --no-dev'
+```
+
+`--frozen --no-dev` is the same environment the ingestion gets: exactly the committed `uv.lock`,
+without the test, lint and type-check tools. `uv sync` also downloads the managed Python 3.12 into
+this account's home, so the API never reads the ingestion's interpreter.
+
+The model cache is this account's own, downloaded on the API's first start: `PW_LOCAL_EMBEDDING_CACHE_DIR`
+in the env file below names `/home/paperwatch-api/.cache/paperwatch-models`. It is a second copy of
+the same ~180 MB of weights, deliberately: sharing the ingestion's cache would need the API's
+account to traverse `/home/paperwatch`, and that home holds the owner role's env file and the
+backups. Disk is not the scarce resource here; the account boundary is. The cache and uv's own
+cache live under `/home/paperwatch-api/.cache`, the only path this unit can write to.
+
+### 15.2 The env file
+
+Separate from the ingestion's, because it connects as a different role and needs a chat key the
+ingestion does not. The here-document is quoted so `$` stays literal. Run it as root and hand the
+file to the API's account, so the secret is never written through a shell that logs it:
+
+```bash
+# as root
+install -d -m 700 -o paperwatch-api -g paperwatch-api /home/paperwatch-api/.config/paperwatch
 umask 077
-cat > ~/.config/paperwatch/api.env <<'ENV'
+cat > /home/paperwatch-api/.config/paperwatch/api.env <<'ENV'
 PW_DATABASE_URL=postgresql+psycopg://paperwatch_api@/paperwatch?host=/var/run/postgresql
 PW_OPENROUTER_API_KEY=
 PW_DRAFT_MODEL=
-PW_LOCAL_EMBEDDING_CACHE_DIR=/home/paperwatch/.cache/paperwatch-models
+PW_LOCAL_EMBEDDING_CACHE_DIR=/home/paperwatch-api/.cache/paperwatch-models
 PW_API_AUTH=oidc
 PW_VERCEL_OIDC_ISSUER=
 PW_VERCEL_OIDC_AUDIENCE=
@@ -570,12 +646,13 @@ PW_VERCEL_OIDC_SUBJECT=
 PW_API_HMAC_SECRET=
 PW_API_PUBLIC_HOST=
 ENV
-chmod 600 ~/.config/paperwatch/api.env
+chown paperwatch-api:paperwatch-api /home/paperwatch-api/.config/paperwatch/api.env
+chmod 600 /home/paperwatch-api/.config/paperwatch/api.env
 ```
 
 - `PW_DATABASE_URL` uses `paperwatch_api`, the least-privilege role from section 12, over the same
   socket and peer authentication. The API reads every table and writes only the rows its grants
-  name.
+  name, and the Unix account is what peer authentication sees.
 - `PW_API_AUTH=oidc` needs the three `PW_VERCEL_OIDC_*` values from the Vercel project (the issuer,
   the audience and the exact subject, production only). For the tunnel rehearsal before a Vercel
   project exists, set `PW_API_AUTH=hmac` and a `PW_API_HMAC_SECRET` of at least 32 characters
@@ -585,42 +662,77 @@ chmod 600 ~/.config/paperwatch/api.env
 - `PW_DRAFT_MODEL` is the optional draft model override; unset means the chat model. A draft sends
   no training opt-out, so the free provider may train on and retain its prompt, point of view
   included.
-- The model cache is the same directory the ingestion uses, so the 180 MB model is downloaded once.
+- The file is 0600 and owned by the API's account: the ingestion cannot read the chat key, and the
+  API cannot read the ingestion's env file.
 
-Install the unit, the slice and the ingestion drop-in, then start it:
+### 15.3 The unit
+
+`deploy/vps/paperwatch-api.service` is a system unit, so it is installed and controlled by the
+system manager, not the `paperwatch` user manager. That is the consequence of a separate account:
+`systemctl --user` reaches only `paperwatch`'s own units, and a system account has no user manager
+of its own to linger.
+
+```bash
+# as root
+cp /home/paperwatch/paper-watch/deploy/vps/paperwatch-api.service /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now paperwatch-api
+systemctl status paperwatch-api
+```
+
+It caps the API at `MemoryMax=700M` with no swap, raises its OOM score to 900, sets
+`OOMPolicy=continue` (a child OOM kill must leave the API answering) and `Restart=on-failure`. It
+no longer joins `paperwatch.slice`: a slice cannot span two systemd managers, so the ingestion keeps
+that slice to itself and each unit carries its own no-swap cap. The order the slice used to enforce
+survives through the API's `OOMScoreAdjust=900` and the ingestion's `Nice=10`: when the machine is
+short, the kernel picks the API, and the morning run finishes.
+
+The sandboxing is the cheap part of the hardening and fits the account: `ProtectSystem=strict` and
+`ProtectHome=read-only` (strict alone leaves `/home` writable) make the whole filesystem read-only
+outside `/home/paperwatch-api/.cache` and the venv `uv run` manages, so the system tree, the
+checkout, the other account's home and the backups cannot be written; `PrivateTmp=yes` and
+`PrivateDevices=yes` hide the shared temporary directory and the device nodes; no capability, no new
+namespace, no setuid bit and no personality change is available. `ProtectHome=tmpfs` would be
+stricter still, but it would need four read-only binds (the checkout, the venv, the `uv` binary and
+the env file) and one missed path stops the unit on a live server; the account boundary already
+keeps this home to the API alone.
+
+There is deliberately no `Conflicts=`, `Requires=` or `After=` between the API and the ingestion: the
+measurements showed that `Conflicts=` stops the ingestion, and nothing in the API may delay a run
+(ADR 0013).
+
+The slice and the ingestion drop-in are the `paperwatch` user manager's, not the system manager's,
+and installing the API's system unit does not install them. On the server they are already in place
+(section 6 and the drop-in below); on a fresh one, install them as `paperwatch`:
 
 ```bash
 mkdir -p ~/.config/systemd/user/paperwatch-ingest.service.d
-cp ~/paper-watch/deploy/vps/paperwatch-api.service \
-   ~/paper-watch/deploy/vps/paperwatch.slice \
-   ~/.config/systemd/user/
+cp ~/paper-watch/deploy/vps/paperwatch.slice ~/.config/systemd/user/
 cp ~/paper-watch/deploy/vps/paperwatch-ingest.service.d/slice.conf \
    ~/.config/systemd/user/paperwatch-ingest.service.d/
 systemctl --user daemon-reload
-systemctl --user enable --now paperwatch-api
 ```
 
-`paperwatch-api.service` caps the API at `MemoryMax=700M` with no swap, raises its OOM score to
-900, and joins `paperwatch.slice` (`MemoryMax=1100M`), which the ingestion joins through the one
-drop-in line. There is deliberately no `Conflicts=`, `Requires=` or `After=` between them: the measurements
-showed that `Conflicts=` stops the ingestion, and the slice, not a unit relationship, is what
-makes the kernel pick the API when both need the memory (ADR 0013). The unit runs
-`uv run --frozen --no-dev paperwatch serve --live --host 127.0.0.1 --port 8000` from
-`/home/paperwatch/paper-watch`.
+### 15.4 Acceptance
 
 Run the acceptance check with a fresh token per authenticated request. With `PW_API_AUTH=hmac` an
 HMAC token is single use, so pass a command that mints one:
 
 ```bash
-PW_CHECK_TOKEN_CMD='uv run --frozen --no-dev --env-file ~/.config/paperwatch/api.env \
-  paperwatch api-token --live' ./deploy/vps/api-check.sh http://127.0.0.1:8000
+sudo -u paperwatch-api -- env HOME=/home/paperwatch-api PW_CHECK_TOKEN_CMD='\
+  /home/paperwatch-api/.local/bin/uv run --frozen --no-dev \
+  --env-file /home/paperwatch-api/.config/paperwatch/api.env paperwatch api-token --live' \
+  /home/paperwatch-api/paper-watch/deploy/vps/api-check.sh http://127.0.0.1:8000
 ```
 
 Every line reads `ok`, `FAIL` or `WARN` (a systemd question that cannot be asked off the server);
-the exit status is non-zero on any `FAIL`. Then read the unit's security score:
+the exit status is non-zero on any `FAIL`. The unit checks now ask the system manager for
+`paperwatch-api` and the user manager for the ingestion, and they read the API's account back.
+Then read the unit's security score:
 
 ```bash
-systemd-analyze --user security paperwatch-api
+# as root
+systemd-analyze security paperwatch-api
 ```
 
 The API answers `text_only` while the ingestion's main pass runs or while memory is short, which
@@ -659,6 +771,10 @@ tailscale --socket="$HOME/.local/state/tailscale/tailscaled.sock" \
   funnel --bg 443 http://127.0.0.1:8000
 tailscale --socket="$HOME/.local/state/tailscale/tailscaled.sock" funnel status
 ```
+
+The target is the loopback port. Section 18 changes which account serves it, never the address, so
+the mapping above and `PW_API_PUBLIC_HOST` stay exactly as they are; the tunnel is still a user unit
+for `paperwatch` and still needs that account's linger.
 
 The hostname Funnel prints is `PW_API_PUBLIC_HOST` in `api.env`; add it, restart the API, and run
 `api-check.sh` against the public URL from outside the tailnet. If any step asks for root or a TUN
@@ -772,3 +888,133 @@ systemctl --user disable --now paperwatch-soak-stream
 
 If the installed `tailscale` spells the removal differently, `tailscale funnel --help` prints it;
 `funnel status` must then show only the 443 mapping.
+
+## 18. Moving an existing server onto the API account
+
+Before ADR 0017 the API ran as `paperwatch`, the account peer authentication maps to the owner
+role, so a bug in a route or a dependency had the corpus, the backups and both env files. This is
+the migration for a server that already runs the API the old way. It is the owner's, applied one
+step at a time, and it can be undone until the last step.
+
+Nothing here touches the ingestion, its timers, the database or the tunnel. The API keeps answering
+on `127.0.0.1:8000`, which is the address the tunnel publishes, and `PW_API_PUBLIC_HOST` does not
+change. Linger stays on for `paperwatch`: the ingestion, the backup and the tunnel are still user
+units. The API no longer needs a user manager at all, which is why it becomes a system unit.
+
+Until step 7 the change is reversible with no database edit at all, because the old
+`paperwatch → paperwatch_api` identity is still in `pg_ident.conf` (step 2 only adds a line).
+
+1. **Create the account.** As root, as in section 15.1:
+
+   ```bash
+   useradd --system --create-home --home-dir /home/paperwatch-api \
+           --shell /usr/sbin/nologin paperwatch-api
+   ```
+
+2. **Let the new account in, and nothing more.** The admin adds one line to the `pg_ident.conf` map
+   from section 12, so the account exists before it is used. Do not remove the old
+   `paperwatch → paperwatch_api` line yet: the rollback relies on it until step 7 removes it.
+
+   ```
+   paperwatch    paperwatch-api   paperwatch_api
+   ```
+
+   Reload and prove both directions before going on: the owner must still reach `paperwatch`, and
+   the new account must reach `paperwatch_api` and nothing else. That the owner can no longer reach
+   `paperwatch_api` is proven in step 7, once its line is gone:
+
+   ```bash
+   # as the admin
+   psql -c 'select pg_reload_conf()'
+   # as paperwatch, which must still see the database
+   psql -d paperwatch -c 'select 1'
+   # as the new account: the role, nothing else
+   sudo -u paperwatch-api -- psql -d paperwatch -Atc 'select current_user'
+   ```
+
+   The last command must print `paperwatch_api`. If it prints `paperwatch`, the map line is wrong
+   and peer authentication fell through to the generic rule: stop and fix it before step 3.
+
+3. **Give the account its checkout, its `uv` and its venv** at the same release tag the ingestion
+   serves, exactly as section 15.1 shows. The model cache is created here on first start; nothing is
+   copied from `/home/paperwatch/.cache/paperwatch-models`, and the ingestion keeps its own copy.
+
+4. **Move the env file.** As root, write the file section 15.2 shows, with the same values the old
+   `~/.config/paperwatch/api.env` holds and `PW_LOCAL_EMBEDDING_CACHE_DIR` pointing at
+   `/home/paperwatch-api/.cache/paperwatch-models`. Then, as `paperwatch`, remove the old copy:
+
+   ```bash
+   rm ~/.config/paperwatch/api.env
+   ```
+
+   Keep the values you moved (the OpenRouter key, the Vercel OIDC triple or the HMAC secret, the
+   public host) somewhere safe until step 6 has passed: they are only in the new file now.
+
+5. **Swap the units, in this order**, so the port is never held by two processes at once. The old
+   unit keeps its file until step 7, so a rollback has it.
+
+   ```bash
+   # as root: install the system unit
+   cp /home/paperwatch/paper-watch/deploy/vps/paperwatch-api.service /etc/systemd/system/
+   systemctl daemon-reload
+   # as paperwatch: stop the old user unit, and keep its file
+   systemctl --user disable --now paperwatch-api
+   # as root: start the new one
+   systemctl enable --now paperwatch-api
+   ```
+
+6. **Verify before tidying.** The unit must be `active` and stay up (a restart loop is a sandbox
+   path or a missing file), the journal must show `serving on http://127.0.0.1:8000`, the acceptance
+   check in section 15.4 must pass, `systemctl show --property=User --value paperwatch-api` must
+   print `paperwatch-api`, and `tailscale ... funnel status` must still show `443 →
+   http://127.0.0.1:8000`. Then load the public URL from outside the tailnet.
+
+   ```bash
+   systemctl status paperwatch-api
+   journalctl -u paperwatch-api -n 50
+   ```
+
+7. **Tidy, once the API has answered for a day.** Remove the owner account's path to the API's role
+   and to the old unit, in that order, and reload:
+
+   ```
+   # MAPNAME     SYSTEM-USERNAME  PG-USERNAME
+   paperwatch    paperwatch       paperwatch
+   paperwatch    paperwatch       paperwatch_ro
+   paperwatch    paperwatch-api   paperwatch_api
+   ```
+
+   ```bash
+   # as the admin
+   psql -c 'select pg_reload_conf()'
+   # as paperwatch: the old path must now be refused
+   psql -d paperwatch -c 'select current_user'          # still paperwatch
+   psql "postgresql://paperwatch_api@/paperwatch?host=/var/run/postgresql"   # must fail
+   # as paperwatch: retire the old unit file
+   rm ~/.config/systemd/user/paperwatch-api.service
+   systemctl --user daemon-reload
+   ```
+
+### Rolling back
+
+Before step 7 nothing in the database changed, so a rollback is a few commands: root stops the
+new unit and hands the env file back, then `paperwatch` starts its old unit. What it costs is
+what the change bought: the API is the owner role's account again.
+
+```bash
+# as root: stop the new unit
+systemctl disable --now paperwatch-api
+# as root: hand the env file back to paperwatch, 0600, under its absolute path (root's ~ is /root)
+install -m 600 -o paperwatch -g paperwatch /home/paperwatch-api/.config/paperwatch/api.env \
+        /home/paperwatch/.config/paperwatch/api.env
+# then point PW_LOCAL_EMBEDDING_CACHE_DIR in that copy back at the ingestion's cache,
+# /home/paperwatch/.cache/paperwatch-models
+# as paperwatch: the old unit file was kept until step 7, so it only needs starting again
+systemctl --user daemon-reload
+systemctl --user enable --now paperwatch-api
+```
+
+Then re-run the acceptance check of section 15.4 against `http://127.0.0.1:8000`. The tunnel never
+moved, so it needs no change in either direction. After step 7 the rollback also needs the
+`paperwatch → paperwatch_api` line put back with a `pg_reload_conf()`, and the old user unit file
+restored from a release before ADR 0017 before `paperwatch` starts it.

@@ -30,6 +30,7 @@ vi.mock("@/lib/api", () => ({
 }));
 
 import Home from "./page";
+import ItemPageRoute from "./items/[id]/page";
 import RunPage from "./runs/[id]/page";
 
 const RUN_ID = "11111111-1111-4111-8111-111111111111";
@@ -52,6 +53,13 @@ describe("the per-page owner guard", () => {
     );
     // The count covers this render alone (see `beforeEach`): the run page must call the guard
     // exactly once, not lean on another test having called it before.
+    expect(requireOwner).toHaveBeenCalledTimes(1);
+  });
+
+  it("the item page refuses an anonymous render", async () => {
+    await expect(ItemPageRoute({ params: Promise.resolve({ id: RUN_ID }) })).rejects.toThrow(
+      "NEXT_REDIRECT:/signin",
+    );
     expect(requireOwner).toHaveBeenCalledTimes(1);
   });
 });

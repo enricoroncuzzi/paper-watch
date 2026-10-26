@@ -1151,6 +1151,54 @@ def test_crash_after_fetch_commit_resumes_and_finishes(db_session: Session) -> N
     assert row(db_session, "2510.old").status == "admitted"
 
 
+def test_a_new_version_is_parked_before_phase_two(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The text replacement happens in phase 2, after phase 1 commits the cursor. A process killed
+    # in between would lose a v2 that falls outside the next overlap, exactly as a first fetch
+    # would: parking the newer payload is what makes the next run resume it.
+    v1 = paper("2510.v", "Agent harness")
+    src = fake_sources([v1])
+    run(db_session, src)
+    assert row(db_session, "2510.v").version == 1
+
+    def killed(self: Repository) -> list[object]:
+        raise SystemExit("process killed between phases")
+
+    monkeypatch.setattr(Repository, "open_item_dead_letters", killed)
+    v2 = dataclasses.replace(paper("2510.v", "Agent harness", version=2), text="Rewritten v2.")
+    src.arxiv.papers = [v2]
+    with pytest.raises(SystemExit):
+        run(db_session, src, now=NOW + timedelta(days=30))
+
+    letter = db_session.scalars(
+        select(DeadLetter).where(DeadLetter.ref == "2510.v", DeadLetter.resolved_at.is_(None))
+    ).one()
+    assert payload_to_item(letter.payload).version == 2
+
+    # Twenty days later the window no longer covers the paper: only the parked letter can store v2.
+    monkeypatch.undo()
+    src.arxiv.papers = []
+    res = run(db_session, src, now=NOW + timedelta(days=31))
+    db_session.expire_all()
+    assert (row(db_session, "2510.v").version, row(db_session, "2510.v").text) == (2, v2.text)
+    assert res.counts["text_updated"] == 1
+
+
+def test_a_stored_version_is_not_parked_again(db_session: Session) -> None:
+    # The same version the store already has is no work: parking it would write a letter that
+    # phase 2 resolves every run, and a run with nothing to do must stay clean.
+    repo = Repository(db_session)
+    run_id = repo.start_run(NOW, NOW, at=NOW)
+    item = paper("2510.same", "Agent harness")
+    repo.record_classified(item, "candidate", "agentic-engineering", 0.9)
+    db_session.commit()
+
+    _park_items(repo, run_id, [item], set())
+
+    assert db_session.scalars(select(DeadLetter).where(DeadLetter.ref == "2510.same")).all() == []
+
+
 def test_corrupt_dead_letter_payload_is_counted_not_fatal(db_session: Session) -> None:
     class Boom(FakeClassifier):
         def classify(self, item: SourceItem) -> Classification:

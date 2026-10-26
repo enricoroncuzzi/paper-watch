@@ -13,16 +13,20 @@ import hashlib
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 import structlog
-from fastapi import APIRouter, HTTPException, Security
+from fastapi import APIRouter, HTTPException, Request, Security
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from paperwatch.api.responses import BEARER, GATE_RESPONSES, Refusal
+from paperwatch.api.auth import Principal
+from paperwatch.api.limits import SlidingThrottle
+from paperwatch.api.responses import BEARER, GATE_RESPONSES, RateLimited, Refusal
 from paperwatch.api.summary_queue import SummaryQueue, needs_summary
+from paperwatch.config import EVENTS_PER_MINUTE
 from paperwatch.domain import Profile
 from paperwatch.store.models import ItemSummary
 from paperwatch.store.repository import (
@@ -124,6 +128,8 @@ class SuggestionService:
         config: SuggestionsConfig,
         queue: SummaryQueue,
         clock: Callable[[], datetime],
+        *,
+        events_throttle: SlidingThrottle | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._profiles = profiles
@@ -131,6 +137,9 @@ class SuggestionService:
         self._queue = queue
         self._clock = clock
         self._cached: _Cached | None = None
+        # The events route's own bound: one small row per call, so a minute count and not the
+        # answer limiter's budget. Built from this service's clock, so a test can advance it.
+        self._events = events_throttle or SlidingThrottle(per_minute=EVENTS_PER_MINUTE, clock=clock)
 
     def invalidate(self) -> None:
         # Called by the events route on a dismissal: the item must leave the list at once.
@@ -188,6 +197,10 @@ class SuggestionService:
             rising=rising,
             rising_note=RISING_NOTE,
         )
+
+    def admit_event(self, subject: str) -> int | None:
+        """None when one more event may be recorded, else the seconds this subject should wait."""
+        return self._events.admit(subject)
 
     def record(self, item_id: UUID, event: Literal["opened", "dismissed", "drafted"]) -> None:
         now = self._clock()
@@ -289,14 +302,32 @@ def make_suggestions_router(service: SuggestionService) -> APIRouter:
     @router.post(
         "/suggestions/{item_id}/events",
         status_code=204,
+        # The handler returns a refusal body on a 429, so no response model may be inferred from
+        # its annotation: FastAPI would refuse a body on the route's own 204.
+        response_model=None,
         responses={
             **GATE_RESPONSES,
             404: {"model": Refusal, "description": "No admitted item with that id."},
+            429: {
+                "model": RateLimited,
+                "description": "This subject sent its minute's events; also sends Retry-After.",
+            },
         },
         dependencies=[Security(BEARER)],
     )
-    def record_event(item_id: UUID, body: EventRequest) -> None:
+    def record_event(item_id: UUID, body: EventRequest, request: Request) -> Any:
+        # Before the write, so a refused call stores nothing. The bound is per credential: one
+        # reader's page cannot spend another's minute.
+        principal: Principal = request.state.principal
+        wait = service.admit_event(principal.subject)
+        if wait is not None:
+            return JSONResponse(
+                status_code=429,
+                content={"detail": "rate_limited", "retry_after_s": wait},
+                headers={"Retry-After": str(wait)},
+            )
         service.record(item_id, body.event)
+        return None
 
     return router
 

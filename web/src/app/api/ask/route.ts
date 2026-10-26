@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import { requireOwnerApi } from "@/auth";
 import { apiToken } from "@/lib/api-token";
+import { crossSiteRefusal } from "@/lib/csrf";
 
 // A streamed answer can run to the API's 120 s deadline, so Vercel must allow the function to live
 // longer than that; the proxy itself adds no buffering.
@@ -38,6 +39,8 @@ function refused(kind: string, status: number, retryAfterS?: number): Response {
 export async function POST(request: Request): Promise<Response> {
   const session = await requireOwnerApi();
   if (session instanceof Response) return session;
+  const crossSite = crossSiteRefusal(request);
+  if (crossSite) return crossSite;
 
   const declared = Number(request.headers.get("content-length") ?? 0);
   if (declared > BODY_MAX_BYTES) return refused("error", 413);

@@ -18,8 +18,10 @@ import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 from paperwatch.drafts.generate import DraftSource, DraftText
+from paperwatch.links import bare_domains
 
 FlagKind = Literal[
     "number",
@@ -51,8 +53,16 @@ LONG_COPY_WORDS = 12
 
 # A number with an optional decimal or thousands part and an optional percent sign.
 _NUMBER = re.compile(r"\d+(?:[.,]\d+)*\s?%?")
-# Straight or curly double quotes; single quotes are not delimiters because contractions use them.
-_QUOTE = re.compile(r'"([^"\n]{1,})"|\u201c([^\u201d\n]{1,})\u201d')
+# Every pair of marks a model or a word processor uses for a quotation: straight and curly double
+# quotes, single curly quotes, French guillemets and the German low-high pair. A bare single quote
+# is not a delimiter, because contractions use it.
+_QUOTE = re.compile(
+    r'"([^"\n]{1,})"'
+    r"|\u201c([^\u201d\n]{1,})\u201d"
+    r"|\u2018([^\u2019\n]{1,})\u2019"
+    r"|\u00ab([^\u00bb\n]{1,})\u00bb"
+    r"|\u201e([^\u201c\n]{1,})\u201c"
+)
 # A URL with a scheme, a www. host, or a bare domain with a path. The third form keeps a filename
 # such as "run.py" from being read as a link.
 _URL = re.compile(
@@ -283,6 +293,7 @@ def _check_links(
         for url in (source.url, source.github_repo, source.project_page, *_links(folded_pov))
         if url
     }
+    allowed_hosts = {_host(url) for url in (*allowed, *_bare_domains(folded_pov))}
     flagged: set[str] = set()
     counts["link"][0] += 1
     key = _url_key(draft.source_link)
@@ -311,6 +322,22 @@ def _check_links(
                 link,
                 f"{link} is not the item's link, its repository or project page, or a link "
                 "you wrote in your point of view.",
+            )
+        )
+    for domain in _bare_domains(text):
+        counts["link"][0] += 1
+        if _host(domain) in allowed_hosts:
+            counts["link"][1] += 1
+            continue
+        if domain.lower() in flagged:
+            continue
+        flagged.add(domain.lower())
+        found["link"].append(
+            DraftFlag(
+                "link",
+                domain,
+                f"{domain} is a bare domain that is not the item's, its repository or project "
+                "page, or one you wrote in your point of view.",
             )
         )
 
@@ -426,7 +453,8 @@ def _blanked(text: str, folded_store: str) -> str:
 
     def quote(match: re.Match[str]) -> str:
         whole = match.group(0)
-        span = _normalise(match.group(1) if match.group(1) is not None else match.group(2))
+        inner = _span(match)
+        span = _normalise(inner or "")
         if len(span.split()) >= MIN_QUOTE_WORDS and span in folded_store:
             # The full stop and its closing quote stay, so the sentence still ends there.
             tail = whole[-2:] if whole[-2] in ".!?" else ""
@@ -603,8 +631,30 @@ def _number_supported(number: str, evidence: set[str]) -> bool:
 def _quoted_spans(text: str) -> list[str]:
     spans = []
     for match in _QUOTE.finditer(text):
-        spans.append(match.group(1) if match.group(1) is not None else match.group(2))
+        span = _span(match)
+        if span is not None:
+            spans.append(span)
     return spans
+
+
+def _span(match: re.Match[str]) -> str | None:
+    """The text inside the delimiters, whichever pair matched."""
+    for group in match.groups():
+        if group is not None:
+            return group
+    return None
+
+
+def _bare_domains(text: str) -> list[str]:
+    """The bare domains in the draft, with every URL taken out first, so a host counts once."""
+    return bare_domains(_URL.sub(" ", text))
+
+
+def _host(url: str) -> str:
+    """The host of a link or a bare domain, lower case, with or without a scheme."""
+    key = _url_key(url)
+    parsed = urlsplit(key if "://" in key else f"//{key}")
+    return (parsed.hostname or "").lower().removeprefix("www.")
 
 
 def _links(text: str) -> list[str]:

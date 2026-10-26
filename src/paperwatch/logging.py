@@ -27,12 +27,36 @@ class _StderrAtCallTime:
         return getattr(sys.stderr, name)
 
 
+class DropQueryString(logging.Filter):
+    """Keep uvicorn's access line but not the query string it carries.
+
+    The corpus table's search is `GET /items?q=...`, and the API never logs a question or a search
+    itself; the one place that text would reach the server's journal is the access record, which
+    carries the whole target. The method, path and status are what an access log is for, so the
+    target is cut at the `?` rather than the line being dropped.
+
+    uvicorn emits one record per request with five arguments - client, method, target with its
+    query string, HTTP version and status - and the default formatter interpolates them, so
+    rewriting the arguments is enough.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if isinstance(args, tuple) and len(args) == 5 and isinstance(args[2], str):
+            record.args = (args[0], args[1], args[2].split("?", 1)[0], args[3], args[4])
+        return True
+
+
 def configure_logging(level: str = "INFO") -> None:
     # Progress and logs go to stderr, so a piped answer (`paperwatch ask q > answer.txt`) stays
     # just the answer. This covers the stdlib logging that httpx and SQLAlchemy use, and structlog
     # itself, whose default logger would otherwise print to stdout, inside the answer.
     sink = _StderrAtCallTime()
     logging.basicConfig(format="%(message)s", level=level, stream=cast(TextIO, sink))
+    access = logging.getLogger("uvicorn.access")
+    # Added once: every command configures logging, and a filter per call would accumulate.
+    if not any(isinstance(existing, DropQueryString) for existing in access.filters):
+        access.addFilter(DropQueryString())
     structlog.configure(
         # Resolves stderr on every write, for the reason in `_StderrAtCallTime`.
         logger_factory=structlog.PrintLoggerFactory(file=cast(TextIO, sink)),

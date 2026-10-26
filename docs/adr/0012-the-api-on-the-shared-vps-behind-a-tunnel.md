@@ -4,7 +4,9 @@ Date: 2026-10-24
 
 ## Status
 
-Accepted
+Accepted. The API's Unix account and unit type are superseded by
+[ADR 0017](0017-the-api-under-its-own-unix-account.md); the tunnel and everything else here still
+hold.
 
 ## Context
 

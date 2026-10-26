@@ -330,6 +330,97 @@ def test_curly_quotes_are_quotes() -> None:
     assert kinds(draft) == ["quote"]
 
 
+@pytest.mark.parametrize(
+    ("opening", "closing"),
+    [("\u2018", "\u2019"), ("\u00ab", "\u00bb"), ("\u201e", "\u201c")],
+    ids=["single-curly", "guillemets", "low-high"],
+)
+def test_every_typographic_quote_delimits_a_quote(opening: str, closing: str) -> None:
+    # A model writing German or French prose quotes with guillemets or the low-high pair, and a
+    # word processor turns a straight quote into single curly ones: a quote it wrote must be
+    # checked however it is delimited, or an invented sentence passes.
+    invented = f" They call it {opening}a new law of agents{closing}."
+    assert kinds(replace(GOOD, body=GOOD.body + invented)) == ["quote"]
+    copied = (
+        f" They report {opening}cut tokens per task by 41% on 40 long-horizon coding tasks"
+        f"{closing}."
+    )
+    assert kinds(replace(GOOD, body=GOOD.body + copied)) == []
+
+
+def test_a_bare_domain_that_is_not_the_item_s_is_flagged() -> None:
+    # "openai.com" has no path, so it is not caught by the URL rule; it is still a link a reader
+    # would follow, and the draft may not invent one.
+    draft = replace(GOOD, body=GOOD.body + " The model card is on openai.com.")
+    [flag] = check_draft(draft, SOURCE, pov=POV).flags
+    assert flag.kind == "link"
+    assert flag.text == "openai.com"
+
+
+def test_a_bare_domain_of_the_item_or_the_code_is_allowed() -> None:
+    draft = replace(GOOD, body=GOOD.body + " It is on arxiv.org and the code on github.com.")
+    assert kinds(draft) == []
+
+
+def test_a_bare_domain_of_a_link_the_pov_wrote_is_allowed() -> None:
+    pov = f"{POV} My notes are at example.com/notes."
+    draft = replace(GOOD, body=GOOD.body + " Notes are on example.com.")
+    assert kinds(draft, pov=pov) == []
+
+
+def test_a_bare_domain_the_pov_wrote_without_a_path_is_allowed() -> None:
+    # The flag says the domain is not one the owner wrote; a bare one in the point of view is.
+    pov = f"{POV} I first read about this on example.com."
+    draft = replace(GOOD, body=GOOD.body + " Notes are on example.com.")
+    assert kinds(draft, pov=pov) == []
+
+
+def test_a_file_name_and_an_abbreviation_are_not_domains() -> None:
+    # A domain needs a real top-level domain: the check must not flag the scripts a draft names,
+    # or the abbreviations an English sentence uses.
+    draft = replace(GOOD, body=GOOD.body + " The code ships as train.py and runs, e.g. 40 tasks.")
+    assert kinds(draft) == []
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "torch.compile",
+        "nn.Module",
+        "np.array",
+        "jax.jit",
+        "model.to",
+        "torch.int",
+        "ASP.NET",
+        "Node.js",
+        "libcudart.so",
+        "libtorch.so",
+        "requirements.in",
+    ],
+)
+def test_a_dotted_code_identifier_is_not_a_domain(code: str) -> None:
+    # Dotted code is everywhere in this corpus, and it is not a link a reader follows: only a
+    # host-shaped token, one that ends in a real top-level domain, is checked.
+    draft = replace(GOOD, body=GOOD.body + f" It builds on {code} as written.")
+    assert kinds(draft) == []
+
+
+def test_a_bare_domain_inside_a_longer_dotted_name_is_not_a_domain() -> None:
+    draft = replace(GOOD, body=GOOD.body + " It calls openai.com.client at startup.")
+    assert kinds(draft) == []
+
+
+def test_the_item_s_own_site_is_allowed_with_or_without_www() -> None:
+    # A lab feed's link usually carries www., and a draft names the site without it.
+    source = replace(SOURCE, url="https://www.anthropic.com/news/replay")
+    draft = replace(
+        GOOD,
+        body=GOOD.body + " The post is on anthropic.com.",
+        source_link="https://www.anthropic.com/news/replay",
+    )
+    assert kinds(draft, source) == []
+
+
 def test_an_escaped_entity_in_the_source_still_backs_a_quote() -> None:
     source = replace(SOURCE, text=TEXT + " Our R&amp;D budget grew.")
     draft = replace(GOOD, body=GOOD.body + ' They say "our R&D budget grew".')

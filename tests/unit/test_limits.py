@@ -6,7 +6,9 @@ exact and the suite never sleeps.
 
 from datetime import UTC, datetime, timedelta
 
-from paperwatch.api.limits import Admitted, Refused, RequestLimiter
+import pytest
+
+from paperwatch.api.limits import Admitted, Refused, RequestLimiter, SlidingThrottle
 
 NOW = datetime(2026, 10, 16, 12, tzinfo=UTC)
 
@@ -137,3 +139,47 @@ def test_a_subject_whose_windows_empty_is_forgotten() -> None:
     assert isinstance(limiter.admit("b"), Admitted)
     assert set(limiter._budgets) == {"b"}
     assert isinstance(limiter.admit("a"), Admitted)
+
+
+def _throttle(clock: Clock, *, per_minute: int = 2) -> SlidingThrottle:
+    return SlidingThrottle(per_minute=per_minute, clock=clock)
+
+
+def test_a_subject_past_the_minute_bound_is_told_when_to_try_again() -> None:
+    clock = Clock()
+    throttle = _throttle(clock)
+    assert [throttle.admit("a"), throttle.admit("a")] == [None, None]
+    # The oldest call leaves the window in 60 seconds, the same arithmetic as the answer limiter.
+    assert throttle.admit("a") == 60
+    clock.now += timedelta(seconds=20)
+    assert throttle.admit("a") == 40
+    clock.now += timedelta(seconds=40)
+    assert throttle.admit("a") is None
+
+
+def test_a_throttled_subject_does_not_spend_another_subject_s_minute() -> None:
+    # The events route is per credential, so one reader's page posting many events must not stop
+    # another caller's event.
+    throttle = _throttle(Clock())
+    throttle.admit("a")
+    throttle.admit("a")
+    assert throttle.admit("a") is not None
+    assert throttle.admit("b") is None
+
+
+def test_the_throttle_forgets_a_subject_whose_minute_is_empty() -> None:
+    # The map holds the callers seen in the current minute only, so a rotated credential cannot
+    # grow it without bound.
+    clock = Clock()
+    throttle = _throttle(clock)
+    throttle.admit("a")
+    clock.now += timedelta(minutes=2)
+    throttle.admit("b")
+    # The map holds the callers of the current minute, so the memory bound is the claim.
+    assert len(throttle._windows) == 1
+
+
+def test_the_throttle_refuses_a_naive_clock() -> None:
+    throttle = SlidingThrottle(per_minute=2, clock=lambda: datetime(2026, 10, 16, 12))
+    with pytest.raises(ValueError):
+        throttle.admit("a")

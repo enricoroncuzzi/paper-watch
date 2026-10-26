@@ -1,5 +1,7 @@
-# Everything Paper Watch runs shares this ceiling. The API's 700M and the ingestion's 950M cannot
-# both fit on a 1.9 GB machine, and the slice is what makes the kernel pick one when they meet:
+# The ingestion's ceiling, as a slice so it can be changed without touching the unit file: the
+# ingestion joins it through paperwatch-ingest.service.d/slice.conf. The API left it when it moved
+# to its own Unix account (ADR 0017): a slice cannot span two systemd managers, so each unit now
+# carries its own no-swap cap and the API's OOM score keeps the order when the machine is short.
 # 1100M leaves the operating system, Postgres and the other project their share (ADR 0013).
 # No swap: a capped process must be OOM-killed, not kept crawling in the shared swap.
 [Slice]

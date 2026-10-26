@@ -28,6 +28,7 @@ from uuid import UUID
 import anyio
 import structlog
 from fastapi import FastAPI, HTTPException, Request, Security
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import text
@@ -97,6 +98,7 @@ from paperwatch.config import (
     REQUESTS_PER_MINUTE,
     SSE_HEARTBEAT_S,
     SUGGESTIONS_PATH,
+    THREAD_HISTORY_TURNS,
     THREAD_TITLE_MAX_CHARS,
     USAGE_POOL_SIZE,
     Settings,
@@ -558,7 +560,7 @@ def run_question(
                 return
             registry = SourceRegistry.from_refs([ref_from_json(ref) for ref in saved.registry])
             restored_sources = len(registry.refs())
-            expected_turns = len(saved.turns)
+            expected_turns = saved.turn_count
             history = bound_history(
                 [(turn.question, str(turn.answer.get("text", ""))) for turn in saved.turns]
             )
@@ -701,9 +703,13 @@ def run_question(
 
 
 def _load_thread(deps: AgentDeps, thread_id: UUID) -> ThreadDetailRow | None:
-    """The thread an answer continues: its registry and its finished turns."""
+    """The thread an answer continues: its registry and its newest finished turns.
+
+    Only the turns a follow-up replays are read; the row's `turn_count` is the thread's total, so
+    a conversation that grew under this answer is still refused by `save_thread_turn`.
+    """
     with closing((deps.read_session_factory or deps.session_factory)()) as reader:
-        return Repository(reader).thread(thread_id)
+        return Repository(reader).thread(thread_id, turns_limit=THREAD_HISTORY_TURNS)
 
 
 def _create_thread(deps: AgentDeps, question: str) -> UUID | None:
@@ -969,7 +975,7 @@ def _check_references(deps: AgentDeps, item_id: UUID | None, thread_id: UUID | N
             raise _refused("item_id is not an admitted item", ["item_id"])
         # The route answers the thread's 404 before a stream starts; `run_question` then loads the
         # thread again for the answer it needs.
-        if thread_id is not None and repo.thread(thread_id) is None:
+        if thread_id is not None and not repo.thread_exists(thread_id):
             raise HTTPException(status_code=404, detail="thread not found")
 
 
@@ -1213,6 +1219,27 @@ def create_app(deps: AgentDeps) -> FastAPI:
     # Every request, including the routes FastAPI adds itself, meets the gate first. Adding it here
     # rather than in `serve` means a test, a script or a future caller cannot build an open app.
     app.add_middleware(ApiGate, verifier=deps.verifier, allowed_hosts=deps.allowed_hosts)
+
+    @app.exception_handler(RequestValidationError)
+    async def _invalid_request(_request: Request, exc: RequestValidationError) -> JSONResponse:
+        """A body that does not validate, in the contract's shape and without its own text back.
+
+        FastAPI's default handler echoes the offending input, and some input cannot be encoded
+        into a response at all: a lone surrogate (a `\ud800` JSON escape) makes the encoder raise,
+        so a 422 became a 500 on a body the route exists to refuse. The errors keep their type,
+        location and message, which is what a client reads; the echoed input and the context
+        (which can hold a driver or a value repr) stay out of the response.
+        """
+        detail = [
+            {
+                "type": str(error.get("type", "value_error")),
+                "loc": list(error.get("loc", ())),
+                "msg": str(error.get("msg", "invalid input")),
+            }
+            for error in exc.errors()
+        ]
+        return JSONResponse(status_code=422, content={"detail": detail})
+
     # The readiness gate lives on the app so a test can replace it, and so two apps never share
     # one limiter (a limiter belongs to one event loop's concurrency budget).
     app.state.ready_limiter = anyio.CapacityLimiter(READY_CONCURRENCY)

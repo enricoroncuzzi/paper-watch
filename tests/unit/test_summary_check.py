@@ -49,6 +49,53 @@ def test_a_changed_number_fails() -> None:
     assert "number:result:45%" in failed
 
 
+def test_a_url_in_an_interpretation_field_fails() -> None:
+    # `why` and `catch` are the model's own reading, and a URL there is a claim a reader cannot
+    # check against the stored text: the source's own links live in the quoted fields.
+    raw = good()
+    raw["why"]["text"] = "A smaller benchmark is cheaper to run; see https://example.com/bench."
+    assert "url:why" in check_summary(raw, title=TITLE, text=TEXT)
+
+    raw = good()
+    raw["catch"]["text"] = "Not stated in the abstract; the code is at example.com."
+    assert "url:catch" in check_summary(raw, title=TITLE, text=TEXT)
+
+
+def test_a_dotted_code_identifier_in_an_interpretation_field_passes() -> None:
+    # torch.compile and nn.Module are code, not links: one of them must not fail a whole summary
+    # and send the card back to the abstract's excerpt.
+    text = f"{TEXT} The planner is written with torch.compile, nn.Module and libtorch.so."
+    raw = good()
+    raw["why"]["text"] = (
+        "A planner built on torch.compile, nn.Module and libtorch.so is easy to reuse."
+    )
+    assert check_summary(raw, title=TITLE, text=text) == []
+
+
+def test_a_product_name_written_in_capitals_is_not_a_domain() -> None:
+    # The matcher tells ASP.NET from a host by its case, so the check must see the field's own
+    # case: a casefolded "asp.net" would fail the whole summary for a product name.
+    text = f"{TEXT} The harness runs on ASP.NET and System.IO, and Character.AI ships it."
+    raw = good()
+    raw["why"]["text"] = "ASP.NET and System.IO harnesses from Character.AI can reuse it."
+    assert check_summary(raw, title=TITLE, text=text) == []
+
+    raw = good()
+    raw["why"]["text"] = "The harness is on Example.com, so it is easy to reuse."
+    assert "url:why" in check_summary(raw, title=TITLE, text=text)
+
+
+def test_a_url_in_a_quoted_field_is_the_source_s_own_link() -> None:
+    # The stored text carries links, and a quote may carry one: only interpretation is refused.
+    text = f"{TEXT} The code is at https://example.com/bench."
+    raw = good()
+    raw["what"] = {
+        "text": "The authors ship the benchmark at https://example.com/bench.",
+        "quote": "The code is at https://example.com/bench.",
+    }
+    assert check_summary(raw, title=TITLE, text=text) == []
+
+
 def test_an_invented_name_fails() -> None:
     raw = good()
     raw["what"]["text"] = "The authors compare AgentBench-Lite with GPT-5 on 41 tasks."

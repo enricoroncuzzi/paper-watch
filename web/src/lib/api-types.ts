@@ -1454,6 +1454,15 @@ export interface operations {
           "application/json": components["schemas"]["HTTPValidationError"];
         };
       };
+      /** @description This subject sent its minute's events; also sends Retry-After. */
+      429: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["RateLimited"];
+        };
+      };
     };
   };
   list_drafts_drafts_get: {

@@ -55,7 +55,7 @@ from paperwatch.config import (
 from paperwatch.domain import Tier, load_profiles
 from paperwatch.drafts.check import check_draft
 from paperwatch.drafts.generate import DraftUnusable, draft_text, generate_draft
-from paperwatch.drafts.prompts import MAX_POV_CHARS, clean_language
+from paperwatch.drafts.prompts import MAX_POV_CHARS, clean_language, clean_pov
 from paperwatch.ingest.pipeline import Followup, Sources, run_ingestion
 from paperwatch.llm.chat import (
     CallGuard,
@@ -578,10 +578,53 @@ def _suggestion_lines(position: int, lane: str, entry: Scored, status: str) -> s
     return f"{position}. [{lane}] {candidate.title}\n   {' | '.join(parts)}\n   {candidate.url}"
 
 
+def _draft_pov(pov: str, pov_file: str | None) -> str:
+    """The owner's point of view, from the flag, a file or stdin, and never from two at once.
+
+    `--pov` is visible in `ps` to every user on the machine and stays in the shell history, so a
+    real point of view belongs in a file (`--pov-file PATH`) or on stdin (`--pov -` or
+    `--pov-file -`).
+    """
+    if pov == "-" and pov_file is None:
+        pov, pov_file = "", "-"
+    if pov_file is not None:
+        if pov:
+            raise typer.BadParameter("give the point of view with --pov or just --pov-file")
+        if pov_file == "-":
+            try:
+                # piped text, so stdin is the point of view itself, not a terminal to type into.
+                text = sys.stdin.read()
+            except (OSError, UnicodeDecodeError) as exc:
+                message = f"cannot read the point of view from stdin: {exc}"
+                raise typer.BadParameter(message) from exc
+        else:
+            try:
+                text = Path(pov_file).read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError) as exc:
+                raise typer.BadParameter(f"cannot read {pov_file}: {exc}") from exc
+        # An editor leaves a newline at the end; it is not part of what the owner wrote.
+        pov = text.rstrip("\r\n")
+    if len(pov) > MAX_POV_CHARS:
+        raise typer.BadParameter(f"the point of view is longer than {MAX_POV_CHARS} characters")
+    try:
+        return clean_pov(pov)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+
 @app.command()
 def draft(
     item_id: str = typer.Argument(..., help="The admitted item's id"),
-    pov: str = typer.Option("", "--pov", help="Your own point of view, as text"),
+    pov: str = typer.Option(
+        "",
+        "--pov",
+        help="Your own point of view, as text (visible in `ps`), or - for stdin",
+    ),
+    pov_file: str | None = typer.Option(
+        None,
+        "--pov-file",
+        help="Read the point of view from a file, or from stdin with -",
+    ),
     language: str = typer.Option("en", "--language", help="Language code for the post"),
     live: bool = LIVE,
 ) -> None:
@@ -593,8 +636,7 @@ def draft(
         parsed = uuid.UUID(item_id)
     except ValueError as exc:
         raise typer.BadParameter(f"not a UUID: {item_id}") from exc
-    if len(pov) > MAX_POV_CHARS:
-        raise typer.BadParameter(f"--pov is longer than {MAX_POV_CHARS} characters")
+    pov = _draft_pov(pov, pov_file)
     try:
         language = clean_language(language)
     except ValueError as exc:
@@ -913,7 +955,7 @@ def ask(
         # A mistyped id is a setup mistake, not a failed answer: say so and stop before the stream.
         reader = deps.read_session_factory or deps.session_factory
         with closing(reader()) as session:
-            if Repository(session).thread(thread) is None:
+            if not Repository(session).thread_exists(thread):
                 typer.echo(f"thread not found: {thread}", err=True)
                 raise typer.Exit(2)
     streamed: list[str] = []

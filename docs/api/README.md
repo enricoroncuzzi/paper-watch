@@ -19,7 +19,7 @@ reference. `docs/learn/15` explains the gate and what each status code means.
 | `GET /runs?limit=10` | `{"runs": [RunSummary]}`, newest `started_at` first; `limit` is 1 to 50. |
 | `GET /runs/{run_id}` | One `RunDetail` (a summary plus `window_start`, `window_end` and `dead_letters`), or 404. |
 | `GET /suggestions` | The picks and the Rising shelf: `{generated_at, list_version, picks, rising, rising_note}`. |
-| `POST /suggestions/{item_id}/events` | `{"event": "opened" \| "dismissed"}`, 204, or 404 for an item that is not admitted. |
+| `POST /suggestions/{item_id}/events` | `{"event": "opened" \| "dismissed"}`, 204, or 404 for an item that is not admitted; 429 with `Retry-After` past 60 events a minute per credential. |
 | `POST /drafts` | `{item_id, pov, language}`: generate, check and save one draft; 201 `Draft`. |
 | `POST /drafts/{draft_id}/regenerate` | Re-run the stored inputs and point of view; 201, with `regenerated_from` set. |
 | `GET /drafts?limit=50` | `{"drafts": [Draft]}`, newest first; the list leaves out the point of view. |
@@ -39,8 +39,8 @@ never counted being `0`. `healthy` is `null` when a run closed without a verdict
 the next run's `fail_open_runs` leaves behind for a crashed one: the page shows that as unknown,
 not as unhealthy. `followup` is `{pass, of, next_at, pending_s2}` while the run waits between
 follow-up passes and `null` otherwise (including once the loop has ended). `RunDetail` adds the
-window and `dead_letters: [{source, ref, error, attempts, created_at, resolved_at}]`, with `ref`
-and `error` clipped to 500 characters. All timestamps are UTC ISO 8601.
+window and `dead_letters: [{source, ref, error, attempts, created_at, resolved_at}]`, the run's
+newest 200 in the order they happened, with `ref` and `error` clipped to 500 characters. All timestamps are UTC ISO 8601.
 
 These three routes open one short read-only session per request and are safe to poll: they never
 touch a model and never count against the answer limits.
