@@ -595,3 +595,79 @@ def test_status_never_prints_a_secret(sandbox: Sandbox) -> None:
     result = sandbox.run("status")
     for secret in SECRETS:
         assert secret not in result.stdout + result.stderr
+
+
+# --- switch (steps 5 and 6) ----------------------------------------------------------------
+
+
+def test_switch_refuses_before_prepare(sandbox: Sandbox) -> None:
+    result = sandbox.run("switch", "--yes")
+    assert result.returncode == 1
+    assert "prepare" in result.stderr
+    assert sandbox.records("systemctl") == []
+    assert not sandbox.system_unit.exists()
+
+
+def test_switch_installs_the_unit_and_never_holds_the_port_twice(sandbox: Sandbox) -> None:
+    sandbox.prepare()
+    result = sandbox.run("switch", "--yes")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert sandbox.system_unit.read_text() == UNIT_FROM_CHECKOUT
+    calls = sandbox.records("systemctl")
+    stop = calls.index(f"--user disable --now paperwatch-api")
+    start = calls.index("enable --now paperwatch-api")
+    assert calls.index("daemon-reload") < stop < start
+    # The old unit is the owner's user manager's, reached as that account: as root it has no
+    # runtime directory of its own to ask.
+    assert f"{OWNER}|/run/user/1001|--user disable --now paperwatch-api" in sandbox.records(
+        "systemctl.who"
+    )
+
+
+def test_switch_runs_the_acceptance_check_before_it_reports_success(sandbox: Sandbox) -> None:
+    sandbox.prepare()
+    result = sandbox.run("switch", "--yes")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "all checks passed" in result.stdout
+    assert "tidy" in result.stdout
+
+
+def test_switch_rolls_back_when_the_new_unit_never_becomes_healthy(dead_api: Sandbox) -> None:
+    dead_api.prepare()
+    result = dead_api.run("switch", "--yes")
+    assert result.returncode == 1
+    calls = dead_api.records("systemctl")
+    assert "disable --now paperwatch-api" in calls
+    assert calls.index("disable --now paperwatch-api") < calls.index(
+        "--user enable --now paperwatch-api"
+    )
+    # The evidence is in the failure itself: the operator is looking at one terminal.
+    assert "fake journal line" in result.stderr
+    assert not (dead_api.rec / "system.active").exists()
+    assert (dead_api.rec / "user.active").exists()
+
+
+def test_switch_rolls_back_when_the_acceptance_check_fails(sandbox: Sandbox) -> None:
+    sandbox.accept(passes=False)
+    sandbox.prepare()
+    result = sandbox.run("switch", "--yes")
+    assert result.returncode == 1
+    assert "FAIL: healthz answers" in result.stdout + result.stderr
+    assert not (sandbox.rec / "system.active").exists()
+    assert (sandbox.rec / "user.active").exists()
+
+
+def test_switch_asks_before_it_swaps_the_units(sandbox: Sandbox) -> None:
+    sandbox.prepare()
+    result = subprocess.run(  # noqa: S603 (the repository's own script, no shell)
+        [BASH, str(SCRIPT), "switch"],
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        timeout=60,
+        check=False,
+        env=sandbox.env(),
+    )
+    assert result.returncode == 1
+    assert "--yes" in result.stderr
+    assert sandbox.records("systemctl") == []

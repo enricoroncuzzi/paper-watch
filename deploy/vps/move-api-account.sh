@@ -148,6 +148,15 @@ as_api_in() {  # directory command...
     runuser -u "$api" -- env "HOME=$api_home" bash -c "cd $(printf '%q' "$dir") && $quoted"
 }
 
+user_manager() {
+    local uid
+    uid=$(account_uid "$owner")
+    # Root asking another account's user manager for something needs that account's runtime
+    # directory and bus: without them systemctl --user has no manager to talk to.
+    as_user "$owner" env "XDG_RUNTIME_DIR=/run/user/$uid" \
+        "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus" systemctl --user "$@"
+}
+
 reload_postgres() {
     # Root's own peer identity is not a Postgres role, so the reload is the admin's, as in the
     # guide: this is a reload, never a restart of the server the other project shares.
@@ -279,6 +288,174 @@ cmd_prepare() {
 
     step "Prepared"
     say "Nothing is serving from the new account yet: the next step is '$0 switch'."
+}
+
+# --- asking, and waiting -----------------------------------------------------------
+
+confirm() {  # question
+    [ "$assume_yes" = 1 ] && return 0
+    if [ ! -t 0 ]; then
+        die "$1: there is no terminal to ask on, so rerun with --yes (nothing was changed)"
+    fi
+    printf '%s [y/N] ' "$1" >&2
+    local answer=
+    read -r answer || answer=
+    case $answer in
+        y | Y | yes | YES) return 0 ;;
+        *) die "cancelled: nothing was changed" ;;
+    esac
+}
+
+unit_active() {  # manager
+    case $1 in
+        system) systemctl is-active --quiet paperwatch-api ;;
+        user) user_manager is-active --quiet paperwatch-api ;;
+    esac
+}
+
+# Bounded on purpose: a unit that is restarting never answers, and the swap has to be undone rather
+# than waited on. The count is iteration based so a stubbed sleep cannot spin forever.
+wait_healthy() {  # manager
+    local manager=$1 tries=$((ready_timeout / poll)) i=1
+    [ "$tries" -ge 1 ] || tries=1
+    say "waiting for the API on $api_url (up to ${ready_timeout}s; the first start downloads the model)"
+    while [ "$i" -le "$tries" ]; do
+        if unit_active "$manager" && curl -fsS -o /dev/null --max-time 5 "$api_url/healthz"; then
+            ok "the unit is active and $api_url/healthz answers"
+            return 0
+        fi
+        i=$((i + 1))
+        if [ "$i" -le "$tries" ]; then
+            sleep "$poll"
+        fi
+    done
+    return 1
+}
+
+# --- the acceptance check of section 15.4 --------------------------------------------------
+
+run_acceptance() {
+    if [ ! -x "$api_check" ]; then
+        warn "the acceptance check is missing or not executable: $api_check"
+        return 1
+    fi
+    local auth=
+    if [ -f "$api_env" ]; then
+        auth=$(env_value "$api_env" PW_API_AUTH)
+    fi
+    if [ "$auth" = hmac ]; then
+        # An HMAC token is single use, so the check mints one per authenticated request. It is
+        # passed as a command, never as a token, so no credential lands on an argv.
+        as_api env "PW_CHECK_TOKEN_CMD=$uv_bin run --frozen --no-dev --env-file $api_env paperwatch api-token --live" \
+            "$api_check" "$api_url"
+    else
+        # An OIDC token cannot be minted here: export PW_CHECK_TOKEN and runuser passes it on.
+        as_api "$api_check" "$api_url"
+    fi
+}
+
+# --- prepare, for the checks switch and tidy make ----------------------------------------
+
+missing_prepare() {
+    local parts=()
+    account_exists "$api" || parts+=("the $api account")
+    map_line_present "$pg_ident" "$api" "$api_role" || parts+=("its $pg_ident line")
+    api_checkout_tag >/dev/null || parts+=("its checkout")
+    [ -x "$uv_bin" ] || parts+=("uv")
+    [ -d "$api_checkout/.venv" ] || parts+=("its venv")
+    [ -f "$api_env" ] || parts+=("its env file")
+    local IFS=,
+    printf '%s' "${parts[*]}"
+}
+
+# --- the swap, and the way back -----------------------------------------------------------
+
+# The order is section 18's: the new unit is installed, the old one stops, and only then does the
+# new one start, so the port is never held by two processes. The old unit's file stays, which is
+# what makes this reversible until tidy.
+cmd_switch() {
+    require_root
+    local missing
+    missing=$(missing_prepare)
+    if [ -n "$missing" ]; then
+        die "prepare is not finished, missing: $missing. Run '$0 prepare' first."
+    fi
+    confirm "Move the API from $owner's user unit to the $api system unit now?"
+
+    step "Step 5: swap the units"
+    # One known mode rather than whatever the checkout carries, and the same file systemd reads.
+    install -m 644 "$api_checkout/deploy/vps/paperwatch-api.service" "$system_unit"
+    ok "installed $system_unit"
+    systemctl daemon-reload
+    user_manager disable --now paperwatch-api
+    ok "stopped $owner's user unit; its file is kept for a rollback"
+    systemctl enable --now paperwatch-api
+    ok "enabled and started the system unit"
+
+    step "Step 6: wait for the API, then accept it"
+    if ! wait_healthy system; then
+        show_evidence
+        do_rollback
+        if wait_healthy user; then
+            die "the new unit never answered, so the API is back on $owner's user unit; fix and rerun '$0 switch'"
+        fi
+        die "the new unit never answered and neither did the rollback: the API is down, see the evidence above"
+    fi
+    if ! run_acceptance; then
+        show_evidence
+        do_rollback
+        if wait_healthy user; then
+            die "the acceptance check failed, so the API is back on $owner's user unit"
+        fi
+        die "the acceptance check failed and the rollback did not answer either: the API is down"
+    fi
+
+    step "Switched"
+    say "The API now runs as $api from $api_checkout at $(api_checkout_tag)."
+    say "Step 6 also reads the journal, the funnel and the public URL by hand; then, after a day of"
+    say "answers, run '$0 tidy'."
+}
+
+show_evidence() {
+    warn "the evidence, for the failure above"
+    systemctl status --no-pager --lines=0 paperwatch-api >&2 || true
+    journalctl -u paperwatch-api -n 50 --no-pager >&2 || true
+}
+
+# Section 18's "Rolling back": root stops the new unit, the env file is the owner's again, and the
+# owner starts the unit whose file the migration kept. No database edit is involved before tidy.
+do_rollback() {
+    step "Rolling back to $owner's user unit"
+    systemctl disable --now paperwatch-api \
+        || warn "the system unit would not stop; stop it before the old one starts"
+    ok "the system unit is stopped and disabled"
+    if [ -f "$owner_env" ]; then
+        # prepare kept it, so there is nothing to copy back and nothing to leak.
+        ok "$owner_env is still in place"
+    elif [ -f "$api_env" ]; then
+        install -m 600 -o "$owner" -g "$owner" "$api_env" "$owner_env"
+        env_point "$owner_env" PW_LOCAL_EMBEDDING_CACHE_DIR "$owner_cache"
+        ok "restored $owner_env, 0600, with PW_LOCAL_EMBEDDING_CACHE_DIR=$owner_cache"
+    else
+        warn "neither env file exists: the owner's unit will not start without one"
+    fi
+    user_manager daemon-reload
+    user_manager enable --now paperwatch-api
+    ok "enabled and started $owner's user unit"
+}
+
+cmd_rollback() {
+    require_root
+    if [ ! -f "$owner_unit" ]; then
+        die "the owner's unit file is gone ($owner_unit): tidy already ran, so going back needs the unit file from a release before ADR 0017"
+    fi
+    confirm "Stop the system unit and serve the API from $owner's user unit again?"
+    do_rollback
+    if wait_healthy user; then
+        say "The API answers on $api_url again. Run '$0 status' when you are ready to try again."
+        return 0
+    fi
+    die "$owner's user unit did not answer on $api_url: read journalctl --user -u paperwatch-api as $owner"
 }
 
 # --- status --------------------------------------------------------------------------------
