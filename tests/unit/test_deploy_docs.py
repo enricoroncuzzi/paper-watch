@@ -1,9 +1,15 @@
-"""The database URL the VPS guide tells the captain to write must be the socket form.
+"""The VPS guide and the units it installs are the deployment contract, read here as one.
 
-A `localhost:5432` URL would silently try TCP, where the server's Postgres has no password
-authentication configured and no listening port for the `paperwatch` role: the run would fail on
-the server but work on a laptop, which is the worst kind of documentation bug. These tests read
-the guide itself, so a drift in the doc fails the suite.
+`docs/deploy/vps.md` and `deploy/vps/*.service`/`.slice` are the exact text a human runs and
+installs on a server no test can reach, so they are an owned contract: a unit key in the wrong
+section is silently ignored by systemd, and a URL the guide tells the captain to write must be the
+socket form, because a `localhost:5432` one would silently try TCP, where the server's Postgres has
+no password authentication and no listening port for the `paperwatch` role. Every assertion below
+is about that contract's meaning - which identity reaches which role, which account a unit runs
+as, which steps happen in which order - not about arbitrary text, and a drift fails the suite.
+
+What a unit *does* when it runs is not testable here, and is not claimed: the keys are asserted in
+the section systemd reads them from, and `api-check.sh` reads the deployed unit back on the server.
 """
 
 import os
