@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.14.2](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.14.1...paperwatch-v0.14.2) (2026-10-26)
+
+
+### Bug Fixes
+
+* **api:** bind corpus cursors to their query and forward since ([#82](https://github.com/enricoroncuzzi/paper-watch/issues/82)) ([d3d7fd0](https://github.com/enricoroncuzzi/paper-watch/commit/d3d7fd0733cff39efab7a525aaa2350fdc06f326))
+* **api:** name a new thread before its first answer so a dropped first question can be recovered ([#84](https://github.com/enricoroncuzzi/paper-watch/issues/84)) ([58b9b79](https://github.com/enricoroncuzzi/paper-watch/commit/58b9b7965f841ab183f0528395576683ac738bd9))
+
 ## [0.14.1](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.14.0...paperwatch-v0.14.1) (2026-10-26)
 
 
