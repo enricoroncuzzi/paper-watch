@@ -181,7 +181,7 @@ map_line_remove() {
     tmp=$pg_ident.new.$$
     cp -p "$pg_ident" "$tmp"
     : >"$tmp"
-    awk -v map="$map_name" -v sys="$owner" -v role="$api_role" \
+    awk -v map="$map_name" -v sys="$1" -v role="$api_role" \
         '!($1 == map && $2 == sys && $3 == role)' "$pg_ident" >"$tmp"
     mv -f "$tmp" "$pg_ident"
 }
@@ -194,7 +194,10 @@ env_point() {
     : >"$tmp"
     while IFS= read -r line || [ -n "$line" ]; do
         case $line in
-            "$key="*) printf '%s=%s\n' "$key" "$value" && found=1 ;;
+            "$key="*)
+                printf '%s=%s\n' "$key" "$value"
+                found=1
+                ;;
             *) printf '%s\n' "$line" ;;
         esac
     done <"$file" >"$tmp"
@@ -302,7 +305,7 @@ cmd_prepare() {
     say "Nothing is serving from the new account yet: the next step is '$0 switch'."
 }
 
-# --- asking, and waiting -----------------------------------------------------------
+# --- asking, and waiting -------------------------------------------------------------------
 
 confirm() {  # question
     [ "$assume_yes" = 1 ] && return 0
@@ -366,7 +369,7 @@ run_acceptance() {
     fi
 }
 
-# --- prepare, for the checks switch and tidy make ----------------------------------------
+# --- prepare, for the checks switch and tidy make ------------------------------------------
 
 missing_prepare() {
     local parts=()
@@ -376,11 +379,11 @@ missing_prepare() {
     [ -x "$uv_bin" ] || parts+=("uv")
     [ -d "$api_checkout/.venv" ] || parts+=("its venv")
     [ -f "$api_env" ] || parts+=("its env file")
-    local IFS=,
+    local IFS=', '
     printf '%s' "${parts[*]}"
 }
 
-# --- the swap, and the way back -----------------------------------------------------------
+# --- the swap, and the way back ------------------------------------------------------------
 
 # The order is section 18's: the new unit is installed, the old one stops, and only then does the
 # new one start, so the port is never held by two processes. The old unit's file stays, which is
@@ -513,7 +516,7 @@ cmd_tidy() {
 
     step "Step 7: the owner's path to the API's role"
     if map_line_present "$pg_ident" "$owner" "$api_role"; then
-        map_line_remove
+        map_line_remove "$owner"
         reload_postgres
         ok "removed $owner -> $api_role from $pg_ident and reloaded"
     else
@@ -622,7 +625,7 @@ cmd_status() {
 # --- entry point ---------------------------------------------------------------------------
 
 main() {
-    local cmd= arg
+    local cmd='' arg
     for arg in "$@"; do
         case $arg in
             --yes | -y) assume_yes=1 ;;

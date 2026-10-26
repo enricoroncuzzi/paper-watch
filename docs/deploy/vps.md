@@ -904,6 +904,26 @@ units. The API no longer needs a user manager at all, which is why it becomes a 
 Until step 7 the change is reversible with no database edit at all, because the old
 `paperwatch → paperwatch_api` identity is still in `pg_ident.conf` (step 2 only adds a line).
 
+`deploy/vps/move-api-account.sh`, in the ingestion's checkout, is this section as subcommands. Run
+it as root, one command at a time, and read the step below when one stops. `status` is read-only
+and says which steps are done; `prepare` is steps 1 to 4 and can be rerun after a partial failure;
+`switch` is steps 5 and 6 and undoes itself when the new unit does not answer or the acceptance
+check fails; `rollback` is the section at the end; `tidy` is step 7. It never prints a value from
+the env file, and `--yes` skips the two confirmations.
+
+```bash
+# as root, on the server, from the ingestion's checkout
+/home/paperwatch/paper-watch/deploy/vps/move-api-account.sh status
+/home/paperwatch/paper-watch/deploy/vps/move-api-account.sh prepare
+/home/paperwatch/paper-watch/deploy/vps/move-api-account.sh switch
+# a day of answers later, step 7
+/home/paperwatch/paper-watch/deploy/vps/move-api-account.sh tidy
+```
+
+One deliberate difference from step 4: the script keeps the owner's `~/.config/paperwatch/api.env`
+until `tidy`, so a rollback has nothing to hand back and the API's values are never only in one
+copy.
+
 1. **Create the account.** As root, as in section 15.1:
 
    ```bash

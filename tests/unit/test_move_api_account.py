@@ -29,6 +29,7 @@ GUIDE = REPO_ROOT / "docs" / "deploy" / "vps.md"
 BASH = shutil.which("bash") or "/bin/bash"
 REAL_CURL = shutil.which("curl") or "/usr/bin/curl"
 REAL_INSTALL = shutil.which("install") or "/usr/bin/install"
+REAL_GIT = shutil.which("git") or "/usr/bin/git"
 REAL_PATH = os.environ["PATH"]
 
 OWNER = "paperwatch"
@@ -62,7 +63,7 @@ UNIT_FROM_CHECKOUT = "# the unit this release installs\n"
 
 def _git(repo: Path, *args: str) -> str:
     done = subprocess.run(  # noqa: S603 (a fixed binary and argv, no shell)
-        ["git", "-C", str(repo), *args],
+        [REAL_GIT, "-C", str(repo), *args],
         check=True,
         capture_output=True,
         text=True,
@@ -178,7 +179,9 @@ class Sandbox:
 
     def owner_map_lines(self) -> list[list[str]]:
         """The owner's own path to the API's role, which tidy removes last."""
-        return [line for line in self.map_lines() if line[1:2] == [OWNER] and line[2:] == [API_ROLE]]
+        return [
+            line for line in self.map_lines() if line[1:2] == [OWNER] and line[2:] == [API_ROLE]
+        ]
 
     # -- running ------------------------------------------------------------------
     def env(self, **extra: str) -> dict[str, str]:
@@ -224,15 +227,16 @@ class Sandbox:
 
 def _build_stubs(sandbox: Sandbox) -> None:
     rec = sandbox.rec
-    (rec / "passwd").write_text(f"{OWNER}:x:1001:1001::{sandbox.path('home/paperwatch')}:/bin/bash\n")
+    home = sandbox.path(f"home/{OWNER}")
+    (rec / "passwd").write_text(f"{OWNER}:x:1001:1001::{home}:/bin/bash\n")
     # The installer the release's uv install would run: enough to put a working `uv` in the
     # account's home, and no network.
     (rec / "installer.sh").write_text(
         "#!/bin/sh\n"
         'mkdir -p "$HOME/.local/bin"\n'
-        'cat > "$HOME/.local/bin/uv" <<\'UV\'\n'
+        "cat > \"$HOME/.local/bin/uv\" <<'UV'\n"
         "#!/bin/sh\n"
-        "printf '%s\\n' \"uv $*\" >> \"$REC/uv\"\n"
+        'printf \'%s\\n\' "uv $*" >> "$REC/uv"\n'
         "mkdir -p .venv\n"
         "exit 0\n"
         "UV\n"
@@ -249,10 +253,10 @@ def _build_stubs(sandbox: Sandbox) -> None:
     _stub(
         sandbox.bin,
         "id",
-        f"""
+        """
         case $* in
             "-u") printf '501\\n' ;;
-            "-u "*) getent passwd "${{2}}" >/dev/null || exit 1; getent passwd "$2" | cut -d: -f3 ;;
+            "-u "*) getent passwd "$2" >/dev/null || exit 1; getent passwd "$2" | cut -d: -f3 ;;
             *) exit 1 ;;
         esac
         """,
@@ -506,9 +510,7 @@ def test_prepare_creates_the_account_and_maps_it(sandbox: Sandbox) -> None:
     assert f"{API}:" in (sandbox.rec / "passwd").read_text()
     # One line, in the columns of the block section 12 shows, and the owner's own path to the
     # API's role is still there for the rollback.
-    assert sandbox.pg_ident.read_text().splitlines()[-1] == (
-        f"{OWNER}    {API}   {API_ROLE}"
-    )
+    assert sandbox.pg_ident.read_text().splitlines()[-1] == (f"{OWNER}    {API}   {API_ROLE}")
     assert sandbox.owner_map_lines() == [[OWNER, OWNER, API_ROLE]]
 
 
@@ -616,7 +618,7 @@ def test_switch_installs_the_unit_and_never_holds_the_port_twice(sandbox: Sandbo
     assert result.returncode == 0, result.stdout + result.stderr
     assert sandbox.system_unit.read_text() == UNIT_FROM_CHECKOUT
     calls = sandbox.records("systemctl")
-    stop = calls.index(f"--user disable --now paperwatch-api")
+    stop = calls.index("--user disable --now paperwatch-api")
     start = calls.index("enable --now paperwatch-api")
     assert calls.index("daemon-reload") < stop < start
     # The old unit is the owner's user manager's, reached as that account: as root it has no
@@ -788,3 +790,19 @@ def test_tidy_leaves_every_file_when_the_owner_can_still_take_the_role(sandbox: 
     assert sandbox.owner_unit.exists()
     # The line it removed is put back, so the next run starts from the same state.
     assert sandbox.owner_map_lines() == [[OWNER, OWNER, API_ROLE]]
+
+
+# --- the guide -----------------------------------------------------------------------------
+
+
+def test_the_guide_points_at_the_script_for_the_migration() -> None:
+    # Section 18 is what the owner reads on the server, so it names the script and each subcommand
+    # the migration runs; the numbered steps stay as the reference for what it does and why.
+    guide = GUIDE.read_text()
+    section = guide[guide.index("## 18. Moving an existing server onto the API account") :]
+    assert "deploy/vps/move-api-account.sh" in section
+    for subcommand in ("status", "prepare", "switch", "tidy"):
+        assert f"move-api-account.sh {subcommand}" in section
+    assert SCRIPT.is_file()
+    # The guide runs it by absolute path, from a checkout that git keeps executable.
+    assert SCRIPT.stat().st_mode & 0o111
