@@ -5,8 +5,7 @@ import { lastAsk, setScenario, signIn } from "./helpers";
 // The picks and the Rising shelf, against the fake API only. The mockup is the visual reference;
 // these tests pin the behaviour the design text decides.
 
-const LEAD_TITLE =
-  "Replay Buffers Beat Summaries for Long-Running Coding Agents";
+const LEAD_TITLE = "Replay Buffers Beat Summaries for Long-Running Coding Agents";
 const LEAD_ID = "33333333-3333-4333-8333-333333333301";
 
 test.beforeEach(async ({ page, request }) => {
@@ -14,9 +13,7 @@ test.beforeEach(async ({ page, request }) => {
   await signIn(page);
 });
 
-test("the lead pick and four compact picks render with their facts", async ({
-  page,
-}) => {
+test("the lead pick and four compact picks render with their facts", async ({ page }) => {
   const picks = page.getByTestId("picks-section");
   const lead = picks.getByTestId("lead-pick");
   await expect(lead).toContainText(LEAD_TITLE);
@@ -35,15 +32,9 @@ test("the lead pick and four compact picks render with their facts", async ({
   await expect(lead).toContainText("Hugging Face");
   await expect(picks.getByTestId("compact-pick")).toHaveCount(4);
   // Seven cards share the same actions, so each one names the item it acts on.
-  await expect(
-    lead.getByRole("button", { name: `Not for me: ${LEAD_TITLE}` }),
-  ).toBeVisible();
-  await expect(
-    lead.getByRole("link", { name: `Read the original: ${LEAD_TITLE}` }),
-  ).toBeVisible();
-  await expect(
-    lead.getByRole("button", { name: `Ask about it: ${LEAD_TITLE}` }),
-  ).toBeVisible();
+  await expect(lead.getByRole("button", { name: `Not for me: ${LEAD_TITLE}` })).toBeVisible();
+  await expect(lead.getByRole("link", { name: `Read the original: ${LEAD_TITLE}` })).toBeVisible();
+  await expect(lead.getByRole("button", { name: `Ask about it: ${LEAD_TITLE}` })).toBeVisible();
   // A reader never sees a database enum: every tier and basis is printed as words.
   const text = await picks.innerText();
   for (const raw of [
@@ -63,9 +54,7 @@ test("the lead pick and four compact picks render with their facts", async ({
   await expect(picks).toContainText("lab post");
 });
 
-test("a checked summary shows quotes and labels interpretations", async ({
-  page,
-}) => {
+test("a checked summary shows quotes and labels interpretations", async ({ page }) => {
   const thirty = page.getByTestId("lead-pick").getByTestId("thirty-seconds");
   await expect(thirty).toContainText("In 30 seconds");
   await expect(thirty).toContainText("What they did");
@@ -79,10 +68,7 @@ test("a checked summary shows quotes and labels interpretations", async ({
   await expect(thirty.getByTestId("interpretation-label")).toHaveCount(2);
 });
 
-test("a pending summary shows the excerpt and is replaced after a refresh", async ({
-  page,
-  request,
-}) => {
+test("a pending summary shows the excerpt and is replaced after a refresh", async ({ page, request }) => {
   await setScenario(request, "summary_pending");
   await page.reload();
 
@@ -92,23 +78,16 @@ test("a pending summary shows the excerpt and is replaced after a refresh", asyn
   await expect(thirty).toContainText("summary on its way");
   await expect(thirty).toContainText("We replace the running summary");
   // The section refreshes itself and the fake serves the checked list from then on.
-  await expect(thirty).toContainText("41% fewer tokens per task", {
-    timeout: 15_000,
-  });
+  await expect(thirty).toContainText("41% fewer tokens per task", { timeout: 15_000 });
   await expect(thirty).not.toContainText("summary on its way");
 });
 
 test("dismissing removes the card and posts the event", async ({ page }) => {
   const picks = page.getByTestId("picks-section");
   const posted = page.waitForRequest(
-    (request) =>
-      /\/api\/suggestions\/.+\/events$/.test(request.url()) &&
-      request.method() === "POST",
+    (request) => /\/api\/suggestions\/.+\/events$/.test(request.url()) && request.method() === "POST",
   );
-  await picks
-    .getByTestId("lead-pick")
-    .getByRole("button", { name: /^Not for me/ })
-    .click();
+  await picks.getByTestId("lead-pick").getByRole("button", { name: /^Not for me/ }).click();
   expect((await posted).postDataJSON()).toEqual({ event: "dismissed" });
 
   // The card goes at once, and the next pick takes the lead slot.
@@ -119,38 +98,24 @@ test("dismissing removes the card and posts the event", async ({ page }) => {
   await expect(picks).not.toContainText(LEAD_TITLE);
 });
 
-test("read the original opens the stored url in a new tab", async ({
-  page,
-}) => {
+test("read the original opens the stored url in a new tab", async ({ page }) => {
   // The page never reaches the network in a test: the external article is fulfilled locally.
   await page.route("https://arxiv.org/**", (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: "text/html",
-      body: "the original",
-    }),
+    route.fulfill({ status: 200, contentType: "text/html", body: "the original" }),
   );
-  const link = page
-    .getByTestId("lead-pick")
-    .getByRole("link", { name: /Read the original/ });
-  expect(await link.getAttribute("href")).toBe(
-    "https://arxiv.org/abs/2610.04412",
-  );
+  const link = page.getByTestId("lead-pick").getByRole("link", { name: /Read the original/ });
+  expect(await link.getAttribute("href")).toBe("https://arxiv.org/abs/2610.04412");
   expect(await link.getAttribute("target")).toBe("_blank");
 
   // A middle click opens the paper too, so it counts as an opening as well.
   const middle = page.waitForRequest(
-    (request) =>
-      /\/api\/suggestions\/.+\/events$/.test(request.url()) &&
-      request.method() === "POST",
+    (request) => /\/api\/suggestions\/.+\/events$/.test(request.url()) && request.method() === "POST",
   );
   await link.click({ button: "middle" });
   expect((await middle).postDataJSON()).toEqual({ event: "opened" });
 
   const beacon = page.waitForRequest(
-    (request) =>
-      /\/api\/suggestions\/.+\/events$/.test(request.url()) &&
-      request.method() === "POST",
+    (request) => /\/api\/suggestions\/.+\/events$/.test(request.url()) && request.method() === "POST",
   );
   const [popup] = await Promise.all([page.waitForEvent("popup"), link.click()]);
   await expect(popup).toHaveURL("https://arxiv.org/abs/2610.04412");
@@ -159,10 +124,7 @@ test("read the original opens the stored url in a new tab", async ({
 
 test("ask about it opens the sheet with the item", async ({ page }) => {
   const picks = page.getByTestId("picks-section");
-  await picks
-    .getByTestId("lead-pick")
-    .getByRole("button", { name: /^Ask about it/ })
-    .click();
+  await picks.getByTestId("lead-pick").getByRole("button", { name: /^Ask about it/ }).click();
 
   const sheet = page.getByRole("dialog");
   await expect(sheet).toBeVisible();
@@ -170,8 +132,7 @@ test("ask about it opens the sheet with the item", async ({ page }) => {
   await expect(sheet).toContainText(LEAD_TITLE);
 
   const sent = page.waitForRequest(
-    (request) =>
-      request.url().endsWith("/api/ask") && request.method() === "POST",
+    (request) => request.url().endsWith("/api/ask") && request.method() === "POST",
   );
   await sheet.getByTestId("composer").fill("What did they measure?");
   await sheet.getByRole("button", { name: "Send the question" }).click();
@@ -181,10 +142,7 @@ test("ask about it opens the sheet with the item", async ({ page }) => {
   });
 });
 
-test("a dropped ask about it is retried about the same item", async ({
-  page,
-  request,
-}) => {
+test("a dropped ask about it is retried about the same item", async ({ page, request }) => {
   await setScenario(request, "drop");
   await page
     .getByTestId("picks-section")
@@ -209,46 +167,31 @@ test("a dropped ask about it is retried about the same item", async ({
 test("rising shows the not yet independently vetted note", async ({ page }) => {
   const rising = page.getByTestId("rising-section");
   // Rising is a shelf inside This week, not a separate page.
-  await expect(
-    page.getByTestId("picks-section").getByTestId("rising-section"),
-  ).toBeVisible();
+  await expect(page.getByTestId("picks-section").getByTestId("rising-section")).toBeVisible();
   await expect(rising).toContainText("Rising, not yet independently vetted.");
   await expect(rising.getByTestId("rising-card")).toHaveCount(3);
   await expect(rising).toContainText("+380 upvotes in 1 day");
   await expect(rising).toContainText("Sparse Attention With a Learned Sketch");
-  await expect(
-    rising.getByRole("button", { name: /^Ask about it/ }).first(),
-  ).toBeVisible();
+  await expect(rising.getByRole("button", { name: /^Ask about it/ }).first()).toBeVisible();
 });
 
-test("a javascript link is never rendered as a link", async ({
-  page,
-  request,
-}) => {
+test("a javascript link is never rendered as a link", async ({ page, request }) => {
   await setScenario(request, "javascript");
   await page.reload();
 
   const hrefs = await page
     .locator("a[href]")
-    .evaluateAll((elements) =>
-      elements.map((element) => element.getAttribute("href") ?? ""),
-    );
+    .evaluateAll((elements) => elements.map((element) => element.getAttribute("href") ?? ""));
   expect(hrefs.length).toBeGreaterThan(0);
-  for (const href of hrefs)
-    expect(href.toLowerCase()).not.toContain("javascript:");
+  for (const href of hrefs) expect(href.toLowerCase()).not.toContain("javascript:");
   // The unsafe card keeps its title and loses only its link.
   await expect(page.getByTestId("picks-section")).toContainText(LEAD_TITLE);
   await expect(
-    page
-      .getByTestId("lead-pick")
-      .getByRole("link", { name: /Read the original/ }),
+    page.getByTestId("lead-pick").getByRole("link", { name: /Read the original/ }),
   ).toHaveCount(0);
 });
 
-test("an empty list says nothing passed the gate", async ({
-  page,
-  request,
-}) => {
+test("an empty list says nothing passed the gate", async ({ page, request }) => {
   await setScenario(request, "empty");
   await page.reload();
   await expect(page.getByTestId("picks-section")).toContainText(
@@ -264,13 +207,8 @@ test("an unreachable API shows the error box", async ({ page, request }) => {
   );
 });
 
-test("the phone layout is one column with touch-sized actions", async ({
-  page,
-}, testInfo) => {
-  test.skip(
-    !testInfo.project.name.includes("iphone"),
-    "checked on the iPhone project",
-  );
+test("the phone layout is one column with touch-sized actions", async ({ page }, testInfo) => {
+  test.skip(!testInfo.project.name.includes("iphone"), "checked on the iPhone project");
 
   const overflow = await page.evaluate(
     () => document.documentElement.scrollWidth - window.innerWidth,
