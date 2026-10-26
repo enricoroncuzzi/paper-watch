@@ -375,6 +375,32 @@ def test_a_file_name_and_an_abbreviation_are_not_domains() -> None:
     assert kinds(draft) == []
 
 
+@pytest.mark.parametrize(
+    "code", ["torch.compile", "nn.Module", "np.array", "jax.jit", "model.to", "ASP.NET", "Node.js"]
+)
+def test_a_dotted_code_identifier_is_not_a_domain(code: str) -> None:
+    # Dotted code is everywhere in this corpus, and it is not a link a reader follows: only a
+    # host-shaped token, one that ends in a real top-level domain, is checked.
+    draft = replace(GOOD, body=GOOD.body + f" It builds on {code} as written.")
+    assert kinds(draft) == []
+
+
+def test_a_bare_domain_inside_a_longer_dotted_name_is_not_a_domain() -> None:
+    draft = replace(GOOD, body=GOOD.body + " It calls openai.com.client at startup.")
+    assert kinds(draft) == []
+
+
+def test_the_item_s_own_site_is_allowed_with_or_without_www() -> None:
+    # A lab feed's link usually carries www., and a draft names the site without it.
+    source = replace(SOURCE, url="https://www.anthropic.com/news/replay")
+    draft = replace(
+        GOOD,
+        body=GOOD.body + " The post is on anthropic.com.",
+        source_link="https://www.anthropic.com/news/replay",
+    )
+    assert kinds(draft, source) == []
+
+
 def test_an_escaped_entity_in_the_source_still_backs_a_quote() -> None:
     source = replace(SOURCE, text=TEXT + " Our R&amp;D budget grew.")
     draft = replace(GOOD, body=GOOD.body + ' They say "our R&D budget grew".')

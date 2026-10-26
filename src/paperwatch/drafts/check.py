@@ -21,6 +21,7 @@ from typing import Any, Literal
 from urllib.parse import urlsplit
 
 from paperwatch.drafts.generate import DraftSource, DraftText
+from paperwatch.links import bare_domains
 
 FlagKind = Literal[
     "number",
@@ -67,60 +68,6 @@ _QUOTE = re.compile(
 _URL = re.compile(
     r"https?://[^\s<>\"')]+|\bwww\.[^\s<>\"')]+|\b(?:[a-z0-9-]+\.)+[a-z]{2,}/[^\s<>\"')]+",
     re.IGNORECASE,
-)
-# A bare domain, with no scheme and no path, which the rule above does not catch: "see openai.com"
-# is a link a reader follows. A file name and an abbreviation look the same, so a known extension
-# is not a domain and a token glued to a word or to an email address is not one either.
-_BARE_DOMAIN = re.compile(
-    r"(?<![\w@.-])(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+([a-z]{2,})\b", re.IGNORECASE
-)
-# The extensions a draft names when it talks about code. Several are also country domains (.py,
-# .md, .sh); a draft writing one as a domain is far rarer than a draft naming its own script.
-_NOT_DOMAINS = frozenset(
-    {
-        "py",
-        "pyi",
-        "ipynb",
-        "pdf",
-        "json",
-        "jsonl",
-        "yaml",
-        "yml",
-        "toml",
-        "md",
-        "txt",
-        "csv",
-        "tsv",
-        "parquet",
-        "sh",
-        "js",
-        "ts",
-        "tsx",
-        "css",
-        "html",
-        "xml",
-        "tex",
-        "bib",
-        "png",
-        "jpg",
-        "jpeg",
-        "svg",
-        "gif",
-        "zip",
-        "tar",
-        "gz",
-        "whl",
-        "pt",
-        "pth",
-        "ckpt",
-        "npy",
-        "npz",
-        "h5",
-        "log",
-        "cfg",
-        "ini",
-        "env",
-    }
 )
 # A first person as a reader writes it, matched on text that went through `_fold`, so a full-width
 # or italic "I" is found. "us" is lower case only, so "A US lab" stays a country, and only the
@@ -700,21 +647,14 @@ def _span(match: re.Match[str]) -> str | None:
 
 def _bare_domains(text: str) -> list[str]:
     """The bare domains in the draft, with every URL taken out first, so a host counts once."""
-    without_urls = _URL.sub(" ", text)
-    domains = []
-    for match in _BARE_DOMAIN.finditer(without_urls):
-        domain = match.group(0).rstrip(".")
-        if match.group(1).lower() in _NOT_DOMAINS:
-            continue
-        domains.append(domain)
-    return domains
+    return bare_domains(_URL.sub(" ", text))
 
 
 def _host(url: str) -> str:
     """The host of a link or a bare domain, lower case, with or without a scheme."""
     key = _url_key(url)
     parsed = urlsplit(key if "://" in key else f"//{key}")
-    return (parsed.hostname or "").lower()
+    return (parsed.hostname or "").lower().removeprefix("www.")
 
 
 def _links(text: str) -> list[str]:

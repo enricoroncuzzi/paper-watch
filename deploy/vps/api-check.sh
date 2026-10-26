@@ -201,7 +201,7 @@ else
     expect "the API unit raises its OOM score" 900 "$OOM"
     # The API left the shared slice with its account: a slice cannot span two managers.
     READONLY=$(systemctl show --property=ProtectSystem --value paperwatch-api.service 2>/dev/null || true)
-    expect "the API unit's filesystem is read-only" yes "$READONLY"
+    expect "the API unit's filesystem is read-only" strict "$READONLY"
     if systemctl --user show-environment >/dev/null 2>&1; then
         INGEST_SLICE=$(systemctl --user show --property=Slice --value paperwatch-ingest.service 2>/dev/null || true)
         expect "the ingestion unit joins its slice" paperwatch.slice "$INGEST_SLICE"

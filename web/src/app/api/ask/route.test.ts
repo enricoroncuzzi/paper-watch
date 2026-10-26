@@ -12,7 +12,7 @@ import { POST } from "./route";
 function askRequest(body: unknown, signal?: AbortSignal): Request {
   return new Request("http://localhost/api/ask", {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "sec-fetch-site": "same-origin", "content-type": "application/json" },
     body: JSON.stringify(body),
     signal,
   });

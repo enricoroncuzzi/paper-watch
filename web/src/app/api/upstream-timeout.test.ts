@@ -30,7 +30,7 @@ function draftRequest(): Promise<Response> {
   return createDraft(
     new Request("http://localhost/api/drafts", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "sec-fetch-site": "same-origin", "content-type": "application/json" },
       body: JSON.stringify({ item_id: ITEM }),
     }),
   );
@@ -40,7 +40,7 @@ function regenerateRequest(): Promise<Response> {
   return regenerate(
     new Request(`http://localhost/api/drafts/${ITEM}/regenerate`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "sec-fetch-site": "same-origin", "content-type": "application/json" },
       body: "{}",
     }),
     context(ITEM),
@@ -52,7 +52,7 @@ function eventRequest(): Promise<Response> {
     // sendBeacon posts text/plain.
     new Request(`http://localhost/api/suggestions/${ITEM}/events`, {
       method: "POST",
-      headers: { "content-type": "text/plain;charset=UTF-8" },
+      headers: { "sec-fetch-site": "same-origin", "content-type": "text/plain;charset=UTF-8" },
       body: JSON.stringify({ event: "opened" }),
     }),
     context(ITEM),
@@ -122,6 +122,33 @@ describe("the upstream timeout", () => {
     expect(done()).toBe(false);
 
     await vi.advanceTimersByTimeAsync(LONG_BOUND_MS - READ_BOUND_MS + 1);
+    const response = await pending;
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ kind: "unavailable" });
+  });
+
+  it("gives up on a body that stalls after the headers arrived", async () => {
+    // `fetch` resolves on the headers; a tunnel can send them and then never finish the body,
+    // and the proxy reads that body after the call returned.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async (_url: string, init: RequestInit) =>
+          new Response(
+            new ReadableStream({
+              start(controller) {
+                // As a real fetch does, the abort errors the body that is still streaming.
+                init.signal?.addEventListener("abort", () =>
+                  controller.error(new DOMException("aborted", "AbortError")),
+                );
+              },
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          ),
+      ),
+    );
+    const pending = corpusRequest();
+    await vi.advanceTimersByTimeAsync(READ_BOUND_MS);
     const response = await pending;
     expect(response.status).toBe(503);
     expect(await response.json()).toEqual({ kind: "unavailable" });

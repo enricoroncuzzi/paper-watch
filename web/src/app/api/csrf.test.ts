@@ -137,18 +137,16 @@ describe("the cross-site guard on every mutating proxy", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it.each(ROUTES)(
-    "$name lets a caller with neither header through, as curl sends",
-    async (route) => {
-      // No browser omits both on a cross-site POST, and a non-browser caller holds no session
-      // cookie to ride on; the guard is for the cookie, not for the network position.
-      const fetchMock = vi.fn().mockResolvedValue(upstream(route));
-      vi.stubGlobal("fetch", fetchMock);
+  it.each(ROUTES)("$name refuses a request with neither header", async (route) => {
+    // The page's own fetch and sendBeacon calls send them in every supported browser, and these
+    // routes are not a curl API: a request without either has no origin to trust.
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
 
-      const response = await route.call({});
-      expect(response.status).toBe(route.ok);
-    },
-  );
+    const response = await route.call({});
+    expect(response.status).toBe(403);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });
 
 // Every mutating handler in this directory, discovered rather than listed: a route added later is

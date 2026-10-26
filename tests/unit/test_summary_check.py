@@ -61,6 +61,15 @@ def test_a_url_in_an_interpretation_field_fails() -> None:
     assert "url:catch" in check_summary(raw, title=TITLE, text=TEXT)
 
 
+def test_a_dotted_code_identifier_in_an_interpretation_field_passes() -> None:
+    # torch.compile and nn.Module are code, not links: one of them must not fail a whole summary
+    # and send the card back to the abstract's excerpt.
+    text = f"{TEXT} The planner is written with torch.compile and nn.Module."
+    raw = good()
+    raw["why"]["text"] = "A planner built on torch.compile and nn.Module is easy to reuse."
+    assert check_summary(raw, title=TITLE, text=text) == []
+
+
 def test_a_url_in_a_quoted_field_is_the_source_s_own_link() -> None:
     # The stored text carries links, and a quote may carry one: only interpretation is refused.
     text = f"{TEXT} The code is at https://example.com/bench."

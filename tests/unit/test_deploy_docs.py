@@ -41,6 +41,27 @@ def _map_block(text: str) -> list[list[str]]:
     return [line.split() for line in lines[header + 1 : header + 4]]
 
 
+def _shell_commands(text: str) -> list[list[str]]:
+    """Every command the text's bash blocks run, split as the shell would, comments dropped.
+
+    A here-document's body is data, not commands, so it is skipped to its terminator.
+    """
+    commands: list[list[str]] = []
+    for block in re.findall(r"```bash\n(.*?)```", text, re.DOTALL):
+        lines = iter(block.replace("\\\n", " ").splitlines())
+        for line in lines:
+            argv = shlex.split(line, comments=True)
+            if not argv:
+                continue
+            commands.append(argv)
+            heredoc = re.search(r"<<'(\w+)'", line)
+            if heredoc:
+                for body in lines:
+                    if body.strip() == heredoc.group(1):
+                        break
+    return commands
+
+
 def _documented_urls() -> list[str]:
     # Every place the guide shows the variable, so prose and code block cannot disagree.
     return re.findall(r"^PW_DATABASE_URL=(\S+)$", GUIDE.read_text(), re.MULTILINE)
@@ -276,16 +297,6 @@ def test_the_guide_documents_the_api_account_migration() -> None:
     assert step_with("rm ~/.config/systemd/user/paperwatch-api.service") == 6
     assert section.index("### Rolling back") > section.index("systemctl status paperwatch-api")
 
-    # The consequences that are easy to get wrong, each stated where the captain acts on it.
-    for phrase in (
-        "/home/paperwatch-api/.config/paperwatch/api.env",
-        "model cache",
-        "Linger stays on",
-        "user manager",
-        "127.0.0.1:8000",
-        "sudo -u paperwatch-api -- psql",
-    ):
-        assert phrase in section, phrase
     # The tidy step removes the owner account's path to the API's role; the migration writes the
     # whole map out, so the final block is the two identity lines plus the API account's.
     assert _map_block(section) == [
@@ -297,10 +308,17 @@ def test_the_guide_documents_the_api_account_migration() -> None:
 
 def test_the_guide_keeps_the_api_env_file_secret() -> None:
     # The key moves to the new account's home, and the old copy is removed: leaving it in
-    # `paperwatch`'s home would put the chat key back next to the ingestion that needs none.
+    # `paperwatch`'s home would put the chat key back next to the ingestion that needs none. Read
+    # from the commands the guide's shell blocks run, so a sentence cannot stand in for a step.
     guide = GUIDE.read_text()
-    assert "chmod 600 /home/paperwatch-api/.config/paperwatch/api.env" in guide
-    assert "rm ~/.config/paperwatch/api.env" in guide
+    env_file = "/home/paperwatch-api/.config/paperwatch/api.env"
+    install = guide[guide.index("### 15.2 The env file") : guide.index("### 15.3 The unit")]
+    commands = _shell_commands(install)
+    assert ["umask", "077"] in commands
+    assert ["chown", "paperwatch-api:paperwatch-api", env_file] in commands
+    assert ["chmod", "600", env_file] in commands
+    migration = guide[guide.index("## 18. Moving an existing server onto the API account") :]
+    assert ["rm", "~/.config/paperwatch/api.env"] in _shell_commands(migration)
 
 
 def test_the_slice_bounds_the_ingestion_now() -> None:

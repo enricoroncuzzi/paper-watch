@@ -578,7 +578,6 @@ def _suggestion_lines(position: int, lane: str, entry: Scored, status: str) -> s
     return f"{position}. [{lane}] {candidate.title}\n   {' | '.join(parts)}\n   {candidate.url}"
 
 
-@app.command()
 def _draft_pov(pov: str, pov_file: str | None) -> str:
     """The owner's point of view, from the flag, a file or stdin, and never from two at once.
 

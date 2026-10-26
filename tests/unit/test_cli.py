@@ -12,6 +12,7 @@ from uuid import uuid4
 
 import pytest
 import structlog
+import typer
 from structlog.testing import capture_logs
 from typer.testing import CliRunner
 
@@ -1378,6 +1379,23 @@ def test_api_token_prints_a_verifiable_token(monkeypatch: pytest.MonkeyPatch) ->
     assert result.exit_code == 0
     verifier = HmacVerifier(secret, time.time)
     assert verifier.verify(result.stdout.strip()) is not None
+
+
+def test_the_cli_exposes_exactly_its_commands() -> None:
+    # A helper registered by mistake becomes a public command in `--help`, taking its own
+    # arguments as positionals: the command set is the documented one and nothing else.
+    commands = typer.main.get_command(app).commands  # type: ignore[attr-defined]
+    assert sorted(commands) == [
+        "api-token",
+        "ask",
+        "draft",
+        "eval",
+        "ingest",
+        "qa-eval",
+        "search",
+        "serve",
+        "suggest",
+    ]
 
 
 def test_the_cli_never_claims_an_answer_was_verified() -> None:

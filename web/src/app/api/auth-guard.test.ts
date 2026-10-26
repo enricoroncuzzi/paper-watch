@@ -31,7 +31,7 @@ function get(url: string): Request {
 function post(url: string, body: unknown): Request {
   return new Request(url, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "sec-fetch-site": "same-origin", "content-type": "application/json" },
     body: JSON.stringify(body),
   });
 }

@@ -73,7 +73,7 @@ the standing rules.
 - `config/` holds the hand-edited YAML (topic profiles, admission thresholds, feeds, suggestion
   weights),
   `deploy/vps/` the systemd units (the ingestion, backup and tunnel as user units, the API as a
-  system unit under its own `paperwatch-api` account), the shared slice, the ingestion drop-in and
+  system unit under its own `paperwatch-api` account), the ingestion's slice and drop-in and
   the two check scripts, `docs/adr/` records architecture decisions, `docs/learn/` explains each
   technology, and `docs/architecture.md` is the current unit map.
 - `src/paperwatch/cli.py` exposes `paperwatch ingest`, `paperwatch search`, `paperwatch suggest`,

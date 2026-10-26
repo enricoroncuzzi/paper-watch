@@ -15,7 +15,7 @@ const ITEM = "33333333-3333-4333-8333-333333333301";
 function eventRequest(body: unknown): Request {
   return new Request(`http://localhost/api/suggestions/${ITEM}/events`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "sec-fetch-site": "same-origin", "content-type": "application/json" },
     body: JSON.stringify(body),
   });
 }

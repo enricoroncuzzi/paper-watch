@@ -22,9 +22,9 @@ export function refused(kind: string, status: number, retryAfterS?: number): Res
  * and a missing base, a missing token and a refused connection all become the same refusals the
  * page already knows, so no route repeats that plumbing.
  *
- * Every call is bounded: a tunnel that accepts the connection and then stalls would otherwise hold
- * the function open to its maxDuration. The default is the read bound, since a read is a page load;
- * only a draft passes the long one.
+ * Every call is bounded, its body included: a tunnel that accepts the connection and then stalls
+ * would otherwise hold the function open to its maxDuration. The default is the read bound, since
+ * a read is a page load; only a draft passes the long one.
  */
 export async function upstreamFetch(
   path: string,
@@ -43,7 +43,7 @@ export async function upstreamFetch(
   const timeout = new AbortController();
   const timer = setTimeout(() => timeout.abort(), timeoutMs);
   try {
-    return await fetch(new URL(path, base), {
+    const upstream = await fetch(new URL(path, base), {
       ...init,
       headers: {
         authorization: `Bearer ${token}`,
@@ -52,6 +52,10 @@ export async function upstreamFetch(
       signal: init.signal ? AbortSignal.any([init.signal, timeout.signal]) : timeout.signal,
       cache: "no-store",
     });
+    // `fetch` resolves on the headers; the body is read here, under the same bound, so a tunnel
+    // that sends headers and then stalls cannot hold the function open either.
+    const body = await upstream.arrayBuffer();
+    return new Response(body, { status: upstream.status, headers: upstream.headers });
   } catch {
     // A timeout, a stalled socket and a refused connection are the same state to the page.
     return refused("unavailable", 503);
