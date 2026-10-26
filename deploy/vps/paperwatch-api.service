@@ -16,8 +16,9 @@ Documentation=https://github.com/enricoroncuzzi/paper-watch/blob/main/docs/deplo
 Type=simple
 User=paperwatch-api
 Group=paperwatch-api
-# The API account's own checkout, synced at the release tag it serves. Read-only at runtime: only
-# the cache below is writable, so a replaced file in the checkout cannot outlive a restart.
+# The API account's own checkout, synced at the release tag it serves. Read-only at runtime except
+# the venv and the model cache below: uv may write the venv, so a file dropped there does run on the
+# next start, but only as this account and its least-privilege role.
 WorkingDirectory=/home/paperwatch-api/paper-watch
 # Absolute path, not PATH: a service's PATH is systemd's, not a login shell's. Loopback only:
 # the tunnel publishes it (docs/deploy/vps.md section 16), and the account change did not move it.

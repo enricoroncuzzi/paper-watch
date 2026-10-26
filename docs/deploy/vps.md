@@ -913,15 +913,15 @@ Until step 7 the change is reversible with no database edit at all, because the 
 
 2. **Let the new account in, and nothing more.** The admin adds one line to the `pg_ident.conf` map
    from section 12, so the account exists before it is used. Do not remove the old
-   `paperwatch → paperwatch_api` line yet: that line is what step 8 restores.
+   `paperwatch → paperwatch_api` line yet: the rollback relies on it until step 7 removes it.
 
    ```
    paperwatch    paperwatch-api   paperwatch_api
    ```
 
-   Reload and prove both directions before going on. The new account must reach `paperwatch_api`,
-   the owner must still reach `paperwatch`, and the owner must still be refused `paperwatch_ro`'s
-   twin only by its own line:
+   Reload and prove both directions before going on: the owner must still reach `paperwatch`, and
+   the new account must reach `paperwatch_api` and nothing else. That the owner can no longer reach
+   `paperwatch_api` is proven in step 7, once its line is gone:
 
    ```bash
    # as the admin
@@ -997,19 +997,24 @@ Until step 7 the change is reversible with no database edit at all, because the 
 
 ### Rolling back
 
-Before step 7 nothing in the database changed, so a rollback is three commands. What it costs is
+Before step 7 nothing in the database changed, so a rollback is a few commands: root stops the
+new unit and hands the env file back, then `paperwatch` starts its old unit. What it costs is
 what the change bought: the API is the owner role's account again.
 
 ```bash
 # as root: stop the new unit
 systemctl disable --now paperwatch-api
-# as paperwatch: restore the old env file (copy the values back, cache path included) and the unit
-mv /home/paperwatch-api/.config/paperwatch/api.env ~/.config/paperwatch/api.env   # as root first
-chmod 600 ~/.config/paperwatch/api.env
+# as root: hand the env file back to paperwatch, 0600, under its absolute path (root's ~ is /root)
+install -m 600 -o paperwatch -g paperwatch /home/paperwatch-api/.config/paperwatch/api.env \
+        /home/paperwatch/.config/paperwatch/api.env
+# then point PW_LOCAL_EMBEDDING_CACHE_DIR in that copy back at the ingestion's cache,
+# /home/paperwatch/.cache/paperwatch-models
+# as paperwatch: the old unit file was kept until step 7, so it only needs starting again
 systemctl --user daemon-reload
 systemctl --user enable --now paperwatch-api
 ```
 
 Then re-run the acceptance check of section 15.4 against `http://127.0.0.1:8000`. The tunnel never
 moved, so it needs no change in either direction. After step 7 the rollback also needs the
-`paperwatch → paperwatch_api` line put back and a `pg_reload_conf()`.
+`paperwatch → paperwatch_api` line put back with a `pg_reload_conf()`, and the old user unit file
+restored from a release before ADR 0017 before `paperwatch` starts it.
