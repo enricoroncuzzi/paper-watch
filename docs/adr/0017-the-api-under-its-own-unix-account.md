@@ -38,8 +38,9 @@ the backup stay user units for `paperwatch`: nothing about them changes, and lin
 that account.
 
 The unit also carries the cheap sandboxing that fits the account: `ProtectSystem=strict` and
-`ProtectHome=read-only` with only `/home/paperwatch-api/.cache` and the venv writable, `PrivateTmp=yes`, `PrivateDevices=yes`, no
-capabilities, no new namespaces, no setuid bit, no personality change.
+`ProtectHome=read-only` with only `/home/paperwatch-api/.cache` and the venv writable,
+`PrivateTmp=yes`, `PrivateDevices=yes`, no capabilities, no new namespaces, no setuid bit, no
+personality change.
 
 ## Consequences
 
@@ -53,8 +54,8 @@ capabilities, no new namespaces, no setuid bit, no personality change.
   with its own `uv sync --frozen --no-dev`. The migration (`alembic upgrade head`) stays with the
   ingestion's account, which owns the schema.
 - `paperwatch ask` on the server now runs as the API's account
-  (`sudo -u paperwatch-api -- env HOME=...`), because the chat key moved with the API. `docs/deploy/vps.md`
-  section 14 has the exact command.
+  (`sudo -u paperwatch-api -- env HOME=...`), because the chat key moved with the API.
+  `docs/deploy/vps.md` section 14 has the exact command.
 - **The shared `paperwatch.slice` no longer spans both.** A systemd slice cannot contain units from
   two managers, so the API left it and the ingestion keeps it to itself. The protection the slice
   gave on a 1.9 GB machine survives on two other settings: each unit has its own no-swap

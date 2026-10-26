@@ -27,8 +27,9 @@ runs offline against a real Postgres + pgvector container.
 user units for the ingestion, the backup and the tunnel, the API as a system unit under its own
 `paperwatch-api` account, the ingestion's `paperwatch.slice` and drop-in, `backup.sh`,
 `check.sh`, `api-check.sh` and the soak's `tunnel-soak.sh` and `soak-stream.py`, described in
-`docs/deploy/vps.md`), which ADR 0009 records and ADRs 0012, 0013 and 0017 extend. Domain units never import a framework directly, so the framework comparison stays fair when
-`bench` is built; `agent` and `llm/chat.py` are the only units that import LangChain or LangGraph.
+`docs/deploy/vps.md`), which ADR 0009 records and ADRs 0012, 0013 and 0017 extend. Domain units
+never import a framework directly, so the framework comparison stays fair when `bench` is built;
+`agent` and `llm/chat.py` are the only units that import LangChain or LangGraph.
 
 ## One ingestion run
 
