@@ -222,6 +222,32 @@ def test_a_dropped_first_question_can_be_read_back_and_retried(
     assert [(row["id"], row["turns"]) for row in listed] == [(str(early.thread_id), 1)]
 
 
+def test_a_different_question_after_a_dropped_one_titles_the_thread(
+    db_session: Session, write_factory: sessionmaker[Session]
+) -> None:
+    app_deps = deps(
+        db_session,
+        scripted(final("An answer with no citation."), final("A second answer.")),
+        write_factory,
+    )
+    stream = run_question(app_deps, "the question that dropped", Filters())
+    early = next(stream)
+    assert isinstance(early, api.ThreadEvent)
+    stream.close()
+
+    # The reader asks something else on the empty thread: the list names what was answered.
+    ask(app_deps, {"question": "the question that finished", "thread_id": str(early.thread_id)})
+    listed = get(app_deps, "/threads").json()["threads"]
+    assert [(row["id"], row["title"]) for row in listed] == [
+        (str(early.thread_id), "the question that finished")
+    ]
+
+    # A follow-up never renames a thread that already has a finished turn.
+    ask(app_deps, {"question": FOLLOW_UP, "thread_id": str(early.thread_id)})
+    listed = get(app_deps, "/threads").json()["threads"]
+    assert [(row["title"], row["turns"]) for row in listed] == [("the question that finished", 2)]
+
+
 def test_a_follow_up_sends_the_earlier_turns_to_the_model(
     db_session: Session, write_factory: sessionmaker[Session], seed_items: Seed
 ) -> None:

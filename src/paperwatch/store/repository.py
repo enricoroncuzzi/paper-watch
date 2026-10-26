@@ -1424,6 +1424,10 @@ class Repository:
                 raise ThreadConflict(
                     f"the thread holds {held} turns, the answer saw {expected_turns}"
                 )
+            # An empty row is titled with a question that never finished: its first stored turn
+            # names it instead, and a thread with turns keeps the title it was listed under.
+            if held == 0:
+                existing.title = title
             existing.source_registry = stored
             existing.updated_at = at
         n = (
