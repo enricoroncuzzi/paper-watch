@@ -49,11 +49,11 @@ RestartSec=3
 # Neither the API nor anything it runs needs to gain privilege: no setuid or setgid binary, no
 # file capability.
 NoNewPrivileges=yes
-# The cheap sandboxing. Everything outside this account's own cache is read-only, so an RCE cannot
-# rewrite the system tree, install anything, or touch the other accounts' files; /tmp and /var/tmp
-# are private; no device node is visible; no new namespace, setuid bit, personality or capability
-# is available. The cache is the model download and uv's own cache, and the venv is what `uv run`
-# manages; both are this account's, and nothing else is writable.
+# The cheap sandboxing. Everything outside this account's cache and venv is read-only, so an RCE
+# cannot rewrite the system tree, install anything, or touch the other accounts' files; /tmp and
+# /var/tmp are private; no device node is visible; no new namespace, setuid bit, personality or
+# capability is available. The cache is the model download and uv's own cache, and the venv is
+# what `uv run` manages; both are this account's, and nothing else is writable.
 ProtectSystem=strict
 # strict leaves /home, /root and /run/user to ProtectHome=, so without this line the checkout
 # stays writable. read-only keeps the paths below writable and the env file readable.
