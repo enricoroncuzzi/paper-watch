@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.3](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.14.2...paperwatch-v0.14.3) (2026-10-26)
+
+
+### Bug Fixes
+
+* **api:** harden ingestion against NUL characters and fix ask, OIDC and HMAC correctness bugs ([#87](https://github.com/enricoroncuzzi/paper-watch/issues/87)) ([30c16cf](https://github.com/enricoroncuzzi/paper-watch/commit/30c16cfda6c4029f51c0699f6415e41a2cdf1be7))
+
 ## [0.14.2](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.14.1...paperwatch-v0.14.2) (2026-10-26)
 
 
