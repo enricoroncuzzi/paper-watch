@@ -201,6 +201,9 @@ jobs:
       # The generated client types must match the committed contract in this same commit.
       - run: npm run gen:api && git diff --exit-code src/lib/api-types.ts
         working-directory: web
+      # The page is 100 columns wide; a hand wrap below it fails here rather than in review.
+      - run: npx prettier --check .
+        working-directory: web
       - run: npm run lint
         working-directory: web
       - run: npm run typecheck
