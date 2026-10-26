@@ -54,6 +54,9 @@ NoNewPrivileges=yes
 # is available. The cache is the model download and uv's own cache, and the venv is what `uv run`
 # manages; both are this account's, and nothing else is writable.
 ProtectSystem=strict
+# strict leaves /home, /root and /run/user to ProtectHome=, so without this line the checkout
+# stays writable. read-only keeps the paths below writable and the env file readable.
+ProtectHome=read-only
 ReadWritePaths=/home/paperwatch-api/.cache
 ReadWritePaths=/home/paperwatch-api/paper-watch/.venv
 PrivateTmp=yes

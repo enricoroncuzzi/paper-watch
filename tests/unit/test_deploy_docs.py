@@ -245,6 +245,9 @@ def test_the_api_unit_is_sandboxed() -> None:
     # capabilities and no new namespaces.
     section = _service_section(API_UNIT)
     assert "ProtectSystem=strict" in section
+    # strict leaves /home, /root and /run/user to ProtectHome=, so without it the API account
+    # could rewrite its own checkout and the change would outlive a restart.
+    assert "ProtectHome=read-only" in section
     assert "PrivateTmp=yes" in section
     assert "PrivateDevices=yes" in section
     assert "ProtectKernelTunables=yes" in section

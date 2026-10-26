@@ -37,8 +37,8 @@ unit that runs as another account is the system manager's to start. The tunnel, 
 the backup stay user units for `paperwatch`: nothing about them changes, and linger stays on for
 that account.
 
-The unit also carries the cheap sandboxing that fits the account: `ProtectSystem=strict` with only
-`/home/paperwatch-api/.cache` and the venv writable, `PrivateTmp=yes`, `PrivateDevices=yes`, no
+The unit also carries the cheap sandboxing that fits the account: `ProtectSystem=strict` and
+`ProtectHome=read-only` with only `/home/paperwatch-api/.cache` and the venv writable, `PrivateTmp=yes`, `PrivateDevices=yes`, no
 capabilities, no new namespaces, no setuid bit, no personality change.
 
 ## Consequences

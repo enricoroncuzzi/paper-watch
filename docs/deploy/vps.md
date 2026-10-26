@@ -687,8 +687,8 @@ that slice to itself and each unit carries its own no-swap cap. The order the sl
 survives through the API's `OOMScoreAdjust=900` and the ingestion's `Nice=10`: when the machine is
 short, the kernel picks the API, and the morning run finishes.
 
-The sandboxing is the cheap part of the hardening and fits the account: `ProtectSystem=strict` makes
-the whole filesystem read-only outside `/home/paperwatch-api/.cache` and the venv `uv run` manages,
+The sandboxing is the cheap part of the hardening and fits the account: `ProtectSystem=strict` and
+`ProtectHome=read-only` (strict alone leaves `/home` writable) make the whole filesystem read-only outside `/home/paperwatch-api/.cache` and the venv `uv run` manages,
 so the system tree, the other account's home and the backups cannot be written; `PrivateTmp=yes` and
 `PrivateDevices=yes` hide the shared temporary directory and the device nodes; no capability, no new
 namespace, no setuid bit and no personality change is available. `ProtectHome=tmpfs` would be
