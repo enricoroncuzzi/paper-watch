@@ -198,8 +198,9 @@ the `event` name (one of the eight below) and `data`, a JSON string whose `conte
 - `thread` with `{"id", "turn"}`. A new conversation receives it before the first token with
   `turn: null`, so the page holds an id even if the stream dies before the answer. After a finished
   answer it is sent again with the stored turn's number. A follow-up sends this `id` back as
-  `thread_id`, and a client re-fetches it after a dropped stream. A failed or aborted answer stores
-  no turn and sends no finished `thread` event; its empty thread is hidden from `GET /threads`;
+  `thread_id`, and a client re-fetches it after a dropped stream. A failed or aborted answer, or one
+  that finishes after the deadline passed or the client left, stores no turn and sends no finished
+  `thread` event; its empty thread is hidden from `GET /threads`;
 - `error` with `{"code", "message", "retry_at"}`, where `code` is `daily_cap`, `budget`,
   `model_unavailable`, `internal` or `deadline`, and `retry_at` is the reset time for `daily_cap`
   (else null). It ends the stream, and the HTTP status is still 200: the stream had started.
@@ -236,6 +237,9 @@ stream starts answers 422 in the shape the contract documents for a validation e
 route-level refusals (an unknown profile name, a `since` in the future, an `item_id` that is not an
 admitted item). An admitted `item_id` is registered as `S1` before the graph starts, so "Ask about
 it" from a card produces an answer that can cite that item.
+When no database connection frees in time for the `item_id` and `thread_id` checks, the request
+answers `503` with `{"detail": "the server is busy; try again shortly"}` and a `Retry-After`
+header, before any stream starts.
 
 ## The committed contract
 

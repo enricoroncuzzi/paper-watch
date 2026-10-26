@@ -536,6 +536,9 @@ def run_ingestion(
                     repo.resolve_open_dead_letters("arxiv", "window", at=now)
                     session.commit()
             except Exception as exc:  # noqa: BLE001 - one source must not abort the run
+                # A failure can leave the session in a dead transaction (a payload Postgres, or the
+                # connection, refused); this handler queries it below, so it starts clean.
+                session.rollback()
                 causes.add("arxiv")
                 if repo.cursor("arxiv") != arxiv_cursor:
                     # A completed day moved the cursor, so the source stopped early with progress;
@@ -591,6 +594,9 @@ def run_ingestion(
                         # Answers, but publishes nothing: looks like a quiet day unless flagged.
                         stale.append(feed.url)
                 except Exception as exc:  # noqa: BLE001
+                    # Same reason as the arXiv handler: the outage check below is the first thing to
+                    # query, and a failed transaction would turn one bad post into a failed run.
+                    session.rollback()
                     # An outage that starts now is a warning: the cursor stays pinned and the
                     # next run retries the same window, so one missed day loses nothing. Only a
                     # feed with a letter already open from an earlier run (a second run in a row,

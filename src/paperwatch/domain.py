@@ -5,12 +5,23 @@ dataclasses plus the tier enum and the topic-profile loader, so the same types
 move unchanged from a source client into the store and back out of retrieval.
 """
 
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
 
 import yaml
+
+# Postgres refuses a NUL byte in text and in json, and cannot encode a lone surrogate at all.
+# A feed body can carry either (feedparser passes a raw NUL through and a "&#xD800;" reference
+# becomes an unencodable surrogate), so one hostile post used to fail its item on every run.
+_UNSTORABLE = re.compile("[\x00\ud800-\udfff]")
+
+
+def storable(value: str) -> str:
+    """Return `value` without the characters Postgres cannot store."""
+    return _UNSTORABLE.sub("", value)
 
 
 class Tier(StrEnum):
@@ -49,6 +60,14 @@ class SourceItem:
     # arXiv version of this text (2 for "2510.01234v2"); feed items keep 1. The store replaces
     # a paper's text only when a fetched version is higher than the stored one.
     version: int = 1
+
+    def __post_init__(self) -> None:
+        # Every source funnels through this constructor, so no client can hand the store a value
+        # Postgres refuses; cleaning here covers each source at once, not only the feed client.
+        for name in ("source", "external_id", "title", "text", "url", "licence"):
+            object.__setattr__(self, name, storable(getattr(self, name)))
+        for name in ("authors", "categories"):
+            object.__setattr__(self, name, tuple(storable(v) for v in getattr(self, name)))
 
 
 @dataclass(frozen=True, kw_only=True)

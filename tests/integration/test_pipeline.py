@@ -47,7 +47,7 @@ from paperwatch.llm.classifier import Classifier, FakeClassifier
 from paperwatch.llm.embedder import Embedder, FakeEmbedder
 from paperwatch.llm.ledger import Ledger
 from paperwatch.retrieval.hybrid import hybrid_search
-from paperwatch.sources.feeds import Feed
+from paperwatch.sources.feeds import Feed, FeedSource
 from paperwatch.sources.hf_daily import HF_URL, HfDailySource, HfPaper
 from paperwatch.store.db import make_session_factory
 from paperwatch.store.models import DeadLetter, Item, Run, SignalSnapshot, TierHistory
@@ -1491,6 +1491,97 @@ def test_malformed_feed_entry_is_dead_lettered_once_and_cursor_advances(
         select(DeadLetter).where(DeadLetter.source == "feed", DeadLetter.payload.is_(None))
     ).all()
     assert len(letters) == 1 and letters[0].ref == bad.ref
+
+
+@respx.mock
+def test_a_nul_in_a_feed_entry_still_stores_the_post_and_advances_the_cursor(
+    db_session: Session,
+) -> None:
+    # End to end through the real feed client: feedparser hands the NUL to `_text`, and Postgres
+    # refuses it in the item's text, so the post failed on every run and one such entry kept the run
+    # degraded for as long as it was in the window. The stored row and the advanced cursor are what
+    # the fix buys.
+    body = (
+        '<rss version="2.0"><channel><item>'
+        '<guid isPermaLink="false">nul-1</guid>'
+        "<title>Building an agent\x00 harness</title>"
+        "<pubDate>Mon, 12 Oct 2026 05:00:00 GMT</pubDate>"
+        "<link>https://lab.example/nul-1</link>"
+        "<description>We built a tool-use harness\x00 with coding agents.</description>"
+        "</item></channel></rss>"
+    )
+    respx.get(FEED.url).mock(return_value=httpx.Response(200, text=body))
+    src = fake_sources([paper("2510.1", "Agent harness")])
+    src.feeds = FeedSource(httpx.Client(), [FEED])
+
+    res = run(db_session, src)
+
+    assert res.status == "succeeded"
+    assert Repository(db_session).cursor(f"feed:{FEED.url}") == NOW
+    stored = db_session.scalars(select(Item).where(Item.source == "feed")).one()
+    assert stored.title == "Building an agent harness"
+    assert "\x00" not in stored.text and "coding agents" in stored.text
+
+
+def _failing_advance(
+    key_prefix: str, db_session: Session, original: Callable[..., None]
+) -> Callable[..., None]:
+    # A real DBAPI error inside the source loop leaves the session in a failed transaction, exactly
+    # like a payload Postgres refuses; every later query on it would raise PendingRollbackError.
+    # It fires once: the handler's own recovery write must then succeed, or the test proves nothing.
+    fired: list[bool] = []
+
+    def advance(repo: Repository, key: str, until: datetime) -> None:
+        if key.startswith(key_prefix) and not fired:
+            fired.append(True)
+            db_session.execute(text("SELECT 1 / 0"))
+        original(repo, key, until)
+
+    return advance
+
+
+def test_a_failed_write_in_the_arxiv_loop_still_records_the_outage(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The source-level handler asks the session again (the cursor, the outage letter). Without a
+    # rollback first it raised PendingRollbackError, so the run died as 'failed' with no letter.
+    monkeypatch.setattr(
+        Repository,
+        "advance_cursor",
+        _failing_advance("arxiv", db_session, Repository.advance_cursor),
+    )
+
+    res = run(db_session, fake_sources([paper("2510.1", "Agent harness")]))
+
+    assert res.run_id is not None
+    # The source-level letter; the item letters for the paper are resolved once it is stored.
+    letters = db_session.scalars(
+        select(DeadLetter).where(DeadLetter.source == "arxiv", DeadLetter.payload.is_(None))
+    ).all()
+    assert [letter.ref for letter in letters] == ["window"]
+    assert db_session.get_one(Run, res.run_id).status == "partial"
+
+
+def test_a_failed_write_in_the_feed_loop_still_records_the_outage(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Same shape for a feed: the outage check is the first thing the handler does, and it used to
+    # run on the failed session.
+    monkeypatch.setattr(
+        Repository,
+        "advance_cursor",
+        _failing_advance("feed:", db_session, Repository.advance_cursor),
+    )
+
+    res = run(db_session, fake_sources([paper("2510.1", "Agent harness")], feed_items=[blog("p1")]))
+
+    assert res.run_id is not None
+    letters = db_session.scalars(
+        select(DeadLetter).where(DeadLetter.source == "feed", DeadLetter.payload.is_(None))
+    ).all()
+    assert [letter.ref for letter in letters] == [FEED.url]
+    # One missed feed day is a warning, not a cause, so the run is still a success.
+    assert db_session.get_one(Run, res.run_id).status == "succeeded"
 
 
 def test_feed_post_published_before_the_cursor_is_still_stored(db_session: Session) -> None:

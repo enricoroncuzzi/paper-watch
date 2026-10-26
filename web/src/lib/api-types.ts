@@ -2221,6 +2221,15 @@ export interface operations {
                     "text/event-stream": components["schemas"]["RateLimited"];
                 };
             };
+            /** @description No answer connection was free in time; also sends Retry-After. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": components["schemas"]["Refusal"];
+                };
+            };
         };
     };
 }

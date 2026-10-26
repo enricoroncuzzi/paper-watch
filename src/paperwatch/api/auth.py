@@ -177,12 +177,15 @@ class OidcVerifier:
                 algorithms=["RS256"],
                 audience=self._audience,
                 issuer=self._issuer,
-                # exp and nbf are checked below against the injected clock, so a test can place a
-                # token on either side of a boundary without sleeping or faking wall time.
+                # exp, nbf and iat are checked below against the injected clock, so a test can place
+                # a token on either side of a boundary without sleeping or faking wall time.
+                # verify_iat especially: PyJWT's own check has no leeway at all, so a server clock a
+                # second or two behind Vercel's would refuse a fresh token before our 30 s check.
                 options={
                     "require": ["exp", "iat", "aud", "iss", "sub"],
                     "verify_exp": False,
                     "verify_nbf": False,
+                    "verify_iat": False,
                 },
             )
         except jwt.InvalidAudienceError:
@@ -283,7 +286,10 @@ class HmacVerifier:
             if jti in self._seen:
                 return None
             self._seen[jti] = exp
-        return Principal("hmac", sub)
+        # One fixed subject, never the token's `sub`: that claim is chosen by whoever minted the
+        # token, so honouring it would let one caller rotate the name with every request and dodge
+        # the per-subject rate limit. The single-use jti is the only per-token identity there is.
+        return Principal("hmac", "hmac")
 
 
 def _b64decode(segment: str) -> bytes:

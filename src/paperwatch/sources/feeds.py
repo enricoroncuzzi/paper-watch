@@ -144,7 +144,14 @@ class FeedSource:
             content_type = resp.headers.get("content-type", "unknown")
             raise ValueError(f"{feed.url} returned {content_type}, not a feed")
         items: list[SourceItem] = []
-        for e in feedparser.parse(resp.content).entries:
+        try:
+            parsed = feedparser.parse(resp.content)
+        except UnicodeError as exc:
+            # A "&#xD800;" character reference makes feedparser raise an encoding error while it
+            # resolves the entry instead of only marking the document bozo; report it as the
+            # malformed feed it is, so the source loop records a failure, not a raw codec error.
+            raise ValueError(f"{feed.url} is a malformed feed: {exc}") from exc
+        for e in parsed.entries:
             ref = e.get("id") or e.get("link") or "<missing id>"
             try:
                 when = _when(e)

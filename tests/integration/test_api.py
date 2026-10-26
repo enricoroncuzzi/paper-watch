@@ -16,7 +16,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, ClassVar
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import anyio
 import pytest
@@ -46,7 +46,7 @@ from paperwatch.api.app import (
     run_question,
 )
 from paperwatch.api.auth import HmacVerifier, mint_hmac_token
-from paperwatch.api.limits import Admitted, RequestLimiter
+from paperwatch.api.limits import BUSY_RETRY_AFTER_S, Admitted, RequestLimiter
 from paperwatch.api.search_mode import ModeDecision
 from paperwatch.config import (
     ANSWER_POOL_OVERFLOW,
@@ -66,7 +66,7 @@ from paperwatch.llm.embedder import EmbedderUnavailable, FakeEmbedder, WorkerEmb
 from paperwatch.retrieval.hybrid import Filters
 from paperwatch.store.db import make_engine, make_session_factory
 from paperwatch.store.models import ChatCall
-from paperwatch.store.repository import ChatCallLog
+from paperwatch.store.repository import ChatCallLog, Repository
 from tests.conftest import AGENT_ROWS, SeedRow
 
 pytestmark = pytest.mark.integration
@@ -724,6 +724,25 @@ def _scope(spec_version: str) -> dict[str, Any]:
     }
 
 
+async def _post_collect(app: Any, payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Drive one POST through raw ASGI on the caller's own loop, returning what the app sent.
+
+    `TestClient` runs the app on a portal thread of its own, so only this can tell which thread the
+    route's own work ran on.
+    """
+    body = json.dumps(payload).encode()
+    sent: list[dict[str, Any]] = []
+
+    async def receive() -> dict[str, Any]:
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    async def send(message: dict[str, Any]) -> None:
+        sent.append(message)
+
+    await app(_scope("2.3"), receive, send)
+    return sent
+
+
 async def _hang_up_mid_stream(
     app: Any,
     payload: dict[str, Any],
@@ -907,6 +926,57 @@ def test_the_answer_is_closed_on_a_worker_thread_not_the_event_loop() -> None:
 
     loop_thread = asyncio.run(run())
     assert threads and threads[0] != loop_thread
+
+
+def test_the_item_and_thread_checks_run_off_the_event_loop(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Both checks are blocking database reads. On the event loop a slow or paused database would
+    # freeze every other request, so the route hands them to a worker thread.
+    seen: dict[str, int] = {}
+    admitted, thread = Repository.admitted_item, Repository.thread
+
+    def record_admitted(self: Repository, item_id: UUID) -> bool:
+        seen["item"] = threading.get_ident()
+        return admitted(self, item_id)
+
+    def record_thread(self: Repository, thread_id: UUID) -> Any:
+        seen["thread"] = threading.get_ident()
+        return thread(self, thread_id)
+
+    monkeypatch.setattr(Repository, "admitted_item", record_admitted)
+    monkeypatch.setattr(Repository, "thread", record_thread)
+    app = create_app(deps(db_session, []))
+
+    async def run() -> int:
+        unknown = str(uuid4())
+        refused = await _post_collect(app, {"question": "q", "item_id": unknown})
+        assert refused[0]["status"] == 422
+        missing = await _post_collect(app, {"question": "q", "thread_id": unknown})
+        assert missing[0]["status"] == 404
+        return threading.get_ident()
+
+    loop_thread = asyncio.run(run())
+    # Both checks ran, and neither on the loop that served the request.
+    assert set(seen) == {"item", "thread"}
+    assert loop_thread not in seen.values()
+
+
+def test_a_pool_timeout_before_the_stream_is_a_503_with_retry_after(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A full answer pool is a busy server, not a bug; the client is told to come back rather than
+    # getting a 500, and the stream never starts.
+    def exhausted(self: Repository, item_id: UUID) -> bool:
+        raise PoolTimeout("the pool is full")
+
+    monkeypatch.setattr(Repository, "admitted_item", exhausted)
+    response = client(create_app(deps(db_session, []))).post(
+        "/ask", json={"question": "q", "item_id": str(uuid4())}
+    )
+    assert response.status_code == 503
+    assert response.json() == {"detail": api.BUSY_MESSAGE}
+    assert response.headers["retry-after"] == str(BUSY_RETRY_AFTER_S)
 
 
 def _sse_line() -> str:
@@ -1336,6 +1406,30 @@ def test_the_seventh_question_in_a_minute_is_refused_before_any_model_call(
     assert len(model.seen) == 6
 
 
+def test_rotating_the_hmac_subject_does_not_dodge_the_rate_limit(db_session: Session) -> None:
+    # `sub` is chosen by whoever minted the token, so a limiter keyed on it could be dodged with a
+    # fresh name per request; every HMAC token is the one fixed principal instead.
+    model = ScriptedChatModel(script=[AIMessage(ANSWER) for _ in range(6)])
+    app_deps = deps(db_session, [ChatModel("openrouter", model)])
+    for index in range(6):
+        token = mint_hmac_token(TEST_SECRET, f"caller-{index}", time.time())
+        response = client(create_app(app_deps)).post(
+            "/ask",
+            json={"question": f"q{index}"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+    token = mint_hmac_token(TEST_SECRET, "caller-7", time.time())
+    refused = client(create_app(app_deps)).post(
+        "/ask",
+        json={"question": "q7"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert refused.status_code == 429
+    assert refused.json() == {"detail": "rate_limited", "retry_after_s": 60}
+    assert len(model.seen) == 6
+
+
 def test_a_third_concurrent_answer_is_busy(db_session: Session) -> None:
     # Two answers already hold the slots; the third is refused at once rather than queued behind
     # two slow free models. The slots protect the server's memory, so another caller's answers
@@ -1551,6 +1645,22 @@ def test_a_running_child_is_stopped_when_the_mode_turns_keyword_only() -> None:
 
 
 FAKE_WORKER = Path(__file__).resolve().parents[1] / "helpers" / "fake_embed_worker.py"
+
+
+def test_the_answer_frees_its_slot_when_the_producer_ends(db_session: Session) -> None:
+    # The slots bound the memory open answers hold, so a slot is freed as soon as the answer's
+    # frames end. Waiting for the response object to close would keep a slot held by a client that
+    # is slow to read the last chunk.
+    released: list[int] = []
+    app_deps = deps(db_session, scripted(AIMessage(ANSWER)))
+    frames = api._stream(
+        app_deps,
+        api.AskRequest(question="q"),
+        threading.Event(),
+        release=lambda: released.append(1),
+    )
+    assert list(frames)  # the response drains the frames and nothing closes them afterwards
+    assert released == [1]
 
 
 def test_a_disconnect_before_the_stream_starts_releases_the_slot() -> None:
