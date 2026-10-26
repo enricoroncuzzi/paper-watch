@@ -1,8 +1,16 @@
 import "server-only";
 
+import { READ_TIMEOUT_MS } from "@/lib/api";
 import { apiToken } from "@/lib/api-token";
 
 export const NO_STORE = { "cache-control": "no-store" } as const;
+
+/**
+ * How long a draft may wait. A draft spends a model call, and the dialog and the function both
+ * wait 300 s; this bound sits just under them, so the reader gets a refusal to show instead of a
+ * function that dies with nothing to render.
+ */
+export const DRAFT_TIMEOUT_MS = 280_000;
 
 /** A refusal the page can act on, in the shape the dialog and the draft cards read. */
 export function refused(kind: string, status: number, retryAfterS?: number): Response {
@@ -13,8 +21,16 @@ export function refused(kind: string, status: number, retryAfterS?: number): Res
  * One call from a route handler to the API. The API's address and credential stay on this server,
  * and a missing base, a missing token and a refused connection all become the same refusals the
  * page already knows, so no route repeats that plumbing.
+ *
+ * Every call is bounded: a tunnel that accepts the connection and then stalls would otherwise hold
+ * the function open to its maxDuration. The default is the read bound, since a read is a page load;
+ * only a draft passes the long one.
  */
-export async function upstreamFetch(path: string, init: RequestInit): Promise<Response> {
+export async function upstreamFetch(
+  path: string,
+  init: RequestInit,
+  timeoutMs: number = READ_TIMEOUT_MS,
+): Promise<Response> {
   const base = process.env.PW_API_URL;
   if (!base) return refused("unavailable", 503);
   let token: string;
@@ -23,6 +39,9 @@ export async function upstreamFetch(path: string, init: RequestInit): Promise<Re
   } catch {
     return refused("unauthorized", 401);
   }
+  // An explicit controller rather than `AbortSignal.timeout`: a test can advance its clock.
+  const timeout = new AbortController();
+  const timer = setTimeout(() => timeout.abort(), timeoutMs);
   try {
     return await fetch(new URL(path, base), {
       ...init,
@@ -30,10 +49,14 @@ export async function upstreamFetch(path: string, init: RequestInit): Promise<Re
         authorization: `Bearer ${token}`,
         ...(init.headers as Record<string, string> | undefined),
       },
+      signal: init.signal ? AbortSignal.any([init.signal, timeout.signal]) : timeout.signal,
       cache: "no-store",
     });
   } catch {
+    // A timeout, a stalled socket and a refused connection are the same state to the page.
     return refused("unavailable", 503);
+  } finally {
+    clearTimeout(timer);
   }
 }
 

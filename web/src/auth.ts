@@ -1,3 +1,5 @@
+import "server-only";
+
 import NextAuth, { type Session } from "next-auth";
 import { redirect } from "next/navigation";
 

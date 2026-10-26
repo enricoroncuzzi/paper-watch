@@ -1,7 +1,9 @@
 import { z } from "zod";
 
 import { requireOwnerApi } from "@/auth";
+import { READ_TIMEOUT_MS } from "@/lib/api";
 import { apiToken } from "@/lib/api-token";
+import { crossSiteRefusal } from "@/lib/csrf";
 
 // An event body is a few bytes; anything larger is not a suggestion event.
 const BODY_MAX_BYTES = 1024;
@@ -20,6 +22,8 @@ export async function POST(
 ): Promise<Response> {
   const session = await requireOwnerApi();
   if (session instanceof Response) return session;
+  const crossSite = crossSiteRefusal(request);
+  if (crossSite) return crossSite;
 
   const { id } = await context.params;
   if (!UUID.test(id)) {
@@ -72,11 +76,15 @@ export async function POST(
   }
 
   let upstream: Response;
+  // Nobody is waiting on the reply, but the function still must not hang on a stalled tunnel.
+  const timeout = new AbortController();
+  const timer = setTimeout(() => timeout.abort(), READ_TIMEOUT_MS);
   try {
     upstream = await fetch(new URL(`/suggestions/${id}/events`, base), {
       method: "POST",
       headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
       body: JSON.stringify(body.data),
+      signal: timeout.signal,
       cache: "no-store",
     });
   } catch {
@@ -84,6 +92,8 @@ export async function POST(
       { kind: "unavailable" },
       { status: 503, headers: { "cache-control": "no-store" } },
     );
+  } finally {
+    clearTimeout(timer);
   }
 
   if (!upstream.ok) {

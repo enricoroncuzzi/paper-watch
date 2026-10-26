@@ -1,7 +1,15 @@
 import { z } from "zod";
 
 import { requireOwnerApi } from "@/auth";
-import { failureFor, forwardJson, NO_STORE, refused, upstreamFetch } from "@/lib/drafts-proxy";
+import { crossSiteRefusal } from "@/lib/csrf";
+import {
+  DRAFT_TIMEOUT_MS,
+  failureFor,
+  forwardJson,
+  NO_STORE,
+  refused,
+  upstreamFetch,
+} from "@/lib/drafts-proxy";
 
 export const runtime = "nodejs";
 // The API's draft call has its own timeout, but a slow tunnel can hold this function for longer;
@@ -25,6 +33,8 @@ const DraftBody = z.object({
 export async function POST(request: Request): Promise<Response> {
   const session = await requireOwnerApi();
   if (session instanceof Response) return session;
+  const crossSite = crossSiteRefusal(request);
+  if (crossSite) return crossSite;
 
   const declared = Number(request.headers.get("content-length") ?? 0);
   if (declared > BODY_MAX_BYTES) return refused("error", 413);
@@ -39,11 +49,15 @@ export async function POST(request: Request): Promise<Response> {
   const body = DraftBody.safeParse(payload);
   if (!body.success) return refused("error", 400);
 
-  const upstream = await upstreamFetch("/drafts", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body.data),
-  });
+  const upstream = await upstreamFetch(
+    "/drafts",
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body.data),
+    },
+    DRAFT_TIMEOUT_MS,
+  );
   if (upstream.status !== 201) return failureFor(upstream);
   return forwardJson(upstream, 201);
 }
