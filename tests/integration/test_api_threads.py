@@ -293,6 +293,26 @@ def test_aliases_stay_stable_across_turns(
     assert [turn.answer["citations"][0]["id"] for turn in turns] == ["S1", "S1"]
 
 
+def test_a_cancelled_answer_is_not_stored_as_a_turn(
+    db_session: Session, write_factory: sessionmaker[Session]
+) -> None:
+    # The deadline sets the cancellation, and a client that leaves sets it too. Either way nobody
+    # reads the rest of the stream, so the answer must not become the thread's turn, which the page
+    # would then show as an answer the reader never saw.
+    cancel = threading.Event()
+    app_deps = deps(db_session, scripted(final("An answer with no citation.")), write_factory)
+    answered = False
+    for event in run_question(app_deps, "what do they measure?", Filters(), cancel):
+        if isinstance(event, api.AnswerEvent):
+            answered = True
+            cancel.set()  # what the deadline and a hang-up do as the answer arrives
+
+    assert answered
+    with write_factory() as session:
+        assert session.scalar(select(func.count()).select_from(ThreadTurn)) == 0
+    assert get(app_deps, "/threads").json()["threads"] == []
+
+
 def test_a_finished_answer_can_be_fetched_by_thread(
     db_session: Session, write_factory: sessionmaker[Session], seed_items: Seed
 ) -> None:

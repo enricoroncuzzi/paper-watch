@@ -517,8 +517,9 @@ def run_question(
 
     `thread_id` continues a conversation: its registry and its last finished turns are loaded
     before the graph starts, so a follow-up can cite an earlier alias and knows what was asked.
-    A finished answer is stored as the thread's next turn. Only the reader's `question` is
-    stored, never the prompt the item block turned it into.
+    A finished answer is stored as the thread's next turn, unless `cancel` was set by the time it
+    arrives: then nobody read it, and a stored turn would say otherwise. Only the reader's
+    `question` is stored, never the prompt the item block turned it into.
 
     `cancel` is set when the consumer leaves: a model call still in flight then stops at its next
     token, and the round after a running tool is never sent. The API's response sets it the moment
@@ -630,6 +631,10 @@ def run_question(
             for event in stream:
                 yield event
                 if isinstance(event, AnswerEvent):
+                    if cancel.is_set():
+                        # The deadline ended the stream or the client left: nobody reads the rest of
+                        # this answer, so it does not become the thread's turn the page reads back.
+                        continue
                     # After the answer, so a failed or aborted answer stores nothing. The write is
                     # one transaction on the writable factory; a failure is logged by type and the
                     # stream ends without a finished thread event, so the answer still reaches the
@@ -1047,12 +1052,15 @@ def _sse(name: str, payload: dict[str, Any]) -> str:
 
 
 def _stream(
-    deps: AgentDeps, body: AskRequest, cancel: threading.Event
+    deps: AgentDeps,
+    body: AskRequest,
+    cancel: threading.Event,
+    release: Callable[[], None] | None = None,
 ) -> Generator[str, None, None]:
     # The pacer owns the deadline and the heartbeat, and closing this generator closes both: it
     # sets the cancel event and joins the producer, on the worker thread `_ClosingStream` uses.
     yield from paced(
-        _answer_frames(deps, body, cancel),
+        _answer_frames(deps, body, cancel, release),
         cancel=cancel,
         clock=time.monotonic,
         heartbeat_s=SSE_HEARTBEAT_S,
@@ -1065,7 +1073,10 @@ def _stream(
 
 
 def _answer_frames(
-    deps: AgentDeps, body: AskRequest, cancel: threading.Event
+    deps: AgentDeps,
+    body: AskRequest,
+    cancel: threading.Event,
+    release: Callable[[], None] | None = None,
 ) -> Generator[str, None, None]:
     # One log per answer: the tools mark it when a search runs by keyword only, and the answer
     # event reads it so `search_mode` describes what actually produced the answer.
@@ -1082,43 +1093,50 @@ def _answer_frames(
         item_id=body.item_id,
         thread_id=body.thread_id,
     )
-    with closing(events):
-        for event in events:
-            if isinstance(event, NoticeEvent):
-                yield _sse(
-                    "notice", NoticeData(code=event.code, message=event.message).model_dump()
-                )
-            elif isinstance(event, ToolEvent):
-                yield _sse(
-                    "tool", ToolData(name=event.name, args=_json_safe(event.args)).model_dump()
-                )
-            elif isinstance(event, SourceEvent):
-                yield _sse("source", _source_payload(event.ref).model_dump())
-            elif isinstance(event, StepEvent):
-                yield _sse(
-                    "step",
-                    StepData(
-                        round=event.round, ms=event.ms, new_sources=event.new_sources
-                    ).model_dump(),
-                )
-            elif isinstance(event, TokenEvent):
-                yield _sse("token", TokenData(text=event.text).model_dump())
-            elif isinstance(event, AnswerEvent):
-                yield _sse("answer", _answer_payload(event.answer, search_log).model_dump())
-            elif isinstance(event, ThreadEvent):
-                # Last event of a saved turn: the client follows up with this id, and re-fetches
-                # it after a dropped stream.
-                yield _sse(
-                    "thread",
-                    ThreadData(id=event.thread_id, turn=event.turn).model_dump(mode="json"),
-                )
-            else:
-                yield _sse(
-                    "error",
-                    ErrorData(
-                        code=event.code, message=event.message, retry_at=event.retry_at
-                    ).model_dump(mode="json"),
-                )
+    try:
+        with closing(events):
+            for event in events:
+                if isinstance(event, NoticeEvent):
+                    yield _sse(
+                        "notice", NoticeData(code=event.code, message=event.message).model_dump()
+                    )
+                elif isinstance(event, ToolEvent):
+                    yield _sse(
+                        "tool", ToolData(name=event.name, args=_json_safe(event.args)).model_dump()
+                    )
+                elif isinstance(event, SourceEvent):
+                    yield _sse("source", _source_payload(event.ref).model_dump())
+                elif isinstance(event, StepEvent):
+                    yield _sse(
+                        "step",
+                        StepData(
+                            round=event.round, ms=event.ms, new_sources=event.new_sources
+                        ).model_dump(),
+                    )
+                elif isinstance(event, TokenEvent):
+                    yield _sse("token", TokenData(text=event.text).model_dump())
+                elif isinstance(event, AnswerEvent):
+                    yield _sse("answer", _answer_payload(event.answer, search_log).model_dump())
+                elif isinstance(event, ThreadEvent):
+                    # Last event of a saved turn: the client follows up with this id, and re-fetches
+                    # it after a dropped stream.
+                    yield _sse(
+                        "thread",
+                        ThreadData(id=event.thread_id, turn=event.turn).model_dump(mode="json"),
+                    )
+                else:
+                    yield _sse(
+                        "error",
+                        ErrorData(
+                            code=event.code, message=event.message, retry_at=event.retry_at
+                        ).model_dump(mode="json"),
+                    )
+    finally:
+        # The request slot is freed here, in the producer's own finally, rather than only when the
+        # response closes: a client slow to read the last chunk must not keep holding a slot that
+        # bounds how many answers the server runs at once.
+        if release is not None:
+            release()
 
 
 class _ClosingStream(StreamingResponse):
@@ -1145,8 +1163,9 @@ class _ClosingStream(StreamingResponse):
         super().__init__(events, **kwargs)
         self._events = events
         self._cancel = cancel
-        # The request limiter's slot belongs to this response, not to the route: it must be freed
-        # when the stream ends however it ends, including a client hang-up.
+        # The request limiter's slot must be free however the stream ends, including a hang-up that
+        # cancels the response before its producer starts. The producer releases it earlier, when
+        # the answer ends; a grant's release is idempotent, so this is the backstop, not a double.
         self._release = release
 
     async def listen_for_disconnect(self, receive: Receive) -> None:
@@ -1329,7 +1348,9 @@ def create_app(deps: AgentDeps) -> FastAPI:
         assert isinstance(admitted, Admitted)  # narrows the union for mypy
         cancel = threading.Event()
         return _ClosingStream(
-            _stream(deps, body, cancel),
+            # The producer frees the slot as soon as the answer ends; the response keeps its own
+            # release as the backstop for a response cancelled before the producer starts.
+            _stream(deps, body, cancel, release=admitted.release),
             cancel,
             release=admitted.release,
             media_type="text/event-stream",

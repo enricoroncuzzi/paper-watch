@@ -1623,6 +1623,22 @@ def test_a_running_child_is_stopped_when_the_mode_turns_keyword_only() -> None:
 FAKE_WORKER = Path(__file__).resolve().parents[1] / "helpers" / "fake_embed_worker.py"
 
 
+def test_the_answer_frees_its_slot_when_the_producer_ends(db_session: Session) -> None:
+    # The slots bound the memory open answers hold, so a slot is freed as soon as the answer's
+    # frames end. Waiting for the response object to close would keep a slot held by a client that
+    # is slow to read the last chunk.
+    released: list[int] = []
+    app_deps = deps(db_session, scripted(AIMessage(ANSWER)))
+    frames = api._stream(
+        app_deps,
+        api.AskRequest(question="q"),
+        threading.Event(),
+        release=lambda: released.append(1),
+    )
+    assert list(frames)  # the response drains the frames and nothing closes them afterwards
+    assert released == [1]
+
+
 def test_a_disconnect_before_the_stream_starts_releases_the_slot() -> None:
     # Starlette can cancel the response before `stream_response` runs, so release cannot live only
     # there: a caller that hangs up at once would otherwise hold a slot until the process restarts.
