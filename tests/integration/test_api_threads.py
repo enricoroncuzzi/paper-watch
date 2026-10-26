@@ -396,6 +396,43 @@ def test_ask_about_an_item_starts_a_thread_with_it_as_s1(
     assert row.turns[0].question == "what does this paper measure?"
 
 
+def test_a_dropped_ask_about_an_item_is_retried_with_it_as_s1(
+    db_session: Session, write_factory: sessionmaker[Session], seed_items: Seed
+) -> None:
+    ids = seed_items(AGENT_ROWS)
+    db_session.commit()
+    app_deps = deps(db_session, scripted(final(ANSWER)), write_factory)
+    stream = run_question(app_deps, "what does this paper measure?", Filters(), item_id=ids["swe"])
+    early = next(stream)
+    assert isinstance(early, api.ThreadEvent)
+    stream.close()
+
+    # The retry names the empty thread the early event created: it has no finished turn, so the
+    # item is still this conversation's S1 and its block still reaches the model.
+    models = scripted(final(ANSWER))
+    frames = events(
+        ask(
+            deps(db_session, models, write_factory),
+            {
+                "question": "what does this paper measure?",
+                "thread_id": str(early.thread_id),
+                "item_id": str(ids["swe"]),
+            },
+        ).text
+    )
+    assert frames[-1][1] == {"id": str(early.thread_id), "turn": 1}
+    prompt = " ".join(
+        str(message.content)
+        for message in models[0].model.seen[-1]  # type: ignore[attr-defined]
+    )
+    assert "The reader is asking about S1" in prompt
+    with write_factory() as session:
+        row = Repository(session).thread(early.thread_id)
+    assert row is not None
+    assert [(ref["alias"], ref["item_id"]) for ref in row.registry] == [("S1", str(ids["swe"]))]
+    assert row.turns[0].question == "what does this paper measure?"
+
+
 def test_a_failed_turn_write_still_delivers_the_answer(
     db_session: Session, seed_items: Seed
 ) -> None:

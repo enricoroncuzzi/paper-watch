@@ -534,10 +534,9 @@ def run_question(
     # loaded it: both are what tell this answer's own work apart from the conversation's history.
     restored_sources = 0
     expected_turns = 0
-    # A new thread is created before the agent runs, so its id reaches the page before the first
-    # token. The flag keeps that separate from a thread id this answer was handed.
-    new_thread = thread_id is None
     try:
+        # A new thread is created before the agent runs, so its id reaches the page before the
+        # first token.
         if thread_id is None:
             created = _create_thread(deps, question)
             if created is not None:
@@ -579,9 +578,10 @@ def run_question(
         # What the model reads: the reader's own question, or that question under the item's
         # block. `question` stays the reader's words, so a stored turn never becomes a prompt.
         prompt = question
-        # Only a new thread registers the item as S1: a follow-up already has its aliases, and a
-        # second S1 would point the reader at two different papers.
-        if item_id is not None and new_thread:
+        # Only a thread with no finished turn registers the item as S1: a follow-up already has its
+        # aliases, and a second S1 would point the reader at two different papers. An empty thread
+        # is a first question retried after it was dropped, so the item still belongs to it.
+        if item_id is not None and expected_turns == 0:
             # Registered before the graph starts, so S1 is this item whatever the search returns:
             # "Ask about it" means the question is about that paper, and the citation check reads
             # the same registry the answer cites from.
@@ -859,7 +859,7 @@ class AskRequest(BaseModel):
     # so the answer can talk about "this paper" and still cite a source the check can verify.
     item_id: UUID | None = None
     # A follow-up: the thread this answer continues. The route refuses an unknown id with a 404
-    # before the stream starts; `item_id` only pre-registers a source on a new thread.
+    # before the stream starts; `item_id` only pre-registers a source on a thread with no turns.
     thread_id: UUID | None = None
 
     @field_validator("question")
