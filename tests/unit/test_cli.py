@@ -619,8 +619,8 @@ def ask_deps(monkeypatch: pytest.MonkeyPatch, *, found: bool = True) -> object:
         def __init__(self, session: object) -> None:
             self._session = session
 
-        def thread(self, thread_id: object) -> object | None:
-            return object() if found else None
+        def thread_exists(self, thread_id: object) -> bool:
+            return found
 
     monkeypatch.setattr(cli, "Repository", Repo)
     return SimpleNamespace(

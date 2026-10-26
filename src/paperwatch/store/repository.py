@@ -176,6 +176,9 @@ class ThreadDetailRow:
     title: str
     registry: tuple[Mapping[str, str], ...]
     turns: tuple[ThreadTurnRow, ...]
+    # The thread's total, which `turns` may not show when the read was limited: the save compares
+    # against it to refuse an answer whose thread grew under it.
+    turn_count: int
 
 
 @dataclass(frozen=True)
@@ -465,6 +468,11 @@ def _corpus_row(row: Any) -> CorpusItemRow:
         github_stars=row.github_stars,
         published_at=row.published_at,
     )
+
+
+# The run detail's list of dead letters. A source that fails every item of a wide window writes one
+# letter per item, so the page reads the newest ones; the run's own counts still report the total.
+RUN_DEAD_LETTERS_LIMIT = 200
 
 
 class Repository:
@@ -834,12 +842,19 @@ class Repository:
         return list(self._s.scalars(select(Run).order_by(Run.started_at.desc()).limit(limit)).all())
 
     def run_dead_letters(self, run_id: uuid.UUID) -> list[DeadLetter]:
-        """This run's letters, resolved ones included: a resolved letter still happened."""
-        return list(
-            self._s.scalars(
-                select(DeadLetter).where(DeadLetter.run_id == run_id).order_by(DeadLetter.id)
-            ).all()
-        )
+        """This run's newest letters, resolved ones included, oldest first.
+
+        A resolved letter still happened, so all of them count; only the number is bounded, so one
+        broken source cannot make the run page read thousands of rows. The newest are the ones a
+        reader can act on, and they are returned in the order they happened.
+        """
+        newest = self._s.scalars(
+            select(DeadLetter)
+            .where(DeadLetter.run_id == run_id)
+            .order_by(DeadLetter.id.desc())
+            .limit(RUN_DEAD_LETTERS_LIMIT)
+        ).all()
+        return list(reversed(newest))
 
     def cursor(self, key: str) -> datetime | None:
         return self._s.scalar(select(SourceCursor.window_end).where(SourceCursor.key == key))
@@ -1344,19 +1359,58 @@ class Repository:
             for thread, turns in rows
         ]
 
-    def thread(self, thread_id: uuid.UUID) -> ThreadDetailRow | None:
+    def thread(
+        self, thread_id: uuid.UUID, *, turns_limit: int | None = None
+    ) -> ThreadDetailRow | None:
+        """One conversation, with its newest `turns_limit` turns when the caller wants only those.
+
+        An answer replays the last few turns, so reading a long conversation whole would grow with
+        the conversation instead of with the question. `turn_count` is always the total, which is
+        what `save_thread_turn` compares against; a limited read must not report the page's size.
+        """
         thread = self._s.get(Thread, thread_id)
         if thread is None:
             return None
-        turns = self._s.scalars(
-            select(ThreadTurn).where(ThreadTurn.thread_id == thread_id).order_by(ThreadTurn.n)
-        )
+        if turns_limit is None:
+            turns = list(
+                self._s.scalars(
+                    select(ThreadTurn)
+                    .where(ThreadTurn.thread_id == thread_id)
+                    .order_by(ThreadTurn.n)
+                )
+            )
+            turn_count = len(turns)
+        else:
+            newest = self._s.scalars(
+                select(ThreadTurn)
+                .where(ThreadTurn.thread_id == thread_id)
+                .order_by(ThreadTurn.n.desc())
+                .limit(turns_limit)
+            ).all()
+            # Oldest first, like the unlimited read, so a caller appends after the same turn.
+            turns = list(reversed(newest))
+            turn_count = self._thread_turn_count(thread_id)
         return ThreadDetailRow(
             id=thread.id,
             title=thread.title,
             registry=tuple(thread.source_registry),
             turns=tuple(_thread_turn_row(turn) for turn in turns),
+            turn_count=turn_count,
         )
+
+    def _thread_turn_count(self, thread_id: uuid.UUID) -> int:
+        count = self._s.scalar(
+            select(func.count()).select_from(ThreadTurn).where(ThreadTurn.thread_id == thread_id)
+        )
+        return int(count or 0)
+
+    def thread_exists(self, thread_id: uuid.UUID) -> bool:
+        """Whether a thread row exists, for a route that only needs the 404.
+
+        The row is a primary-key read; loading its turns to learn that it is there would make an
+        unknown-id check cost the whole conversation.
+        """
+        return self._s.get(Thread, thread_id) is not None
 
     def create_thread(self, *, title: str, at: datetime) -> uuid.UUID:
         """Create an empty thread before its first answer, so the client can hold its id.

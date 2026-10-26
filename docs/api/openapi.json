@@ -349,6 +349,16 @@
               }
             }
           },
+          "429": {
+            "description": "This subject sent its minute's events; also sends Retry-After.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RateLimited"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation Error",
             "content": {

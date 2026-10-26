@@ -417,6 +417,50 @@ def test_history_is_bounded_to_six_turns(
     assert "answer 8" in contents
 
 
+def test_a_long_thread_still_stores_its_next_turn(
+    db_session: Session, write_factory: sessionmaker[Session]
+) -> None:
+    # The answer replays only the last few turns, but the save holds the thread against another
+    # answer by its total count: a limited read must not make the ninth turn look like an overlap.
+    with write_factory() as session:
+        repo = Repository(session)
+        thread_id, _ = repo.save_thread_turn(
+            thread_id=None,
+            title="question 1",
+            registry=[],
+            question="question 1",
+            answer={"text": "answer 1"},
+            search_mode="hybrid",
+            at=NOW,
+            expected_turns=0,
+        )
+        for n in range(2, 9):
+            repo.save_thread_turn(
+                thread_id=thread_id,
+                title="",
+                registry=[],
+                question=f"question {n}",
+                answer={"text": f"answer {n}"},
+                search_mode="hybrid",
+                at=NOW,
+                expected_turns=n - 1,
+            )
+        session.commit()
+
+    list(
+        run_question(
+            deps(db_session, scripted(final("An answer with no citation.")), write_factory),
+            "the follow-up",
+            Filters(),
+            thread_id=thread_id,
+        )
+    )
+
+    turns = stored_turn(write_factory, thread_id)
+    assert [turn.n for turn in turns] == list(range(1, 10))
+    assert turns[-1].question == "the follow-up"
+
+
 def test_ask_about_an_item_starts_a_thread_with_it_as_s1(
     db_session: Session, write_factory: sessionmaker[Session], seed_items: Seed
 ) -> None:
@@ -810,8 +854,10 @@ def test_a_stale_follow_up_is_refused_and_still_answers(
     loaded = api._load_thread
 
     def stale(deps: AgentDeps, tid: UUID) -> object:
+        # What the answer saw before the other answer stored its turn: no turns, so a total of 0.
+        # The read loads only the newest turns, so the total is the field that says how stale it is.
         row = loaded(deps, tid)
-        return replace(row, turns=()) if row is not None else None
+        return replace(row, turns=(), turn_count=0) if row is not None else None
 
     monkeypatch.setattr(api, "_load_thread", stale)
     with capture_logs() as logs:

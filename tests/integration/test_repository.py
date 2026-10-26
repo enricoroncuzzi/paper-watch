@@ -20,7 +20,7 @@ from paperwatch.domain import AdmissionBasis, Signals, SourceItem, Tier
 from paperwatch.llm.embedder import FakeEmbedder
 from paperwatch.sources.hf_daily import HfPaper
 from paperwatch.store.models import DeadLetter, Item, Run, SignalSnapshot, TierHistory
-from paperwatch.store.repository import Repository
+from paperwatch.store.repository import RUN_DEAD_LETTERS_LIMIT, Repository
 
 pytestmark = pytest.mark.integration
 NOW = datetime(2026, 10, 12, 6, tzinfo=UTC)
@@ -839,3 +839,74 @@ def test_an_arxiv_item_keeps_its_authors_out_of_the_org_field(db_session: Sessio
     [candidate] = repo.suggestion_candidates(now=now, max_age=timedelta(days=90), momentum_days=3)
 
     assert candidate.org is None
+
+
+def test_a_thread_can_be_read_with_only_its_newest_turns(db_session: Session) -> None:
+    # An answer replays the last few turns and needs the total only to hold the thread's lock
+    # against a second answer; loading every turn of a long conversation would grow without bound.
+    repo = Repository(db_session)
+    thread_id, _ = repo.save_thread_turn(
+        thread_id=None,
+        title="q1",
+        registry=[],
+        question="q1",
+        answer={"text": "a1"},
+        search_mode="hybrid",
+        at=NOW,
+        expected_turns=0,
+    )
+    for n in range(2, 9):
+        repo.save_thread_turn(
+            thread_id=thread_id,
+            title="",
+            registry=[],
+            question=f"q{n}",
+            answer={"text": f"a{n}"},
+            search_mode="hybrid",
+            at=NOW,
+            expected_turns=n - 1,
+        )
+
+    full = repo.thread(thread_id)
+    assert full is not None
+    assert [turn.n for turn in full.turns] == list(range(1, 9))
+    assert full.turn_count == 8
+
+    newest = repo.thread(thread_id, turns_limit=3)
+    assert newest is not None
+    # Newest three, still oldest first, so the caller appends to them in order.
+    assert [turn.n for turn in newest.turns] == [6, 7, 8]
+    # The total is what the save compares against, so a limited read must not report 3.
+    assert newest.turn_count == 8
+
+
+def test_thread_exists_answers_without_loading_turns(db_session: Session) -> None:
+    repo = Repository(db_session)
+    assert repo.thread_exists(uuid.uuid4()) is False
+    thread_id, _ = repo.save_thread_turn(
+        thread_id=None,
+        title="q1",
+        registry=[],
+        question="q1",
+        answer={"text": "a1"},
+        search_mode="hybrid",
+        at=NOW,
+        expected_turns=0,
+    )
+    assert repo.thread_exists(thread_id) is True
+
+
+def test_a_runs_dead_letters_are_capped_at_the_newest(db_session: Session) -> None:
+    # A source that fails every item of a wide window can write thousands of letters. The page
+    # shows the newest ones, oldest first, and the run's own counts still report the total.
+    repo = Repository(db_session)
+    run_id = repo.start_run(NOW, NOW + timedelta(days=1), at=NOW)
+    for index in range(RUN_DEAD_LETTERS_LIMIT + 5):
+        repo.add_dead_letter(run_id, "feed", f"p{index}", "boom")
+
+    letters = repo.run_dead_letters(run_id)
+
+    assert len(letters) == RUN_DEAD_LETTERS_LIMIT
+    assert [letter.ref for letter in letters] == [
+        f"p{index}" for index in range(5, RUN_DEAD_LETTERS_LIMIT + 5)
+    ]

@@ -27,6 +27,7 @@ from paperwatch.api.search_mode import ModeDecision
 from paperwatch.api.summary_queue import SummaryQueue
 from paperwatch.config import (
     CONCURRENT_ANSWERS,
+    EVENTS_PER_MINUTE,
     LOOPBACK_HOSTS,
     PROFILES_PATH,
     REQUESTS_PER_DAY,
@@ -270,6 +271,29 @@ def test_a_dismissed_item_leaves_the_list_immediately(db_session: Session) -> No
     assert posted.status_code == 204
     after = {card["item_id"] for card in api.get("/suggestions").json()["picks"]}
     assert after == {str(kept)}
+
+
+def test_the_event_route_is_throttled_per_subject(db_session: Session) -> None:
+    # An event is a cheap write but not a free one, and the row is stored before anything else
+    # happens: one subject's loop must not fill the table.
+    item_id = seed_item(db_session, "swe")
+    api = client(db_session, NoQueue())
+    path = f"/suggestions/{item_id}/events"
+    for _ in range(EVENTS_PER_MINUTE):
+        assert api.post(path, json={"event": "opened"}).status_code == 204
+
+    refused = api.post(path, json={"event": "opened"})
+
+    assert refused.status_code == 429
+    assert refused.headers["retry-after"] == "60"
+    assert refused.json() == {"detail": "rate_limited", "retry_after_s": 60}
+    # The throttle is the credential's, not the server's: another subject still records its event.
+    other = api.post(
+        path,
+        json={"event": "opened"},
+        headers={"Authorization": f"Bearer {mint_hmac_token(TEST_SECRET, 'other', time.time())}"},
+    )
+    assert other.status_code == 204
 
 
 def test_shown_is_recorded_at_most_once_an_hour(db_session: Session) -> None:

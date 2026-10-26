@@ -154,6 +154,9 @@ READY_TIMEOUT_S = 2.0
 REQUESTS_PER_MINUTE = 6
 REQUESTS_PER_DAY = 100
 CONCURRENT_ANSWERS = 2
+# The suggestions page records one row per opened or dismissed card; a reader dismissing a
+# page of cards is well under this, and a loop on one credential stays bounded.
+EVENTS_PER_MINUTE = 60
 ANSWER_DEADLINE_S = 120
 SSE_HEARTBEAT_S = 15
 

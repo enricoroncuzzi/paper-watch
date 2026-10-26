@@ -51,6 +51,44 @@ class _Budget:
     day_count: int = 0
 
 
+class SlidingThrottle:
+    """At most `per_minute` calls per subject, for a route whose cost is one small write.
+
+    The events route records a card's opening or dismissal, and the row is stored before anything
+    else happens: a loop on one credential must not fill the table, but the route owns no model
+    call, so it needs a bound and not a budget. No day count, no concurrency slot, and the same
+    minute arithmetic as `RequestLimiter`, so "wait 40 s" means the same thing in both places.
+    """
+
+    def __init__(self, *, per_minute: int, clock: Callable[[], datetime]) -> None:
+        self._per_minute = per_minute
+        self._clock = clock
+        self._lock = threading.Lock()
+        # Only subjects seen in the current minute, dropped when their window empties, so a
+        # rotated credential cannot grow the map without bound.
+        self._windows: dict[str, deque[datetime]] = {}
+
+    def admit(self, subject: str) -> int | None:
+        """None when the call may proceed, else the seconds to wait before trying again."""
+        now = self._clock()
+        # A naive clock read as local time would move the window by the machine's offset.
+        if now.tzinfo is None:
+            raise ValueError("the clock must return an aware datetime")
+        now = now.astimezone(UTC)
+        with self._lock:
+            for key in list(self._windows):
+                window = self._windows[key]
+                while window and now - window[0] >= WINDOW:
+                    window.popleft()
+                if not window:
+                    del self._windows[key]
+            window = self._windows.setdefault(subject, deque())
+            if len(window) >= self._per_minute:
+                return _ceil_s(window[0] + WINDOW - now)
+            window.append(now)
+            return None
+
+
 class RequestLimiter:
     """A sliding minute and a UTC-day count per subject, and shared concurrency slots, one lock."""
 
