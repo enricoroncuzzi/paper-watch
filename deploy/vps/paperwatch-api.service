@@ -1,30 +1,40 @@
-# The Paper Watch API, as a systemd user unit for the `paperwatch` account.
-# Install into ~/.config/systemd/user/ and follow docs/deploy/vps.md section 15.
+# The Paper Watch API, as a system unit under its own Unix account, `paperwatch-api`.
+# Install as root into /etc/systemd/system/ and follow docs/deploy/vps.md section 15; section 18
+# moves an existing server onto it.
+#
+# It is not the `paperwatch` account on purpose. Peer authentication maps this account to the
+# least-privilege `paperwatch_api` role and nothing else, so a bug in a route or a dependency
+# cannot own the corpus, read the nightly backups or read the ingestion's env file (ADR 0017).
+# That is also why it is a system unit: a system account needs no lingering user manager, and a
+# unit that runs as another user is the system manager's to start.
 [Unit]
 Description=Paper Watch API
 Documentation=https://github.com/enricoroncuzzi/paper-watch/blob/main/docs/deploy/vps.md
 # No ordering or relationship to the ingestion, ever. The measurements showed that Conflicts= stops the
-# ingestion, and the API must give way to the run, not disturb it (ADR 0013); the shared slice is
-# the only bound between them.
+# ingestion, and the API must give way to the run, not disturb it (ADR 0013).
 [Service]
 Type=simple
-WorkingDirectory=/home/paperwatch/paper-watch
-# Absolute path, not PATH: a user unit's PATH is systemd's, not a login shell's. Loopback only:
-# the tunnel publishes it (docs/deploy/vps.md section 16).
-ExecStart=/home/paperwatch/.local/bin/uv run --frozen --no-dev paperwatch serve --live --host 127.0.0.1 --port 8000
-# 0600 and outside the repo: PW_DATABASE_URL for paperwatch_api, the chat key, the model cache, the
-# credential settings and PW_API_PUBLIC_HOST.
-EnvironmentFile=/home/paperwatch/.config/paperwatch/api.env
-# The shared slice bounds everything Paper Watch runs together (MemoryMax=1100M). The API and the
-# ingestion cannot both fit on a 1.9 GB machine, so one ceiling makes the kernel pick.
-Slice=paperwatch.slice
+User=paperwatch-api
+Group=paperwatch-api
+# The API account's own checkout, synced at the release tag it serves. Read-only at runtime: only
+# the cache below is writable, so a replaced file in the checkout cannot outlive a restart.
+WorkingDirectory=/home/paperwatch-api/paper-watch
+# Absolute path, not PATH: a service's PATH is systemd's, not a login shell's. Loopback only:
+# the tunnel publishes it (docs/deploy/vps.md section 16), and the account change did not move it.
+ExecStart=/home/paperwatch-api/.local/bin/uv run --frozen --no-dev paperwatch serve --live --host 127.0.0.1 --port 8000
+# 0600 inside the API account's home: PW_DATABASE_URL for paperwatch_api, the chat key, the model
+# cache directory, the credential settings and PW_API_PUBLIC_HOST. The ingestion's env file is not
+# readable by this account and this one is not readable by the ingestion.
+EnvironmentFile=/home/paperwatch-api/.config/paperwatch/api.env
 # With its child embedder the API measured under 520 MB; 700M leaves room for the parent, the
 # child and one burst. MemorySwapMax=0 is the important half: without it a runaway keeps running in
 # the shared swap instead of being OOM-killed, which is the failure mode the measurements recorded.
 MemoryMax=700M
 MemorySwapMax=0
 # The API side volunteers to the OOM killer (the child raises its own score to 1000 too), so when
-# the slice is exhausted the API dies before the ingestion, which is the morning that matters.
+# the machine is short the API dies before the ingestion, which is the morning that matters. The
+# slice that used to hold both cannot span two managers, so this score and the ingestion's own
+# 950M cap are what keep the order (ADR 0017).
 OOMScoreAdjust=900
 # When the kernel OOM-kills a process in this unit's cgroup (the child embedder, by design),
 # systemd's default OOMPolicy=stop would stop the whole API and cut every open answer. Continue
@@ -32,13 +42,34 @@ OOMScoreAdjust=900
 # signal and Restart=on-failure still brings it back.
 OOMPolicy=continue
 TasksMax=128
-# A crash restarts in three seconds; a clean `systemctl --user stop` is not a failure and stays
-# stopped.
+# A crash restarts in three seconds; a clean `systemctl stop` is not a failure and stays stopped.
 Restart=on-failure
 RestartSec=3
 # Neither the API nor anything it runs needs to gain privilege: no setuid or setgid binary, no
 # file capability.
 NoNewPrivileges=yes
+# The cheap sandboxing. Everything outside this account's own cache is read-only, so an RCE cannot
+# rewrite the system tree, install anything, or touch the other accounts' files; /tmp and /var/tmp
+# are private; no device node is visible; no new namespace, setuid bit, personality or capability
+# is available. The cache is the model download and uv's own cache, and the venv is what `uv run`
+# manages; both are this account's, and nothing else is writable.
+ProtectSystem=strict
+ReadWritePaths=/home/paperwatch-api/.cache
+ReadWritePaths=/home/paperwatch-api/paper-watch/.venv
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+LockPersonality=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+RemoveIPC=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+UMask=0077
 
 [Install]
-WantedBy=default.target
+WantedBy=multi-user.target

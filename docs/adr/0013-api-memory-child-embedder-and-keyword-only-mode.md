@@ -4,7 +4,10 @@ Date: 2026-10-24
 
 ## Status
 
-Accepted
+Accepted. The API's membership of `paperwatch.slice` is superseded by
+[ADR 0017](0017-the-api-under-its-own-unix-account.md): a slice cannot span two managers, so each
+unit carries its own cap and the API's OOM score keeps the order. The memory measurements and the
+child embedder here still hold.
 
 ## Context
 

@@ -147,8 +147,8 @@ LinkedIn drafts.
 ## Documentation
 
 - [`docs/deploy/vps.md`](docs/deploy/vps.md): running the daily ingestion, the API and its tunnel
-  as capped systemd user units on the shared VPS, and browsing the corpus from a desktop client
-  over an SSH tunnel.
+  as capped systemd units on the shared VPS (the API as its own Unix account, mapped to the
+  least-privilege role), and browsing the corpus from a desktop client over an SSH tunnel.
 - [`web/README.md`](web/README.md): the page, its environment, its gates and the fake API they run
   against.
 - [`docs/learn/`](docs/learn/): one lesson per technology, starting with

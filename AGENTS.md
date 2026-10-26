@@ -72,9 +72,10 @@ the standing rules.
   through the citation check), each with a committed baseline.
 - `config/` holds the hand-edited YAML (topic profiles, admission thresholds, feeds, suggestion
   weights),
-  `deploy/vps/` the systemd user units, the shared slice, the ingestion drop-in and the two check
-  scripts, `docs/adr/` records architecture decisions, `docs/learn/` explains each technology, and
-  `docs/architecture.md` is the current unit map.
+  `deploy/vps/` the systemd units (the ingestion, backup and tunnel as user units, the API as a
+  system unit under its own `paperwatch-api` account), the shared slice, the ingestion drop-in and
+  the two check scripts, `docs/adr/` records architecture decisions, `docs/learn/` explains each
+  technology, and `docs/architecture.md` is the current unit map.
 - `src/paperwatch/cli.py` exposes `paperwatch ingest`, `paperwatch search`, `paperwatch suggest`,
   `paperwatch draft`, `paperwatch ask`, `paperwatch serve`, `paperwatch api-token`,
   `paperwatch eval` and `paperwatch qa-eval`.

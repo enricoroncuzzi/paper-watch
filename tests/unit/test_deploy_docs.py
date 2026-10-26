@@ -24,6 +24,17 @@ from paperwatch.ingest.health import Health
 GUIDE = REPO_ROOT / "docs" / "deploy" / "vps.md"
 
 
+def _map_block(text: str) -> list[list[str]]:
+    """The pg_ident.conf block the guide shows, as the three system-user/role pairs.
+
+    Read from the block itself, so a sentence about the mapping cannot satisfy a test that the
+    mapping is right. The block is indented inside a numbered step, so the lines are stripped.
+    """
+    lines = text.splitlines()
+    header = next(index for index, line in enumerate(lines) if "# MAPNAME" in line)
+    return [line.split() for line in lines[header + 1 : header + 4]]
+
+
 def _documented_urls() -> list[str]:
     # Every place the guide shows the variable, so prose and code block cannot disagree.
     return re.findall(r"^PW_DATABASE_URL=(\S+)$", GUIDE.read_text(), re.MULTILINE)
@@ -171,16 +182,122 @@ def test_the_tunnel_unit_never_creates_a_relationship() -> None:
 
 def test_the_api_unit_caps_memory_and_volunteers_for_the_oom_killer() -> None:
     section = _service_section(API_UNIT)
-    assert "Slice=paperwatch.slice" in section
     assert "MemoryMax=700M" in section
     assert "MemorySwapMax=0" in section
+    # No Slice=: the API is another Unix account now, and a systemd slice cannot span two managers.
+    # The API still dies first because it volunteers to the OOM killer and the ingestion runs at
+    # Nice=10; each unit's own no-swap cap bounds it absolutely (ADR 0017).
+    assert not any(line.startswith("Slice=") for line in section)
     assert "OOMScoreAdjust=900" in section
     # A child OOM kill must leave the API answering: systemd's default would stop the whole unit.
     assert "OOMPolicy=continue" in section
     assert "Restart=on-failure" in section
 
 
-def test_the_slice_caps_everything_paper_watch_runs() -> None:
+def test_the_api_runs_as_its_own_account() -> None:
+    # An RCE in the API must not be the account pg_ident maps to the owner role: no corpus writes,
+    # no backups, no ingestion env file (ADR 0017).
+    section = _service_section(API_UNIT)
+    assert "User=paperwatch-api" in section
+    assert "Group=paperwatch-api" in section
+    # A system account needs no lingering user manager, so its unit is the system manager's.
+    assert "WantedBy=multi-user.target" in API_UNIT.read_text().split("[Install]", 1)[1]
+    [exec_line] = [line for line in section if line.startswith("ExecStart=")]
+    [workdir] = [line for line in section if line.startswith("WorkingDirectory=")]
+    [env_file] = [line for line in section if line.startswith("EnvironmentFile=")]
+    for line in (exec_line, workdir, env_file):
+        assert "paperwatch-api" in line
+        # Never the old account's home, which holds the owner role's env file and the backups.
+        assert not line.endswith("/home/paperwatch/paper-watch")
+    assert "/home/paperwatch/" not in exec_line.replace("/home/paperwatch-api/", "")
+
+
+def test_the_api_unit_is_sandboxed() -> None:
+    # The cheap half of the hardening: the system tree, the other account's home and everything
+    # else outside the API's own cache are read-only, and the process gets no device nodes, no
+    # capabilities and no new namespaces.
+    section = _service_section(API_UNIT)
+    assert "ProtectSystem=strict" in section
+    assert "PrivateTmp=yes" in section
+    assert "PrivateDevices=yes" in section
+    assert "ProtectKernelTunables=yes" in section
+    assert "ProtectKernelModules=yes" in section
+    assert "ProtectControlGroups=yes" in section
+    assert "LockPersonality=yes" in section
+    assert "CapabilityBoundingSet=" in section
+    for name in ("RestrictAddressFamilies", "RestrictNamespaces", "RestrictSUIDSGID"):
+        assert any(line.startswith(f"{name}=") for line in section), name
+    # The model cache and the venv are the only writable places, and both are the API's own.
+    writable = [line for line in section if line.startswith("ReadWritePaths=")]
+    assert writable and all("paperwatch-api" in line for line in writable)
+    assert not any("backups" in line or "paperwatch/.config" in line for line in writable)
+
+
+def test_the_guide_documents_the_api_account_migration() -> None:
+    # The server is already running, so the change is a migration, not an install: an ordered
+    # procedure with a rollback, or the captain has to improvise on a live machine. The steps are
+    # read from the migration section itself, since every command also appears earlier as an
+    # install step.
+    guide = GUIDE.read_text()
+    heading = "## 18. Moving an existing server onto the API account"
+    assert heading in guide
+    section = guide[guide.index(heading) :]
+    # One step per numbered bold heading, so a command is attributed to the step that runs it.
+    steps = re.split(r"\n\d\. \*\*", section)[1:]
+    assert len(steps) >= 7
+
+    def step_with(*needles: str) -> int:
+        for index, step in enumerate(steps):
+            if all(needle in step for needle in needles):
+                return index
+        raise AssertionError(f"no step runs {needles}")
+
+    assert step_with("useradd", "/home/paperwatch-api") == 0
+    assert step_with("pg_ident.conf", "paperwatch-api", "psql") == 1
+    # The checkout, uv and venv steps are section 15.1's, so there is one copy of them to drift.
+    assert step_with("checkout", "section 15.1") == 2
+    assert step_with("rm ~/.config/paperwatch/api.env") == 3
+    # The port is never held twice: the old unit stops in the same step the new one starts.
+    assert (
+        step_with(
+            "systemctl --user disable --now paperwatch-api", "systemctl enable --now paperwatch-api"
+        )
+        == 4
+    )
+    assert step_with("systemctl status paperwatch-api") == 5
+    # The owner account keeps its path to the API's role until the last step, so every earlier
+    # step can be undone without a database edit.
+    assert step_with("rm ~/.config/systemd/user/paperwatch-api.service") == 6
+    assert section.index("### Rolling back") > section.index("systemctl status paperwatch-api")
+
+    # The consequences that are easy to get wrong, each stated where the captain acts on it.
+    for phrase in (
+        "/home/paperwatch-api/.config/paperwatch/api.env",
+        "model cache",
+        "Linger stays on",
+        "user manager",
+        "127.0.0.1:8000",
+        "sudo -u paperwatch-api -- psql",
+    ):
+        assert phrase in section, phrase
+    # The tidy step removes the owner account's path to the API's role; the migration writes the
+    # whole map out, so the final block is the two identity lines plus the API account's.
+    assert _map_block(section) == [
+        ["paperwatch", "paperwatch", "paperwatch"],
+        ["paperwatch", "paperwatch", "paperwatch_ro"],
+        ["paperwatch", "paperwatch-api", "paperwatch_api"],
+    ]
+
+
+def test_the_guide_keeps_the_api_env_file_secret() -> None:
+    # The key moves to the new account's home, and the old copy is removed: leaving it in
+    # `paperwatch`'s home would put the chat key back next to the ingestion that needs none.
+    guide = GUIDE.read_text()
+    assert "chmod 600 /home/paperwatch-api/.config/paperwatch/api.env" in guide
+    assert "rm ~/.config/paperwatch/api.env" in guide
+
+
+def test_the_slice_bounds_the_ingestion_now() -> None:
     lines = SLICE_FILE.read_text().splitlines()
     start = lines.index("[Slice]") + 1
     section = [line for line in lines[start:] if line and not line.startswith("#")]
@@ -202,7 +319,9 @@ def test_the_ingest_drop_in_only_sets_the_slice() -> None:
 def test_the_api_binds_loopback_only() -> None:
     [line] = [line for line in _service_section(API_UNIT) if line.startswith("ExecStart=")]
     assert "--host 127.0.0.1" in line
-    assert "/home/paperwatch/.local/bin/uv run --frozen --no-dev paperwatch serve --live" in line
+    assert (
+        "/home/paperwatch-api/.local/bin/uv run --frozen --no-dev paperwatch serve --live" in line
+    )
 
 
 def test_the_soak_stream_binds_loopback_only() -> None:
@@ -269,16 +388,13 @@ def test_the_guide_gives_each_of_the_two_roles_its_grants() -> None:
     assert "placed above the generic" in guide
     assert "Never put `map=` on `local all all peer`" in guide
 
-    # The map's first line keeps the owner, hence the ingestion, in; all three lines are the only
-    # system-user/role pairs peer accepts, which is what still restricts access to Unix paperwatch.
-    assert [
-        line.split()
-        for line in guide.splitlines()
-        if line.split()[:2] == ["paperwatch", "paperwatch"]
-    ] == [
+    # The map's first two lines keep the owner, hence the ingestion, and Beekeeper in; the third is
+    # the whole point of the split: the API's own Unix account reaches `paperwatch_api` and nothing
+    # else (ADR 0017). The map itself is read from the block, so prose cannot satisfy it.
+    assert _map_block(guide) == [
         ["paperwatch", "paperwatch", "paperwatch"],
         ["paperwatch", "paperwatch", "paperwatch_ro"],
-        ["paperwatch", "paperwatch", "paperwatch_api"],
+        ["paperwatch", "paperwatch-api", "paperwatch_api"],
     ]
 
     # The admin reloads the config and proves the owner still connects before trying the two

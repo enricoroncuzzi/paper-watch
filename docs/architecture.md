@@ -20,14 +20,14 @@ runs offline against a real Postgres + pgvector container.
 | `api` | The credential and host gate, the per-client limits, the paced SSE stream, the search-mode gate, the FastAPI routes (`/healthz`, `/readyz`, `/status`, `POST /ask` with `thread_id`, `GET /today` and the runs reads, `GET /suggestions` with its 5-minute cache, its background summary queue and its event route, `POST /drafts`, its regenerate route and the Drafts reads, `GET /threads` and one thread's turns, `GET /items` and one item's page), health and readiness, the committed OpenAPI contract; the one place an agent failure becomes an error event and a finished turn is stored (ADR 0016) | agent, store, llm |
 | `web` | The Next.js page in `web/`: server-rendered sections (the today strip, the picks and Rising, Drafts, Corpus, Runs), the GitHub session guard on every server component and route handler, the streaming ask proxy, the thread reads and the conversation the sheet keeps with its Recent list, the corpus table and its filter and search proxy, the item page, the drafts dialog, and the server-only API client; the only caller of the API | the API over HTTPS |
 | `evals` | Labelled synthetic corpus and questions; recall@k, MRR and nDCG@k for retrieval, and the four recorded-answer scores the QA eval replays through the citation check; each against a committed baseline | retrieval, llm, store |
-| `deploy/vps` | systemd user units for the daily ingestion (06:00 Europe/Rome, `--followup`), the 05:15 backup, the API and its tunnel, the shared `paperwatch.slice` and the ingestion drop-in, `backup.sh`, the morning `check.sh`, the API `api-check.sh`, and the tunnel soak's `tunnel-soak.sh` probe with its `soak-stream.py` SSE test server and `paperwatch-soak-stream.service` unit | the `paperwatch ingest` and `serve` CLIs, Postgres |
+| `deploy/vps` | systemd user units for the daily ingestion (06:00 Europe/Rome, `--followup`), the 05:15 backup and the tunnel, the shared `paperwatch.slice`, the ingestion drop-in, the API as a system unit under its own `paperwatch-api` account (ADR 0017), `backup.sh`, the morning `check.sh`, the API `api-check.sh`, and the tunnel soak's `tunnel-soak.sh` probe with its `soak-stream.py` SSE test server and `paperwatch-soak-stream.service` unit | the `paperwatch ingest` and `serve` CLIs, Postgres |
 
 `bench` and the Azure proof arrive in a later milestone. `infra` exists in part:
 `docker-compose.yml` for local Postgres, `web/` for the Vercel project and `deploy/vps/` (systemd
-user units for the ingestion, the API and its tunnel, the shared `paperwatch.slice`, the ingestion
-drop-in, `backup.sh`, `check.sh`, `api-check.sh` and the soak's `tunnel-soak.sh` and
-`soak-stream.py`, described in `docs/deploy/vps.md`), which ADR 0009 records and ADRs 0012 and 0013
-extend. Domain units never import a framework directly, so the framework comparison stays fair when
+user units for the ingestion, the backup and the tunnel, the API as a system unit under its own
+`paperwatch-api` account, the shared `paperwatch.slice`, the ingestion drop-in, `backup.sh`,
+`check.sh`, `api-check.sh` and the soak's `tunnel-soak.sh` and `soak-stream.py`, described in
+`docs/deploy/vps.md`), which ADR 0009 records and ADRs 0012, 0013 and 0017 extend. Domain units never import a framework directly, so the framework comparison stays fair when
 `bench` is built; `agent` and `llm/chat.py` are the only units that import LangChain or LangGraph.
 
 ## One ingestion run

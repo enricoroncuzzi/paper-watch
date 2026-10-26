@@ -11,8 +11,12 @@
 # single use, so for the HMAC rehearsal set PW_CHECK_TOKEN_CMD to a command that prints a fresh
 # one, for example:
 #
-#   PW_CHECK_TOKEN_CMD='uv run --frozen --no-dev --env-file ~/.config/paperwatch/api.env \
+#   PW_CHECK_TOKEN_CMD='/home/paperwatch-api/.local/bin/uv run --frozen --no-dev \
+#     --env-file /home/paperwatch-api/.config/paperwatch/api.env \
 #     paperwatch api-token --live' ./api-check.sh http://127.0.0.1:8000
+#
+# The chat key lives in the API account's env file now (ADR 0017), so that command runs as
+# `paperwatch-api`: `sudo -u paperwatch-api -- env HOME=/home/paperwatch-api ...`.
 #
 # A Vercel OIDC token is reusable, so PW_CHECK_TOKEN is enough for it.
 set -u
@@ -177,25 +181,33 @@ else
     esac
 fi
 
-# The units, when this shell can ask a user manager (the server) and not on a laptop.
-if ! systemctl --user show-environment >/dev/null 2>&1; then
-    warn "systemctl --user is not available, so the unit checks are skipped"
+# The units, when this shell can ask a system manager (the server) and not on a laptop. The API is
+# a system unit under its own account (ADR 0017); the ingestion is still the user manager's.
+if ! systemctl show-environment >/dev/null 2>&1; then
+    warn "systemctl is not available, so the unit checks are skipped"
 else
-    ACTIVE=$(systemctl --user is-active paperwatch-api.service 2>/dev/null || true)
+    ACTIVE=$(systemctl is-active paperwatch-api.service 2>/dev/null || true)
     expect "paperwatch-api is active" active "$ACTIVE"
-    MEMORY=$(systemctl --user show --property=MemoryMax --value paperwatch-api.service 2>/dev/null || true)
+    ACCOUNT=$(systemctl show --property=User --value paperwatch-api.service 2>/dev/null || true)
+    expect "the API runs as its own account" paperwatch-api "$ACCOUNT"
+    MEMORY=$(systemctl show --property=MemoryMax --value paperwatch-api.service 2>/dev/null || true)
     case "$MEMORY" in
         700M | 734003200) ok "the API unit caps memory at 700M" ;;
         *) fail "the API unit MemoryMax is not 700M (got ${MEMORY:-nothing})" ;;
     esac
-    SWAP=$(systemctl --user show --property=MemorySwapMax --value paperwatch-api.service 2>/dev/null || true)
+    SWAP=$(systemctl show --property=MemorySwapMax --value paperwatch-api.service 2>/dev/null || true)
     expect "the API unit forbids swap" 0 "$SWAP"
-    OOM=$(systemctl --user show --property=OOMScoreAdjust --value paperwatch-api.service 2>/dev/null || true)
+    OOM=$(systemctl show --property=OOMScoreAdjust --value paperwatch-api.service 2>/dev/null || true)
     expect "the API unit raises its OOM score" 900 "$OOM"
-    SLICE=$(systemctl --user show --property=Slice --value paperwatch-api.service 2>/dev/null || true)
-    expect "the API unit joins the shared slice" paperwatch.slice "$SLICE"
-    INGEST_SLICE=$(systemctl --user show --property=Slice --value paperwatch-ingest.service 2>/dev/null || true)
-    expect "the ingestion unit joins the shared slice" paperwatch.slice "$INGEST_SLICE"
+    # The API left the shared slice with its account: a slice cannot span two managers.
+    READONLY=$(systemctl show --property=ProtectSystem --value paperwatch-api.service 2>/dev/null || true)
+    expect "the API unit's filesystem is read-only" yes "$READONLY"
+    if systemctl --user show-environment >/dev/null 2>&1; then
+        INGEST_SLICE=$(systemctl --user show --property=Slice --value paperwatch-ingest.service 2>/dev/null || true)
+        expect "the ingestion unit joins its slice" paperwatch.slice "$INGEST_SLICE"
+    else
+        warn "systemctl --user is not available, so the ingestion's slice is not checked"
+    fi
 fi
 
 if [ "$FAILS" -ne 0 ]; then
