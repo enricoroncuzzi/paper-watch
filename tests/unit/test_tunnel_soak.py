@@ -563,7 +563,7 @@ def test_a_running_probe_stops_promptly_with_a_probe_in_flight(tmp_path: Path) -
                 "--hours",
                 "0",
             ],
-            stdout=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
         )
@@ -578,7 +578,11 @@ def test_a_running_probe_stops_promptly_with_a_probe_in_flight(tmp_path: Path) -
         finally:
             probe.kill()
             probe.wait(timeout=15)
-    assert probe.returncode == 130, probe.stderr
+    stdout, stderr = probe.communicate()
+    assert probe.returncode == 130, stderr
+    # The stop lands while curl's output is redirected to a temporary file, and the hint must still
+    # reach the operator rather than that file.
+    assert f"stopped. read the numbers with: {SCRIPT} summary {log}" in stdout, stdout
 
 
 def _run_args(*args: str) -> subprocess.CompletedProcess[str]:

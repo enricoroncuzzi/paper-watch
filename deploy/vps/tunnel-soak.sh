@@ -82,7 +82,9 @@ bg_wait() {
 stop_soak() {
     [ -z "$CHILD" ] || kill "$CHILD" 2>/dev/null
     CHILD=
-    printf '\nstopped. read the numbers with: %s summary %s\n' "$0" "$LOG"
+    # To fd 3, the operator's stdout saved before `run`: the trap runs inside whatever redirection
+    # the interrupted command had, and a probe's curl writes to a temporary file.
+    printf '\nstopped. read the numbers with: %s summary %s\n' "$0" "$LOG" >&3
     exit 130
 }
 
@@ -488,6 +490,7 @@ case $MODE in
         }
         trap 'rm -rf "$TMP"' EXIT
         trap stop_soak INT TERM
+        exec 3>&1
         run
         ;;
     summary)
