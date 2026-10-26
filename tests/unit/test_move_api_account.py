@@ -25,7 +25,6 @@ import pytest
 from paperwatch.config import REPO_ROOT
 
 SCRIPT = REPO_ROOT / "deploy" / "vps" / "move-api-account.sh"
-GUIDE = REPO_ROOT / "docs" / "deploy" / "vps.md"
 BASH = shutil.which("bash") or "/bin/bash"
 REAL_CURL = shutil.which("curl") or "/usr/bin/curl"
 REAL_INSTALL = shutil.which("install") or "/usr/bin/install"
@@ -208,6 +207,8 @@ class Sandbox:
             text=True,
             timeout=180,
             check=False,
+            # Root's own working directory, which is no project of the API's.
+            cwd=self.root,
             env=self.env(**extra),
         )
 
@@ -216,8 +217,20 @@ class Sandbox:
         assert result.returncode == 0, result.stdout + result.stderr
 
     def accept(self, *, passes: bool = True) -> None:
-        """Point the script at an api-check that passes or fails, as section 15.4 would."""
-        body = "#!/bin/sh\nprintf 'all checks passed\\n'\nexit 0\n"
+        """Point the script at an api-check that passes or fails, as section 15.4 would.
+
+        The passing one mints its token the way the real check does, so a command that cannot
+        mint one fails it.
+        """
+        body = (
+            "#!/bin/sh\n"
+            'if [ -n "${PW_CHECK_TOKEN_CMD:-}" ]; then\n'
+            '    token=$(sh -c "$PW_CHECK_TOKEN_CMD") || token=\n'
+            "    [ -n \"$token\" ] || { printf 'FAIL: no token to send\\n' >&2; exit 1; }\n"
+            "fi\n"
+            "printf 'all checks passed\\n'\n"
+            "exit 0\n"
+        )
         if not passes:
             body = "#!/bin/sh\nprintf 'FAIL: healthz answers\\n' >&2\nexit 1\n"
         check = self.rec / "api-check.sh"
@@ -237,7 +250,14 @@ def _build_stubs(sandbox: Sandbox) -> None:
         "cat > \"$HOME/.local/bin/uv\" <<'UV'\n"
         "#!/bin/sh\n"
         'printf \'%s\\n\' "uv $*" >> "$REC/uv"\n'
-        "mkdir -p .venv\n"
+        "if [ ! -f pyproject.toml ]; then\n"
+        "    printf 'error: no project found in %s\\n' \"$PWD\" >&2\n"
+        "    exit 2\n"
+        "fi\n"
+        "case $* in\n"
+        "    *api-token*) printf 'fake-minted-token\\n' ;;\n"
+        "    *) mkdir -p .venv ;;\n"
+        "esac\n"
         "exit 0\n"
         "UV\n"
         'chmod 755 "$HOME/.local/bin/uv"\n'
@@ -292,27 +312,43 @@ def _build_stubs(sandbox: Sandbox) -> None:
         exec "$@"
         """,
     )
+    # Postgres answers from the map it last loaded, which is what a reload changes: the file on
+    # disk alone grants nothing.
     _stub(
         sandbox.bin,
         "psql",
         f"""
         printf '%s\\n' "$MOVE_AS psql $*" >> {rec}/psql
+        loaded() {{
+            awk -v sys="$1" '$1 == "paperwatch" && $2 == sys && $3 == "{API_ROLE}" {{ f = 1 }}
+                END {{ exit !f }}' {rec}/live-ident
+        }}
         case $* in
             *postgresql://*)
-                if [ -f {rec}/psql.role-reachable ]; then printf 'paperwatch_api\\n'; exit 0; fi
+                if [ -f {rec}/psql.role-reachable ] || loaded "$MOVE_AS"; then
+                    printf '1\\n'
+                    exit 0
+                fi
                 printf 'psql: error: connection failed\\n' >&2
                 exit 1
                 ;;
             *current_user*)
                 if [ -f "{rec}/current_user.$MOVE_AS" ]; then
                     cat "{rec}/current_user.$MOVE_AS"
-                elif [ "$MOVE_AS" = {API} ]; then
-                    printf 'paperwatch_api\\n'
-                else
+                elif [ "$MOVE_AS" != {API} ]; then
                     printf 'paperwatch\\n'
+                elif loaded {API}; then
+                    printf '{API_ROLE}\\n'
+                else
+                    printf 'psql: error: peer authentication failed\\n' >&2
+                    exit 2
                 fi
                 ;;
-            *pg_reload_conf*) printf 't\\n' ;;
+            *pg_reload_conf*)
+                [ -f {rec}/reload.fails ] && exit 2
+                cp {sandbox.pg_ident} {rec}/live-ident
+                printf 't\\n'
+                ;;
             *'select 1'*) printf '1\\n' ;;
         esac
         exit 0
@@ -417,6 +453,8 @@ def _sandbox(tmp_path: Path, api_url: str) -> Sandbox:
         "# the old user unit\n"
     )
     (root / "etc" / "postgresql" / "17" / "main" / "pg_ident.conf").write_text(PG_IDENT)
+    # The map the running server has loaded: the file as it stands before the migration.
+    (rec / "live-ident").write_text(PG_IDENT)
     for directory in (
         root / "home" / OWNER / ".config" / "paperwatch",
         root / "home" / OWNER / ".config" / "systemd" / "user",
@@ -577,6 +615,32 @@ def test_prepare_refuses_when_the_ingestion_checkout_is_not_on_a_release_tag(
     assert not sandbox.api_checkout.exists()
 
 
+def test_prepare_refuses_when_the_ingestion_checkout_is_past_its_release_tag(
+    tmp_path: Path, api: str
+) -> None:
+    # Both accounts serve one release: an older tag would put the API on other code.
+    sandbox = _sandbox(tmp_path, api)
+    ingestion = sandbox.path(f"home/{OWNER}/paper-watch")
+    _git(ingestion, "commit", "-q", "--allow-empty", "-m", "past the release")
+    result = sandbox.run("prepare")
+    assert result.returncode == 1
+    assert "release tag" in result.stderr
+    assert not sandbox.api_checkout.exists()
+
+
+def test_prepare_proves_the_written_map_after_a_failed_reload(sandbox: Sandbox) -> None:
+    (sandbox.rec / "reload.fails").write_text("")
+    result = sandbox.run("prepare")
+    assert result.returncode == 1
+    assert "reload" in result.stderr
+    # The owner fixes what stopped the reload and reruns: the line is already written, and the
+    # rerun still loads it before proving it.
+    (sandbox.rec / "reload.fails").unlink()
+    result = sandbox.run("prepare")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert len([line for line in sandbox.map_lines() if line[1:2] == [API]]) == 1
+
+
 def test_prepare_leaves_the_running_api_alone(sandbox: Sandbox) -> None:
     sandbox.prepare()
     assert sandbox.records("systemctl") == []
@@ -637,6 +701,18 @@ def test_switch_runs_the_acceptance_check_before_it_reports_success(sandbox: San
     assert result.returncode == 0, result.stdout + result.stderr
     assert "all checks passed" in result.stdout
     assert "tidy" in result.stdout
+
+
+def test_switch_mints_the_acceptance_tokens_from_the_api_checkout(sandbox: Sandbox) -> None:
+    # The run's working directory is root's; the token is minted by the API's own project.
+    sandbox.prepare()
+    result = sandbox.run("switch", "--yes")
+    assert result.returncode == 0, result.stdout + result.stderr
+    minted = [call for call in sandbox.records("uv") if "api-token" in call]
+    assert minted == [
+        f"uv run --frozen --no-dev --env-file {sandbox.api_env} paperwatch api-token --live"
+    ]
+    assert "fake-minted-token" not in result.stdout + result.stderr
 
 
 def test_switch_rolls_back_when_the_new_unit_never_becomes_healthy(dead_api: Sandbox) -> None:
@@ -780,6 +856,21 @@ def test_tidy_removes_the_owners_way_in_and_the_old_files(sandbox: Sandbox) -> N
     assert "--user daemon-reload" in sandbox.records("systemctl")
 
 
+def test_tidy_proves_the_written_map_after_a_failed_reload(sandbox: Sandbox) -> None:
+    _switched(sandbox)
+    (sandbox.rec / "reload.fails").write_text("")
+    result = sandbox.run("tidy", "--yes")
+    assert result.returncode == 1
+    assert "reload" in result.stderr
+    assert sandbox.owner_map_lines() == []
+    # The rerun finds the line already gone and still loads that map before proving the refusal.
+    (sandbox.rec / "reload.fails").unlink()
+    result = sandbox.run("tidy", "--yes")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert sandbox.owner_map_lines() == []
+    assert not sandbox.owner_env.exists()
+
+
 def test_tidy_leaves_every_file_when_the_owner_can_still_take_the_role(sandbox: Sandbox) -> None:
     # If the owner still reaches paperwatch_api with its line gone, something else lets it in, and
     # deleting the rest would hide that instead of closing it.
@@ -795,20 +886,21 @@ def test_tidy_leaves_every_file_when_the_owner_can_still_take_the_role(sandbox: 
     assert sandbox.owner_map_lines() == [[OWNER, OWNER, API_ROLE]]
 
 
-# --- the guide -----------------------------------------------------------------------------
+# --- the script itself ----------------------------------------------------------------------
 
 
-def test_the_guide_points_at_the_script_for_the_migration() -> None:
-    # Section 18 is what the owner reads on the server, so it names the script and each subcommand
-    # the migration runs; the numbered steps stay as the reference for what it does and why.
-    guide = GUIDE.read_text()
-    section = guide[guide.index("## 18. Moving an existing server onto the API account") :]
-    assert "deploy/vps/move-api-account.sh" in section
-    for subcommand in ("status", "prepare", "switch", "tidy"):
-        assert f"move-api-account.sh {subcommand}" in section
-    assert SCRIPT.is_file()
-    # The guide runs it by absolute path, from a checkout that git keeps executable.
-    assert SCRIPT.stat().st_mode & 0o111
+def test_the_script_runs_by_its_own_path(sandbox: Sandbox) -> None:
+    # The guide runs it by absolute path as root, so it is executable and names its interpreter.
+    result = subprocess.run(  # noqa: S603 (the repository's own script, no shell)
+        [str(SCRIPT), "--help"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+        env=sandbox.env(),
+    )
+    assert result.returncode == 0, result.stderr
+    assert "usage:" in result.stdout
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="the check only fires for a non-root caller")

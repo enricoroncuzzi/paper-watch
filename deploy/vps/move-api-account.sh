@@ -18,8 +18,8 @@
 # has nothing to hand back, so the way back needs no file copy at all.
 #
 # No secret value is ever printed: the script rewrites keys by name and reports file modes, never
-# file contents. For an OIDC deployment, export PW_CHECK_TOKEN before `switch` so the acceptance
-# check can make its authenticated requests; with an HMAC deployment the script mints one per
+# file contents. For an OIDC deployment, export PW_CHECK_TOKEN before `switch` and `tidy` so the
+# acceptance check can make its authenticated requests; with an HMAC deployment the script mints one per
 # request itself.
 set -euo pipefail
 
@@ -161,7 +161,7 @@ reload_postgres() {
     # Root's own peer identity is not a Postgres role, so the reload is the admin's, as in the
     # guide: this is a reload, never a restart of the server the other project shares.
     as_user "$admin_user" psql -c 'select pg_reload_conf()' >/dev/null \
-        || die "could not reload Postgres as $admin_user: nothing else was changed"
+        || die "could not reload Postgres as $admin_user: $pg_ident is written, rerun once the reload works"
 }
 
 # --- editing the two files this migration rewrites -----------------------------------------
@@ -213,14 +213,7 @@ env_point() {
 # The tag is read from the ingestion's checkout rather than chosen here: both accounts serve one
 # release, and a checkout that drifts is a different program halfway through a run.
 release_tag() {
-    local tag
-    if tag=$(git -C "$owner_checkout" describe --tags --exact-match 2>/dev/null); then
-        printf '%s\n' "$tag"
-        return 0
-    fi
-    tag=$(git -C "$owner_checkout" describe --tags --abbrev=0 2>/dev/null) || return 1
-    warn "$owner_checkout is not on a release tag; the API gets the nearest one, $tag"
-    printf '%s\n' "$tag"
+    git -C "$owner_checkout" describe --tags --exact-match 2>/dev/null
 }
 
 prove_mapping() {
@@ -256,9 +249,10 @@ cmd_prepare() {
     else
         map_line_add "$api"
         ok "added $api -> $api_role to $pg_ident"
-        # Only when the file changed: a rerun must not reload the shared server for nothing.
-        reload_postgres
     fi
+    # Every time, not only when the file changed: the proofs must read the map as it is written,
+    # and a rerun after a failed reload would otherwise prove the old one.
+    reload_postgres
     prove_mapping
 
     step "Step 3: its checkout, its uv and its venv"
@@ -359,14 +353,17 @@ run_acceptance() {
     if [ -f "$api_env" ]; then
         auth=$(env_value "$api_env" PW_API_AUTH)
     fi
+    # From the API's checkout: `uv run` finds its project from the working directory, and root's
+    # is neither the API's project nor readable by its account.
     if [ "$auth" = hmac ]; then
         # An HMAC token is single use, so the check mints one per authenticated request. It is
         # passed as a command, never as a token, so no credential lands on an argv.
-        as_api env "PW_CHECK_TOKEN_CMD=$uv_bin run --frozen --no-dev --env-file $api_env paperwatch api-token --live" \
+        as_api_in "$api_checkout" env \
+            "PW_CHECK_TOKEN_CMD=$uv_bin run --frozen --no-dev --env-file $api_env paperwatch api-token --live" \
             "$api_check" "$api_url"
     else
         # An OIDC token cannot be minted here: export PW_CHECK_TOKEN and runuser passes it on.
-        as_api "$api_check" "$api_url"
+        as_api_in "$api_checkout" "$api_check" "$api_url"
     fi
 }
 
@@ -497,7 +494,7 @@ prove_owner_locked_out() {
     fi
     # And the role it must never take again is what has to be refused now.
     if as_user "$owner" psql "postgresql://$api_role@/paperwatch?host=/var/run/postgresql" \
-        >/dev/null 2>&1; then
+        -Atc 'select 1' </dev/null >/dev/null 2>&1; then
         map_line_add "$owner"
         reload_postgres || true
         die "$owner can still take $api_role with its line gone, so something else lets it in: the line was put back and tidy stops here"
@@ -519,11 +516,12 @@ cmd_tidy() {
     step "Step 7: the owner's path to the API's role"
     if map_line_present "$pg_ident" "$owner" "$api_role"; then
         map_line_remove "$owner"
-        reload_postgres
-        ok "removed $owner -> $api_role from $pg_ident and reloaded"
+        ok "removed $owner -> $api_role from $pg_ident"
     else
         ok "$pg_ident has no $owner -> $api_role line"
     fi
+    # Every time, so a rerun after a failed reload proves the map as it is written.
+    reload_postgres
     prove_owner_locked_out
 
     step "Step 7: the old files"
