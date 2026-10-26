@@ -64,6 +64,30 @@ require_value() {
     }
 }
 
+# A trapped signal runs only once the command the shell is waiting for returns, and that command
+# can be a curl a --max-time long or the sleep between ticks an --interval long: stopping the soak
+# would wait for the tunnel. So every command that can block runs in the background, `wait` (a
+# builtin, which a trapped signal does interrupt) is what blocks, and the trap kills the child it
+# holds.
+CHILD=
+bg_wait() {
+    "$@" &
+    CHILD=$!
+    wait "$CHILD"
+    local status=$?
+    CHILD=
+    return $status
+}
+
+stop_soak() {
+    [ -z "$CHILD" ] || kill "$CHILD" 2>/dev/null
+    CHILD=
+    # To fd 3, the operator's stdout saved before `run`: the trap runs inside whatever redirection
+    # the interrupted command had, and a probe's curl writes to a temporary file.
+    printf '\nstopped. read the numbers with: %s summary %s\n' "$0" "$LOG" >&3
+    exit 130
+}
+
 # curl prints %{time_total} as seconds with a fraction; the log wants whole milliseconds. Pure
 # shell arithmetic, because awk's printf and bc are not on every machine this runs on.
 to_ms() {
@@ -127,9 +151,14 @@ record() {
 http_probe() {
     local probe=$1 path=$2 want=$3 want_body=${4-}
     local out code total curl_status=0 ms why=
-    out=$(curl -sS --connect-timeout 10 --max-time "$MAX_TIME" \
-        -o "$TMP/body" -w '%{http_code} %{time_total}' "$BASE_URL$path" 2>/dev/null)
+    out=
+    # Read back from a file rather than captured, for the reason bg_wait states above: a captured
+    # response blocks the shell, and a stop must not wait for one.
+    bg_wait curl -sS --connect-timeout 10 --max-time "$MAX_TIME" \
+        -o "$TMP/body" -w '%{http_code} %{time_total}\n' "$BASE_URL$path" \
+        >"$TMP/probe" 2>/dev/null
     curl_status=$?
+    IFS= read -r out <"$TMP/probe"
     code=${out%% *}
     total=${out##* }
     case $out in
@@ -195,7 +224,7 @@ stream_probe() {
             down_since=${last:-$started}
         fi
         # A refused connection returns at once: the pause keeps the retries from spinning.
-        sleep 1
+        bg_wait sleep 1
     done
     if [ -n "$down_since" ] && [ $((SECONDS - down_since)) -gt "$outage" ]; then
         outage=$((SECONDS - down_since))
@@ -246,7 +275,7 @@ run() {
         target=$((start + tick * INTERVAL))
         sleep_for=$((target - $(date -u +%s)))
         if [ "$sleep_for" -gt 0 ]; then
-            sleep "$sleep_for"
+            bg_wait sleep "$sleep_for"
         fi
     done
     printf 'soak finished. read the numbers with: %s summary %s\n' "$0" "$LOG"
@@ -460,8 +489,8 @@ case $MODE in
             exit 2
         }
         trap 'rm -rf "$TMP"' EXIT
-        trap 'printf "\nstopped. read the numbers with: %s summary %s\n" "$0" "$LOG"; exit 130' \
-            INT TERM
+        trap stop_soak INT TERM
+        exec 3>&1
         run
         ;;
     summary)
