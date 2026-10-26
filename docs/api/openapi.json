@@ -1368,6 +1368,16 @@
               }
             }
           },
+          "503": {
+            "description": "No answer connection was free in time; also sends Retry-After.",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
           "400": {
             "description": "The Host is not allowed, or the Content-Length is bad.",
             "content": {

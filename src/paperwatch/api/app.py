@@ -58,7 +58,12 @@ from paperwatch.agent.sources import (
 from paperwatch.agent.tools import SearchLog, item_block, make_tools
 from paperwatch.api.auth import Principal, Verifier
 from paperwatch.api.gate import ApiGate
-from paperwatch.api.limits import Admitted, Refused, RequestLimiter
+from paperwatch.api.limits import (
+    BUSY_RETRY_AFTER_S,
+    Admitted,
+    Refused,
+    RequestLimiter,
+)
 from paperwatch.api.pacing import paced
 from paperwatch.api.payloads import AnswerData, CitationData, FlagData
 from paperwatch.api.responses import (
@@ -909,6 +914,10 @@ _ASK_RESPONSES: dict[int | str, dict[str, Any]] = {
         ),
     },
     404: {"model": Refusal, "description": "The `thread_id` names no thread."},
+    503: {
+        "model": Refusal,
+        "description": "No answer connection was free in time; also sends Retry-After.",
+    },
 }
 
 
@@ -937,6 +946,26 @@ def _refused(message: str, loc: list[str]) -> HTTPException:
         status_code=422,
         detail=[{"type": "value_error", "loc": ["body", *loc], "msg": message}],
     )
+
+
+def _check_references(deps: AgentDeps, item_id: UUID | None, thread_id: UUID | None) -> None:
+    """Refuse an item or thread the corpus does not hold, before any stream starts.
+
+    Both are blocking reads, done on one session, and the route runs this whole helper on a worker
+    thread: on the event loop a slow or paused database would stall every other request.
+    """
+    if item_id is None and thread_id is None:
+        return
+    with closing((deps.read_session_factory or deps.session_factory)()) as reader:
+        repo = Repository(reader)
+        if item_id is not None and not repo.admitted_item(item_id):
+            # An id that is not in the corpus would only spend a model call on a question about
+            # nothing.
+            raise _refused("item_id is not an admitted item", ["item_id"])
+        # The route answers the thread's 404 before a stream starts; `run_question` then loads the
+        # thread again for the answer it needs.
+        if thread_id is not None and repo.thread(thread_id) is None:
+            raise HTTPException(status_code=404, detail="thread not found")
 
 
 def _json_safe(value: Any) -> Any:
@@ -1275,18 +1304,18 @@ def create_app(deps: AgentDeps) -> FastAPI:
             raise _refused(f"unknown profiles: {', '.join(unknown)}", ["profiles"])
         if body.since is not None and body.since > deps.clock().astimezone(UTC).date():
             raise _refused("since must not be in the future", ["since"])
-        if body.item_id is not None:
-            # Refused before the stream starts: an id that is not in the corpus would only spend a
-            # model call on a question about nothing.
-            with closing((deps.read_session_factory or deps.session_factory)()) as reader:
-                if not Repository(reader).admitted_item(body.item_id):
-                    raise _refused("item_id is not an admitted item", ["item_id"])
-        if body.thread_id is not None:
-            # The thread's turns are small, so the route reads it for the 404 the plan wants before
-            # a stream starts; `run_question` then loads it again for the answer it needs.
-            with closing((deps.read_session_factory or deps.session_factory)()) as reader:
-                if Repository(reader).thread(body.thread_id) is None:
-                    raise HTTPException(status_code=404, detail="thread not found")
+        try:
+            # One worker round trip for both reads; a paused database must not stall the loop.
+            await anyio.to_thread.run_sync(_check_references, deps, body.item_id, body.thread_id)
+        except PoolTimeout:
+            # The answer pool is small and its wait short, so a full pool is a busy server, not a
+            # bug: the client gets the same sentence and Retry-After as a busy answer slot.
+            log.warning("ask_reference_check_busy")
+            raise HTTPException(
+                status_code=503,
+                detail=BUSY_MESSAGE,
+                headers={"Retry-After": str(BUSY_RETRY_AFTER_S)},
+            ) from None
         principal: Principal = request.state.principal
         admitted = deps.limiter.admit(principal.subject)
         if isinstance(admitted, Refused):
