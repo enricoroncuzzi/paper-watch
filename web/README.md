@@ -11,6 +11,7 @@ npm run fake-api       # the fake API alone, on 127.0.0.1:8787 (FAKE_API_PORT mo
 npm test               # Vitest: the pure logic (guards, safeHref, the API client, the SSE parser)
 npm run e2e            # Playwright, Chromium and WebKit (including an iPhone 15), fake API only
 npm run lint
+npx prettier --check .  # formatting at 100 columns (.prettierrc), as CI checks it
 npm run typecheck      # next typegen, then tsc
 npm run build
 npm run gen:api        # regenerate src/lib/api-types.ts from ../docs/api/openapi.json
