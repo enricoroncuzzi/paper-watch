@@ -51,8 +51,6 @@ LONG_COPY_WORDS = 12
 
 # A number with an optional decimal or thousands part and an optional percent sign.
 _NUMBER = re.compile(r"\d+(?:[.,]\d+)*\s?%?")
-# A sentence boundary: the whitespace after terminal punctuation.
-_SENTENCE = re.compile(r"(?<=[.!?])\s+")
 # Straight or curly double quotes; single quotes are not delimiters because contractions use them.
 _QUOTE = re.compile(r'"([^"\n]{1,})"|\u201c([^\u201d\n]{1,})\u201d')
 # A URL with a scheme, a www. host, or a bare domain with a path. The third form keeps a filename
@@ -75,7 +73,7 @@ _LOWER_US = re.compile(r"\bus\b")
 # after the stop, including markdown bold, may be one or two in a row.
 _CLOSERS = "\"')\\]\u201d\u2019*"
 _SENTENCE_END = re.compile(
-    rf"(?<![A-Z]\.)(?<=[.!?])\s+(?![a-z])"
+    rf"(?<!\b[A-Z]\.)(?<=[.!?])\s+(?![a-z])"
     rf"|(?<=[.!?][{_CLOSERS}])\s+(?![a-z])"
     rf"|(?<=[.!?][{_CLOSERS}][{_CLOSERS}])\s+(?![a-z])"
     r"|(?<=\u2026)\s+"
@@ -627,7 +625,9 @@ def _url_key(url: str) -> str:
 
 
 def _sentences(text: str) -> list[str]:
-    return [sentence.strip() for sentence in _SENTENCE.split(text.strip()) if sentence.strip()]
+    # The same boundary the first person check uses, so an abbreviation does not split a sentence
+    # in one rule and hold it whole in another.
+    return [text[start:end] for start, end in _piece_spans(_SENTENCE_END, text)]
 
 
 def _first_sentence(text: str) -> str:
