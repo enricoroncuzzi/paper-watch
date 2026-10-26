@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.1](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.15.0...paperwatch-v0.15.1) (2026-10-26)
+
+
+### Bug Fixes
+
+* **deploy:** stop the tunnel soak probe at once on SIGINT or SIGTERM ([#95](https://github.com/enricoroncuzzi/paper-watch/issues/95)) ([885df33](https://github.com/enricoroncuzzi/paper-watch/commit/885df336638128c4c23f3564ead3720234e2fbc7))
+
 ## [0.15.0](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.14.4...paperwatch-v0.15.0) (2026-10-26)
 
 
