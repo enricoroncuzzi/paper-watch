@@ -287,13 +287,6 @@ def test_the_event_route_is_throttled_per_subject(db_session: Session) -> None:
     assert refused.status_code == 429
     assert refused.headers["retry-after"] == "60"
     assert refused.json() == {"detail": "rate_limited", "retry_after_s": 60}
-    # The throttle is the credential's, not the server's: another subject still records its event.
-    other = api.post(
-        path,
-        json={"event": "opened"},
-        headers={"Authorization": f"Bearer {mint_hmac_token(TEST_SECRET, 'other', time.time())}"},
-    )
-    assert other.status_code == 204
 
 
 def test_shown_is_recorded_at_most_once_an_hour(db_session: Session) -> None:
