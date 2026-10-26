@@ -72,6 +72,19 @@ def test_a_dotted_code_identifier_in_an_interpretation_field_passes() -> None:
     assert check_summary(raw, title=TITLE, text=text) == []
 
 
+def test_a_product_name_written_in_capitals_is_not_a_domain() -> None:
+    # The matcher tells ASP.NET from a host by its case, so the check must see the field's own
+    # case: a casefolded "asp.net" would fail the whole summary for a product name.
+    text = f"{TEXT} The harness runs on ASP.NET and System.IO, and Character.AI ships it."
+    raw = good()
+    raw["why"]["text"] = "ASP.NET and System.IO harnesses from Character.AI can reuse it."
+    assert check_summary(raw, title=TITLE, text=text) == []
+
+    raw = good()
+    raw["why"]["text"] = "The harness is on Example.com, so it is easy to reuse."
+    assert "url:why" in check_summary(raw, title=TITLE, text=text)
+
+
 def test_a_url_in_a_quoted_field_is_the_source_s_own_link() -> None:
     # The stored text carries links, and a quote may carry one: only interpretation is refused.
     text = f"{TEXT} The code is at https://example.com/bench."

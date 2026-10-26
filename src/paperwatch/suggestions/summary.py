@@ -130,7 +130,9 @@ def check_summary(raw: Mapping[str, Any], *, title: str, text: str) -> list[str]
             for word in SUPERLATIVES
             if _superlative_is_unbacked(body, source, word)
         ]
-        if name in INTERPRETATION_FIELDS and (_URL.search(body) or bare_domains(body)):
+        if name in INTERPRETATION_FIELDS and (
+            _URL.search(body) or bare_domains(_fold(field["text"]))
+        ):
             # The check cannot follow a link, and `why` and `catch` are where the model's own
             # reading goes: a URL there would put an unverifiable claim on the card.
             failed.append(f"url:{name}")
@@ -312,8 +314,13 @@ def _normalise(value: str) -> str:
     # Both sides of every comparison go through this. The model reads the source HTML-escaped, so
     # "R&D" reaches it as "R&amp;D" and comes back that way: unescaping both sides makes a faithful
     # quote match instead of failing the card for a character the prompt introduced.
+    return _fold(value).casefold()
+
+
+def _fold(value: str) -> str:
+    """The text as a reader sees it, with its case kept: a host is told from a product by case."""
     folded = unicodedata.normalize("NFKC", html.unescape(value)).translate(_TRANSLATION)
-    return " ".join(folded.split()).casefold()
+    return " ".join(folded.split())
 
 
 def _numbers(normalised: str) -> set[str]:
