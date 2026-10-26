@@ -345,14 +345,19 @@ def _park_items(
             if item.version > parked_version:
                 repo.refresh_dead_letter_payload(letter_id, item_to_payload(item))
             continue
-        if repo.stored(item.source, item.external_id) is None and not repo.has_open_dead_letter(
+        stored = repo.stored(item.source, item.external_id)
+        # An item with nothing stored needs its first fetch kept; an item the store already has
+        # needs the newer text kept when a later version arrives, because the replacement happens
+        # in phase 2 and a process killed in between would lose a v2 outside the next overlap.
+        # The same version is no work at all, so it writes no letter.
+        if (stored is None or item.version > stored.item.version) and not repo.has_open_dead_letter(
             item.source, item.external_id
         ):
             repo.add_dead_letter(
                 run_id,
                 item.source,
                 item.external_id,
-                "fetched, not yet stored",
+                "fetched, not yet stored" if stored is None else "fetched, text not yet replaced",
                 payload=item_to_payload(item),
                 attempts=0,
             )

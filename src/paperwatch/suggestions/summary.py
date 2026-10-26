@@ -54,6 +54,12 @@ SUPERLATIVES = (
 )
 # A number with an optional decimal or thousands part and an optional percent sign.
 _NUMBER = re.compile(r"\d+(?:[.,]\d+)*\s?%?")
+# A URL or a bare domain, for the fields that are the model's own reading: a link there is a claim
+# no stored text backs, and the source's own links live in the quoted fields.
+_URL = re.compile(
+    r"https?://\S+|\bwww\.\S+|(?<![\w@.-])(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}\b",
+    re.IGNORECASE,
+)
 # A sentence boundary: the whitespace after terminal punctuation.
 _SENTENCE = re.compile(r"(?<=[.!?])\s+")
 # A word as a name check sees it: letters, digits and the punctuation real names carry.
@@ -126,6 +132,10 @@ def check_summary(raw: Mapping[str, Any], *, title: str, text: str) -> list[str]
             for word in SUPERLATIVES
             if _superlative_is_unbacked(body, source, word)
         ]
+        if name in INTERPRETATION_FIELDS and _URL.search(body):
+            # The check cannot follow a link, and `why` and `catch` are where the model's own
+            # reading goes: a URL there would put an unverifiable claim on the card.
+            failed.append(f"url:{name}")
         if len(field["text"].split()) > MAX_FIELD_WORDS:
             failed.append(f"length:{name}")
     total = sum(len(fields[name]["text"].split()) for name in FIELD_NAMES)

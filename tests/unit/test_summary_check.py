@@ -49,6 +49,29 @@ def test_a_changed_number_fails() -> None:
     assert "number:result:45%" in failed
 
 
+def test_a_url_in_an_interpretation_field_fails() -> None:
+    # `why` and `catch` are the model's own reading, and a URL there is a claim a reader cannot
+    # check against the stored text: the source's own links live in the quoted fields.
+    raw = good()
+    raw["why"]["text"] = "A smaller benchmark is cheaper to run; see https://example.com/bench."
+    assert "url:why" in check_summary(raw, title=TITLE, text=TEXT)
+
+    raw = good()
+    raw["catch"]["text"] = "Not stated in the abstract; the code is at example.com."
+    assert "url:catch" in check_summary(raw, title=TITLE, text=TEXT)
+
+
+def test_a_url_in_a_quoted_field_is_the_source_s_own_link() -> None:
+    # The stored text carries links, and a quote may carry one: only interpretation is refused.
+    text = f"{TEXT} The code is at https://example.com/bench."
+    raw = good()
+    raw["what"] = {
+        "text": "The authors ship the benchmark at https://example.com/bench.",
+        "quote": "The code is at https://example.com/bench.",
+    }
+    assert check_summary(raw, title=TITLE, text=text) == []
+
+
 def test_an_invented_name_fails() -> None:
     raw = good()
     raw["what"]["text"] = "The authors compare AgentBench-Lite with GPT-5 on 41 tasks."
