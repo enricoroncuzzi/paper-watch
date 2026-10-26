@@ -40,9 +40,9 @@ key"; it never raises into the request.
 
 After the signature, the claims are checked: `iss`, `aud`, and the exact `sub` (Vercel's subject
 names the owner, project and environment, so a preview deployment's token cannot pass for
-production), `exp` and `nbf` with 30 seconds of clock skew, and `iat` (which PyJWT does not check)
-against the same skew. A claim mismatch is logged as `token_claim_mismatch` with the claim name and
-both values: they are Vercel's own, not secrets, and this is how an operator reads the real claims
+production), `exp` and `nbf` with 30 seconds of clock skew, and `iat` against the same skew
+(PyJWT's own `iat` check has no leeway, so it is turned off). A claim mismatch is logged as
+`token_claim_mismatch` with the claim name and both values: they are Vercel's own, not secrets, and this is how an operator reads the real claims
 the first day a new project's token is refused.
 
 ## The HMAC fallback
@@ -51,7 +51,9 @@ the first day a new project's token is refused.
 Vercel project exists. `paperwatch api-token --live` mints one token with a 60 second life, and its
 signature is compared with `hmac.compare_digest`. Like the OIDC token, one whose `iat` lies more
 than 30 seconds in the future is refused. A token's `jti` is remembered until the token
-expires, so it is single use: one copied out of a shell history or a log does not work twice. The
+expires, so it is single use: one copied out of a shell history or a log does not work twice.
+Every HMAC token becomes the same subject, `hmac`, whatever its `sub` claim says: the claim is
+chosen by whoever mints the token, so the per-subject limits count all HMAC callers as one client. The
 secret must be at least 32 characters, or `make_verifier` refuses to build the verifier and `serve`
 exits 2 naming `PW_API_HMAC_SECRET`. Two credentials never run at once; the setting picks one.
 
