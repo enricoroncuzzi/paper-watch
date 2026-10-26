@@ -1,12 +1,12 @@
-import { readdirSync, readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // The routes are tested without a Next server: the session guard and the credential are the two
 // collaborators, and everything else is the fetch contract with the API.
 vi.mock("@/auth", () => ({
   requireOwnerApi: vi.fn(async () => ({ githubId: "4242" })),
+  // The discovery below imports every route module, including the Auth.js handler route, which
+  // reads `handlers` from this module; an empty object gives it no mutating export to call.
+  handlers: {},
 }));
 vi.mock("@/lib/api-token", () => ({ apiToken: vi.fn(async () => "test-token") }));
 
@@ -151,26 +151,62 @@ describe("the cross-site guard on every mutating proxy", () => {
   );
 });
 
-describe("the guard's coverage", () => {
-  const root = new URL("./", import.meta.url);
+// Every mutating handler in this directory, discovered rather than listed: a route added later is
+// covered by the same call without anyone remembering to add it here, and the discovery is the
+// route tree itself (the modules Next runs), not a scan of their source.
+const ROUTE_MODULES = import.meta.glob<Record<string, unknown>>("./**/route.ts", { eager: true });
+const MUTATING = ["POST", "PUT", "PATCH", "DELETE"];
 
-  function routeFiles(): string[] {
-    return readdirSync(fileURLToPath(root), { recursive: true, encoding: "utf8" })
-      .filter((path) => path.endsWith("route.ts"))
-      .map((path) => fileURLToPath(new URL(path, root)));
+interface MutatingRoute {
+  name: string;
+  handler: (request: Request, context: unknown) => Promise<Response>;
+}
+
+function mutatingRoutes(): MutatingRoute[] {
+  const found: MutatingRoute[] = [];
+  for (const [path, module] of Object.entries(ROUTE_MODULES)) {
+    for (const method of MUTATING) {
+      const handler = module[method];
+      if (typeof handler === "function") {
+        found.push({
+          name: `${method} ${path}`,
+          handler: handler as MutatingRoute["handler"],
+        });
+      }
+    }
   }
+  return found;
+}
 
-  it("finds the routes it is meant to scan", () => {
-    // A scan over no files would pass silently, and the guard would look covered while it is not.
-    expect(routeFiles().length).toBeGreaterThanOrEqual(4);
+describe("the guard's coverage", () => {
+  it("discovers the mutating handlers it is meant to check", () => {
+    // A discovery over nothing would pass silently, and the guard would look covered while it is
+    // not; there are four mutating routes today.
+    expect(mutatingRoutes().length).toBeGreaterThanOrEqual(4);
   });
 
-  it("every mutating route handler calls the guard", () => {
-    const mutating = /export async function (POST|PUT|PATCH|DELETE)\b/;
-    const files = routeFiles().filter((path) => mutating.test(readFileSync(path, "utf8")));
-    expect(files.length).toBeGreaterThanOrEqual(4);
-    for (const path of files) {
-      expect(readFileSync(path, "utf8"), path).toContain("crossSiteRefusal");
+  it("every mutating handler refuses a cross-site request, whichever route it is", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubEnv("PW_API_URL", "http://api.test");
+    try {
+      for (const route of mutatingRoutes()) {
+        const request = new Request("http://localhost/api/whatever", {
+          method: route.name.split(" ")[0],
+          headers: {
+            "sec-fetch-site": "cross-site",
+            origin: "https://evil.example",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ question: "q", item_id: ITEM, event: "opened" }),
+        });
+        const response = await route.handler(request, context(ITEM));
+        expect(response.status, route.name).toBe(403);
+      }
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+      vi.unstubAllEnvs();
     }
   });
 });
