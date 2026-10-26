@@ -236,34 +236,36 @@ jobs:
       # The cache holds the browser binaries only, so the OS packages they link against install on
       # a hit too. Each attempt is capped at 5 minutes: a stuck apt source fails the step instead
       # of holding the job until its time limit, and the one retry rides out one bad mirror. The
-      # timeout kills the npx tree, dpkg included, which can leave a configure half done, so the
-      # retry finishes any interrupted configure before it installs anything else.
+      # retry's stop of a leftover attempt can leave a configure half done, so the retry finishes
+      # any interrupted configure before it installs anything else.
       #
-      # The timeout alone does not end an attempt: Playwright installs the packages through sudo,
-      # and sudo runs its command in a session of its own, so the apt-get outlives the signal and
-      # keeps the dpkg frontend lock. A retry that starts while it lives dies at once with "dpkg
-      # frontend lock was locked by another process" and never gets a second chance at a slow
-      # mirror. So the retry first takes the lock back: wait out an install that is nearly done,
-      # stop one that is not, and let `dpkg --configure -a` finish what the stop interrupted.
+      # The timeout alone does not end an attempt: Playwright runs `apt-get update && apt-get
+      # install` through sudo, and sudo runs its command in a session of its own, so the apt-get
+      # outlives the signal and keeps its apt or dpkg lock. A retry that starts while it lives dies
+      # at once with "Could not get lock" or "dpkg frontend lock was locked by another process" and
+      # never gets a second chance at a slow mirror. So the retry first takes the locks back: wait
+      # out an apt-get that is nearly done, stop one that is not, and let `dpkg --configure -a`
+      # finish what the stop interrupted.
       - run: |
-          # Fills `holders` with the pids holding the dpkg locks, and with nothing when both are
-          # free. apt and dpkg take an fcntl write lock on them, which only fuser reports, and only
-          # root can see another user's files.
-          dpkg_locks=(/var/lib/dpkg/lock-frontend /var/lib/dpkg/lock)
+          # Fills `holders` with the pids holding the apt and dpkg locks, and with nothing when all
+          # are free. apt and dpkg take an fcntl write lock on them, which only fuser reports, and
+          # only root can see another user's files. `apt-get update` holds only the lists lock.
+          apt_locks=(/var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock
+            /var/cache/apt/archives/lock)
           lock_holders() {
-            read -r -a holders <<<"$(sudo fuser "${dpkg_locks[@]}" 2>/dev/null)"
+            read -r -a holders <<<"$(sudo fuser "${apt_locks[@]}" 2>/dev/null)"
           }
-          free_dpkg_lock() {
+          free_apt_locks() {
             local holders
-            # A nearly finished install gets 15s to release the lock itself.
+            # A nearly finished apt-get gets 15s to release its lock itself.
             for _ in $(seq 1 15); do
               lock_holders
               if [ "${#holders[@]}" -eq 0 ]; then return 0; fi
               sleep 1
             done
-            echo "::warning::stopping the dpkg lock holder(s): ${holders[*]}"
+            echo "::warning::stopping the apt lock holder(s): ${holders[*]}"
             sudo kill -TERM "${holders[@]}" 2>/dev/null || true
-            # TERM lets dpkg unwind; KILL only for a holder still there 15s later.
+            # TERM lets apt and dpkg unwind; KILL only for a holder still there 15s later.
             for _ in $(seq 1 15); do
               sleep 1
               lock_holders
@@ -275,12 +277,12 @@ jobs:
               if [ "${#holders[@]}" -eq 0 ]; then return 0; fi
               sleep 1
             done
-            echo "::error::the dpkg lock is still held 40s after the retry started"
+            echo "::error::the apt locks are still held 40s after the retry started"
             return 1
           }
           for attempt in 1 2; do
             if [ "$attempt" -gt 1 ]; then
-              free_dpkg_lock || exit 1
+              free_apt_locks || exit 1
               sudo dpkg --configure -a || true
             fi
             timeout --kill-after=30 300 npx playwright install-deps chromium webkit && exit 0
