@@ -172,7 +172,9 @@ class Sandbox:
         return log.read_text().splitlines() if log.exists() else []
 
     def map_lines(self) -> list[list[str]]:
-        return [line.split() for line in self.pg_ident.read_text().splitlines() if line.strip()]
+        """The map's own lines, the comment header aside."""
+        lines = [line for line in self.pg_ident.read_text().splitlines() if line.strip()]
+        return [line.split() for line in lines if not line.lstrip().startswith("#")]
 
     def owner_map_lines(self) -> list[list[str]]:
         """The owner's own path to the API's role, which tidy removes last."""
@@ -671,3 +673,118 @@ def test_switch_asks_before_it_swaps_the_units(sandbox: Sandbox) -> None:
     assert result.returncode == 1
     assert "--yes" in result.stderr
     assert sandbox.records("systemctl") == []
+
+
+# --- rollback ------------------------------------------------------------------------------
+
+
+def test_rollback_stops_the_system_unit_before_starting_the_old_one(sandbox: Sandbox) -> None:
+    sandbox.prepare()
+    assert sandbox.run("switch", "--yes").returncode == 0
+    (sandbox.rec / "systemctl").unlink()
+    result = sandbox.run("rollback", "--yes")
+    assert result.returncode == 0, result.stdout + result.stderr
+    calls = sandbox.records("systemctl")
+    assert calls.index("disable --now paperwatch-api") < calls.index(
+        "--user enable --now paperwatch-api"
+    )
+    assert (sandbox.rec / "user.active").exists()
+    assert not (sandbox.rec / "system.active").exists()
+    # The unit the rollback starts is the one the migration kept, and it is still there.
+    assert sandbox.owner_unit.exists()
+
+
+def test_rollback_leaves_the_owners_env_file_exactly_as_prepare_left_it(sandbox: Sandbox) -> None:
+    sandbox.prepare()
+    assert sandbox.run("switch", "--yes").returncode == 0
+    result = sandbox.run("rollback", "--yes")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert sandbox.owner_env.read_text() == OWNER_ENV
+
+
+def test_rollback_restores_the_owners_env_file_when_it_is_gone(sandbox: Sandbox) -> None:
+    # The guide's step 4 removes the owner's copy by hand. When it is gone, the rollback puts it
+    # back 0600 with the ingestion's own model cache, not the API's.
+    sandbox.prepare()
+    assert sandbox.run("switch", "--yes").returncode == 0
+    sandbox.owner_env.unlink()
+    result = sandbox.run("rollback", "--yes")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert oct(sandbox.owner_env.stat().st_mode & 0o777) == "0o600"
+    restored = sandbox.owner_env.read_text().splitlines()
+    assert f"PW_LOCAL_EMBEDDING_CACHE_DIR={sandbox.owner_cache}" in restored
+    assert len(restored) == len(OWNER_ENV.splitlines())
+
+
+def test_rollback_refuses_once_tidy_has_removed_the_old_unit(sandbox: Sandbox) -> None:
+    # After step 7 the way back needs the owner's ident line and a unit file from a release before
+    # ADR 0017, which is not something this script can put back on its own.
+    sandbox.prepare()
+    assert sandbox.run("switch", "--yes").returncode == 0
+    sandbox.owner_unit.unlink()
+    result = sandbox.run("rollback", "--yes")
+    assert result.returncode == 1
+    assert "tidy already ran" in result.stderr
+
+
+# --- tidy (step 7) -------------------------------------------------------------------------
+
+
+def _switched(sandbox: Sandbox) -> None:
+    sandbox.prepare()
+    result = sandbox.run("switch", "--yes")
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_tidy_refuses_unless_the_system_unit_is_active(sandbox: Sandbox) -> None:
+    # Prepared but not switched: retiring the owner's way in would leave the API on an account
+    # that may not be serving at all.
+    sandbox.prepare()
+    result = sandbox.run("tidy", "--yes")
+    assert result.returncode == 1
+    assert "not active" in result.stderr
+    assert sandbox.owner_env.exists()
+    assert sandbox.owner_map_lines() == [[OWNER, OWNER, API_ROLE]]
+
+
+def test_tidy_refuses_when_the_acceptance_check_fails(sandbox: Sandbox) -> None:
+    _switched(sandbox)
+    sandbox.accept(passes=False)
+    result = sandbox.run("tidy", "--yes")
+    assert result.returncode == 1
+    assert "acceptance check" in result.stderr
+    assert sandbox.owner_env.exists()
+    assert sandbox.owner_map_lines() == [[OWNER, OWNER, API_ROLE]]
+
+
+def test_tidy_removes_the_owners_way_in_and_the_old_files(sandbox: Sandbox) -> None:
+    _switched(sandbox)
+    result = sandbox.run("tidy", "--yes")
+    assert result.returncode == 0, result.stdout + result.stderr
+    # The map is now the block section 12 ends with: the owner's two lines and the API's one.
+    assert sandbox.map_lines() == [
+        [OWNER, OWNER, OWNER],
+        [OWNER, OWNER, "paperwatch_ro"],
+        [OWNER, API, API_ROLE],
+    ]
+    # The refusal is proven before the files go: the owner asking for the API's role is refused.
+    assert f"{OWNER} psql postgresql://{API_ROLE}@" in (sandbox.rec / "psql").read_text()
+    assert not sandbox.owner_env.exists()
+    assert not sandbox.retired_env.exists()
+    assert not sandbox.owner_unit.exists()
+    assert "--user daemon-reload" in sandbox.records("systemctl")
+
+
+def test_tidy_leaves_every_file_when_the_owner_can_still_take_the_role(sandbox: Sandbox) -> None:
+    # If the owner still reaches paperwatch_api with its line gone, something else lets it in, and
+    # deleting the rest would hide that instead of closing it.
+    _switched(sandbox)
+    (sandbox.rec / "psql.role-reachable").write_text("")
+    result = sandbox.run("tidy", "--yes")
+    assert result.returncode == 1
+    assert API_ROLE in result.stderr
+    assert sandbox.owner_env.exists()
+    assert sandbox.retired_env.exists()
+    assert sandbox.owner_unit.exists()
+    # The line it removed is put back, so the next run starts from the same state.
+    assert sandbox.owner_map_lines() == [[OWNER, OWNER, API_ROLE]]

@@ -169,9 +169,21 @@ reload_postgres() {
 # Both edits copy the file with `cp -p` and rename the copy over it, so the mode and the owner of
 # a file root writes on another account's behalf survive, and a crash never leaves half a file.
 
+# map_line_add SYSTEM-USER-NAME: let that account reach the API's role.
 map_line_add() {
     # The columns are the block section 12 shows; any whitespace would do for Postgres.
-    printf '%-14s%-17s%s\n' "$map_name" "$api" "$api_role" >>"$pg_ident"
+    printf '%-14s%-17s%s\n' "$map_name" "$1" "$api_role" >>"$pg_ident"
+}
+
+# map_line_remove SYSTEM-USER-NAME: drop that account's line for the API's role and nothing else.
+map_line_remove() {
+    local tmp
+    tmp=$pg_ident.new.$$
+    cp -p "$pg_ident" "$tmp"
+    : >"$tmp"
+    awk -v map="$map_name" -v sys="$owner" -v role="$api_role" \
+        '!($1 == map && $2 == sys && $3 == role)' "$pg_ident" >"$tmp"
+    mv -f "$tmp" "$pg_ident"
 }
 
 # env_point FILE KEY VALUE: set one key and leave every other line byte for byte as it was.
@@ -238,7 +250,7 @@ cmd_prepare() {
     if map_line_present "$pg_ident" "$api" "$api_role"; then
         ok "the map already has $api -> $api_role"
     else
-        map_line_add
+        map_line_add "$api"
         ok "added $api -> $api_role to $pg_ident"
         # Only when the file changed: a rerun must not reload the shared server for nothing.
         reload_postgres
@@ -456,6 +468,75 @@ cmd_rollback() {
         return 0
     fi
     die "$owner's user unit did not answer on $api_url: read journalctl --user -u paperwatch-api as $owner"
+}
+
+# --- tidy: step 7 --------------------------------------------------------------------------
+
+remove_if_present() {
+    if [ -e "$1" ]; then
+        rm -f "$1"
+        ok "removed $1"
+    else
+        ok "$1 is already gone"
+    fi
+}
+
+prove_owner_locked_out() {
+    # The owner still has to see the database it owns: a stale line would otherwise be tidied away
+    # behind a locked-out ingestion.
+    local who
+    who=$(as_user "$owner" psql -d paperwatch -Atc 'select current_user') || who=
+    if [ "$who" != "$owner" ]; then
+        map_line_add "$owner"
+        reload_postgres || true
+        die "$owner no longer reaches paperwatch as itself: the removed line was put back, check $pg_ident"
+    fi
+    # And the role it must never take again is what has to be refused now.
+    if as_user "$owner" psql "postgresql://$api_role@/paperwatch?host=/var/run/postgresql" \
+        >/dev/null 2>&1; then
+        map_line_add "$owner"
+        reload_postgres || true
+        die "$owner can still take $api_role with its line gone, so something else lets it in: the line was put back and tidy stops here"
+    fi
+    ok "$owner still reaches paperwatch and can no longer take $api_role"
+}
+
+cmd_tidy() {
+    require_root
+    # The way back is only given up once the new unit is serving and accepted: this is the one step
+    # that is not undone by a scripted rollback.
+    unit_active system || die "the system unit is not active: run '$0 status' and '$0 switch' first"
+    if ! run_acceptance; then
+        die "the acceptance check fails, so tidy would retire the way back to an API that does not answer"
+    fi
+    confirm "Retire $owner's path to $api_role, its copy of the env file and the old unit file now?"
+
+    step "Step 7: the owner's path to the API's role"
+    if map_line_present "$pg_ident" "$owner" "$api_role"; then
+        map_line_remove
+        reload_postgres
+        ok "removed $owner -> $api_role from $pg_ident and reloaded"
+    else
+        ok "$pg_ident has no $owner -> $api_role line"
+    fi
+    prove_owner_locked_out
+
+    step "Step 7: the old files"
+    remove_if_present "$owner_env"
+    remove_if_present "$retired_env"
+    # Anything else left beside them may hold a secret too: named, never deleted on a guess.
+    local other
+    for other in "$owner_env".*; do
+        if [ -e "$other" ]; then
+            warn "$other is left in place: check whether it holds a secret"
+        fi
+    done
+    remove_if_present "$owner_unit"
+    user_manager daemon-reload
+    ok "the user manager has forgotten the old unit"
+
+    step "Done"
+    say "The API serves from $api alone. Run '$0 status' to read the whole migration back."
 }
 
 # --- status --------------------------------------------------------------------------------
