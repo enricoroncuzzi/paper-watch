@@ -90,7 +90,7 @@ switch    steps 5 and 6: install and start the system unit where the user unit r
 rollback  the guide's "Rolling back": back to the owner's user unit, valid before tidy
 tidy      step 7: retire the owner's ident line, env file, backup and old unit file
 
---yes skips the confirmation before switch and tidy. No secret value is ever printed.
+--yes skips the confirmation before switch, rollback and tidy. No secret value is ever printed.
 USAGE
 }
 

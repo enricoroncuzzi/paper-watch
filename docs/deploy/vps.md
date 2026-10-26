@@ -909,7 +909,7 @@ it as root, one command at a time, and read the step below when one stops. `stat
 and says which steps are done; `prepare` is steps 1 to 4 and can be rerun after a partial failure;
 `switch` is steps 5 and 6 and undoes itself when the new unit does not answer or the acceptance
 check fails; `rollback` is the section at the end; `tidy` is step 7. It never prints a value from
-the env file, and `--yes` skips the two confirmations. With `PW_API_AUTH=hmac` it mints the
+the env file, and `--yes` skips its confirmations. With `PW_API_AUTH=hmac` it mints the
 acceptance check's tokens itself; an OIDC deployment must export `PW_CHECK_TOKEN` before `switch`
 and `tidy`, or the authenticated checks are skipped.
 
