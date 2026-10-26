@@ -10,6 +10,7 @@ summary parses is the line the probe writes, and the stub stream server is the r
 
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import threading
@@ -278,7 +279,15 @@ def _stream_url(proc: subprocess.Popen[str]) -> str:
     raise AssertionError("the soak stream server never printed its address")
 
 
-def _wait_for_lines(log: Path, count: int, timeout: float = 30) -> list[str]:
+# One bound for both ends of a probe test, the lines it collects and the stop it asks for, so a
+# loaded runner is treated the same way at both. The probe holds its stream for the window the test
+# passes (seven seconds at most here) and answers a stop at once, whatever it was waiting for
+# (`test_a_running_probe_stops_promptly_with_a_probe_in_flight`), so this leaves a slow runner
+# seconds to spare while still failing a probe that waits on a window that has already closed.
+PROBE_TIMEOUT = 30
+
+
+def _wait_for_lines(log: Path, count: int, timeout: float = PROBE_TIMEOUT) -> list[str]:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if log.exists():
@@ -287,6 +296,17 @@ def _wait_for_lines(log: Path, count: int, timeout: float = 30) -> list[str]:
                 return lines
         time.sleep(0.2)
     raise AssertionError(f"{log} never collected {count} probe lines")
+
+
+def _stop(proc: subprocess.Popen[str], what: str) -> None:
+    """Stop a child, and report a signal it ignored as that instead of as a timeout."""
+    proc.terminate()
+    try:
+        proc.wait(timeout=PROBE_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+        raise AssertionError(f"{what} was still running {PROBE_TIMEOUT}s after SIGTERM") from None
 
 
 def test_the_probe_logs_one_line_per_probe_with_the_fields_the_summary_reads(
@@ -324,10 +344,11 @@ def test_the_probe_logs_one_line_per_probe_with_the_fields_the_summary_reads(
     try:
         lines = _wait_for_lines(log, 3)
     finally:
-        probe.terminate()
-        probe.wait(timeout=15)
-        stream.terminate()
-        stream.wait(timeout=15)
+        try:
+            _stop(probe, "the soak probe")
+        finally:
+            stream.terminate()
+            stream.wait(timeout=15)
 
     assert lines[0].split()[1].startswith("at=")
     assert re.fullmatch(r"ts=\S+ at=\d+ probe=healthz result=ok http=200 ms=\d+", lines[0]), lines[
@@ -440,10 +461,11 @@ def _stream_line(
     try:
         lines = _wait_for_lines(log, 3)
     finally:
-        probe.terminate()
-        probe.wait(timeout=15)
-        server.shutdown()
-        server.server_close()
+        try:
+            _stop(probe, "the soak probe")
+        finally:
+            server.shutdown()
+            server.server_close()
     [line] = [line for line in lines if " probe=stream " in line]
     return line
 
@@ -507,6 +529,56 @@ def test_a_stalled_stream_that_never_comes_back_is_unrecovered(
     result = _summary(_write_log(tmp_path, [line], name="stalled.log"))
     assert result.returncode == 1
     assert "verdict: FAIL - 1 failed streams" in result.stdout
+
+
+def test_a_running_probe_stops_promptly_with_a_probe_in_flight(tmp_path: Path) -> None:
+    # The soak runs for 72 hours and is stopped by hand or by systemd, so the stop itself is worth
+    # testing. bash runs a trapped signal only once the command it is waiting for returns, so a
+    # probe blocked in curl defers SIGTERM for curl's whole --max-time and the sleep between ticks
+    # defers it for up to --interval; the probe waits on its children in the background for that
+    # reason. The five seconds here are far under the 30 s max-time given below, so a stop that
+    # still waits on the tunnel fails.
+    log = tmp_path / "soak.log"
+    assert BASH, "the soak probe is bash"
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        port = listener.getsockname()[1]
+        probe = subprocess.Popen(  # noqa: S603 (a fixed script path, no shell)
+            [
+                BASH,
+                str(SCRIPT),
+                "run",
+                f"http://127.0.0.1:{port}",
+                "--stream-url",
+                f"http://127.0.0.1:{port}/events",
+                "--log",
+                str(log),
+                "--interval",
+                "300",
+                "--stream-window",
+                "1",
+                "--max-time",
+                "30",
+                "--hours",
+                "0",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            # A listener that accepts and never answers holds the first healthz probe inside curl
+            # from the moment the connection lands.
+            listener.settimeout(30)
+            connection, _ = listener.accept()
+            with connection:
+                probe.terminate()
+                probe.wait(timeout=5)
+        finally:
+            probe.kill()
+            probe.wait(timeout=15)
+    assert probe.returncode == 130, probe.stderr
 
 
 def _run_args(*args: str) -> subprocess.CompletedProcess[str]:
