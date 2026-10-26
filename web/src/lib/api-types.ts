@@ -4,2232 +4,2226 @@
  */
 
 export interface paths {
-    "/runs": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Runs */
-        get: operations["runs_runs_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+  "/runs": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    "/runs/{run_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Run Detail */
-        get: operations["run_detail_runs__run_id__get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+    /** Runs */
+    get: operations["runs_runs_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/runs/{run_id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    "/today": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Today */
-        get: operations["today_today_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+    /** Run Detail */
+    get: operations["run_detail_runs__run_id__get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/today": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    "/suggestions": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Suggestions */
-        get: operations["suggestions_suggestions_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+    /** Today */
+    get: operations["today_today_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/suggestions": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    "/suggestions/{item_id}/events": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Record Event */
-        post: operations["record_event_suggestions__item_id__events_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+    /** Suggestions */
+    get: operations["suggestions_suggestions_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/suggestions/{item_id}/events": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    "/drafts": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List Drafts */
-        get: operations["list_drafts_drafts_get"];
-        put?: never;
-        /**
-         * Create Draft
-         * @description Generate, check and save one draft; generating is saving.
-         */
-        post: operations["create_draft_drafts_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+    get?: never;
+    put?: never;
+    /** Record Event */
+    post: operations["record_event_suggestions__item_id__events_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/drafts": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    "/drafts/{draft_id}/regenerate": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Regenerate Draft
-         * @description Re-run the stored inputs and point of view; the old draft stays, linked.
-         */
-        post: operations["regenerate_draft_drafts__draft_id__regenerate_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+    /** List Drafts */
+    get: operations["list_drafts_drafts_get"];
+    put?: never;
+    /**
+     * Create Draft
+     * @description Generate, check and save one draft; generating is saving.
+     */
+    post: operations["create_draft_drafts_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/drafts/{draft_id}/regenerate": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    "/drafts/{draft_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get Draft */
-        get: operations["get_draft_drafts__draft_id__get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+    get?: never;
+    put?: never;
+    /**
+     * Regenerate Draft
+     * @description Re-run the stored inputs and point of view; the old draft stays, linked.
+     */
+    post: operations["regenerate_draft_drafts__draft_id__regenerate_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/drafts/{draft_id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    "/threads": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * List Threads
-         * @description The Recent menu: newest conversation first.
-         */
-        get: operations["list_threads_threads_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+    /** Get Draft */
+    get: operations["get_draft_drafts__draft_id__get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/threads": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    "/threads/{thread_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get Thread */
-        get: operations["get_thread_threads__thread_id__get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+    /**
+     * List Threads
+     * @description The Recent menu: newest conversation first.
+     */
+    get: operations["list_threads_threads_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/threads/{thread_id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    "/items": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Items */
-        get: operations["items_items_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+    /** Get Thread */
+    get: operations["get_thread_threads__thread_id__get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/items": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    "/items/{item_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Item Detail */
-        get: operations["item_detail_items__item_id__get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+    /** Items */
+    get: operations["items_items_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/items/{item_id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    "/healthz": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Healthz
-         * @description Liveness: the process is up. It deliberately does not touch the database.
-         */
-        get: operations["healthz_healthz_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+    /** Item Detail */
+    get: operations["item_detail_items__item_id__get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/healthz": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    "/readyz": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Readyz
-         * @description Readiness: an answer needs the database, so readiness means one query succeeds.
-         */
-        get: operations["readyz_readyz_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+    /**
+     * Healthz
+     * @description Liveness: the process is up. It deliberately does not touch the database.
+     */
+    get: operations["healthz_healthz_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/readyz": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    "/status": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Status
-         * @description The search mode the page reads on load: hybrid, or keyword-only and why.
-         */
-        get: operations["status_status_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+    /**
+     * Readyz
+     * @description Readiness: an answer needs the database, so readiness means one query succeeds.
+     */
+    get: operations["readyz_readyz_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/status": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    "/ask": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Ask
-         * @description Answer one question as server-sent events, one `itemSchema` event per frame.
-         */
-        post: operations["ask_ask_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+    /**
+     * Status
+     * @description The search mode the page reads on load: hybrid, or keyword-only and why.
+     */
+    get: operations["status_status_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/ask": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
+    get?: never;
+    put?: never;
+    /**
+     * Ask
+     * @description Answer one question as server-sent events, one `itemSchema` event per frame.
+     */
+    post: operations["ask_ask_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
 }
 export type webhooks = Record<string, never>;
 export interface components {
-    schemas: {
-        /** AlsoData */
-        AlsoData: {
-            /** Title */
-            title: string;
-            /** Url */
-            url: string;
-            /** Source */
-            source: string;
-        };
-        /** AnswerData */
-        AnswerData: {
-            /** Text */
-            text: string;
-            /**
-             * Search Mode
-             * @description Hybrid retrieval, or the keyword-only branch during a run.
-             * @default hybrid
-             * @enum {string}
-             */
-            search_mode: "hybrid" | "text_only";
-            /**
-             * Supported
-             * @description True when every visible claim points at a retrieved source. That is not a verification: sentences under six words and numbers are not checked.
-             */
-            supported: boolean;
-            /** Citations */
-            citations: components["schemas"]["CitationData"][];
-            /** Flags */
-            flags: components["schemas"]["FlagData"][];
-        };
-        /** AskRequest */
-        AskRequest: {
-            /** Question */
-            question: string;
-            /** Tiers */
-            tiers?: components["schemas"]["Tier"][] | null;
-            /** Profiles */
-            profiles?: string[] | null;
-            /** Since */
-            since?: string | null;
-            /** Item Id */
-            item_id?: string | null;
-            /** Thread Id */
-            thread_id?: string | null;
-        };
-        /** CitationData */
-        CitationData: {
-            /**
-             * Id
-             * @description The per-answer source alias, such as S1.
-             */
-            id: string;
-            /** Item Id */
-            item_id: string;
-            /** Title */
-            title: string;
-            /** Url */
-            url: string;
-            /** Tier */
-            tier: string;
-            /** Basis */
-            basis: string;
-        };
-        /**
-         * CorpusData
-         * @description One page: the rows, the cursor for the next page (null at the end) and the match count.
-         */
-        CorpusData: {
-            /** Items */
-            items: components["schemas"]["CorpusItemData"][];
-            /** Next Cursor */
-            next_cursor: string | null;
-            /** Total */
-            total: number;
-        };
-        /**
-         * CorpusItemData
-         * @description One row of the table: the facts the columns show, and the API's own basis label.
-         */
-        CorpusItemData: {
-            /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
-            /** Title */
-            title: string;
-            /** Source */
-            source: string;
-            /** Tier */
-            tier: string;
-            /** Basis */
-            basis: string;
-            /** Basis Label */
-            basis_label: string;
-            /** Profile */
-            profile: string | null;
-            /** Venue */
-            venue: string | null;
-            /** Citation Count */
-            citation_count: number;
-            /** Hf Upvotes */
-            hf_upvotes: number | null;
-            /** Github Stars */
-            github_stars: number | null;
-            /**
-             * Published At
-             * Format: date-time
-             */
-            published_at: string;
-        };
-        /**
-         * CorpusItemDetail
-         * @description The row plus the text, the extras, the history and what was already written about it.
-         */
-        CorpusItemDetail: {
-            /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
-            /** Title */
-            title: string;
-            /** Source */
-            source: string;
-            /** Tier */
-            tier: string;
-            /** Basis */
-            basis: string;
-            /** Basis Label */
-            basis_label: string;
-            /** Profile */
-            profile: string | null;
-            /** Venue */
-            venue: string | null;
-            /** Citation Count */
-            citation_count: number;
-            /** Hf Upvotes */
-            hf_upvotes: number | null;
-            /** Github Stars */
-            github_stars: number | null;
-            /**
-             * Published At
-             * Format: date-time
-             */
-            published_at: string;
-            /** Early */
-            early: boolean;
-            /** Authors */
-            authors: string[];
-            /** Url */
-            url: string;
-            /** Text */
-            text: string;
-            /** Github Repo */
-            github_repo: string | null;
-            /** Project Page */
-            project_page: string | null;
-            /** Org */
-            org: string | null;
-            /** Tier History */
-            tier_history: components["schemas"]["TierChangeData"][];
-            /** Signals */
-            signals: components["schemas"]["SignalPointData"][];
-            summary: components["schemas"]["SummaryData"] | null;
-            /** Drafts */
-            drafts: components["schemas"]["ItemDraftData"][];
-        };
-        /** DeadLetterData */
-        DeadLetterData: {
-            /** Source */
-            source: string;
-            /** Ref */
-            ref: string;
-            /** Error */
-            error: string;
-            /** Attempts */
-            attempts: number;
-            /**
-             * Created At
-             * Format: date-time
-             */
-            created_at: string;
-            /** Resolved At */
-            resolved_at: string | null;
-        };
-        /**
-         * DraftData
-         * @description One saved draft as the list shows it; the detail adds the owner's own words.
-         */
-        DraftData: {
-            /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
-            /**
-             * Item Id
-             * Format: uuid
-             */
-            item_id: string;
-            /** Item Title */
-            item_title: string;
-            /** Item Url */
-            item_url: string;
-            /**
-             * Created At
-             * Format: date-time
-             */
-            created_at: string;
-            /** Regenerated From */
-            regenerated_from: string | null;
-            /** Language */
-            language: string;
-            /** Model */
-            model: string;
-            /** Hook */
-            hook: string;
-            /** Body */
-            body: string;
-            /** Hashtags */
-            hashtags: string[];
-            /** Source Link */
-            source_link: string;
-            /** Flags */
-            flags: components["schemas"]["DraftFlagData"][];
-            /** Counts */
-            counts: {
-                [key: string]: [
-                    number,
-                    number
-                ];
-            };
-            /** Chars */
-            chars: number;
-        };
-        /**
-         * DraftDetail
-         * @description The detail adds the owner's own words, so "Open" shows what the draft was built from.
-         */
-        DraftDetail: {
-            /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
-            /**
-             * Item Id
-             * Format: uuid
-             */
-            item_id: string;
-            /** Item Title */
-            item_title: string;
-            /** Item Url */
-            item_url: string;
-            /**
-             * Created At
-             * Format: date-time
-             */
-            created_at: string;
-            /** Regenerated From */
-            regenerated_from: string | null;
-            /** Language */
-            language: string;
-            /** Model */
-            model: string;
-            /** Hook */
-            hook: string;
-            /** Body */
-            body: string;
-            /** Hashtags */
-            hashtags: string[];
-            /** Source Link */
-            source_link: string;
-            /** Flags */
-            flags: components["schemas"]["DraftFlagData"][];
-            /** Counts */
-            counts: {
-                [key: string]: [
-                    number,
-                    number
-                ];
-            };
-            /** Chars */
-            chars: number;
-            /** Pov */
-            pov: string;
-        };
-        /**
-         * DraftError
-         * @description A 503 the page can show: which failure, a sentence, and the cap's reset time.
-         */
-        DraftError: {
-            /**
-             * Code
-             * @enum {string}
-             */
-            code: "daily_cap" | "model_unavailable" | "unusable";
-            /** Message */
-            message: string;
-            /** Retry At */
-            retry_at?: string | null;
-        };
-        /**
-         * DraftFlagData
-         * @description One numbered note under a draft; `text` is the claim it is about.
-         */
-        DraftFlagData: {
-            /** N */
-            n: number;
-            /** Kind */
-            kind: string;
-            /** Text */
-            text: string;
-            /** Detail */
-            detail: string;
-        };
-        /** DraftRequest */
-        DraftRequest: {
-            /**
-             * Item Id
-             * Format: uuid
-             */
-            item_id: string;
-            /**
-             * Pov
-             * @default
-             */
-            pov: string;
-            /**
-             * Language
-             * @default en
-             */
-            language: string;
-        };
-        /** DraftsData */
-        DraftsData: {
-            /** Drafts */
-            drafts: components["schemas"]["DraftData"][];
-        };
-        /** ErrorData */
-        ErrorData: {
-            /**
-             * Code
-             * @enum {string}
-             */
-            code: "daily_cap" | "budget" | "model_unavailable" | "internal" | "deadline";
-            /** Message */
-            message: string;
-            /** Retry At */
-            retry_at?: string | null;
-        };
-        /** EventRequest */
-        EventRequest: {
-            /**
-             * Event
-             * @enum {string}
-             */
-            event: "opened" | "dismissed";
-        };
-        /** FlagData */
-        FlagData: {
-            /** Kind */
-            kind: string;
-            /** Sentence */
-            sentence: string;
-            /** Detail */
-            detail: string;
-        };
-        /**
-         * FollowupState
-         * @description A run waiting between follow-up passes, as `health.followup` records it.
-         */
-        FollowupState: {
-            /** Pass */
-            pass: number;
-            /** Of */
-            of: number;
-            /** Next At */
-            next_at?: string | null;
-            /** Pending S2 */
-            pending_s2?: number | null;
-        };
-        /** HTTPValidationError */
-        HTTPValidationError: {
-            /** Detail */
-            detail?: components["schemas"]["ValidationError"][];
-        };
-        /**
-         * ItemDraftData
-         * @description A draft the item already has, so the page can offer to open it instead of making another.
-         */
-        ItemDraftData: {
-            /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
-            /**
-             * Created At
-             * Format: date-time
-             */
-            created_at: string;
-        };
-        /**
-         * NoticeData
-         * @description The `notice` event: the answer runs in a reduced mode and says so.
-         */
-        NoticeData: {
-            /**
-             * Code
-             * @constant
-             */
-            code: "text_only";
-            /** Message */
-            message: string;
-        };
-        /**
-         * RateLimited
-         * @description A 429: the per-client limit refused the request before the stream started.
-         */
-        RateLimited: {
-            /**
-             * Detail
-             * @enum {string}
-             */
-            detail: "rate_limited" | "busy";
-            /** Retry After S */
-            retry_after_s: number;
-        };
-        /**
-         * Refusal
-         * @description The body of every gate refusal except 429, as `docs/learn/15` lists them.
-         */
-        Refusal: {
-            /** Detail */
-            detail: string;
-        };
-        /**
-         * RunCounts
-         * @description The counts the page reads as six cells; a key the run never counted is 0.
-         */
-        RunCounts: {
-            /**
-             * Fetched
-             * @default 0
-             */
-            fetched: number;
-            /**
-             * Fetched Arxiv
-             * @default 0
-             */
-            fetched_arxiv: number;
-            /**
-             * Stored
-             * @default 0
-             */
-            stored: number;
-            /**
-             * New
-             * @default 0
-             */
-            new: number;
-            /**
-             * Irrelevant
-             * @default 0
-             */
-            irrelevant: number;
-            /**
-             * Failed
-             * @default 0
-             */
-            failed: number;
-            /**
-             * Admitted Late
-             * @default 0
-             */
-            admitted_late: number;
-            /**
-             * Followup Passes
-             * @default 0
-             */
-            followup_passes: number;
-            /**
-             * S2 Refused
-             * @default 0
-             */
-            s2_refused: number;
-        };
-        /** RunDetail */
-        RunDetail: {
-            /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
-            /**
-             * Started At
-             * Format: date-time
-             */
-            started_at: string;
-            /** Finished At */
-            finished_at: string | null;
-            /** Status */
-            status: string;
-            /** Healthy */
-            healthy: boolean | null;
-            /** Problems */
-            problems: string[];
-            /** Warnings */
-            warnings: string[];
-            counts: components["schemas"]["RunCounts"];
-            /** Tokens */
-            tokens: number;
-            followup: components["schemas"]["FollowupState"] | null;
-            /**
-             * Window Start
-             * Format: date-time
-             */
-            window_start: string;
-            /**
-             * Window End
-             * Format: date-time
-             */
-            window_end: string;
-            /** Dead Letters */
-            dead_letters: components["schemas"]["DeadLetterData"][];
-        };
-        /** RunSummary */
-        RunSummary: {
-            /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
-            /**
-             * Started At
-             * Format: date-time
-             */
-            started_at: string;
-            /** Finished At */
-            finished_at: string | null;
-            /** Status */
-            status: string;
-            /** Healthy */
-            healthy: boolean | null;
-            /** Problems */
-            problems: string[];
-            /** Warnings */
-            warnings: string[];
-            counts: components["schemas"]["RunCounts"];
-            /** Tokens */
-            tokens: number;
-            followup: components["schemas"]["FollowupState"] | null;
-        };
-        /** RunsData */
-        RunsData: {
-            /** Runs */
-            runs: components["schemas"]["RunSummary"][];
-        };
-        /**
-         * SignalPointData
-         * @description One observed reading of the item's signals, oldest first in the list.
-         */
-        SignalPointData: {
-            /**
-             * Observed At
-             * Format: date-time
-             */
-            observed_at: string;
-            /** Hf Upvotes */
-            hf_upvotes: number | null;
-            /** Hf Comments */
-            hf_comments: number | null;
-            /** Github Stars */
-            github_stars: number | null;
-            /** Citation Count */
-            citation_count: number;
-        };
-        /**
-         * SourceData
-         * @description The `source` event: a source a tool just returned, in alias order.
-         */
-        SourceData: {
-            /**
-             * Id
-             * @description The per-answer source alias, such as S1.
-             */
-            id: string;
-            /** Item Id */
-            item_id: string;
-            /** Title */
-            title: string;
-            /** Url */
-            url: string;
-            /** Tier */
-            tier: string;
-            /** Basis */
-            basis: string;
-        };
-        /**
-         * StatusData
-         * @description `GET /status`: the search mode the page reads on load.
-         */
-        StatusData: {
-            /**
-             * Mode
-             * @enum {string}
-             */
-            mode: "hybrid" | "text_only";
-            /**
-             * Reason
-             * @enum {string}
-             */
-            reason: "ok" | "ingestion" | "memory" | "database";
-            /** Since */
-            since?: string | null;
-        };
-        /**
-         * StepData
-         * @description The `step` event: one tool round finished.
-         */
-        StepData: {
-            /** Round */
-            round: number;
-            /** Ms */
-            ms: number;
-            /** New Sources */
-            new_sources: number;
-        };
-        /** SuggestionCardData */
-        SuggestionCardData: {
-            /**
-             * Item Id
-             * Format: uuid
-             */
-            item_id: string;
-            /** Title */
-            title: string;
-            /** Url */
-            url: string;
-            /** Source */
-            source: string;
-            /** Tier */
-            tier: string;
-            /** Basis */
-            basis: string;
-            /** Basis Label */
-            basis_label: string;
-            /** Venue */
-            venue: string | null;
-            /** Citation Count */
-            citation_count: number;
-            /** Hf Upvotes */
-            hf_upvotes: number | null;
-            /** Github Repo */
-            github_repo: string | null;
-            /** Github Stars */
-            github_stars: number | null;
-            /** Project Page */
-            project_page: string | null;
-            /** Org */
-            org: string | null;
-            /**
-             * Published At
-             * Format: date-time
-             */
-            published_at: string;
-            /** Profile */
-            profile: string | null;
-            /** Relevance */
-            relevance: number;
-            /** Momentum Label */
-            momentum_label: string | null;
-            /** Also */
-            also: components["schemas"]["AlsoData"][];
-            summary: components["schemas"]["SummaryData"];
-        };
-        /** SuggestionsData */
-        SuggestionsData: {
-            /**
-             * Generated At
-             * Format: date-time
-             */
-            generated_at: string;
-            /** List Version */
-            list_version: string;
-            /** Picks */
-            picks: components["schemas"]["SuggestionCardData"][];
-            /** Rising */
-            rising: components["schemas"]["SuggestionCardData"][];
-            /** Rising Note */
-            rising_note: string;
-        };
-        /** SummaryData */
-        SummaryData: {
-            /**
-             * Status
-             * @enum {string}
-             */
-            status: "pending" | "checked" | "excerpt";
-            what: components["schemas"]["SummaryFieldData"] | null;
-            result: components["schemas"]["SummaryFieldData"] | null;
-            why: components["schemas"]["SummaryFieldData"] | null;
-            catch: components["schemas"]["SummaryFieldData"] | null;
-            /** Excerpt */
-            excerpt: string;
-        };
-        /** SummaryFieldData */
-        SummaryFieldData: {
-            /** Text */
-            text: string;
-            /** Quote */
-            quote: string | null;
-            /** Interpretation */
-            interpretation: boolean;
-        };
-        /**
-         * ThreadData
-         * @description The `thread` event: the conversation's id, and its finished turn when one is stored.
-         */
-        ThreadData: {
-            /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
-            /** Turn */
-            turn: number | null;
-        };
-        /**
-         * ThreadDetailData
-         * @description One conversation with every finished turn, oldest first.
-         */
-        ThreadDetailData: {
-            /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
-            /** Title */
-            title: string;
-            /** Turns */
-            turns: components["schemas"]["ThreadTurnData"][];
-        };
-        /**
-         * ThreadSummaryData
-         * @description One conversation in the Recent menu: its name and how many turns it holds.
-         */
-        ThreadSummaryData: {
-            /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
-            /** Title */
-            title: string;
-            /** Turns */
-            turns: number;
-            /**
-             * Updated At
-             * Format: date-time
-             */
-            updated_at: string;
-        };
-        /**
-         * ThreadTurnData
-         * @description One finished turn as the page re-renders it after a dropped stream.
-         */
-        ThreadTurnData: {
-            /** N */
-            n: number;
-            /** Question */
-            question: string;
-            answer: components["schemas"]["AnswerData"];
-            /** Search Mode */
-            search_mode: string;
-            /**
-             * Created At
-             * Format: date-time
-             */
-            created_at: string;
-        };
-        /** ThreadsData */
-        ThreadsData: {
-            /** Threads */
-            threads: components["schemas"]["ThreadSummaryData"][];
-        };
-        /**
-         * Tier
-         * @enum {string}
-         */
-        Tier: "peer_reviewed" | "vetted_preprint" | "lab_blog";
-        /**
-         * TierChangeData
-         * @description One move in the item's tier history.
-         */
-        TierChangeData: {
-            /** From Tier */
-            from_tier: string | null;
-            /** To Tier */
-            to_tier: string;
-            /** Basis */
-            basis: string;
-            /**
-             * Changed At
-             * Format: date-time
-             */
-            changed_at: string;
-        };
-        /** TodayData */
-        TodayData: {
-            run: components["schemas"]["RunSummary"] | null;
-            search: components["schemas"]["TodaySearch"];
-        };
-        /** TodaySearch */
-        TodaySearch: {
-            /**
-             * Mode
-             * @enum {string}
-             */
-            mode: "hybrid" | "text_only";
-            /**
-             * Reason
-             * @enum {string}
-             */
-            reason: "ok" | "ingestion" | "memory" | "database";
-            /** Since */
-            since?: string | null;
-        };
-        /**
-         * TokenData
-         * @description The `token` event: a piece of the model's answer, before the citation check.
-         */
-        TokenData: {
-            /** Text */
-            text: string;
-        };
-        /**
-         * ToolData
-         * @description The `tool` event: the model called one of the corpus tools.
-         */
-        ToolData: {
-            /** Name */
-            name: string;
-            /** Args */
-            args: {
-                [key: string]: unknown;
-            };
-        };
-        /** ValidationError */
-        ValidationError: {
-            /** Location */
-            loc: (string | number)[];
-            /** Message */
-            msg: string;
-            /** Error Type */
-            type: string;
-            /** Input */
-            input?: unknown;
-            /** Context */
-            ctx?: Record<string, never>;
-        };
+  schemas: {
+    /** AlsoData */
+    AlsoData: {
+      /** Title */
+      title: string;
+      /** Url */
+      url: string;
+      /** Source */
+      source: string;
     };
-    responses: never;
-    parameters: never;
-    requestBodies: never;
-    headers: never;
-    pathItems: never;
+    /** AnswerData */
+    AnswerData: {
+      /** Text */
+      text: string;
+      /**
+       * Search Mode
+       * @description Hybrid retrieval, or the keyword-only branch during a run.
+       * @default hybrid
+       * @enum {string}
+       */
+      search_mode: "hybrid" | "text_only";
+      /**
+       * Supported
+       * @description True when every visible claim points at a retrieved source. That is not a verification: sentences under six words and numbers are not checked.
+       */
+      supported: boolean;
+      /** Citations */
+      citations: components["schemas"]["CitationData"][];
+      /** Flags */
+      flags: components["schemas"]["FlagData"][];
+    };
+    /** AskRequest */
+    AskRequest: {
+      /** Question */
+      question: string;
+      /** Tiers */
+      tiers?: components["schemas"]["Tier"][] | null;
+      /** Profiles */
+      profiles?: string[] | null;
+      /** Since */
+      since?: string | null;
+      /** Item Id */
+      item_id?: string | null;
+      /** Thread Id */
+      thread_id?: string | null;
+    };
+    /** CitationData */
+    CitationData: {
+      /**
+       * Id
+       * @description The per-answer source alias, such as S1.
+       */
+      id: string;
+      /** Item Id */
+      item_id: string;
+      /** Title */
+      title: string;
+      /** Url */
+      url: string;
+      /** Tier */
+      tier: string;
+      /** Basis */
+      basis: string;
+    };
+    /**
+     * CorpusData
+     * @description One page: the rows, the cursor for the next page (null at the end) and the match count.
+     */
+    CorpusData: {
+      /** Items */
+      items: components["schemas"]["CorpusItemData"][];
+      /** Next Cursor */
+      next_cursor: string | null;
+      /** Total */
+      total: number;
+    };
+    /**
+     * CorpusItemData
+     * @description One row of the table: the facts the columns show, and the API's own basis label.
+     */
+    CorpusItemData: {
+      /**
+       * Id
+       * Format: uuid
+       */
+      id: string;
+      /** Title */
+      title: string;
+      /** Source */
+      source: string;
+      /** Tier */
+      tier: string;
+      /** Basis */
+      basis: string;
+      /** Basis Label */
+      basis_label: string;
+      /** Profile */
+      profile: string | null;
+      /** Venue */
+      venue: string | null;
+      /** Citation Count */
+      citation_count: number;
+      /** Hf Upvotes */
+      hf_upvotes: number | null;
+      /** Github Stars */
+      github_stars: number | null;
+      /**
+       * Published At
+       * Format: date-time
+       */
+      published_at: string;
+    };
+    /**
+     * CorpusItemDetail
+     * @description The row plus the text, the extras, the history and what was already written about it.
+     */
+    CorpusItemDetail: {
+      /**
+       * Id
+       * Format: uuid
+       */
+      id: string;
+      /** Title */
+      title: string;
+      /** Source */
+      source: string;
+      /** Tier */
+      tier: string;
+      /** Basis */
+      basis: string;
+      /** Basis Label */
+      basis_label: string;
+      /** Profile */
+      profile: string | null;
+      /** Venue */
+      venue: string | null;
+      /** Citation Count */
+      citation_count: number;
+      /** Hf Upvotes */
+      hf_upvotes: number | null;
+      /** Github Stars */
+      github_stars: number | null;
+      /**
+       * Published At
+       * Format: date-time
+       */
+      published_at: string;
+      /** Early */
+      early: boolean;
+      /** Authors */
+      authors: string[];
+      /** Url */
+      url: string;
+      /** Text */
+      text: string;
+      /** Github Repo */
+      github_repo: string | null;
+      /** Project Page */
+      project_page: string | null;
+      /** Org */
+      org: string | null;
+      /** Tier History */
+      tier_history: components["schemas"]["TierChangeData"][];
+      /** Signals */
+      signals: components["schemas"]["SignalPointData"][];
+      summary: components["schemas"]["SummaryData"] | null;
+      /** Drafts */
+      drafts: components["schemas"]["ItemDraftData"][];
+    };
+    /** DeadLetterData */
+    DeadLetterData: {
+      /** Source */
+      source: string;
+      /** Ref */
+      ref: string;
+      /** Error */
+      error: string;
+      /** Attempts */
+      attempts: number;
+      /**
+       * Created At
+       * Format: date-time
+       */
+      created_at: string;
+      /** Resolved At */
+      resolved_at: string | null;
+    };
+    /**
+     * DraftData
+     * @description One saved draft as the list shows it; the detail adds the owner's own words.
+     */
+    DraftData: {
+      /**
+       * Id
+       * Format: uuid
+       */
+      id: string;
+      /**
+       * Item Id
+       * Format: uuid
+       */
+      item_id: string;
+      /** Item Title */
+      item_title: string;
+      /** Item Url */
+      item_url: string;
+      /**
+       * Created At
+       * Format: date-time
+       */
+      created_at: string;
+      /** Regenerated From */
+      regenerated_from: string | null;
+      /** Language */
+      language: string;
+      /** Model */
+      model: string;
+      /** Hook */
+      hook: string;
+      /** Body */
+      body: string;
+      /** Hashtags */
+      hashtags: string[];
+      /** Source Link */
+      source_link: string;
+      /** Flags */
+      flags: components["schemas"]["DraftFlagData"][];
+      /** Counts */
+      counts: {
+        [key: string]: [number, number];
+      };
+      /** Chars */
+      chars: number;
+    };
+    /**
+     * DraftDetail
+     * @description The detail adds the owner's own words, so "Open" shows what the draft was built from.
+     */
+    DraftDetail: {
+      /**
+       * Id
+       * Format: uuid
+       */
+      id: string;
+      /**
+       * Item Id
+       * Format: uuid
+       */
+      item_id: string;
+      /** Item Title */
+      item_title: string;
+      /** Item Url */
+      item_url: string;
+      /**
+       * Created At
+       * Format: date-time
+       */
+      created_at: string;
+      /** Regenerated From */
+      regenerated_from: string | null;
+      /** Language */
+      language: string;
+      /** Model */
+      model: string;
+      /** Hook */
+      hook: string;
+      /** Body */
+      body: string;
+      /** Hashtags */
+      hashtags: string[];
+      /** Source Link */
+      source_link: string;
+      /** Flags */
+      flags: components["schemas"]["DraftFlagData"][];
+      /** Counts */
+      counts: {
+        [key: string]: [number, number];
+      };
+      /** Chars */
+      chars: number;
+      /** Pov */
+      pov: string;
+    };
+    /**
+     * DraftError
+     * @description A 503 the page can show: which failure, a sentence, and the cap's reset time.
+     */
+    DraftError: {
+      /**
+       * Code
+       * @enum {string}
+       */
+      code: "daily_cap" | "model_unavailable" | "unusable";
+      /** Message */
+      message: string;
+      /** Retry At */
+      retry_at?: string | null;
+    };
+    /**
+     * DraftFlagData
+     * @description One numbered note under a draft; `text` is the claim it is about.
+     */
+    DraftFlagData: {
+      /** N */
+      n: number;
+      /** Kind */
+      kind: string;
+      /** Text */
+      text: string;
+      /** Detail */
+      detail: string;
+    };
+    /** DraftRequest */
+    DraftRequest: {
+      /**
+       * Item Id
+       * Format: uuid
+       */
+      item_id: string;
+      /**
+       * Pov
+       * @default
+       */
+      pov: string;
+      /**
+       * Language
+       * @default en
+       */
+      language: string;
+    };
+    /** DraftsData */
+    DraftsData: {
+      /** Drafts */
+      drafts: components["schemas"]["DraftData"][];
+    };
+    /** ErrorData */
+    ErrorData: {
+      /**
+       * Code
+       * @enum {string}
+       */
+      code: "daily_cap" | "budget" | "model_unavailable" | "internal" | "deadline";
+      /** Message */
+      message: string;
+      /** Retry At */
+      retry_at?: string | null;
+    };
+    /** EventRequest */
+    EventRequest: {
+      /**
+       * Event
+       * @enum {string}
+       */
+      event: "opened" | "dismissed";
+    };
+    /** FlagData */
+    FlagData: {
+      /** Kind */
+      kind: string;
+      /** Sentence */
+      sentence: string;
+      /** Detail */
+      detail: string;
+    };
+    /**
+     * FollowupState
+     * @description A run waiting between follow-up passes, as `health.followup` records it.
+     */
+    FollowupState: {
+      /** Pass */
+      pass: number;
+      /** Of */
+      of: number;
+      /** Next At */
+      next_at?: string | null;
+      /** Pending S2 */
+      pending_s2?: number | null;
+    };
+    /** HTTPValidationError */
+    HTTPValidationError: {
+      /** Detail */
+      detail?: components["schemas"]["ValidationError"][];
+    };
+    /**
+     * ItemDraftData
+     * @description A draft the item already has, so the page can offer to open it instead of making another.
+     */
+    ItemDraftData: {
+      /**
+       * Id
+       * Format: uuid
+       */
+      id: string;
+      /**
+       * Created At
+       * Format: date-time
+       */
+      created_at: string;
+    };
+    /**
+     * NoticeData
+     * @description The `notice` event: the answer runs in a reduced mode and says so.
+     */
+    NoticeData: {
+      /**
+       * Code
+       * @constant
+       */
+      code: "text_only";
+      /** Message */
+      message: string;
+    };
+    /**
+     * RateLimited
+     * @description A 429: the per-client limit refused the request before the stream started.
+     */
+    RateLimited: {
+      /**
+       * Detail
+       * @enum {string}
+       */
+      detail: "rate_limited" | "busy";
+      /** Retry After S */
+      retry_after_s: number;
+    };
+    /**
+     * Refusal
+     * @description The body of every gate refusal except 429, as `docs/learn/15` lists them.
+     */
+    Refusal: {
+      /** Detail */
+      detail: string;
+    };
+    /**
+     * RunCounts
+     * @description The counts the page reads as six cells; a key the run never counted is 0.
+     */
+    RunCounts: {
+      /**
+       * Fetched
+       * @default 0
+       */
+      fetched: number;
+      /**
+       * Fetched Arxiv
+       * @default 0
+       */
+      fetched_arxiv: number;
+      /**
+       * Stored
+       * @default 0
+       */
+      stored: number;
+      /**
+       * New
+       * @default 0
+       */
+      new: number;
+      /**
+       * Irrelevant
+       * @default 0
+       */
+      irrelevant: number;
+      /**
+       * Failed
+       * @default 0
+       */
+      failed: number;
+      /**
+       * Admitted Late
+       * @default 0
+       */
+      admitted_late: number;
+      /**
+       * Followup Passes
+       * @default 0
+       */
+      followup_passes: number;
+      /**
+       * S2 Refused
+       * @default 0
+       */
+      s2_refused: number;
+    };
+    /** RunDetail */
+    RunDetail: {
+      /**
+       * Id
+       * Format: uuid
+       */
+      id: string;
+      /**
+       * Started At
+       * Format: date-time
+       */
+      started_at: string;
+      /** Finished At */
+      finished_at: string | null;
+      /** Status */
+      status: string;
+      /** Healthy */
+      healthy: boolean | null;
+      /** Problems */
+      problems: string[];
+      /** Warnings */
+      warnings: string[];
+      counts: components["schemas"]["RunCounts"];
+      /** Tokens */
+      tokens: number;
+      followup: components["schemas"]["FollowupState"] | null;
+      /**
+       * Window Start
+       * Format: date-time
+       */
+      window_start: string;
+      /**
+       * Window End
+       * Format: date-time
+       */
+      window_end: string;
+      /** Dead Letters */
+      dead_letters: components["schemas"]["DeadLetterData"][];
+    };
+    /** RunSummary */
+    RunSummary: {
+      /**
+       * Id
+       * Format: uuid
+       */
+      id: string;
+      /**
+       * Started At
+       * Format: date-time
+       */
+      started_at: string;
+      /** Finished At */
+      finished_at: string | null;
+      /** Status */
+      status: string;
+      /** Healthy */
+      healthy: boolean | null;
+      /** Problems */
+      problems: string[];
+      /** Warnings */
+      warnings: string[];
+      counts: components["schemas"]["RunCounts"];
+      /** Tokens */
+      tokens: number;
+      followup: components["schemas"]["FollowupState"] | null;
+    };
+    /** RunsData */
+    RunsData: {
+      /** Runs */
+      runs: components["schemas"]["RunSummary"][];
+    };
+    /**
+     * SignalPointData
+     * @description One observed reading of the item's signals, oldest first in the list.
+     */
+    SignalPointData: {
+      /**
+       * Observed At
+       * Format: date-time
+       */
+      observed_at: string;
+      /** Hf Upvotes */
+      hf_upvotes: number | null;
+      /** Hf Comments */
+      hf_comments: number | null;
+      /** Github Stars */
+      github_stars: number | null;
+      /** Citation Count */
+      citation_count: number;
+    };
+    /**
+     * SourceData
+     * @description The `source` event: a source a tool just returned, in alias order.
+     */
+    SourceData: {
+      /**
+       * Id
+       * @description The per-answer source alias, such as S1.
+       */
+      id: string;
+      /** Item Id */
+      item_id: string;
+      /** Title */
+      title: string;
+      /** Url */
+      url: string;
+      /** Tier */
+      tier: string;
+      /** Basis */
+      basis: string;
+    };
+    /**
+     * StatusData
+     * @description `GET /status`: the search mode the page reads on load.
+     */
+    StatusData: {
+      /**
+       * Mode
+       * @enum {string}
+       */
+      mode: "hybrid" | "text_only";
+      /**
+       * Reason
+       * @enum {string}
+       */
+      reason: "ok" | "ingestion" | "memory" | "database";
+      /** Since */
+      since?: string | null;
+    };
+    /**
+     * StepData
+     * @description The `step` event: one tool round finished.
+     */
+    StepData: {
+      /** Round */
+      round: number;
+      /** Ms */
+      ms: number;
+      /** New Sources */
+      new_sources: number;
+    };
+    /** SuggestionCardData */
+    SuggestionCardData: {
+      /**
+       * Item Id
+       * Format: uuid
+       */
+      item_id: string;
+      /** Title */
+      title: string;
+      /** Url */
+      url: string;
+      /** Source */
+      source: string;
+      /** Tier */
+      tier: string;
+      /** Basis */
+      basis: string;
+      /** Basis Label */
+      basis_label: string;
+      /** Venue */
+      venue: string | null;
+      /** Citation Count */
+      citation_count: number;
+      /** Hf Upvotes */
+      hf_upvotes: number | null;
+      /** Github Repo */
+      github_repo: string | null;
+      /** Github Stars */
+      github_stars: number | null;
+      /** Project Page */
+      project_page: string | null;
+      /** Org */
+      org: string | null;
+      /**
+       * Published At
+       * Format: date-time
+       */
+      published_at: string;
+      /** Profile */
+      profile: string | null;
+      /** Relevance */
+      relevance: number;
+      /** Momentum Label */
+      momentum_label: string | null;
+      /** Also */
+      also: components["schemas"]["AlsoData"][];
+      summary: components["schemas"]["SummaryData"];
+    };
+    /** SuggestionsData */
+    SuggestionsData: {
+      /**
+       * Generated At
+       * Format: date-time
+       */
+      generated_at: string;
+      /** List Version */
+      list_version: string;
+      /** Picks */
+      picks: components["schemas"]["SuggestionCardData"][];
+      /** Rising */
+      rising: components["schemas"]["SuggestionCardData"][];
+      /** Rising Note */
+      rising_note: string;
+    };
+    /** SummaryData */
+    SummaryData: {
+      /**
+       * Status
+       * @enum {string}
+       */
+      status: "pending" | "checked" | "excerpt";
+      what: components["schemas"]["SummaryFieldData"] | null;
+      result: components["schemas"]["SummaryFieldData"] | null;
+      why: components["schemas"]["SummaryFieldData"] | null;
+      catch: components["schemas"]["SummaryFieldData"] | null;
+      /** Excerpt */
+      excerpt: string;
+    };
+    /** SummaryFieldData */
+    SummaryFieldData: {
+      /** Text */
+      text: string;
+      /** Quote */
+      quote: string | null;
+      /** Interpretation */
+      interpretation: boolean;
+    };
+    /**
+     * ThreadData
+     * @description The `thread` event: the conversation's id, and its finished turn when one is stored.
+     */
+    ThreadData: {
+      /**
+       * Id
+       * Format: uuid
+       */
+      id: string;
+      /** Turn */
+      turn: number | null;
+    };
+    /**
+     * ThreadDetailData
+     * @description One conversation with every finished turn, oldest first.
+     */
+    ThreadDetailData: {
+      /**
+       * Id
+       * Format: uuid
+       */
+      id: string;
+      /** Title */
+      title: string;
+      /** Turns */
+      turns: components["schemas"]["ThreadTurnData"][];
+    };
+    /**
+     * ThreadSummaryData
+     * @description One conversation in the Recent menu: its name and how many turns it holds.
+     */
+    ThreadSummaryData: {
+      /**
+       * Id
+       * Format: uuid
+       */
+      id: string;
+      /** Title */
+      title: string;
+      /** Turns */
+      turns: number;
+      /**
+       * Updated At
+       * Format: date-time
+       */
+      updated_at: string;
+    };
+    /**
+     * ThreadTurnData
+     * @description One finished turn as the page re-renders it after a dropped stream.
+     */
+    ThreadTurnData: {
+      /** N */
+      n: number;
+      /** Question */
+      question: string;
+      answer: components["schemas"]["AnswerData"];
+      /** Search Mode */
+      search_mode: string;
+      /**
+       * Created At
+       * Format: date-time
+       */
+      created_at: string;
+    };
+    /** ThreadsData */
+    ThreadsData: {
+      /** Threads */
+      threads: components["schemas"]["ThreadSummaryData"][];
+    };
+    /**
+     * Tier
+     * @enum {string}
+     */
+    Tier: "peer_reviewed" | "vetted_preprint" | "lab_blog";
+    /**
+     * TierChangeData
+     * @description One move in the item's tier history.
+     */
+    TierChangeData: {
+      /** From Tier */
+      from_tier: string | null;
+      /** To Tier */
+      to_tier: string;
+      /** Basis */
+      basis: string;
+      /**
+       * Changed At
+       * Format: date-time
+       */
+      changed_at: string;
+    };
+    /** TodayData */
+    TodayData: {
+      run: components["schemas"]["RunSummary"] | null;
+      search: components["schemas"]["TodaySearch"];
+    };
+    /** TodaySearch */
+    TodaySearch: {
+      /**
+       * Mode
+       * @enum {string}
+       */
+      mode: "hybrid" | "text_only";
+      /**
+       * Reason
+       * @enum {string}
+       */
+      reason: "ok" | "ingestion" | "memory" | "database";
+      /** Since */
+      since?: string | null;
+    };
+    /**
+     * TokenData
+     * @description The `token` event: a piece of the model's answer, before the citation check.
+     */
+    TokenData: {
+      /** Text */
+      text: string;
+    };
+    /**
+     * ToolData
+     * @description The `tool` event: the model called one of the corpus tools.
+     */
+    ToolData: {
+      /** Name */
+      name: string;
+      /** Args */
+      args: {
+        [key: string]: unknown;
+      };
+    };
+    /** ValidationError */
+    ValidationError: {
+      /** Location */
+      loc: (string | number)[];
+      /** Message */
+      msg: string;
+      /** Error Type */
+      type: string;
+      /** Input */
+      input?: unknown;
+      /** Context */
+      ctx?: Record<string, never>;
+    };
+  };
+  responses: never;
+  parameters: never;
+  requestBodies: never;
+  headers: never;
+  pathItems: never;
 }
 export type $defs = Record<string, never>;
 export interface operations {
-    runs_runs_get: {
-        parameters: {
-            query?: {
-                limit?: number;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RunsData"];
-                };
-            };
-            /** @description The Host is not allowed, or the Content-Length is bad. */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Refusal"];
-                };
-            };
-            /** @description The credential is missing or invalid; `WWW-Authenticate: Bearer`. */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Refusal"];
-                };
-            };
-            /** @description The request carries an Origin header. */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Refusal"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
+  runs_runs_get: {
+    parameters: {
+      query?: {
+        limit?: number;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    run_detail_runs__run_id__get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                run_id: string;
-            };
-            cookie?: never;
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
         };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RunDetail"];
-                };
-            };
-            /** @description The Host is not allowed, or the Content-Length is bad. */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Refusal"];
-                };
-            };
-            /** @description The credential is missing or invalid; `WWW-Authenticate: Bearer`. */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Refusal"];
-                };
-            };
-            /** @description The request carries an Origin header. */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Refusal"];
-                };
-            };
-            /** @description No run with that id. */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Refusal"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
+        content: {
+          "application/json": components["schemas"]["RunsData"];
         };
+      };
+      /** @description The Host is not allowed, or the Content-Length is bad. */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Refusal"];
+        };
+      };
+      /** @description The credential is missing or invalid; `WWW-Authenticate: Bearer`. */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Refusal"];
+        };
+      };
+      /** @description The request carries an Origin header. */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Refusal"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
     };
-    today_today_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["TodayData"];
-                };
-            };
-            /** @description The Host is not allowed, or the Content-Length is bad. */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Refusal"];
-                };
-            };
-            /** @description The credential is missing or invalid; `WWW-Authenticate: Bearer`. */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Refusal"];
-                };
-            };
-            /** @description The request carries an Origin header. */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Refusal"];
-                };
-            };
-        };
+  };
+  run_detail_runs__run_id__get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        run_id: string;
+      };
+      cookie?: never;
     };
-    suggestions_suggestions_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
         };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SuggestionsData"];
-                };
-            };
-            /** @description The Host is not allowed, or the Content-Length is bad. */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Refusal"];
-                };
-            };
-            /** @description The credential is missing or invalid; `WWW-Authenticate: Bearer`. */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Refusal"];
-                };
-            };
-            /** @description The request carries an Origin header. */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Refusal"];
-                };
-            };
+        content: {
+          "application/json": components["schemas"]["RunDetail"];
         };
+      };
+      /** @description The Host is not allowed, or the Content-Length is bad. */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Refusal"];
+        };
+      };
+      /** @description The credential is missing or invalid; `WWW-Authenticate: Bearer`. */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Refusal"];
+        };
+      };
+      /** @description The request carries an Origin header. */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Refusal"];
+        };
+      };
+      /** @description No run with that id. */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Refusal"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
     };
-    record_event_suggestions__item_id__events_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                item_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["EventRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description The Host is not allowed, or the Content-Length is bad. */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Refusal"];
-                };
-            };
-            /** @description The credential is missing or invalid; `WWW-Authenticate: Bearer`. */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Refusal"];
-                };
-            };
-            /** @description The request carries an Origin header. */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Refusal"];
-                };
-            };
-            /** @description No admitted item with that id. */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Refusal"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
+  };
+  today_today_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    list_drafts_drafts_get: {
-        parameters: {
-            query?: {
-                limit?: number;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
         };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DraftsData"];
-                };
-            };
-            /** @description The Host is not allowed, or the Content-Length is bad. */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Refusal"];
-                };
-            };
-            /** @description The credential is missing or invalid; `WWW-Authenticate: Bearer`. */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Refusal"];
-                };
-            };
-            /** @description The request carries an Origin header. */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Refusal"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
+        content: {
+          "application/json": components["schemas"]["TodayData"];
         };
+      };
+      /** @description The Host is not allowed, or the Content-Length is bad. */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Refusal"];
+        };
+      };
+      /** @description The credential is missing or invalid; `WWW-Authenticate: Bearer`. */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Refusal"];
+        };
+      };
+      /** @description The request carries an Origin header. */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Refusal"];
+        };
+      };
     };
-    create_draft_drafts_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["DraftRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DraftData"];
-                };
-            };
-            /** @description The Host is not allowed, or the Content-Length is bad. */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Refusal"];
-                };
-            };
-            /** @description The credential is missing or invalid; `WWW-Authenticate: Bearer`. */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Refusal"];
-                };
-            };
-            /** @description The request carries an Origin header. */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Refusal"];
-                };
-            };
-            /** @description No admitted item, or no draft, with that id. */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Refusal"];
-                };
-            };
-            /** @description The stored text is too short to draft from, or a field is invalid. */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description The per-client limit refused the request; also sends Retry-After. */
-            429: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RateLimited"];
-                };
-            };
-            /** @description No draft was generated: the daily cap (`retry_at`), a model that did not answer, or a reply that could not be read as a draft. */
-            503: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DraftError"];
-                };
-            };
-        };
+  };
+  suggestions_suggestions_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    regenerate_draft_drafts__draft_id__regenerate_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                draft_id: string;
-            };
-            cookie?: never;
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
         };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DraftData"];
-                };
-            };
-            /** @description The Host is not allowed, or the Content-Length is bad. */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Refusal"];
-                };
-            };
-            /** @description The credential is missing or invalid; `WWW-Authenticate: Bearer`. */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Refusal"];
-                };
-            };
-            /** @description The request carries an Origin header. */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Refusal"];
-                };
-            };
-            /** @description No admitted item, or no draft, with that id. */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Refusal"];
-                };
-            };
-            /** @description The stored text is too short to draft from, or a field is invalid. */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description The per-client limit refused the request; also sends Retry-After. */
-            429: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RateLimited"];
-                };
-            };
-            /** @description No draft was generated: the daily cap (`retry_at`), a model that did not answer, or a reply that could not be read as a draft. */
-            503: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DraftError"];
-                };
-            };
+        content: {
+          "application/json": components["schemas"]["SuggestionsData"];
         };
+      };
+      /** @description The Host is not allowed, or the Content-Length is bad. */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Refusal"];
+        };
+      };
+      /** @description The credential is missing or invalid; `WWW-Authenticate: Bearer`. */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Refusal"];
+        };
+      };
+      /** @description The request carries an Origin header. */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Refusal"];
+        };
+      };
     };
-    get_draft_drafts__draft_id__get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                draft_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DraftDetail"];
-                };
-            };
-            /** @description The Host is not allowed, or the Content-Length is bad. */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Refusal"];
-                };
-            };
-            /** @description The credential is missing or invalid; `WWW-Authenticate: Bearer`. */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Refusal"];
-                };
-            };
-            /** @description The request carries an Origin header. */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Refusal"];
-                };
-            };
-            /** @description No saved draft with that id. */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Refusal"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
+  };
+  record_event_suggestions__item_id__events_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        item_id: string;
+      };
+      cookie?: never;
     };
-    list_threads_threads_get: {
-        parameters: {
-            query?: {
-                limit?: number;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ThreadsData"];
-                };
-            };
-            /** @description The Host is not allowed, or the Content-Length is bad. */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Refusal"];
-                };
-            };
-            /** @description The credential is missing or invalid; `WWW-Authenticate: Bearer`. */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Refusal"];
-                };
-            };
-            /** @description The request carries an Origin header. */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Refusal"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["EventRequest"];
+      };
     };
-    get_thread_threads__thread_id__get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                thread_id: string;
-            };
-            cookie?: never;
+    responses: {
+      /** @description Successful Response */
+      204: {
+        headers: {
+          [name: string]: unknown;
         };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ThreadDetailData"];
-                };
-            };
-            /** @description The Host is not allowed, or the Content-Length is bad. */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Refusal"];
-                };
-            };
-            /** @description The credential is missing or invalid; `WWW-Authenticate: Bearer`. */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Refusal"];
-                };
-            };
-            /** @description The request carries an Origin header. */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Refusal"];
-                };
-            };
-            /** @description No thread with that id. */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Refusal"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
+        content?: never;
+      };
+      /** @description The Host is not allowed, or the Content-Length is bad. */
+      400: {
+        headers: {
+          [name: string]: unknown;
         };
+        content: {
+          "application/json": components["schemas"]["Refusal"];
+        };
+      };
+      /** @description The credential is missing or invalid; `WWW-Authenticate: Bearer`. */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Refusal"];
+        };
+      };
+      /** @description The request carries an Origin header. */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Refusal"];
+        };
+      };
+      /** @description No admitted item with that id. */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Refusal"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
     };
-    items_items_get: {
-        parameters: {
-            query?: {
-                q?: string | null;
-                tier?: ("peer_reviewed" | "vetted_preprint" | "lab_blog") | null;
-                source?: ("arxiv" | "feed") | null;
-                profile?: string | null;
-                since?: string | null;
-                cursor?: string | null;
-                limit?: number;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CorpusData"];
-                };
-            };
-            /** @description The Host is not allowed, or the Content-Length is bad. */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Refusal"];
-                };
-            };
-            /** @description The credential is missing or invalid; `WWW-Authenticate: Bearer`. */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Refusal"];
-                };
-            };
-            /** @description The request carries an Origin header. */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Refusal"];
-                };
-            };
-            /** @description An unknown profile or tier, or a cursor from another request. */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Refusal"];
-                };
-            };
-        };
+  };
+  list_drafts_drafts_get: {
+    parameters: {
+      query?: {
+        limit?: number;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    item_detail_items__item_id__get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                item_id: string;
-            };
-            cookie?: never;
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
         };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CorpusItemDetail"];
-                };
-            };
-            /** @description The Host is not allowed, or the Content-Length is bad. */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Refusal"];
-                };
-            };
-            /** @description The credential is missing or invalid; `WWW-Authenticate: Bearer`. */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Refusal"];
-                };
-            };
-            /** @description The request carries an Origin header. */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Refusal"];
-                };
-            };
-            /** @description No admitted item with that id. */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Refusal"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
+        content: {
+          "application/json": components["schemas"]["DraftsData"];
         };
+      };
+      /** @description The Host is not allowed, or the Content-Length is bad. */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Refusal"];
+        };
+      };
+      /** @description The credential is missing or invalid; `WWW-Authenticate: Bearer`. */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Refusal"];
+        };
+      };
+      /** @description The request carries an Origin header. */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Refusal"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
     };
-    healthz_healthz_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: string;
-                    };
-                };
-            };
-        };
+  };
+  create_draft_drafts_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    readyz_readyz_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description The Host is not allowed, or the Content-Length is bad. */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Refusal"];
-                };
-            };
-            /** @description The credential is missing or invalid; `WWW-Authenticate: Bearer`. */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Refusal"];
-                };
-            };
-            /** @description The request carries an Origin header. */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Refusal"];
-                };
-            };
-        };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["DraftRequest"];
+      };
     };
-    status_status_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
+    responses: {
+      /** @description Successful Response */
+      201: {
+        headers: {
+          [name: string]: unknown;
         };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["StatusData"];
-                };
-            };
-            /** @description The Host is not allowed, or the Content-Length is bad. */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Refusal"];
-                };
-            };
-            /** @description The credential is missing or invalid; `WWW-Authenticate: Bearer`. */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Refusal"];
-                };
-            };
-            /** @description The request carries an Origin header. */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Refusal"];
-                };
-            };
+        content: {
+          "application/json": components["schemas"]["DraftData"];
         };
+      };
+      /** @description The Host is not allowed, or the Content-Length is bad. */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Refusal"];
+        };
+      };
+      /** @description The credential is missing or invalid; `WWW-Authenticate: Bearer`. */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Refusal"];
+        };
+      };
+      /** @description The request carries an Origin header. */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Refusal"];
+        };
+      };
+      /** @description No admitted item, or no draft, with that id. */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Refusal"];
+        };
+      };
+      /** @description The stored text is too short to draft from, or a field is invalid. */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description The per-client limit refused the request; also sends Retry-After. */
+      429: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["RateLimited"];
+        };
+      };
+      /** @description No draft was generated: the daily cap (`retry_at`), a model that did not answer, or a reply that could not be read as a draft. */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["DraftError"];
+        };
+      };
     };
-    ask_ask_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["AskRequest"];
-            };
-        };
-        responses: {
-            /** @description Server-sent events, one JSON object per `data:` line. The `event` line names the payload: `tool`, `step`, `source`, `token`, `notice`, `answer`, `thread` or `error`. A `: ping` comment line arrives after 15 s of silence; it has no `data:`. `answer` is the last event unless a `thread` or an `error` follows; a client replaces its streamed text with the `answer` event's `text`, never appends it, and takes every link from its `citations[].url`. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "text/event-stream": unknown;
-                };
-            };
-            /** @description The Host is not allowed, or the Content-Length is bad. */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "text/event-stream": components["schemas"]["Refusal"];
-                };
-            };
-            /** @description The credential is missing or invalid; `WWW-Authenticate: Bearer`. */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "text/event-stream": components["schemas"]["Refusal"];
-                };
-            };
-            /** @description The request carries an Origin header. */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "text/event-stream": components["schemas"]["Refusal"];
-                };
-            };
-            /** @description The `thread_id` names no thread. */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "text/event-stream": components["schemas"]["Refusal"];
-                };
-            };
-            /** @description The body is over 16 KB, by header or by stream. */
-            413: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "text/event-stream": components["schemas"]["Refusal"];
-                };
-            };
-            /** @description A POST without application/json. */
-            415: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "text/event-stream": components["schemas"]["Refusal"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-            /** @description The per-client limit refused the request; also sends Retry-After. */
-            429: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "text/event-stream": components["schemas"]["RateLimited"];
-                };
-            };
-            /** @description No answer connection was free in time; also sends Retry-After. */
-            503: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "text/event-stream": components["schemas"]["Refusal"];
-                };
-            };
-        };
+  };
+  regenerate_draft_drafts__draft_id__regenerate_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        draft_id: string;
+      };
+      cookie?: never;
     };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["DraftData"];
+        };
+      };
+      /** @description The Host is not allowed, or the Content-Length is bad. */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Refusal"];
+        };
+      };
+      /** @description The credential is missing or invalid; `WWW-Authenticate: Bearer`. */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Refusal"];
+        };
+      };
+      /** @description The request carries an Origin header. */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Refusal"];
+        };
+      };
+      /** @description No admitted item, or no draft, with that id. */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Refusal"];
+        };
+      };
+      /** @description The stored text is too short to draft from, or a field is invalid. */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description The per-client limit refused the request; also sends Retry-After. */
+      429: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["RateLimited"];
+        };
+      };
+      /** @description No draft was generated: the daily cap (`retry_at`), a model that did not answer, or a reply that could not be read as a draft. */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["DraftError"];
+        };
+      };
+    };
+  };
+  get_draft_drafts__draft_id__get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        draft_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["DraftDetail"];
+        };
+      };
+      /** @description The Host is not allowed, or the Content-Length is bad. */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Refusal"];
+        };
+      };
+      /** @description The credential is missing or invalid; `WWW-Authenticate: Bearer`. */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Refusal"];
+        };
+      };
+      /** @description The request carries an Origin header. */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Refusal"];
+        };
+      };
+      /** @description No saved draft with that id. */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Refusal"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  list_threads_threads_get: {
+    parameters: {
+      query?: {
+        limit?: number;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ThreadsData"];
+        };
+      };
+      /** @description The Host is not allowed, or the Content-Length is bad. */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Refusal"];
+        };
+      };
+      /** @description The credential is missing or invalid; `WWW-Authenticate: Bearer`. */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Refusal"];
+        };
+      };
+      /** @description The request carries an Origin header. */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Refusal"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  get_thread_threads__thread_id__get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        thread_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ThreadDetailData"];
+        };
+      };
+      /** @description The Host is not allowed, or the Content-Length is bad. */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Refusal"];
+        };
+      };
+      /** @description The credential is missing or invalid; `WWW-Authenticate: Bearer`. */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Refusal"];
+        };
+      };
+      /** @description The request carries an Origin header. */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Refusal"];
+        };
+      };
+      /** @description No thread with that id. */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Refusal"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  items_items_get: {
+    parameters: {
+      query?: {
+        q?: string | null;
+        tier?: ("peer_reviewed" | "vetted_preprint" | "lab_blog") | null;
+        source?: ("arxiv" | "feed") | null;
+        profile?: string | null;
+        since?: string | null;
+        cursor?: string | null;
+        limit?: number;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["CorpusData"];
+        };
+      };
+      /** @description The Host is not allowed, or the Content-Length is bad. */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Refusal"];
+        };
+      };
+      /** @description The credential is missing or invalid; `WWW-Authenticate: Bearer`. */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Refusal"];
+        };
+      };
+      /** @description The request carries an Origin header. */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Refusal"];
+        };
+      };
+      /** @description An unknown profile or tier, or a cursor from another request. */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Refusal"];
+        };
+      };
+    };
+  };
+  item_detail_items__item_id__get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        item_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["CorpusItemDetail"];
+        };
+      };
+      /** @description The Host is not allowed, or the Content-Length is bad. */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Refusal"];
+        };
+      };
+      /** @description The credential is missing or invalid; `WWW-Authenticate: Bearer`. */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Refusal"];
+        };
+      };
+      /** @description The request carries an Origin header. */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Refusal"];
+        };
+      };
+      /** @description No admitted item with that id. */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Refusal"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  healthz_healthz_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            [key: string]: string;
+          };
+        };
+      };
+    };
+  };
+  readyz_readyz_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": unknown;
+        };
+      };
+      /** @description The Host is not allowed, or the Content-Length is bad. */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Refusal"];
+        };
+      };
+      /** @description The credential is missing or invalid; `WWW-Authenticate: Bearer`. */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Refusal"];
+        };
+      };
+      /** @description The request carries an Origin header. */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Refusal"];
+        };
+      };
+    };
+  };
+  status_status_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["StatusData"];
+        };
+      };
+      /** @description The Host is not allowed, or the Content-Length is bad. */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Refusal"];
+        };
+      };
+      /** @description The credential is missing or invalid; `WWW-Authenticate: Bearer`. */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Refusal"];
+        };
+      };
+      /** @description The request carries an Origin header. */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Refusal"];
+        };
+      };
+    };
+  };
+  ask_ask_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["AskRequest"];
+      };
+    };
+    responses: {
+      /** @description Server-sent events, one JSON object per `data:` line. The `event` line names the payload: `tool`, `step`, `source`, `token`, `notice`, `answer`, `thread` or `error`. A `: ping` comment line arrives after 15 s of silence; it has no `data:`. `answer` is the last event unless a `thread` or an `error` follows; a client replaces its streamed text with the `answer` event's `text`, never appends it, and takes every link from its `citations[].url`. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "text/event-stream": unknown;
+        };
+      };
+      /** @description The Host is not allowed, or the Content-Length is bad. */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "text/event-stream": components["schemas"]["Refusal"];
+        };
+      };
+      /** @description The credential is missing or invalid; `WWW-Authenticate: Bearer`. */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "text/event-stream": components["schemas"]["Refusal"];
+        };
+      };
+      /** @description The request carries an Origin header. */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "text/event-stream": components["schemas"]["Refusal"];
+        };
+      };
+      /** @description The `thread_id` names no thread. */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "text/event-stream": components["schemas"]["Refusal"];
+        };
+      };
+      /** @description The body is over 16 KB, by header or by stream. */
+      413: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "text/event-stream": components["schemas"]["Refusal"];
+        };
+      };
+      /** @description A POST without application/json. */
+      415: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "text/event-stream": components["schemas"]["Refusal"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+      /** @description The per-client limit refused the request; also sends Retry-After. */
+      429: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "text/event-stream": components["schemas"]["RateLimited"];
+        };
+      };
+      /** @description No answer connection was free in time; also sends Retry-After. */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "text/event-stream": components["schemas"]["Refusal"];
+        };
+      };
+    };
+  };
 }

@@ -317,7 +317,8 @@ export function AskSheet({
                 data-testid="asking-about"
                 className="mb-3 max-w-[38rem] border-l-2 border-accent pl-2.5 text-[11.5px] leading-[1.5] text-ink-2"
               >
-                About this item: <span className="font-serif text-[13px] text-ink">{item.title}</span>
+                About this item:{" "}
+                <span className="font-serif text-[13px] text-ink">{item.title}</span>
               </p>
             ) : null}
 
@@ -402,9 +403,7 @@ export function AskSheet({
                 className="max-w-[38rem] border border-bad/40 bg-bad-soft px-4 py-3"
               >
                 <p className="text-[13px] leading-[1.55] text-ink">{errorCopy(shownError)}</p>
-                {shownError.code === "daily_cap" ? (
-                  <MatchingItems sources={state.sources} />
-                ) : null}
+                {shownError.code === "daily_cap" ? <MatchingItems sources={state.sources} /> : null}
                 {shownError.code === "dropped" ? (
                   // A dropped answer has no server payload, and a follow-up's re-fetch can fail
                   // too: the block carries the retry itself, or the reader retypes the question.

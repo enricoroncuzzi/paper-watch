@@ -123,7 +123,9 @@ function newThread(question) {
   const now = new Date().toISOString();
   const thread = {
     id: randomUUID(),
-    title: String(question ?? "").trim().slice(0, 80),
+    title: String(question ?? "")
+      .trim()
+      .slice(0, 80),
     turns: [],
     created_at: now,
     updated_at: now,
@@ -436,7 +438,9 @@ async function handle(request, response) {
     // FastAPI refuses a path id that is not a UUID with 422 before the route runs.
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
       json(response, 422, {
-        detail: [{ type: "uuid_parsing", loc: ["path", "item_id"], msg: "Input should be a valid UUID" }],
+        detail: [
+          { type: "uuid_parsing", loc: ["path", "item_id"], msg: "Input should be a valid UUID" },
+        ],
       });
       return;
     }

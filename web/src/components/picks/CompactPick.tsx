@@ -33,7 +33,7 @@ export function CompactPick({
         </h3>
         <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px] text-ink-3">
           <TierChip tier={card.tier} />
-          {card.venue ?? card.org ? <Chip>{card.venue ?? card.org}</Chip> : null}
+          {(card.venue ?? card.org) ? <Chip>{card.venue ?? card.org}</Chip> : null}
           {card.hf_upvotes !== null ? <Chip>HF {card.hf_upvotes} ↑</Chip> : null}
           {card.citation_count > 0 ? <Chip>{card.citation_count} cites</Chip> : null}
           {card.profile ? <Chip>{profileLabel(card.profile)}</Chip> : null}

@@ -93,8 +93,13 @@ export function RisingShelf({
       className="mt-8 border-t-[1.5px] border-ink pt-3 sm:mt-12"
     >
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <span className="font-mono text-[10px] uppercase tracking-[0.1em] text-accent-text">02</span>
-        <h2 id="rising-title" className="font-serif text-[23px] font-normal tracking-[-0.02em] sm:text-[27px]">
+        <span className="font-mono text-[10px] uppercase tracking-[0.1em] text-accent-text">
+          02
+        </span>
+        <h2
+          id="rising-title"
+          className="font-serif text-[23px] font-normal tracking-[-0.02em] sm:text-[27px]"
+        >
           Rising
         </h2>
         <span className="text-[11.5px] text-ink-3">
@@ -129,7 +134,9 @@ export function RisingShelf({
               </svg>
               {note}
             </span>
-            <span className="ml-auto hidden text-[10.5px] text-ink-3 sm:inline">re-checked every run</span>
+            <span className="ml-auto hidden text-[10.5px] text-ink-3 sm:inline">
+              re-checked every run
+            </span>
           </div>
           {rising.map((card) => (
             <RisingCard

@@ -45,9 +45,10 @@ export async function upstreamFetch(path: string, init: RequestInit): Promise<Re
  * uses, and everything else a kind the page already maps to copy.
  */
 export async function failureFor(upstream: Response): Promise<Response> {
-  const body = (await upstream.json().catch(() => null)) as
-    | { detail?: unknown; retry_after_s?: unknown }
-    | null;
+  const body = (await upstream.json().catch(() => null)) as {
+    detail?: unknown;
+    retry_after_s?: unknown;
+  } | null;
   if (upstream.status === 503) {
     return Response.json(body ?? { kind: "unavailable" }, { status: 503, headers: NO_STORE });
   }

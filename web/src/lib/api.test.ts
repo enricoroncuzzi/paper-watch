@@ -84,9 +84,11 @@ describe("apiGet", () => {
   it("falls back to the body's retry_after_s when Retry-After is absent", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue(
-        Response.json({ detail: "rate_limited", retry_after_s: 12 }, { status: 429 }),
-      ),
+      vi
+        .fn()
+        .mockResolvedValue(
+          Response.json({ detail: "rate_limited", retry_after_s: 12 }, { status: 429 }),
+        ),
     );
     expect(await apiGet("/runs")).toEqual({ ok: false, kind: "rate_limited", retryAfterS: 12 });
   });

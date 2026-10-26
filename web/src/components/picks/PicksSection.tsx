@@ -89,8 +89,13 @@ export function PicksSection({
       className="mt-[30px] border-t-[1.5px] border-ink pt-3 sm:mt-11"
     >
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <span className="font-mono text-[10px] uppercase tracking-[0.1em] text-accent-text">01</span>
-        <h2 id="picks-title" className="font-serif text-[24px] font-normal tracking-[-0.01em] sm:text-[27px]">
+        <span className="font-mono text-[10px] uppercase tracking-[0.1em] text-accent-text">
+          01
+        </span>
+        <h2
+          id="picks-title"
+          className="font-serif text-[24px] font-normal tracking-[-0.01em] sm:text-[27px]"
+        >
           The picks
         </h2>
         <span className="text-[11.5px] text-ink-3">3 to 5 a week, evidence first</span>

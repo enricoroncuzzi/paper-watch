@@ -13,7 +13,7 @@
     "typecheck": "next typegen && tsc --noEmit",
     "test": "vitest run",
     "e2e": "playwright test",
-    "gen:api": "openapi-typescript ../docs/api/openapi.json -o src/lib/api-types.ts",
+    "gen:api": "openapi-typescript ../docs/api/openapi.json -o src/lib/api-types.ts && prettier --write src/lib/api-types.ts",
     "fake-api": "node fake-api/server.mjs"
   },
   "dependencies": {

@@ -23,14 +23,14 @@ describe("linkedin text", () => {
 
   it("hashtags gain one hash sign and no spaces", () => {
     // A stored tag never shows as "##ai agents": the page owns the hash sign and the separator.
-    expect(linkedinText({ ...DRAFT, hashtags: ["agents", "#memory", "ai safety", " #llm "] })).toContain(
-      "#agents #memory #aisafety #llm",
-    );
+    expect(
+      linkedinText({ ...DRAFT, hashtags: ["agents", "#memory", "ai safety", " #llm "] }),
+    ).toContain("#agents #memory #aisafety #llm");
   });
 
   it("omits the empty blocks instead of leaving blank lines", () => {
-    expect(
-      linkedinText({ hook: "A hook.", body: "A body.", hashtags: [], source_link: "" }),
-    ).toBe("A hook.\n\nA body.");
+    expect(linkedinText({ hook: "A hook.", body: "A body.", hashtags: [], source_link: "" })).toBe(
+      "A hook.\n\nA body.",
+    );
   });
 });

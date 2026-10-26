@@ -5,10 +5,7 @@ export type LinkedInDraft = Pick<Draft, "hook" | "body" | "hashtags" | "source_l
 
 /** One hash sign, no spaces: a stored tag never reads as "##ai agents" on the clipboard. */
 function tag(value: string): string {
-  return value
-    .trim()
-    .replace(/^#+/, "")
-    .replace(/\s+/g, "");
+  return value.trim().replace(/^#+/, "").replace(/\s+/g, "");
 }
 
 /**

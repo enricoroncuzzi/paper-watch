@@ -43,15 +43,15 @@ Every fixture is validated against the API's own pydantic models by
 
 All are server-only; there is no `NEXT_PUBLIC_` variable.
 
-| Name | Purpose |
-|---|---|
-| `PW_API_URL` | The API's base URL (the Funnel URL in production). |
-| `PW_API_AUTH` | `oidc` (default on Vercel production), `hmac`, or `e2e`. |
-| `PW_API_HMAC_SECRET` | The shared secret, only with `PW_API_AUTH=hmac`. |
-| `AUTH_GITHUB_ID`, `AUTH_GITHUB_SECRET` | The GitHub OAuth app. |
-| `AUTH_SECRET` | The Auth.js signing secret. |
-| `ALLOWED_GITHUB_ID` | The one numeric GitHub id allowed in. |
-| `PW_E2E_SESSION` | `1` enables the test provider and token, off Vercel only. |
+| Name                                   | Purpose                                                   |
+| -------------------------------------- | --------------------------------------------------------- |
+| `PW_API_URL`                           | The API's base URL (the Funnel URL in production).        |
+| `PW_API_AUTH`                          | `oidc` (default on Vercel production), `hmac`, or `e2e`.  |
+| `PW_API_HMAC_SECRET`                   | The shared secret, only with `PW_API_AUTH=hmac`.          |
+| `AUTH_GITHUB_ID`, `AUTH_GITHUB_SECRET` | The GitHub OAuth app.                                     |
+| `AUTH_SECRET`                          | The Auth.js signing secret.                               |
+| `ALLOWED_GITHUB_ID`                    | The one numeric GitHub id allowed in.                     |
+| `PW_E2E_SESSION`                       | `1` enables the test provider and token, off Vercel only. |
 
 ## How a release deploys
 

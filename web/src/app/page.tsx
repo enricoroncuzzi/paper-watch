@@ -11,13 +11,7 @@ import { RunsSection } from "@/components/RunsSection";
 import { ErrorState, LoadingState } from "@/components/SectionState";
 import { TodayStrip } from "@/components/TodayStrip";
 import { apiGet } from "@/lib/api";
-import type {
-  CorpusData,
-  DraftsData,
-  RunSummary,
-  SuggestionsData,
-  TodayData,
-} from "@/lib/types";
+import type { CorpusData, DraftsData, RunSummary, SuggestionsData, TodayData } from "@/lib/types";
 
 // A private page reads a live corpus: nothing here may be cached or statically rendered.
 export const dynamic = "force-dynamic";
@@ -26,7 +20,12 @@ async function TodaySection() {
   const result = await apiGet<TodayData>("/today");
   if (!result.ok) {
     return (
-      <ErrorState kind={result.kind} testId="today-error" detail="GET /today" retryAfterS={result.retryAfterS} />
+      <ErrorState
+        kind={result.kind}
+        testId="today-error"
+        detail="GET /today"
+        retryAfterS={result.retryAfterS}
+      />
     );
   }
   return <TodayStrip today={result.data} />;
@@ -83,7 +82,12 @@ async function RunsSectionData() {
   const result = await apiGet<{ runs: RunSummary[] }>("/runs?limit=7");
   if (!result.ok) {
     return (
-      <ErrorState kind={result.kind} testId="runs-error" detail="GET /runs" retryAfterS={result.retryAfterS} />
+      <ErrorState
+        kind={result.kind}
+        testId="runs-error"
+        detail="GET /runs"
+        retryAfterS={result.retryAfterS}
+      />
     );
   }
   return <RunsSection runs={result.data.runs} />;

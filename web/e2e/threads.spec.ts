@@ -70,10 +70,7 @@ test("a follow-up shows both turns and keeps the citation numbers", async ({ pag
   await expect(sheet.getByTestId("past-answer").locator("sup")).toHaveText(["1"]);
   await expect(sheet.getByTestId("turns-chip")).toHaveText("2 turns");
   // The composer now invites a follow-up, and the sheet remembers which thread it is on.
-  await expect(sheet.getByTestId("composer")).toHaveAttribute(
-    "placeholder",
-    "Ask a follow-up...",
-  );
+  await expect(sheet.getByTestId("composer")).toHaveAttribute("placeholder", "Ask a follow-up...");
 });
 
 test("the peer-reviewed chip re-asks with the filter", async ({ page, request }) => {
@@ -168,7 +165,10 @@ test("returning to a reopened conversation does not duplicate its last turn", as
   expect(reads).toEqual([]);
 });
 
-test("a refused follow-up keeps its error when the reader comes back", async ({ page, request }) => {
+test("a refused follow-up keeps its error when the reader comes back", async ({
+  page,
+  request,
+}) => {
   await openSheet(page);
   await firstTurn(page);
   // The daily cap is spent: a return must not turn that into "That answer was interrupted",
@@ -230,7 +230,9 @@ test("a refusal that lands while the return's read is in flight keeps its error"
     });
   });
 
-  await sheet.getByRole("textbox", { name: "Your question" }).fill("What would break this approach?");
+  await sheet
+    .getByRole("textbox", { name: "Your question" })
+    .fill("What would break this approach?");
   await sheet.getByRole("button", { name: "Send the question" }).click();
   await expect(sheet.getByTestId("asked-question")).toHaveText("What would break this approach?");
 
@@ -484,10 +486,7 @@ test("recent threads reopen a conversation", async ({ page }) => {
     "What do recent papers say about memory for long-running coding agents?",
   );
   await expect(sheet.getByTestId("turn-2")).toContainText("How was it measured?");
-  await expect(sheet.getByTestId("composer")).toHaveAttribute(
-    "placeholder",
-    "Ask a follow-up...",
-  );
+  await expect(sheet.getByTestId("composer")).toHaveAttribute("placeholder", "Ask a follow-up...");
 });
 
 test("escape closes the recent list before it closes the sheet", async ({ page }) => {
@@ -584,7 +583,11 @@ test("the conversation keeps its chips and composer on the phone", async ({ page
   expect(box!.height).toBeGreaterThanOrEqual(viewport!.height - 1);
 
   // The three fixed chips and the composer are visible without scrolling, above the safe area.
-  for (const label of ["Only peer-reviewed sources", "What are the limitations?", "How was it measured?"]) {
+  for (const label of [
+    "Only peer-reviewed sources",
+    "What are the limitations?",
+    "How was it measured?",
+  ]) {
     await expect(sheet.getByRole("button", { name: label })).toBeVisible();
   }
   const composer = await sheet.getByTestId("composer").boundingBox();

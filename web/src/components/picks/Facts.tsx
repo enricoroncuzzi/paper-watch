@@ -35,10 +35,7 @@ export function Facts({
   if (!compact) {
     rows.push(["Citations", card.citation_count > 0 ? String(card.citation_count) : NO_VALUE]);
   }
-  rows.push([
-    "Hugging Face",
-    card.hf_upvotes === null ? NO_VALUE : `${card.hf_upvotes} \u2191`,
-  ]);
+  rows.push(["Hugging Face", card.hf_upvotes === null ? NO_VALUE : `${card.hf_upvotes} \u2191`]);
   rows.push([
     "GitHub",
     card.github_stars === null ? NO_VALUE : `${compactCount(card.github_stars)} \u2605`,

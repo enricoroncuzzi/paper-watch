@@ -210,7 +210,9 @@ test("command enter opens the sheet and sends", async ({ page }) => {
   await page.keyboard.press("ControlOrMeta+Enter");
   const sheet = page.getByRole("dialog");
   await expect(sheet).toBeVisible();
-  await sheet.getByRole("textbox", { name: "Your question" }).fill("What do coding agents measure?");
+  await sheet
+    .getByRole("textbox", { name: "Your question" })
+    .fill("What do coding agents measure?");
   await page.keyboard.press("ControlOrMeta+Enter");
   await expect(sheet.getByTestId("answer")).toContainText("Coding agents are measured");
 });

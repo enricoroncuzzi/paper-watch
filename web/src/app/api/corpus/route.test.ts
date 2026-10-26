@@ -51,16 +51,20 @@ describe("the corpus proxy", () => {
     expect(forwardedUrl(fetchMock).searchParams.has("since")).toBe(false);
   });
 
-  it.each(["01-11-2026", "2026-11", "2026-11-01T00:00:00Z", "2026-02-30", "yesterday", " 2026-11-01"])(
-    "refuses %s before spending a round trip",
-    async (since) => {
-      const fetchMock = vi.fn();
-      vi.stubGlobal("fetch", fetchMock);
+  it.each([
+    "01-11-2026",
+    "2026-11",
+    "2026-11-01T00:00:00Z",
+    "2026-02-30",
+    "yesterday",
+    " 2026-11-01",
+  ])("refuses %s before spending a round trip", async (since) => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
 
-      const response = await GET(corpusRequest(`?since=${encodeURIComponent(since)}`));
-      expect(response.status).toBe(400);
-      expect(await response.json()).toEqual({ kind: "error" });
-      expect(fetchMock).not.toHaveBeenCalled();
-    },
-  );
+    const response = await GET(corpusRequest(`?since=${encodeURIComponent(since)}`));
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ kind: "error" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });

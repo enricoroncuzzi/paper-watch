@@ -529,12 +529,14 @@ describe("the ask controller", () => {
   });
 
   it("a 429 becomes a rate_limited error with the wait", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(
-      Response.json(
-        { kind: "rate_limited", retryAfterS: 12 },
-        { status: 429, headers: { "retry-after": "12" } },
-      ),
-    );
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(
+        Response.json(
+          { kind: "rate_limited", retryAfterS: 12 },
+          { status: 429, headers: { "retry-after": "12" } },
+        ),
+      );
     const controller = new AskController({ fetchImpl });
     await controller.ask("q");
     const error = controller.getState().error;

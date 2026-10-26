@@ -1,7 +1,11 @@
 import { followupLine, formatRome, runDayLabel, stripStatus, verdict } from "@/lib/format";
 import type { TodayData } from "@/lib/types";
 
-const DOT_COLOR = { ok: "bg-ok shadow-[0_0_0_3px_var(--ok-soft)]", warn: "bg-warn shadow-[0_0_0_3px_var(--warn-soft)]", bad: "bg-bad shadow-[0_0_0_3px_var(--bad-soft)]" };
+const DOT_COLOR = {
+  ok: "bg-ok shadow-[0_0_0_3px_var(--ok-soft)]",
+  warn: "bg-warn shadow-[0_0_0_3px_var(--warn-soft)]",
+  bad: "bg-bad shadow-[0_0_0_3px_var(--bad-soft)]",
+};
 const VERDICT_COLOR = { ok: "text-ok", warn: "text-warn", bad: "text-bad" };
 
 /** One line about the last run, the way the mockup's runline reads it. */

@@ -11,44 +11,18 @@
       "model": "vendor/model:free",
       "hook": "A replay buffer is the part worth copying.",
       "body": "A paragraph that runs on without any full stop at its end for quite a while, so the preview keeps this whole paragraph in the collapsed card and then has to leave out the next one\n\nA second paragraph that the collapsed card leaves out when it is longer than the preview limit, so the first one ends the card.",
-      "hashtags": [
-        "agents"
-      ],
+      "hashtags": ["agents"],
       "source_link": "https://arxiv.org/abs/2610.04412",
       "flags": [],
       "counts": {
-        "number": [
-          0,
-          0
-        ],
-        "quote": [
-          0,
-          0
-        ],
-        "link": [
-          0,
-          0
-        ],
-        "first_person": [
-          0,
-          0
-        ],
-        "attribution": [
-          0,
-          0
-        ],
-        "preprint_fact": [
-          0,
-          0
-        ],
-        "early_notice": [
-          0,
-          0
-        ],
-        "long_copy": [
-          0,
-          0
-        ]
+        "number": [0, 0],
+        "quote": [0, 0],
+        "link": [0, 0],
+        "first_person": [0, 0],
+        "attribution": [0, 0],
+        "preprint_fact": [0, 0],
+        "early_notice": [0, 0],
+        "long_copy": [0, 0]
       },
       "chars": 395
     },
@@ -63,44 +37,18 @@
       "model": "vendor/model:free",
       "hook": "A replay buffer is the part worth copying.",
       "body": "A paragraph that ends with a quote from the paper: \"we tested it on forty long-horizon tasks.\"\n\nA second paragraph that the collapsed card leaves out when the whole body is longer than the preview limit, which this one makes it.",
-      "hashtags": [
-        "agents"
-      ],
+      "hashtags": ["agents"],
       "source_link": "https://arxiv.org/abs/2610.04412",
       "flags": [],
       "counts": {
-        "number": [
-          0,
-          0
-        ],
-        "quote": [
-          0,
-          0
-        ],
-        "link": [
-          0,
-          0
-        ],
-        "first_person": [
-          0,
-          0
-        ],
-        "attribution": [
-          0,
-          0
-        ],
-        "preprint_fact": [
-          0,
-          0
-        ],
-        "early_notice": [
-          0,
-          0
-        ],
-        "long_copy": [
-          0,
-          0
-        ]
+        "number": [0, 0],
+        "quote": [0, 0],
+        "link": [0, 0],
+        "first_person": [0, 0],
+        "attribution": [0, 0],
+        "preprint_fact": [0, 0],
+        "early_notice": [0, 0],
+        "long_copy": [0, 0]
       },
       "chars": 315
     }

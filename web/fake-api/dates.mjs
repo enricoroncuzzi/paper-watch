@@ -55,7 +55,10 @@ export function romeDayStart(daysAgo, nowMs) {
  * so a "today" run is always on today's Rome date and a "yesterday" run always on yesterday's.
  */
 export function fakeRunStart(daysAgo, nowMs) {
-  return Math.max(romeDayStart(daysAgo, nowMs), nowMs - daysAgo * 24 * 60 * 60 * 1000 - 3 * 60 * 60 * 1000);
+  return Math.max(
+    romeDayStart(daysAgo, nowMs),
+    nowMs - daysAgo * 24 * 60 * 60 * 1000 - 3 * 60 * 60 * 1000,
+  );
 }
 
 /** A three-minute run, never in the future. */

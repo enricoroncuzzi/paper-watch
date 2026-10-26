@@ -68,7 +68,10 @@ test("a checked summary shows quotes and labels interpretations", async ({ page 
   await expect(thirty.getByTestId("interpretation-label")).toHaveCount(2);
 });
 
-test("a pending summary shows the excerpt and is replaced after a refresh", async ({ page, request }) => {
+test("a pending summary shows the excerpt and is replaced after a refresh", async ({
+  page,
+  request,
+}) => {
   await setScenario(request, "summary_pending");
   await page.reload();
 
@@ -85,9 +88,13 @@ test("a pending summary shows the excerpt and is replaced after a refresh", asyn
 test("dismissing removes the card and posts the event", async ({ page }) => {
   const picks = page.getByTestId("picks-section");
   const posted = page.waitForRequest(
-    (request) => /\/api\/suggestions\/.+\/events$/.test(request.url()) && request.method() === "POST",
+    (request) =>
+      /\/api\/suggestions\/.+\/events$/.test(request.url()) && request.method() === "POST",
   );
-  await picks.getByTestId("lead-pick").getByRole("button", { name: /^Not for me/ }).click();
+  await picks
+    .getByTestId("lead-pick")
+    .getByRole("button", { name: /^Not for me/ })
+    .click();
   expect((await posted).postDataJSON()).toEqual({ event: "dismissed" });
 
   // The card goes at once, and the next pick takes the lead slot.
@@ -109,13 +116,15 @@ test("read the original opens the stored url in a new tab", async ({ page }) => 
 
   // A middle click opens the paper too, so it counts as an opening as well.
   const middle = page.waitForRequest(
-    (request) => /\/api\/suggestions\/.+\/events$/.test(request.url()) && request.method() === "POST",
+    (request) =>
+      /\/api\/suggestions\/.+\/events$/.test(request.url()) && request.method() === "POST",
   );
   await link.click({ button: "middle" });
   expect((await middle).postDataJSON()).toEqual({ event: "opened" });
 
   const beacon = page.waitForRequest(
-    (request) => /\/api\/suggestions\/.+\/events$/.test(request.url()) && request.method() === "POST",
+    (request) =>
+      /\/api\/suggestions\/.+\/events$/.test(request.url()) && request.method() === "POST",
   );
   const [popup] = await Promise.all([page.waitForEvent("popup"), link.click()]);
   await expect(popup).toHaveURL("https://arxiv.org/abs/2610.04412");
@@ -124,7 +133,10 @@ test("read the original opens the stored url in a new tab", async ({ page }) => 
 
 test("ask about it opens the sheet with the item", async ({ page }) => {
   const picks = page.getByTestId("picks-section");
-  await picks.getByTestId("lead-pick").getByRole("button", { name: /^Ask about it/ }).click();
+  await picks
+    .getByTestId("lead-pick")
+    .getByRole("button", { name: /^Ask about it/ })
+    .click();
 
   const sheet = page.getByRole("dialog");
   await expect(sheet).toBeVisible();
@@ -226,9 +238,7 @@ test("the phone layout is one column with touch-sized actions", async ({ page },
     expect(aside.width).toBeGreaterThan(title.width * 0.9);
   }
 
-  const actions = lead.locator(
-    "a:has-text('Read the original'), button:has-text('Ask about it')",
-  );
+  const actions = lead.locator("a:has-text('Read the original'), button:has-text('Ask about it')");
   await expect(actions).toHaveCount(2);
   for (let index = 0; index < 2; index += 1) {
     const target = await actions.nth(index).boundingBox();

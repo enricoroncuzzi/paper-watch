@@ -19,7 +19,8 @@ const SMALL =
   "inline-flex h-11 items-center rounded-[2px] border border-rule-2 px-2.5 text-[11.5px] font-medium text-ink hover:border-ink hover:bg-card sm:h-7";
 // Both chips use the one font: the mockup's mixed mono/sans pair put their baselines 0.75 px
 // apart in Chromium, and a font is the only nudge that holds in every engine.
-const CHIP = "inline-flex h-[21px] items-center rounded-[2px] border border-rule px-2 font-mono text-[10.5px] leading-none text-ink-2";
+const CHIP =
+  "inline-flex h-[21px] items-center rounded-[2px] border border-rule px-2 font-mono text-[10.5px] leading-none text-ink-2";
 
 function headline(draft: Draft): string {
   // "saved today 12:41" reads as one label; a date keeps its capital ("saved Oct 21 12:41").

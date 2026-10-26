@@ -58,7 +58,9 @@ describe("the hash a click moves the mark to", () => {
     expect(sectionHashFromClick(click({ altKey: true }), HERE)).toBeNull();
     expect(sectionHashFromClick(click({ button: 1 }), HERE)).toBeNull();
     expect(sectionHashFromClick(click({ target: "_blank" }), HERE)).toBeNull();
-    expect(sectionHashFromClick(click({ href: "https://example.org/post#results" }), HERE)).toBeNull();
+    expect(
+      sectionHashFromClick(click({ href: "https://example.org/post#results" }), HERE),
+    ).toBeNull();
     expect(sectionHashFromClick(click({ href: "mailto:someone@example.org#x" }), HERE)).toBeNull();
   });
 

@@ -58,8 +58,8 @@ export function RunDetail({ run }: { run: RunDetailData }) {
       <div className="mt-4 border-t border-rule pt-3 text-[12px] text-ink-2">
         <p>
           <span className="text-ink-3">window </span>
-          {formatDay(run.window_start)} {formatRome(run.window_start)} to {formatDay(run.window_end)}{" "}
-          {formatRome(run.window_end)} Europe/Rome
+          {formatDay(run.window_start)} {formatRome(run.window_start)} to{" "}
+          {formatDay(run.window_end)} {formatRome(run.window_end)} Europe/Rome
         </p>
         {followup ? <p className="mt-1 text-ink-3">{followup}</p> : null}
       </div>
