@@ -286,7 +286,10 @@ class HmacVerifier:
             if jti in self._seen:
                 return None
             self._seen[jti] = exp
-        return Principal("hmac", sub)
+        # One fixed subject, never the token's `sub`: that claim is chosen by whoever minted the
+        # token, so honouring it would let one caller rotate the name with every request and dodge
+        # the per-subject rate limit. The single-use jti is the only per-token identity there is.
+        return Principal("hmac", "hmac")
 
 
 def _b64decode(segment: str) -> bytes:

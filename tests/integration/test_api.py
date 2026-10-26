@@ -1406,6 +1406,30 @@ def test_the_seventh_question_in_a_minute_is_refused_before_any_model_call(
     assert len(model.seen) == 6
 
 
+def test_rotating_the_hmac_subject_does_not_dodge_the_rate_limit(db_session: Session) -> None:
+    # `sub` is chosen by whoever minted the token, so a limiter keyed on it could be dodged with a
+    # fresh name per request; every HMAC token is the one fixed principal instead.
+    model = ScriptedChatModel(script=[AIMessage(ANSWER) for _ in range(6)])
+    app_deps = deps(db_session, [ChatModel("openrouter", model)])
+    for index in range(6):
+        token = mint_hmac_token(TEST_SECRET, f"caller-{index}", time.time())
+        response = client(create_app(app_deps)).post(
+            "/ask",
+            json={"question": f"q{index}"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+    token = mint_hmac_token(TEST_SECRET, "caller-7", time.time())
+    refused = client(create_app(app_deps)).post(
+        "/ask",
+        json={"question": "q7"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert refused.status_code == 429
+    assert refused.json() == {"detail": "rate_limited", "retry_after_s": 60}
+    assert len(model.seen) == 6
+
+
 def test_a_third_concurrent_answer_is_busy(db_session: Session) -> None:
     # Two answers already hold the slots; the third is refused at once rather than queued behind
     # two slow free models. The slots protect the server's memory, so another caller's answers

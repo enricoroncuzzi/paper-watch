@@ -243,12 +243,25 @@ def _hmac_verifier(secret: str, clock: Clock) -> HmacVerifier:
     return HmacVerifier(secret, clock)
 
 
+def test_hmac_tokens_all_share_one_principal() -> None:
+    # `sub` is whatever the token was minted with, so honouring it would let one caller rotate the
+    # name and dodge the per-subject rate limit with every request. Every HMAC token is the same
+    # fixed principal; the single-use jti is what tells them apart.
+    clock = Clock()
+    verifier = _hmac_verifier(TEST_SECRET, clock)
+    principals = {
+        verifier.verify(mint_hmac_token(TEST_SECRET, subject, clock.now))
+        for subject in ("operator", "someone-else", "a-third-name")
+    }
+    assert principals == {Principal("hmac", "hmac")}
+
+
 def test_hmac_token_round_trip_and_replay() -> None:
     secret = TEST_SECRET
     clock = Clock()
     verifier = _hmac_verifier(secret, clock)
     token = mint_hmac_token(secret, "operator", clock.now)
-    assert verifier.verify(token) == Principal("hmac", "operator")
+    assert verifier.verify(token) == Principal("hmac", "hmac")
     # A token is single use: replaying it must not work, so a leaked log line cannot be reused.
     assert verifier.verify(token) is None
     long_lived = jwt.encode(
