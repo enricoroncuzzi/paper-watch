@@ -27,11 +27,12 @@ def _emit_access(path: str) -> str:
             captured.append(record)
 
     handler = Capture()
-    # The record format is uvicorn's own: client, method, full target, version, status.
-    root = logging.getLogger()
-    root.addHandler(handler)
+    # On the logger itself, so the test does not depend on what the root logger carries: pytest's
+    # own handlers are there, and a test that silenced the process would otherwise pass silently.
+    logger.addHandler(handler)
     try:
-        # Five separate arguments, as uvicorn emits them; logging keeps them as one tuple.
+        # The record format is uvicorn's own: client, method, full target, version, status. They go
+        # in as separate arguments, which is how uvicorn emits them and how logging stores them.
         logger.info(
             '%s - "%s %s HTTP/%s" %d',
             "203.0.113.7:51000",
@@ -41,7 +42,7 @@ def _emit_access(path: str) -> str:
             200,
         )
     finally:
-        root.removeHandler(handler)
+        logger.removeHandler(handler)
     [record] = captured
     return record.getMessage()
 

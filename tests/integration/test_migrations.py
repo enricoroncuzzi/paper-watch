@@ -1,5 +1,7 @@
 """The migrated schema and ``models.py`` must agree, or tests and a fresh deploy would differ."""
 
+import logging
+
 import pytest
 from alembic import command
 from alembic.config import Config
@@ -22,6 +24,21 @@ def test_models_and_migrations_do_not_drift(db_url: str) -> None:
     cfg = Config("alembic.ini")
     cfg.set_main_option("sqlalchemy.url", db_url)
     command.check(cfg)
+
+
+def test_migrating_keeps_the_process_loggers_enabled(db_url: str) -> None:
+    # `fileConfig` disables every existing logger by default: the template does not pass
+    # `disable_existing_loggers`, and a process that migrates in-band (the eval's throwaway
+    # database, a test fixture) would go silent from that line on. The probe exists before the
+    # migration runs, which is the condition the default trips on.
+    probe = logging.getLogger("paperwatch.migration-probe")
+    assert probe.disabled is False
+
+    cfg = Config("alembic.ini")
+    cfg.set_main_option("sqlalchemy.url", db_url)
+    command.upgrade(cfg, "head")
+
+    assert probe.disabled is False
 
 
 def test_hnsw_index_definition_matches_the_search_predicate(engine: Engine) -> None:

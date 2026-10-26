@@ -11,9 +11,12 @@ from paperwatch.store.models import Base
 config = context.config
 
 # Interpret the config file for Python logging, unless a caller (the eval) asked to keep its own
-# output clean by setting the `configure_logger` attribute to False.
+# output clean by setting the `configure_logger` attribute to False. `disable_existing_loggers` is
+# spelled out because `fileConfig` defaults it to True: without it, a process that migrates its own
+# database (the eval's throwaway one, a test fixture) would silence every logger it had already
+# created, and only the alembic ones would keep writing.
 if config.config_file_name is not None and config.attributes.get("configure_logger", True):
-    fileConfig(config.config_file_name)
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # A test fixture or the eval sets `sqlalchemy.url` on the Config so migrations run against its own
 # throwaway database; only when it is unset (empty in alembic.ini) does the app's Settings supply
