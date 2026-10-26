@@ -621,6 +621,9 @@ def test_switch_installs_the_unit_and_never_holds_the_port_twice(sandbox: Sandbo
     stop = calls.index("--user disable --now paperwatch-api")
     start = calls.index("enable --now paperwatch-api")
     assert calls.index("daemon-reload") < stop < start
+    # Everything a rollback needs is still there: the way back is not given up until tidy.
+    assert sandbox.owner_unit.exists()
+    assert sandbox.owner_env.exists()
     # The old unit is the owner's user manager's, reached as that account: as root it has no
     # runtime directory of its own to ask.
     assert f"{OWNER}|/run/user/1001|--user disable --now paperwatch-api" in sandbox.records(
@@ -806,3 +809,20 @@ def test_the_guide_points_at_the_script_for_the_migration() -> None:
     assert SCRIPT.is_file()
     # The guide runs it by absolute path, from a checkout that git keeps executable.
     assert SCRIPT.stat().st_mode & 0o111
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="the check only fires for a non-root caller")
+def test_a_subcommand_refuses_to_run_without_root(sandbox: Sandbox) -> None:
+    # The account, the system unit and pg_ident.conf are root's, so the refusal has to come before
+    # any of them is touched. The tests skip this check the rest of the time, so it is tested here.
+    result = subprocess.run(  # noqa: S603 (the repository's own script, no shell)
+        [BASH, str(SCRIPT), "prepare"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+        env=sandbox.env(PW_MOVE_UNPRIVILEGED="0"),
+    )
+    assert result.returncode == 1
+    assert "run as root" in result.stderr
+    assert sandbox.records("useradd") == []

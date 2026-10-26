@@ -167,7 +167,8 @@ reload_postgres() {
 # --- editing the two files this migration rewrites -----------------------------------------
 
 # Both edits copy the file with `cp -p` and rename the copy over it, so the mode and the owner of
-# a file root writes on another account's behalf survive, and a crash never leaves half a file.
+# a file root writes on another account's behalf survive, a crash never leaves half a file, and
+# the temporary copy is never more readable than the file it stands in for.
 
 # map_line_add SYSTEM-USER-NAME: let that account reach the API's role.
 map_line_add() {
