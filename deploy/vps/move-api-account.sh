@@ -509,6 +509,7 @@ cmd_tidy() {
     # The way back is only given up once the new unit is serving and accepted: this is the one step
     # that is not undone by a scripted rollback.
     unit_active system || die "the system unit is not active: run '$0 status' and '$0 switch' first"
+    step "Step 7: accept the API before retiring anything"
     if ! run_acceptance; then
         die "the acceptance check fails, so tidy would retire the way back to an API that does not answer"
     fi
