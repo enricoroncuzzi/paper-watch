@@ -235,12 +235,55 @@ jobs:
           key: ${{ runner.os }}-${{ steps.playwright-version.outputs.image }}-playwright-${{ steps.playwright-version.outputs.version }}
       # The cache holds the browser binaries only, so the OS packages they link against install on
       # a hit too. Each attempt is capped at 5 minutes: a stuck apt source fails the step instead
-      # of holding the job until its time limit, and the one retry rides out one bad mirror. A
-      # timeout can kill dpkg mid-install, so the retry first finishes any interrupted configure.
+      # of holding the job until its time limit, and the one retry rides out one bad mirror. The
+      # timeout kills the npx tree, dpkg included, which can leave a configure half done, so the
+      # retry finishes any interrupted configure before it installs anything else.
+      #
+      # The timeout alone does not end an attempt: Playwright installs the packages through sudo,
+      # and sudo runs its command in a session of its own, so the apt-get outlives the signal and
+      # keeps the dpkg frontend lock. A retry that starts while it lives dies at once with "dpkg
+      # frontend lock was locked by another process" and never gets a second chance at a slow
+      # mirror. So the retry first takes the lock back: wait out an install that is nearly done,
+      # stop one that is not, and let `dpkg --configure -a` finish what the stop interrupted.
       - run: |
+          # Fills `holders` with the pids holding the dpkg locks, and with nothing when both are
+          # free. apt and dpkg take an fcntl write lock on them, which only fuser reports, and only
+          # root can see another user's files.
+          dpkg_locks=(/var/lib/dpkg/lock-frontend /var/lib/dpkg/lock)
+          lock_holders() {
+            read -r -a holders <<<"$(sudo fuser "${dpkg_locks[@]}" 2>/dev/null)"
+          }
+          free_dpkg_lock() {
+            local holders
+            # A nearly finished install gets 15s to release the lock itself.
+            for _ in $(seq 1 15); do
+              lock_holders
+              if [ "${#holders[@]}" -eq 0 ]; then return 0; fi
+              sleep 1
+            done
+            echo "::warning::stopping the dpkg lock holder(s): ${holders[*]}"
+            sudo kill -TERM "${holders[@]}" 2>/dev/null || true
+            # TERM lets dpkg unwind; KILL only for a holder still there 15s later.
+            for _ in $(seq 1 15); do
+              sleep 1
+              lock_holders
+              if [ "${#holders[@]}" -eq 0 ]; then return 0; fi
+            done
+            sudo kill -KILL "${holders[@]}" 2>/dev/null || true
+            for _ in $(seq 1 10); do
+              lock_holders
+              if [ "${#holders[@]}" -eq 0 ]; then return 0; fi
+              sleep 1
+            done
+            echo "::error::the dpkg lock is still held 40s after the retry started"
+            return 1
+          }
           for attempt in 1 2; do
-            if [ "$attempt" -gt 1 ]; then sudo dpkg --configure -a || true; fi
-            timeout 300 npx playwright install-deps chromium webkit && exit 0
+            if [ "$attempt" -gt 1 ]; then
+              free_dpkg_lock || exit 1
+              sudo dpkg --configure -a || true
+            fi
+            timeout --kill-after=30 300 npx playwright install-deps chromium webkit && exit 0
             echo "::warning::install-deps attempt ${attempt} of 2 failed or timed out"
           done
           exit 1
