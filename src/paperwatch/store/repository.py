@@ -1319,15 +1319,21 @@ class Repository:
         return _draft_row(row) if row is not None else None
 
     def threads(self, limit: int) -> list[ThreadRow]:
-        """The Recent menu: newest conversation first, with its finished turn count."""
+        """The Recent menu: newest conversation first, with its finished turn count.
+
+        A thread row is created before its first answer so the page can hold the id early, but an
+        empty thread is not a conversation yet: only threads with at least one finished turn are
+        listed. The row still answers `GET /threads/{id}` with no turns, which is how a dropped
+        first question is read back.
+        """
         counts = (
             select(ThreadTurn.thread_id, func.count().label("turns"))
             .group_by(ThreadTurn.thread_id)
             .subquery()
         )
         rows = self._s.execute(
-            select(Thread, func.coalesce(counts.c.turns, 0))
-            .outerjoin(counts, counts.c.thread_id == Thread.id)
+            select(Thread, counts.c.turns)
+            .join(counts, counts.c.thread_id == Thread.id)
             .order_by(Thread.updated_at.desc())
             .limit(limit)
         )
@@ -1351,6 +1357,23 @@ class Repository:
             registry=tuple(thread.source_registry),
             turns=tuple(_thread_turn_row(turn) for turn in turns),
         )
+
+    def create_thread(self, *, title: str, at: datetime) -> uuid.UUID:
+        """Create an empty thread before its first answer, so the client can hold its id.
+
+        Nothing is listed until a finished turn exists; `save_thread_turn` then appends turn 1 to
+        this row instead of creating it.
+        """
+        created = Thread(
+            id=uuid.uuid4(),
+            title=title,
+            source_registry=[],
+            created_at=at,
+            updated_at=at,
+        )
+        self._s.add(created)
+        self._s.flush()
+        return created.id
 
     def save_thread_turn(
         self,

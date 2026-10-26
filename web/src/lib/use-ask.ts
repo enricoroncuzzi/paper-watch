@@ -82,7 +82,8 @@ export type AskState = {
   askedAt: string | null;
   // The finished turns before the current one, oldest first.
   turns: ConversationTurn[];
-  // The thread the conversation belongs to: set once the server saved a turn, or by opening one.
+  // The thread the conversation belongs to: named before a new answer's first token, or by
+  // opening one.
   threadId: string | null;
   // This turn's number, once the server saved it.
   turn: number | null;
@@ -105,8 +106,9 @@ export type AskState = {
   notice: NoticePayload | null;
   answer: AnswerPayload | null;
   error: AskError | null;
-  // True while a response stream is still open. The `thread` event that names the conversation
-  // follows the `answer`, so a follow-up waits for the stream to end, not only for the answer.
+  // True while a response stream is still open. The `thread` event that names a new thread comes
+  // before the answer; the one carrying the finished turn follows it, so a follow-up waits for the
+  // stream to end, not only for the answer.
   streamOpen: boolean;
 };
 
@@ -334,7 +336,10 @@ function applyEvent(state: AskState, event: string, data: unknown): AskState {
     case "notice":
       return { ...state, notice: data as NoticePayload };
     case "thread": {
-      const thread = data as { id: string; turn: number };
+      const thread = data as { id: string; turn: number | null };
+      // A new thread is named before the agent runs, with no finished turn yet: the id alone is
+      // what lets a dropped first question be read back and retried.
+      if (thread.turn === null) return { ...state, threadId: thread.id };
       // The finished turn is stored: its number is this conversation's, and the chip counts it.
       return { ...state, threadId: thread.id, turn: thread.turn, turnCount: thread.turn };
     }

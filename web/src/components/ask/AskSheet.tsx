@@ -137,8 +137,8 @@ export function AskSheet({
   const askedQuestion = useRef<HTMLHeadingElement>(null);
 
   const streaming = state.status === "streaming";
-  // A follow-up waits for the stream to end: the `thread` event it continues arrives after the
-  // answer.
+  // A follow-up waits for the stream to end: the `thread` event that stores its turn arrives after
+  // the answer.
   const busy = streaming || state.streamOpen;
   const hasConversation = state.turns.length > 0 || state.question !== "";
   const numbers = footnoteNumbers(state.answer?.citations ?? []);

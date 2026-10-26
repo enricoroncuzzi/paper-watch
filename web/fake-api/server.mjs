@@ -118,24 +118,36 @@ function resetThreads() {
 
 resetThreads();
 
-/** Append one finished answer to its thread, creating the thread for a first question. */
-function saveTurn(ask, answer) {
+/** The empty thread a first question names before its stream starts, as the real API does. */
+function newThread(question) {
+  const now = new Date().toISOString();
+  const thread = {
+    id: randomUUID(),
+    title: String(question ?? "").trim().slice(0, 80),
+    turns: [],
+    created_at: now,
+    updated_at: now,
+  };
+  threads.push(thread);
+  return thread;
+}
+
+/** Append one finished answer to its thread, creating the thread when no early row exists. */
+function saveTurn(ask, answer, thread) {
   const question = String(ask.question ?? "").trim();
   const now = new Date().toISOString();
-  let thread = ask.thread_id ? threads.find((one) => one.id === ask.thread_id) : undefined;
-  if (!thread) {
-    thread = { id: randomUUID(), title: question.slice(0, 80), turns: [], created_at: now };
-    threads.push(thread);
-  }
-  thread.turns.push({
-    n: thread.turns.length + 1,
+  let target = thread;
+  if (!target) target = ask.thread_id ? threads.find((one) => one.id === ask.thread_id) : undefined;
+  if (!target) target = newThread(question);
+  target.turns.push({
+    n: target.turns.length + 1,
     question,
     answer,
     search_mode: answer.search_mode ?? "hybrid",
     created_at: now,
   });
-  thread.updated_at = now;
-  return thread;
+  target.updated_at = now;
+  return target;
 }
 
 const SCENARIOS = new Set([
@@ -244,7 +256,7 @@ function runsFor(name) {
   return { runs: base };
 }
 
-async function serveStream(name, response, request, ask) {
+async function serveStream(name, response, request, ask, thread, named = false) {
   const frames = stream(name);
   // A scenario where the client leaves mid-answer must not record the turn the real server would
   // have stored: the request is aborted, and nothing after it is written.
@@ -260,6 +272,11 @@ async function serveStream(name, response, request, ask) {
     "cache-control": "no-cache, no-transform",
     "x-accel-buffering": "no",
   });
+  // A new conversation is named before its first token, with no finished turn yet, so the page can
+  // read it back or retry into it after a dropped stream.
+  if (named) {
+    response.write(`event: thread\ndata: ${JSON.stringify({ id: thread.id, turn: null })}\n\n`);
+  }
   for (const frame of frames) {
     await sleep(frame.delay_ms ?? 0);
     if (aborted || response.writableEnded || response.destroyed) return;
@@ -278,9 +295,9 @@ async function serveStream(name, response, request, ask) {
     // `thread_slow` holds the stored turn back, so a test can act between the answer and it.
     if (scenario === "thread_slow") await sleep(1500);
     if (aborted || response.writableEnded || response.destroyed) return;
-    const thread = saveTurn(ask, last.data);
+    const stored = saveTurn(ask, last.data, thread);
     response.write(
-      `event: thread\ndata: ${JSON.stringify({ id: thread.id, turn: thread.turns.length })}\n\n`,
+      `event: thread\ndata: ${JSON.stringify({ id: stored.id, turn: stored.turns.length })}\n\n`,
     );
   }
   response.end();
@@ -567,7 +584,10 @@ async function handle(request, response) {
   }
 
   if (path === "/threads" && request.method === "GET") {
-    const list = [...threads]
+    // An empty thread is not a conversation yet: the row exists so its first question can be read
+    // back, but Recent lists only conversations with a finished turn.
+    const list = threads
+      .filter((thread) => thread.turns.length > 0)
       .sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1))
       .map((thread) => ({
         id: thread.id,
@@ -613,16 +633,22 @@ async function handle(request, response) {
       json(response, 404, { detail: "thread not found" });
       return;
     }
+    // A first question names its thread before the stream, as the real API does. A follow-up
+    // already has its id, so only a new thread sends the early event.
+    const thread = lastAsk.thread_id
+      ? threads.find((one) => one.id === lastAsk.thread_id)
+      : newThread(lastAsk.question);
+    const named = !lastAsk.thread_id;
     if (scenario === "thread_drop" && lastAsk.thread_id) {
       // A follow-up whose connection dies: the server cancels it, so nothing is stored.
-      await serveStream("drop", response, request, lastAsk);
+      await serveStream("drop", response, request, lastAsk, thread, named);
       return;
     }
     const name =
       scenario === "normal" || scenario === "empty" || scenario === "thread_slow"
         ? "normal"
         : scenario;
-    await serveStream(name, response, request, lastAsk);
+    await serveStream(name, response, request, lastAsk, thread, named);
     return;
   }
 

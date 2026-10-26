@@ -139,14 +139,16 @@ TEXT_ONLY_MESSAGE = (
 
 @dataclass(frozen=True)
 class ThreadEvent:
-    """A finished turn was stored: the thread it joined and that turn's number.
+    """The thread this answer belongs to: its id, and the finished turn once one is stored.
 
-    It is the last event of the stream and exists only on success, so a client follows up with an
-    id it can re-fetch; an answer that failed stores nothing and sends no thread event.
+    A new thread is named before the agent runs, with `turn=None`, so the page holds an id from the
+    first token and can read back or retry an interrupted first question. A finished turn is sent
+    again as the last event, with its number; an answer that failed stores nothing and sends only
+    the early event.
     """
 
     thread_id: UUID
-    turn: int
+    turn: int | None
 
 
 @dataclass(frozen=True)
@@ -401,10 +403,11 @@ class NoticeData(BaseModel):
 
 
 class ThreadData(BaseModel):
-    """The `thread` event: the finished turn was stored, so the client can follow up."""
+    """The `thread` event: the conversation's id, and its finished turn when one is stored."""
 
     id: UUID
-    turn: int
+    # Null on the first event of a new thread: the id is known before the answer is stored.
+    turn: int | None
 
 
 class ErrorData(BaseModel):
@@ -531,8 +534,16 @@ def run_question(
     # loaded it: both are what tell this answer's own work apart from the conversation's history.
     restored_sources = 0
     expected_turns = 0
+    # A new thread is created before the agent runs, so its id reaches the page before the first
+    # token. The flag keeps that separate from a thread id this answer was handed.
+    new_thread = thread_id is None
     try:
-        if thread_id is not None:
+        if thread_id is None:
+            created = _create_thread(deps, question)
+            if created is not None:
+                thread_id = created
+                yield ThreadEvent(created, None)
+        else:
             # The route checks the thread first, so an unknown id is a 404 before the stream; this
             # is the read the answer itself needs. A thread deleted between the two is an error
             # event rather than a silent new conversation under a different id.
@@ -570,7 +581,7 @@ def run_question(
         prompt = question
         # Only a new thread registers the item as S1: a follow-up already has its aliases, and a
         # second S1 would point the reader at two different papers.
-        if item_id is not None and thread_id is None:
+        if item_id is not None and new_thread:
             # Registered before the graph starts, so S1 is this item whatever the search returns:
             # "Ask about it" means the question is about that paper, and the citation check reads
             # the same registry the answer cites from.
@@ -616,7 +627,8 @@ def run_question(
                 if isinstance(event, AnswerEvent):
                     # After the answer, so a failed or aborted answer stores nothing. The write is
                     # one transaction on the writable factory; a failure is logged by type and the
-                    # stream ends without a thread event, so the answer still reaches the reader.
+                    # stream ends without a finished thread event, so the answer still reaches the
+                    # reader. `thread_id` is the row created before the agent ran, or a follow-up's.
                     stored = _save_turn(
                         deps,
                         thread_id,
@@ -682,6 +694,29 @@ def _load_thread(deps: AgentDeps, thread_id: UUID) -> ThreadDetailRow | None:
     """The thread an answer continues: its registry and its finished turns."""
     with closing((deps.read_session_factory or deps.session_factory)()) as reader:
         return Repository(reader).thread(thread_id)
+
+
+def _create_thread(deps: AgentDeps, question: str) -> UUID | None:
+    """Create the row a new thread is named by; None when it could not be stored.
+
+    The row exists before the answer, so the page can hold the id and read it back after a dropped
+    first question. It is not listed until a finished turn is stored. A failure is logged by type
+    and swallowed: the answer is still worth delivering, and `_save_turn` can create the thread
+    itself when this write was the only thing that failed.
+    """
+    writer = deps.write_session_factory
+    if writer is None:
+        return None
+    try:
+        with writer() as session:
+            thread_id = Repository(session).create_thread(
+                title=question[:THREAD_TITLE_MAX_CHARS], at=deps.clock()
+            )
+            session.commit()
+    except Exception as exc:  # noqa: BLE001 - the answer has not started yet
+        log.warning("thread_create_failed", error_type=type(exc).__name__)
+        return None
+    return thread_id
 
 
 def _save_turn(

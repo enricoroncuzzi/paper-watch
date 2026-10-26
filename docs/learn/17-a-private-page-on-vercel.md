@@ -60,7 +60,8 @@ copy for its kind instead of the page failing. Reads time out at ten seconds and
 ## A conversation on the page
 
 The sheet holds one thread (`web/src/lib/use-ask.ts`): the finished turns above the current one, the
-thread id the server returned with the last answer, and the current question with its stream. A
+thread id the server names before the first answer (with `turn: null`) and confirms with the
+finished turn, and the current question with its stream. A
 follow-up sends that id, so the API replays the thread's last turns and keeps its source aliases, and
 the reply's footnote numbers stay per answer. Three fixed chips sit under the composer; the
 peer-reviewed one re-asks the last question with `tiers: ["peer_reviewed"]`, so a filter is not a
@@ -70,12 +71,14 @@ The thread ends when the sheet closes: the controller starts clean, so "Ask abou
 always opens a new thread about that item, which the API registers as `S1`. A conversation picked
 from Recent is read back with `GET /api/threads/{id}` and lets go of the item, so a follow-up there
 never claims to be about a different paper. A follow-up also waits for the stream to end, not only
-for the answer: the `thread` event that carries the id and the turn number comes after the server's
-write, and a send in that gap would start a second, history-less thread.
+for the answer: the `thread` event that carries the finished turn comes after the server's write,
+and a send in that gap would race the turn it should continue.
 
 A dropped stream does not end the conversation. The controller asks `GET /api/threads/{id}` and
 shows what the server finished: the answer is adopted when the thread saved it, and when the thread
 has no turn for the question the sheet says the answer was interrupted and offers to ask it again.
+This works for a first question too: its id arrived before the first token, and the empty thread is
+readable by id even though Recent does not list it, so "Ask it again" continues the same thread.
 Adoption needs the turn's number as well as its words, because a chip re-asks the same question:
 otherwise the unfiltered answer to the first ask would be shown as the answer to the filtered one.
 
@@ -103,8 +106,9 @@ only `Authorization: Bearer e2e`, serves `fixtures/<name>.json` for the read rou
 `streams/<scenario>.json` for `POST /ask`, and takes `POST /__scenario` so a Playwright test can pick
 `normal`, `empty`, `error`, `unhealthy`, `followup`, `text_only`, `slow`, `drop`, `thread_drop` or
 `thread_slow` (the `thread` event held back, so a test can act between it and the answer).
-It keeps the conversations a test created: a finished answer appends a turn and the stream ends with
-the `thread` event, `GET /threads` and `GET /threads/{id}` read them back, and `keepThreads: true`
+It keeps the conversations a test created: a new stream starts with a `thread` event whose `turn`
+is null, a finished answer appends a turn and ends with the `thread` event, `GET /threads` lists only
+threads with a turn while `GET /threads/{id}` reads an empty one back, and `keepThreads: true`
 on a scenario switch lets one test ask, then change how the next stream behaves. `GET /__last_ask`
 is the test seam for what the page sent (a follow-up's thread and the chip's filter). Tests run one
 worker, so the global scenario is safe.
