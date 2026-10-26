@@ -177,12 +177,15 @@ class OidcVerifier:
                 algorithms=["RS256"],
                 audience=self._audience,
                 issuer=self._issuer,
-                # exp and nbf are checked below against the injected clock, so a test can place a
-                # token on either side of a boundary without sleeping or faking wall time.
+                # exp, nbf and iat are checked below against the injected clock, so a test can place
+                # a token on either side of a boundary without sleeping or faking wall time.
+                # verify_iat especially: PyJWT's own check has no leeway at all, so a server clock a
+                # second or two behind Vercel's would refuse a fresh token before our 30 s check.
                 options={
                     "require": ["exp", "iat", "aud", "iss", "sub"],
                     "verify_exp": False,
                     "verify_nbf": False,
+                    "verify_iat": False,
                 },
             )
         except jwt.InvalidAudienceError:

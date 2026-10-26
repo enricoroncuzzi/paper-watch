@@ -179,6 +179,17 @@ def test_leeway_accepts_thirty_seconds_of_clock_skew() -> None:
     assert verifier.verify(_token(private, exp=int(NOW) - TOKEN_LEEWAY_S + 1)) is not None
 
 
+def test_a_fresh_token_minted_ahead_of_our_clock_is_accepted() -> None:
+    # Our own check allows TOKEN_LEEWAY_S of skew, but PyJWT's `verify_iat` has no leeway at all.
+    # A server clock a few seconds behind Vercel's rejected a fresh token before that check ran, so
+    # this uses the real wall clock PyJWT reads, not the injected test one.
+    private, _, jwk = _key()
+    now = time.time()
+    verifier = _verifier(private, jwk, clock=Clock(now))
+    token = _token(private, iat=int(now) + 10, nbf=int(now) + 10, exp=int(now) + 300)
+    assert verifier.verify(token) == Principal("oidc", SUBJECT)
+
+
 def test_unknown_kids_refetch_the_key_set_at_most_once_per_window() -> None:
     private, _, jwk = _key()
     clock = Clock()
