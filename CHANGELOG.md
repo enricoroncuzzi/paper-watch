@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.0](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.14.4...paperwatch-v0.15.0) (2026-10-26)
+
+
+### Features
+
+* **deploy:** add move-api-account.sh to move the API onto its own account ([#92](https://github.com/enricoroncuzzi/paper-watch/issues/92)) ([65e42f3](https://github.com/enricoroncuzzi/paper-watch/commit/65e42f38f639dff64c4c27821311057faa8514ec))
+
 ## [0.14.4](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.14.3...paperwatch-v0.14.4) (2026-10-26)
 
 
