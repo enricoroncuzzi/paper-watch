@@ -155,6 +155,47 @@ def test_bad_entry_is_rejected_and_other_entries_continue() -> None:
 
 
 @respx.mock
+def test_a_nul_in_an_entry_never_reaches_the_item() -> None:
+    # A feed body can carry a raw NUL, and feedparser passes it straight through. Postgres refuses
+    # it in a JSONB payload, so one such post used to fail the whole run.
+    doc = _rss(
+        _item(
+            "https://lab.example/nul",
+            "Agent\x00 harness",
+            "Fri, 09 Oct 2026 10:00:00 GMT",
+            "https://lab.example/nul",
+        ).replace("</item>", "<description>tool\x00 use</description></item>")
+    )
+    respx.get(FEED.url).mock(return_value=httpx.Response(200, text=doc))
+    items, failures = FeedSource(httpx.Client(), [FEED]).fetch(SINCE, UNTIL)
+    assert failures == [] and len(items) == 1
+    assert items[0].title == "Agent harness"
+    assert items[0].text == "tool use"
+    assert "\x00" not in items[0].external_id
+
+
+@respx.mock
+def test_a_lone_surrogate_char_ref_is_a_malformed_feed_not_a_crash() -> None:
+    # feedparser raises UnicodeEncodeError on a "&#xD800;" character reference. It must be a
+    # reported feed failure, so the next feed and the run survive it.
+    doc = _rss(
+        _item(
+            "https://lab.example/surrogate",
+            "Agent &#xD800; harness",
+            "Fri, 09 Oct 2026 10:00:00 GMT",
+            "https://lab.example/surrogate",
+        )
+    )
+    respx.get(FEED.url).mock(return_value=httpx.Response(200, text=doc))
+    respx.get(OTHER.url).mock(return_value=httpx.Response(200, text=FIX))
+    items, failures = FeedSource(httpx.Client(), [FEED, OTHER]).fetch(SINCE, UNTIL)
+    assert [url for url, _ in failures] == [FEED.url]
+    assert "malformed feed" in failures[0][1]
+    # The other feed still answered; a hostile entry in one feed cannot stop the fetch.
+    assert {item.authors for item in items} == {("Other",)}
+
+
+@respx.mock
 def test_timezone_less_pubdate_is_treated_as_utc() -> None:
     # RFC 822 without a zone is the lab's clock; treat it as UTC rather than drop it.
     doc = _rss(
