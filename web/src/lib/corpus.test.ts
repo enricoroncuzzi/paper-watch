@@ -35,7 +35,9 @@ describe("the corpus labels", () => {
     expect(signalLine(row({ citation_count: 1 }))).toBe("1 cite");
     expect(signalLine(row({ hf_upvotes: 63 }))).toBe("HF 63 \u2191");
     // The number follows the rule the row's basis names.
-    expect(signalLine(row({ basis: "citations", citation_count: 9, hf_upvotes: 4 }))).toBe("9 cites");
+    expect(signalLine(row({ basis: "citations", citation_count: 9, hf_upvotes: 4 }))).toBe(
+      "9 cites",
+    );
     expect(signalLine(row({ basis: "hf_upvotes", citation_count: 9, hf_upvotes: 4 }))).toBe(
       "HF 4 \u2191",
     );

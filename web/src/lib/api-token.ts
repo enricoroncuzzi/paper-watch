@@ -30,14 +30,16 @@ export async function apiToken(env: Env = process.env): Promise<string> {
     const secret = env.PW_API_HMAC_SECRET;
     if (!secret) throw new Error("PW_API_AUTH=hmac needs PW_API_HMAC_SECRET");
     const issued = Math.floor(Date.now() / 1000);
-    return new SignJWT({ sub: env.ALLOWED_GITHUB_ID ?? "owner" })
-      .setProtectedHeader({ alg: "HS256" })
-      .setAudience(HMAC_AUDIENCE)
-      .setIssuedAt(issued)
-      .setExpirationTime(issued + HMAC_TTL_S)
-      // Single use: the verifier remembers the id until the token expires.
-      .setJti(crypto.randomUUID().replaceAll("-", ""))
-      .sign(new TextEncoder().encode(secret));
+    return (
+      new SignJWT({ sub: env.ALLOWED_GITHUB_ID ?? "owner" })
+        .setProtectedHeader({ alg: "HS256" })
+        .setAudience(HMAC_AUDIENCE)
+        .setIssuedAt(issued)
+        .setExpirationTime(issued + HMAC_TTL_S)
+        // Single use: the verifier remembers the id until the token expires.
+        .setJti(crypto.randomUUID().replaceAll("-", ""))
+        .sign(new TextEncoder().encode(secret))
+    );
   }
   if (env.PW_API_AUTH === "oidc" || env.VERCEL_ENV === "production") {
     // The default audience (the team URL), deliberately: the API pins issuer, audience and the

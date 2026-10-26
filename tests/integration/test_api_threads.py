@@ -497,6 +497,49 @@ def test_a_failed_turn_write_still_delivers_the_answer(
     assert "unwritable" not in str(logs)
 
 
+def test_a_failed_thread_create_still_delivers_the_answer(
+    db_session: Session,
+    write_factory: sessionmaker[Session],
+    seed_items: Seed,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seed_items(AGENT_ROWS)
+    models = scripted(call("search_corpus", query="SWE-bench coding agents"), final(ANSWER))
+    create = Repository.create_thread
+    calls = 0
+
+    def flaky_create(self: Repository, *, title: str, at: datetime) -> UUID:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("threads is unwritable")
+        return create(self, title=title, at=at)
+
+    # Only the early create fails; the write session still works, so the final save can create the
+    # thread itself. A broken factory would fail that save too and prove nothing.
+    monkeypatch.setattr(Repository, "create_thread", flaky_create)
+    with capture_logs() as logs:
+        frames = events(ask(deps(db_session, models, write_factory), {"question": "q"}).text)
+    # No early thread event: the page is never told an id the server could not store.
+    assert [name for name, _ in frames][-2:] == ["answer", "thread"]
+    assert [name for name, _ in frames].count("thread") == 1
+    assert dict(frames)["answer"]["text"] == ANSWER
+    [failure] = [entry for entry in logs if entry["event"] == "thread_create_failed"]
+    assert failure["error_type"] == "RuntimeError"
+    assert "unwritable" not in str(logs)
+    assert calls == 1
+    # The save created the thread itself: the final event names turn 1 and the list holds it.
+    assert frames[-1][1]["turn"] == 1
+    thread_id = UUID(frames[-1][1]["id"])
+    listed = get(deps(db_session, [], write_factory), "/threads").json()["threads"]
+    assert [(row["id"], row["turns"]) for row in listed] == [(str(thread_id), 1)]
+    with write_factory() as session:
+        row = Repository(session).thread(thread_id)
+    assert row is not None
+    assert row.title == "q"
+    assert [(turn.n, turn.question) for turn in row.turns] == [(1, "q")]
+
+
 def test_a_caller_without_a_write_factory_saves_no_thread(
     db_session: Session, seed_items: Seed
 ) -> None:

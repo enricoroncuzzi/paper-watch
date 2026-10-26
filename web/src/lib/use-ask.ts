@@ -199,10 +199,7 @@ export function askReducer(state: AskState, action: AskAction): AskState {
         state.answer !== null && state.askedAt !== null
           ? [
               {
-                id:
-                  state.turn !== null
-                    ? `saved-${state.turn}`
-                    : `local-${state.askedAt}`,
+                id: state.turn !== null ? `saved-${state.turn}` : `local-${state.askedAt}`,
                 n: state.turn,
                 question: state.question,
                 answer: state.answer,

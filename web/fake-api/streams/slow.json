@@ -1,9 +1,17 @@
 [
-  { "event": "tool", "data": { "name": "search_corpus", "args": { "query": "coding agents evaluation" } }, "delay_ms": 40 },
+  {
+    "event": "tool",
+    "data": { "name": "search_corpus", "args": { "query": "coding agents evaluation" } },
+    "delay_ms": 40
+  },
   { "event": "token", "data": { "text": "Coding agents are " }, "delay_ms": 600 },
   { "comment": ": ping", "delay_ms": 1200 },
   { "comment": ": ping", "delay_ms": 1200 },
-  { "event": "token", "data": { "text": "measured on real repository bugs [S1]." }, "delay_ms": 600 },
+  {
+    "event": "token",
+    "data": { "text": "measured on real repository bugs [S1]." },
+    "delay_ms": 600
+  },
   {
     "event": "source",
     "data": {

@@ -186,7 +186,8 @@ jobs:
     # The page: no path filter, so the check can become required without ever sitting pending.
     # Every step runs offline against the fake API; no key, no model, no real server.
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Longer than the others: the Playwright browser and apt dependency install can be slow.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
@@ -200,6 +201,9 @@ jobs:
         working-directory: web
       # The generated client types must match the committed contract in this same commit.
       - run: npm run gen:api && git diff --exit-code src/lib/api-types.ts
+        working-directory: web
+      # The page is 100 columns wide; a hand wrap below it fails here rather than in review.
+      - run: npx prettier --check .
         working-directory: web
       - run: npm run lint
         working-directory: web

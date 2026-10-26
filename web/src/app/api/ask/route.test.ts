@@ -38,11 +38,12 @@ describe("the ask proxy", () => {
   });
 
   it("forwards the request's signal, so a browser hang-up cancels the answer", async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValue(
-        new Response(emptyStream(), { status: 200, headers: { "content-type": "text/event-stream" } }),
-      );
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(emptyStream(), {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      }),
+    );
     vi.stubGlobal("fetch", fetchMock);
     const requestAbort = new AbortController();
 
@@ -87,9 +88,11 @@ describe("the ask proxy", () => {
   it("keeps the API's busy detail and retry wait", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue(
-        Response.json({ detail: "busy" }, { status: 429, headers: { "retry-after": "7" } }),
-      ),
+      vi
+        .fn()
+        .mockResolvedValue(
+          Response.json({ detail: "busy" }, { status: 429, headers: { "retry-after": "7" } }),
+        ),
     );
     const response = await POST(askRequest({ question: "q" }));
     expect(response.status).toBe(429);
@@ -117,9 +120,11 @@ describe("the ask proxy", () => {
   it("takes the wait from a 429 body when there is no Retry-After", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue(
-        Response.json({ detail: "rate_limited", retry_after_s: 12 }, { status: 429 }),
-      ),
+      vi
+        .fn()
+        .mockResolvedValue(
+          Response.json({ detail: "rate_limited", retry_after_s: 12 }, { status: 429 }),
+        ),
     );
     const response = await POST(askRequest({ question: "q" }));
     expect(response.status).toBe(429);
@@ -133,9 +138,11 @@ describe("the ask proxy", () => {
   });
 
   it("forwards the item an Ask about it question is about", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      new Response("data: {}\n\n", { headers: { "content-type": "text/event-stream" } }),
-    );
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        new Response("data: {}\n\n", { headers: { "content-type": "text/event-stream" } }),
+      );
     vi.stubGlobal("fetch", fetchMock);
     const itemId = "33333333-3333-4333-8333-333333333301";
     const response = await POST(askRequest({ question: "q", item_id: itemId }));
@@ -151,9 +158,11 @@ describe("the ask proxy", () => {
   });
 
   it("forwards the thread and the filter, and no unknown field", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      new Response("data: {}\n\n", { headers: { "content-type": "text/event-stream" } }),
-    );
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        new Response("data: {}\n\n", { headers: { "content-type": "text/event-stream" } }),
+      );
     vi.stubGlobal("fetch", fetchMock);
     const response = await POST(
       askRequest({

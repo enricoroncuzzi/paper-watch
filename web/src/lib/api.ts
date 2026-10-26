@@ -10,8 +10,7 @@ import { apiToken } from "@/lib/api-token";
 export type ApiErrorKind = "unauthorized" | "rate_limited" | "unavailable" | "not_found" | "error";
 
 export type ApiResult<T> =
-  | { ok: true; data: T }
-  | { ok: false; kind: ApiErrorKind; retryAfterS?: number };
+  { ok: true; data: T } | { ok: false; kind: ApiErrorKind; retryAfterS?: number };
 
 /** Reads are a page load, not an answer: ten seconds is already a slow corpus query. */
 export const READ_TIMEOUT_MS = 10_000;
@@ -35,9 +34,7 @@ function retryAfter(response: Response): number | undefined {
 type RefusalBody = components["schemas"]["Refusal"];
 type RateLimitedBody = components["schemas"]["RateLimited"];
 
-async function declaredRefusal(
-  response: Response,
-): Promise<RefusalBody | RateLimitedBody | null> {
+async function declaredRefusal(response: Response): Promise<RefusalBody | RateLimitedBody | null> {
   try {
     return (await response.json()) as RefusalBody | RateLimitedBody;
   } catch {
@@ -69,8 +66,7 @@ export async function apiGet<T>(path: string): Promise<ApiResult<T>> {
       // The wait is declared in the body as `retry_after_s` and repeated in `Retry-After`; the
       // header wins, and a body-only refusal still tells the reader when to try again.
       const body = await declaredRefusal(response);
-      const declaredWait =
-        body && "retry_after_s" in body ? body.retry_after_s : undefined;
+      const declaredWait = body && "retry_after_s" in body ? body.retry_after_s : undefined;
       return {
         ok: false,
         kind: kindFor(response.status),

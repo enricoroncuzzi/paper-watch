@@ -1,5 +1,9 @@
 [
-  { "event": "tool", "data": { "name": "search_corpus", "args": { "query": "coding agents evaluation" } }, "delay_ms": 40 },
+  {
+    "event": "tool",
+    "data": { "name": "search_corpus", "args": { "query": "coding agents evaluation" } },
+    "delay_ms": 40
+  },
   { "event": "step", "data": { "round": 1, "ms": 412, "new_sources": 1 }, "delay_ms": 120 },
   {
     "event": "source",

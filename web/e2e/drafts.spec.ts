@@ -122,7 +122,8 @@ test("regenerate adds a new draft above the old one", async ({ page }) => {
   await expect(drafts.getByTestId("draft-card")).toHaveCount(2);
 
   const regenerated = page.waitForRequest(
-    (request) => /\/api\/drafts\/.+\/regenerate$/.test(request.url()) && request.method() === "POST",
+    (request) =>
+      /\/api\/drafts\/.+\/regenerate$/.test(request.url()) && request.method() === "POST",
   );
   await drafts
     .getByTestId("draft-card")
@@ -182,7 +183,10 @@ test("a rising item says the draft will note it is early", async ({ page }) => {
 test("the Drafts link stops below the masthead", async ({ page }) => {
   // The masthead is sticky: an anchor that puts the section under it hides the heading and its
   // rule. The header and scroll-padding-top share one custom property, and this asserts they meet.
-  await page.getByRole("navigation", { name: "Sections" }).getByRole("link", { name: "Drafts" }).click();
+  await page
+    .getByRole("navigation", { name: "Sections" })
+    .getByRole("link", { name: "Drafts" })
+    .click();
   // The section mounts after the click and the scroll is smooth, so scrollY can hold still at 0
   // before the scroll starts: poll the landing itself instead of waiting for scrollY to settle.
   await expect
@@ -224,8 +228,14 @@ test("the saved and chars chips use one font and share a baseline", async ({ pag
   expect(result!.delta).toBeLessThanOrEqual(0.1);
 });
 
-async function generateAndClose(page: import("@playwright/test").Page, scope: import("@playwright/test").Locator) {
-  await scope.getByRole("button", { name: /^LinkedIn post preview:/ }).first().click();
+async function generateAndClose(
+  page: import("@playwright/test").Page,
+  scope: import("@playwright/test").Locator,
+) {
+  await scope
+    .getByRole("button", { name: /^LinkedIn post preview:/ })
+    .first()
+    .click();
   const dialog = page.getByTestId("pov-dialog");
   await expect(dialog).toBeVisible();
   await dialog.getByRole("button", { name: "Generate draft" }).click();
@@ -252,9 +262,9 @@ test("closing the dialog returns focus to the button that opened it", async ({ p
   const opener = page
     .getByTestId("lead-pick")
     .getByRole("button", { name: `LinkedIn post preview: ${LEAD_TITLE}` });
-  await expect.poll(() => opener.evaluate((element) => element === document.activeElement)).toBe(
-    true,
-  );
+  await expect
+    .poll(() => opener.evaluate((element) => element === document.activeElement))
+    .toBe(true);
 });
 
 test("a body keeps one paragraph per blank line", async ({ page }) => {

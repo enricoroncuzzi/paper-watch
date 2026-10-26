@@ -7,9 +7,12 @@ import { formatRome } from "@/lib/format";
  * a 429 always says how long to wait, wherever the reader met it.
  */
 export function draftFailureMessage(status: number, body: unknown): string {
-  const payload = body as
-    | { message?: unknown; code?: unknown; retry_at?: unknown; retryAfterS?: unknown }
-    | null;
+  const payload = body as {
+    message?: unknown;
+    code?: unknown;
+    retry_at?: unknown;
+    retryAfterS?: unknown;
+  } | null;
   if (status === 503 && typeof payload?.message === "string") {
     if (payload.code === "daily_cap" && typeof payload.retry_at === "string") {
       return `${payload.message} It resets at ${formatRome(payload.retry_at)} Europe/Rome.`;

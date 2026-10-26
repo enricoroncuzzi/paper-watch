@@ -7,7 +7,11 @@
     },
     "delay_ms": 40
   },
-  { "event": "tool", "data": { "name": "search_corpus", "args": { "query": "agent memory" } }, "delay_ms": 60 },
+  {
+    "event": "tool",
+    "data": { "name": "search_corpus", "args": { "query": "agent memory" } },
+    "delay_ms": 60
+  },
   { "event": "step", "data": { "round": 1, "ms": 180, "new_sources": 1 }, "delay_ms": 60 },
   {
     "event": "source",
@@ -22,7 +26,11 @@
     "delay_ms": 60
   },
   { "event": "token", "data": { "text": "Long-horizon agents plan better " }, "delay_ms": 80 },
-  { "event": "token", "data": { "text": "when they remember earlier sessions [S1]." }, "delay_ms": 80 },
+  {
+    "event": "token",
+    "data": { "text": "when they remember earlier sessions [S1]." },
+    "delay_ms": 80
+  },
   {
     "event": "answer",
     "data": {

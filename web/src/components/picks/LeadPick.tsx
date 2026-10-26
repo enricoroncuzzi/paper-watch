@@ -22,7 +22,10 @@ export function LeadPick({
 }) {
   const arxiv = arxivLabel(card.url);
   return (
-    <article data-testid="lead-pick" className="pt-5 sm:grid sm:grid-cols-[minmax(0,1fr)_300px] sm:gap-x-[52px]">
+    <article
+      data-testid="lead-pick"
+      className="pt-5 sm:grid sm:grid-cols-[minmax(0,1fr)_300px] sm:gap-x-[52px]"
+    >
       <div className="mb-2.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[10px] uppercase tracking-[0.15em] text-ink-3 sm:col-span-2">
         <b className="font-semibold text-accent-text">Pick 01</b>
         <span aria-hidden="true" className="hidden sm:inline">
@@ -49,7 +52,7 @@ export function LeadPick({
       <div className="sm:col-start-1 sm:row-start-4">
         <div className="mt-4 flex flex-wrap items-center gap-2 text-[11.5px] text-ink-3">
           <TierChip tier={card.tier} />
-          {card.venue ?? card.org ? <Chip>{card.venue ?? card.org}</Chip> : null}
+          {(card.venue ?? card.org) ? <Chip>{card.venue ?? card.org}</Chip> : null}
           {card.citation_count > 0 ? <Chip>{card.citation_count} cites</Chip> : null}
           {card.hf_upvotes !== null ? <Chip>HF {card.hf_upvotes} ↑</Chip> : null}
           {arxiv ? <span className="font-mono text-[11px]">{arxiv}</span> : null}

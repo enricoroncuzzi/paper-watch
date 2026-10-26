@@ -23,9 +23,7 @@ async function collect(
 
 describe("the SSE parser", () => {
   it("handles frames split across chunks, inside data and inside the blank line", async () => {
-    const events = await collect(
-      streamOf(["event: tok", 'en\ndata: {"te', 'xt":"hi"}\n', "\n"]),
-    );
+    const events = await collect(streamOf(["event: tok", 'en\ndata: {"te', 'xt":"hi"}\n', "\n"]));
     expect(events).toEqual([{ event: "token", data: { text: "hi" } }]);
   });
 

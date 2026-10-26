@@ -20,7 +20,10 @@ const AskBody = z.object({
   // A follow-up continues a stored thread; the API refuses an unknown id before its stream starts.
   thread_id: z.string().uuid().optional(),
   // The peer-reviewed chip re-asks with this filter; the API's own bound is one to three.
-  tiers: z.array(z.enum(["peer_reviewed", "vetted_preprint", "lab_blog"])).max(3).optional(),
+  tiers: z
+    .array(z.enum(["peer_reviewed", "vetted_preprint", "lab_blog"]))
+    .max(3)
+    .optional(),
 });
 
 function refused(kind: string, status: number, retryAfterS?: number): Response {

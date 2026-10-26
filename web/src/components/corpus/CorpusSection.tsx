@@ -15,8 +15,10 @@ const PAGE_SIZE = 10;
 // Long enough that a typed word is one request, short enough that the table feels live.
 const SEARCH_DEBOUNCE_MS = 300;
 
-const TAB = "relative inline-flex min-h-11 items-center text-[12px] text-ink-3 hover:text-ink sm:min-h-0 sm:py-1.5";
-const TAB_ON = "relative inline-flex min-h-11 items-center text-[12px] text-ink sm:min-h-0 sm:py-1.5";
+const TAB =
+  "relative inline-flex min-h-11 items-center text-[12px] text-ink-3 hover:text-ink sm:min-h-0 sm:py-1.5";
+const TAB_ON =
+  "relative inline-flex min-h-11 items-center text-[12px] text-ink sm:min-h-0 sm:py-1.5";
 
 type Page = { rows: CorpusItem[]; total: number; cursor: string | null };
 
@@ -158,7 +160,8 @@ export function CorpusSection({ initial }: { initial: CorpusData }) {
     function onKeyDown(event: KeyboardEvent) {
       if (document.querySelector("[role=dialog]")) return;
       const target = event.target as HTMLElement | null;
-      const onPage = target === null || target === document.body || target === document.documentElement;
+      const onPage =
+        target === null || target === document.body || target === document.documentElement;
       const inTable = target?.closest('[data-corpus="table"]') != null;
       if (!onPage && !inTable) return;
       if (event.metaKey || event.ctrlKey || event.altKey) return;
@@ -291,7 +294,12 @@ export function CorpusSection({ initial }: { initial: CorpusData }) {
       ) : null}
 
       {shown > 0 ? (
-        <table ref={table} data-corpus="table" aria-busy={loading} className="mt-1 w-full border-collapse">
+        <table
+          ref={table}
+          data-corpus="table"
+          aria-busy={loading}
+          className="mt-1 w-full border-collapse"
+        >
           <caption className="sr-only">
             Admitted items, {filters.q ? "best match first" : "newest published first"}
           </caption>

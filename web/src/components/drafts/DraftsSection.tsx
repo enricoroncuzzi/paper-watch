@@ -26,9 +26,7 @@ export function DraftsSection({ drafts }: { drafts: Draft[] }) {
         >
           Drafts
         </h2>
-        <span className="text-[11.5px] text-ink-3">
-          {drafts.length} saved · nothing posted
-        </span>
+        <span className="text-[11.5px] text-ink-3">{drafts.length} saved · nothing posted</span>
       </div>
       <p className="mb-4 mt-1.5 max-w-[64ch] text-[12.5px] text-ink-2 sm:text-[13px]">
         Generated from a pick plus your own words. The check under each draft is code, not a model:

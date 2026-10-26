@@ -480,7 +480,10 @@ test("the masthead marks the section the reader clicked", async ({ page }) => {
   await expect(nav.locator("[aria-current='true']")).toHaveText("Runs");
 });
 
-test("a click that opens another tab leaves the mark where it is", async ({ page, context }, testInfo) => {
+test("a click that opens another tab leaves the mark where it is", async ({
+  page,
+  context,
+}, testInfo) => {
   test.skip(testInfo.project.name.includes("iphone"), "a touch context has no modifier click");
   const nav = page.getByRole("navigation");
   await nav.getByRole("link", { name: "Corpus" }).click();

@@ -28,7 +28,7 @@ function Context({ card }: { card: DraftTarget }) {
     <>
       <div className="mb-3 flex flex-wrap items-center gap-1.5 text-[10.5px] text-ink-3">
         <TierChip tier={card.tier} />
-        {card.venue ?? card.org ? <Chip>{card.venue ?? card.org}</Chip> : null}
+        {(card.venue ?? card.org) ? <Chip>{card.venue ?? card.org}</Chip> : null}
         {card.profile ? <Chip>{profileLabel(card.profile)}</Chip> : null}
       </div>
       {context ? (
@@ -147,8 +147,8 @@ export function PovDialog({
                 {card.title}
               </Dialog.Title>
               <Dialog.Description className="sr-only">
-                Write your own point of view. The draft quotes the item&apos;s stored text, and
-                code checks every number, quote and link before saving it.
+                Write your own point of view. The draft quotes the item&apos;s stored text, and code
+                checks every number, quote and link before saving it.
               </Dialog.Description>
             </div>
             <Dialog.Close
@@ -207,8 +207,8 @@ export function PovDialog({
                     : "Generate draft"}
               </button>
               <span className="max-w-[34ch] text-[10.5px] leading-[1.4] text-ink-3">
-                The draft is grounded in the item&apos;s stored text. Numbers, quotes and links
-                are checked by code afterwards.
+                The draft is grounded in the item&apos;s stored text. Numbers, quotes and links are
+                checked by code afterwards.
               </span>
             </div>
 

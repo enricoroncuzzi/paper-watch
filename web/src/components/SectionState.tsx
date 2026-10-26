@@ -75,10 +75,7 @@ export function ErrorState({
   const copy = ERROR_COPY[kind];
   const wait = retryAfterS === undefined ? "" : ` (retry in ${retryAfterS}s)`;
   return (
-    <div
-      data-testid={testId}
-      className="mt-3 border border-bad/40 bg-bad-soft px-4 py-3.5"
-    >
+    <div data-testid={testId} className="mt-3 border border-bad/40 bg-bad-soft px-4 py-3.5">
       <h3 className="mb-1 font-serif text-[18px] font-normal text-bad">{copy.title}</h3>
       <p className="mb-2.5 max-w-[52ch] text-[12.5px] leading-[1.55] text-ink-2">{copy.body}</p>
       <span className="font-mono text-[10px] text-ink-3">

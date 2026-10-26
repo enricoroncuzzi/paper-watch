@@ -75,7 +75,10 @@ test("the main flow", async ({ page }) => {
   await expect(dialog).toBeHidden();
 
   // 6. Find it in Drafts.
-  await page.getByRole("navigation", { name: "Sections" }).getByRole("link", { name: "Drafts" }).click();
+  await page
+    .getByRole("navigation", { name: "Sections" })
+    .getByRole("link", { name: "Drafts" })
+    .click();
   await expect(page).toHaveURL(/\/#drafts$/);
   const drafts = page.getByTestId("drafts-section");
   await expect(drafts).toContainText("3 saved");
@@ -105,7 +108,10 @@ test("the main flow", async ({ page }) => {
   await expect(sheet).toBeHidden();
 
   // 8. Open Runs: the last run's counts and the rows that open each run.
-  await page.getByRole("navigation", { name: "Sections" }).getByRole("link", { name: "Runs" }).click();
+  await page
+    .getByRole("navigation", { name: "Sections" })
+    .getByRole("link", { name: "Runs" })
+    .click();
   await expect(page).toHaveURL(/\/#runs$/);
   const runs = page.getByTestId("runs-section");
   await expect(runs.getByRole("heading", { name: "Runs" })).toBeVisible();

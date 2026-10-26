@@ -109,7 +109,10 @@ test("a run from an earlier day says so in amber", async ({ page, request }) => 
   await expect(day).toHaveClass(/text-warn/);
 });
 
-test("the run detail heading names the run's Rome day before its time", async ({ page, request }) => {
+test("the run detail heading names the run's Rome day before its time", async ({
+  page,
+  request,
+}) => {
   const detail = "/runs/11111111-1111-4111-8111-111111111111";
   await page.goto(detail);
   await expect(page.getByTestId("run-detail").getByRole("heading", { level: 1 })).toHaveText(
@@ -151,7 +154,10 @@ test("command k opens the palette and navigates", async ({ page }) => {
 test("from a run detail the masthead and the palette return to Runs", async ({ page }) => {
   const detail = "/runs/11111111-1111-4111-8111-111111111111";
   await page.goto(detail);
-  await page.getByRole("navigation", { name: "Sections" }).getByRole("link", { name: "Runs" }).click();
+  await page
+    .getByRole("navigation", { name: "Sections" })
+    .getByRole("link", { name: "Runs" })
+    .click();
   await expect(page).toHaveURL(/\/#runs$/);
   await expect(page.getByTestId("runs-section")).toBeVisible();
 

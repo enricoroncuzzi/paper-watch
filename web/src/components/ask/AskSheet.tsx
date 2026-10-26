@@ -16,29 +16,13 @@ import {
   type SourceRef,
 } from "@/lib/use-ask";
 
-type FollowUp = {
-  label: string;
-  question: string | null;
-  tiers: string[] | null;
-};
+type FollowUp = { label: string; question: string | null; tiers: string[] | null };
 
 /** The three fixed follow-ups. Fixed on purpose: inventing them would cost a model call each. */
 export const FOLLOW_UPS: FollowUp[] = [
-  {
-    label: "Only peer-reviewed sources",
-    question: null,
-    tiers: ["peer_reviewed"],
-  },
-  {
-    label: "What are the limitations?",
-    question: "What are the limitations?",
-    tiers: null,
-  },
-  {
-    label: "How was it measured?",
-    question: "How was it measured?",
-    tiers: null,
-  },
+  { label: "Only peer-reviewed sources", question: null, tiers: ["peer_reviewed"] },
+  { label: "What are the limitations?", question: "What are the limitations?", tiers: null },
+  { label: "How was it measured?", question: "How was it measured?", tiers: null },
 ];
 
 function errorCopy(error: AskError): string {
@@ -72,9 +56,7 @@ function MatchingItems({ sources }: { sources: SourceRef[] }) {
   if (sources.length === 0) return null;
   return (
     <div className="mt-3 border-t border-bad/30 pt-2.5">
-      <p className="mb-1.5 text-[9.5px] uppercase tracking-[0.13em] text-ink-3">
-        Matching items
-      </p>
+      <p className="mb-1.5 text-[9.5px] uppercase tracking-[0.13em] text-ink-3">Matching items</p>
       <ul className="flex flex-col gap-1 text-[12px] text-ink-2">
         {sources.map((source) => (
           <li key={source.id} className="font-serif text-[13.5px]">
@@ -106,10 +88,7 @@ function PastTurn({
   const numbers = footnoteNumbers(sources);
   const prefix = `turn-${id}-`;
   return (
-    <section
-      data-testid={`turn-${n ?? "unsaved"}`}
-      className="mb-8 border-b border-rule pb-7"
-    >
+    <section data-testid={`turn-${n ?? "unsaved"}`} className="mb-8 border-b border-rule pb-7">
       <h2 className="mb-2 max-w-[32ch] font-serif text-[19px] leading-[1.35] tracking-[-0.01em]">
         {question}
       </h2>
@@ -126,12 +105,7 @@ function PastTurn({
         anchorPrefix={prefix}
         testId="past-answer"
       />
-      <Sources
-        sources={sources}
-        numbers={numbers}
-        anchorPrefix={prefix}
-        testId="past-sources"
-      />
+      <Sources sources={sources} numbers={numbers} anchorPrefix={prefix} testId="past-sources" />
     </section>
   );
 }
@@ -175,9 +149,7 @@ export function AskSheet({
   const shownError: AskError | null = state.interrupted
     ? null
     : (state.error ??
-      (state.status === "dropped"
-        ? { code: "dropped", message: "", retryAt: null }
-        : null));
+      (state.status === "dropped" ? { code: "dropped", message: "", retryAt: null } : null));
 
   const closeRecent = useCallback(() => {
     setRecentOpen(false);
@@ -202,8 +174,7 @@ export function AskSheet({
     // A refusal puts the question back only when nothing else has been typed since. A dropped
     // answer does not: its own block offers "Ask it again", and refilling as well would both
     // duplicate the offer and discard the block's own question and filter.
-    if (status === "error")
-      setDraft((current) => (current === "" ? trimmed : current));
+    if (status === "error") setDraft((current) => (current === "" ? trimmed : current));
   }
 
   function onKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -238,8 +209,7 @@ export function AskSheet({
       if (document.visibilityState === "visible") void recover();
     }
     document.addEventListener("visibilitychange", onVisibilityChange);
-    return () =>
-      document.removeEventListener("visibilitychange", onVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
   }, [state.status, recover]);
 
   return (
@@ -272,9 +242,8 @@ export function AskSheet({
               Ask the corpus
             </Dialog.Title>
             <Dialog.Description className="sr-only">
-              Ask a question about the stored corpus, or a follow-up about the
-              conversation so far. Answers cite their sources. Escape closes the
-              sheet.
+              Ask a question about the stored corpus, or a follow-up about the conversation so far.
+              Answers cite their sources. Escape closes the sheet.
             </Dialog.Description>
             {state.turnCount > 0 ? (
               <span
@@ -296,9 +265,7 @@ export function AskSheet({
               >
                 <span
                   className={`inline-flex h-[26px] items-center rounded-[2px] border px-2.5 text-[11.5px] ${
-                    recentOpen
-                      ? "border-accent text-ink"
-                      : "border-rule-2 hover:border-accent"
+                    recentOpen ? "border-accent text-ink" : "border-rule-2 hover:border-accent"
                   }`}
                 >
                   Recent
@@ -351,9 +318,7 @@ export function AskSheet({
                 className="mb-3 max-w-[38rem] border-l-2 border-accent pl-2.5 text-[11.5px] leading-[1.5] text-ink-2"
               >
                 About this item:{" "}
-                <span className="font-serif text-[13px] text-ink">
-                  {item.title}
-                </span>
+                <span className="font-serif text-[13px] text-ink">{item.title}</span>
               </p>
             ) : null}
 
@@ -392,8 +357,7 @@ export function AskSheet({
               </>
             ) : state.turns.length === 0 ? (
               <p className="max-w-[34ch] font-serif text-[21px] leading-[1.45] text-ink-2">
-                Ask about the stored corpus. Every answer cites the items it
-                used.
+                Ask about the stored corpus. Every answer cites the items it used.
               </p>
             ) : null}
 
@@ -412,9 +376,7 @@ export function AskSheet({
               // The checked answer's own citations are what the footnote list prints, so the count
               // must agree with them: a follow-up that only re-reads an earlier source announces
               // no `source` event and would otherwise read "0 sources" above the answer.
-              sourceCount={
-                state.answer?.citations.length ?? state.sources.length
-              }
+              sourceCount={state.answer?.citations.length ?? state.sources.length}
             />
 
             {state.interrupted ? (
@@ -427,9 +389,7 @@ export function AskSheet({
                 </p>
                 <button
                   type="button"
-                  onClick={() =>
-                    void sendQuestion(state.question, { tiers: state.tiers })
-                  }
+                  onClick={() => void sendQuestion(state.question, { tiers: state.tiers })}
                   className="mt-2 inline-flex h-8 items-center rounded-[2px] border border-rule-2 bg-card px-3 text-[12px] text-ink hover:border-accent"
                 >
                   Ask it again
@@ -442,20 +402,14 @@ export function AskSheet({
                 data-testid="ask-error"
                 className="max-w-[38rem] border border-bad/40 bg-bad-soft px-4 py-3"
               >
-                <p className="text-[13px] leading-[1.55] text-ink">
-                  {errorCopy(shownError)}
-                </p>
-                {shownError.code === "daily_cap" ? (
-                  <MatchingItems sources={state.sources} />
-                ) : null}
+                <p className="text-[13px] leading-[1.55] text-ink">{errorCopy(shownError)}</p>
+                {shownError.code === "daily_cap" ? <MatchingItems sources={state.sources} /> : null}
                 {shownError.code === "dropped" ? (
                   // A dropped answer has no server payload, and a follow-up's re-fetch can fail
                   // too: the block carries the retry itself, or the reader retypes the question.
                   <button
                     type="button"
-                    onClick={() =>
-                      void sendQuestion(state.question, { tiers: state.tiers })
-                    }
+                    onClick={() => void sendQuestion(state.question, { tiers: state.tiers })}
                     className="mt-2 inline-flex h-8 items-center rounded-[2px] border border-rule-2 bg-card px-3 text-[12px] text-ink hover:border-accent"
                   >
                     Ask it again
@@ -466,8 +420,7 @@ export function AskSheet({
               // An interrupted answer has no checked text: the partial stream and its unchecked
               // sources stay hidden behind the interrupted line, which offers to ask again.
               <>
-                {state.answer &&
-                (!state.answer.supported || state.answer.flags.length > 0) ? (
+                {state.answer && (!state.answer.supported || state.answer.flags.length > 0) ? (
                   <div
                     data-testid="check-note"
                     className="mb-4 max-w-[38rem] border border-warn/40 bg-warn-soft px-3.5 py-2.5"
@@ -494,10 +447,7 @@ export function AskSheet({
                   checked={state.answer !== null}
                   numbers={numbers}
                 />
-                <Sources
-                  sources={state.answer?.citations ?? state.sources}
-                  numbers={numbers}
-                />
+                <Sources sources={state.answer?.citations ?? state.sources} numbers={numbers} />
               </>
             )}
           </div>
@@ -511,9 +461,7 @@ export function AskSheet({
                     key={chip.label}
                     type="button"
                     disabled={busy || !hasConversation}
-                    onClick={() =>
-                      void sendQuestion(question, { tiers: chip.tiers })
-                    }
+                    onClick={() => void sendQuestion(question, { tiers: chip.tiers })}
                     className="rounded-full border border-rule bg-card-2 px-[10px] py-[3px] text-[11.5px] text-ink-2 hover:border-accent hover:text-ink disabled:opacity-40"
                   >
                     {chip.label}
@@ -563,9 +511,7 @@ export function AskSheet({
             <p className="mt-1.5 flex gap-3 text-[10.5px] text-ink-3">
               <span className="hidden sm:inline">⌘↵ to send</span>
               <span className="hidden sm:inline">Esc to close</span>
-              {draft.length > 800 ? (
-                <span className="ml-auto">{draft.length}/1000</span>
-              ) : null}
+              {draft.length > 800 ? <span className="ml-auto">{draft.length}/1000</span> : null}
             </p>
           </footer>
         </Dialog.Content>

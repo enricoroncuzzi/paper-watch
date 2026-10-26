@@ -127,7 +127,9 @@ export function ItemPage({ item }: { item: CorpusItemDetail }) {
             </p>
           )}
 
-          <h2 className="mt-5 text-[9px] uppercase tracking-[0.13em] text-ink-3">The stored text</h2>
+          <h2 className="mt-5 text-[9px] uppercase tracking-[0.13em] text-ink-3">
+            The stored text
+          </h2>
           <p className="mt-1.5 max-w-[var(--measure)] whitespace-pre-line font-serif text-[15px] leading-[1.65] text-ink-2">
             {item.text}
           </p>
@@ -145,7 +147,9 @@ export function ItemPage({ item }: { item: CorpusItemDetail }) {
               />
               <Fact
                 label="GitHub"
-                value={item.github_stars === null ? "n/a" : `${compactCount(item.github_stars)} \u2605`}
+                value={
+                  item.github_stars === null ? "n/a" : `${compactCount(item.github_stars)} \u2605`
+                }
               />
               <Fact label="Organisation" value={item.org ?? "n/a"} />
               <Fact label="Source" value={item.source === "arxiv" ? "arXiv" : "feed"} />
@@ -157,9 +161,7 @@ export function ItemPage({ item }: { item: CorpusItemDetail }) {
           </div>
 
           <div>
-            <h2 className="mb-1 text-[9px] uppercase tracking-[0.13em] text-ink-3">
-              Tier history
-            </h2>
+            <h2 className="mb-1 text-[9px] uppercase tracking-[0.13em] text-ink-3">Tier history</h2>
             {item.tier_history.length === 0 ? (
               <p className="text-[11.5px] text-ink-3">No tier moves recorded.</p>
             ) : (

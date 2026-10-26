@@ -23,34 +23,52 @@ export async function POST(
 
   const { id } = await context.params;
   if (!UUID.test(id)) {
-    return Response.json({ kind: "not_found" }, { status: 404, headers: { "cache-control": "no-store" } });
+    return Response.json(
+      { kind: "not_found" },
+      { status: 404, headers: { "cache-control": "no-store" } },
+    );
   }
 
   const raw = await request.text();
   if (new TextEncoder().encode(raw).length > BODY_MAX_BYTES) {
-    return Response.json({ kind: "error" }, { status: 413, headers: { "cache-control": "no-store" } });
+    return Response.json(
+      { kind: "error" },
+      { status: 413, headers: { "cache-control": "no-store" } },
+    );
   }
   let payload: unknown;
   try {
     payload = JSON.parse(raw);
   } catch {
-    return Response.json({ kind: "error" }, { status: 400, headers: { "cache-control": "no-store" } });
+    return Response.json(
+      { kind: "error" },
+      { status: 400, headers: { "cache-control": "no-store" } },
+    );
   }
   const body = EventBody.safeParse(payload);
   if (!body.success) {
-    return Response.json({ kind: "error" }, { status: 400, headers: { "cache-control": "no-store" } });
+    return Response.json(
+      { kind: "error" },
+      { status: 400, headers: { "cache-control": "no-store" } },
+    );
   }
 
   const base = process.env.PW_API_URL;
   if (!base) {
-    return Response.json({ kind: "unavailable" }, { status: 503, headers: { "cache-control": "no-store" } });
+    return Response.json(
+      { kind: "unavailable" },
+      { status: 503, headers: { "cache-control": "no-store" } },
+    );
   }
 
   let token: string;
   try {
     token = await apiToken();
   } catch {
-    return Response.json({ kind: "unauthorized" }, { status: 401, headers: { "cache-control": "no-store" } });
+    return Response.json(
+      { kind: "unauthorized" },
+      { status: 401, headers: { "cache-control": "no-store" } },
+    );
   }
 
   let upstream: Response;
@@ -62,7 +80,10 @@ export async function POST(
       cache: "no-store",
     });
   } catch {
-    return Response.json({ kind: "unavailable" }, { status: 503, headers: { "cache-control": "no-store" } });
+    return Response.json(
+      { kind: "unavailable" },
+      { status: 503, headers: { "cache-control": "no-store" } },
+    );
   }
 
   if (!upstream.ok) {

@@ -25,12 +25,11 @@ const COUNT_ORDER = [
 // check ran and found nothing to verify, which is not the same as a check that never happened.
 const ALWAYS_PRINTED = new Set(["number", "quote", "link"]);
 
-const ROW = "grid grid-cols-[14px_minmax(0,1fr)] gap-x-[7px] text-[11.5px] leading-[1.45] text-ink-2";
+const ROW =
+  "grid grid-cols-[14px_minmax(0,1fr)] gap-x-[7px] text-[11.5px] leading-[1.45] text-ink-2";
 
 function countsLine(counts: Draft["counts"]): string {
-  return COUNT_ORDER.filter(
-    (kind) => ALWAYS_PRINTED.has(kind) || (counts[kind]?.[0] ?? 0) > 0,
-  )
+  return COUNT_ORDER.filter((kind) => ALWAYS_PRINTED.has(kind) || (counts[kind]?.[0] ?? 0) > 0)
     .map((kind) => `${KIND_LABEL[kind]} ${counts[kind]?.[0] ?? 0}/${counts[kind]?.[1] ?? 0}`)
     .join(" · ");
 }
