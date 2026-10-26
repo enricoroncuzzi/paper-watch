@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.4](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.14.3...paperwatch-v0.14.4) (2026-10-26)
+
+
+### Bug Fixes
+
+* harden web writes, logging, bounds, draft checks and the API deploy ([#89](https://github.com/enricoroncuzzi/paper-watch/issues/89)) ([5596857](https://github.com/enricoroncuzzi/paper-watch/commit/559685754605e2e1632c666b433a971af0f196d4))
+
 ## [0.14.3](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.14.2...paperwatch-v0.14.3) (2026-10-26)
 
 
