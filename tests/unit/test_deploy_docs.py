@@ -270,35 +270,47 @@ def test_the_guide_documents_the_api_account_migration() -> None:
     # install step.
     guide = GUIDE.read_text()
     heading = "## 18. Moving an existing server onto the API account"
-    assert heading in guide
     section = guide[guide.index(heading) :]
-    # One step per numbered bold heading, so a command is attributed to the step that runs it.
-    steps = re.split(r"\n\d\. \*\*", section)[1:]
-    assert len(steps) >= 7
-
-    def step_with(*needles: str) -> int:
-        for index, step in enumerate(steps):
-            if all(needle in step for needle in needles):
-                return index
-        raise AssertionError(f"no step runs {needles}")
-
-    assert step_with("useradd", "/home/paperwatch-api") == 0
-    assert step_with("pg_ident.conf", "paperwatch-api", "psql") == 1
-    # The checkout, uv and venv steps are section 15.1's, so there is one copy of them to drift.
-    assert step_with("checkout", "section 15.1") == 2
-    assert step_with("rm ~/.config/paperwatch/api.env") == 3
-    # The port is never held twice: the old unit stops in the same step the new one starts.
-    assert (
-        step_with(
-            "systemctl --user disable --now paperwatch-api", "systemctl enable --now paperwatch-api"
-        )
-        == 4
-    )
-    assert step_with("systemctl status paperwatch-api") == 5
+    body, rollback = section.split("### Rolling back")
+    # One step per numbered bold heading, each read as the commands its own blocks run, so a
+    # command is attributed to the step that runs it and a sentence cannot stand in for one.
+    steps = [_shell_commands(step) for step in re.split(r"\n\d\. \*\*", body)[1:]]
+    api_unit = "paperwatch-api"
+    assert len(steps) == 7
+    assert steps[0][0][0] == "useradd" and steps[0][0][-1] == api_unit
+    # Reload, then prove the owner still reaches the database and the new account its role.
+    assert steps[1][0] == ["psql", "-c", "select pg_reload_conf()"]
+    assert steps[1][-1][:5] == ["sudo", "-u", api_unit, "--", "psql"]
+    # The checkout, uv and venv commands are section 15.1's, so there is one copy of them to drift.
+    assert steps[2] == []
+    assert steps[3] == [["rm", "~/.config/paperwatch/api.env"]]
+    # The port is never held twice: the old unit stops in the same step the new one starts, first.
+    stop = ["systemctl", "--user", "disable", "--now", api_unit]
+    start = ["systemctl", "enable", "--now", api_unit]
+    assert steps[4].index(stop) < steps[4].index(start)
+    assert ["systemctl", "status", api_unit] in steps[5]
     # The owner account keeps its path to the API's role until the last step, so every earlier
     # step can be undone without a database edit.
-    assert step_with("rm ~/.config/systemd/user/paperwatch-api.service") == 6
-    assert section.index("### Rolling back") > section.index("systemctl status paperwatch-api")
+    assert ["rm", "~/.config/systemd/user/paperwatch-api.service"] in steps[6]
+    # The rollback hands the env file back to the owner under its absolute path, 0600, before the
+    # owner starts its old unit, and only after root stopped the new one.
+    undo = _shell_commands(rollback)
+    restore = [
+        "install",
+        "-m",
+        "600",
+        "-o",
+        "paperwatch",
+        "-g",
+        "paperwatch",
+        "/home/paperwatch-api/.config/paperwatch/api.env",
+        "/home/paperwatch/.config/paperwatch/api.env",
+    ]
+    assert (
+        undo.index(["systemctl", "disable", "--now", api_unit])
+        < undo.index(restore)
+        < undo.index(["systemctl", "--user", "enable", "--now", api_unit])
+    )
 
     # The tidy step removes the owner account's path to the API's role; the migration writes the
     # whole map out, so the final block is the two identity lines plus the API account's.

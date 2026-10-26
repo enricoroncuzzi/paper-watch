@@ -119,8 +119,8 @@ curl -N -X POST localhost:8000/ask \
 ```
 
 `--pov` puts the point of view on the command line, where every user on the machine reads it
-in `ps` and the shell keeps it in its history; `--pov-file PATH`, or `--pov-file -` for stdin,
-keeps it out of both.
+in `ps` and the shell keeps it in its history; `--pov-file PATH`, or `--pov -` (the same as
+`--pov-file -`) for stdin, keeps it out of both.
 
 The API runs on the shared VPS behind a userspace tunnel and answers only its owner: every route
 but `GET /healthz` needs a credential (`PW_API_AUTH=oidc` for a Vercel OIDC token, or `hmac` with a

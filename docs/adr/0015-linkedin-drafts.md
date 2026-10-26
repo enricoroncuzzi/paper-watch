@@ -86,8 +86,8 @@ disagree. The prompt asks for the sentence; the checker flags its absence.
   result meaningful: the text it describes cannot change under it.
 - The point of view is personal data at rest. It lives in `drafts.pov` with the same access as the
   corpus, and it exists nowhere else: not in an event, not in a log, not in a commit. The CLI
-  takes it from a file or stdin (`--pov-file`), so it does not reach `ps` or the shell history
-  either; a NUL or a lone surrogate is refused before the paid call, because the draft row that
-  would carry it could not be stored afterwards.
+  takes it from a file (`--pov-file PATH`) or stdin (`--pov -` or `--pov-file -`), so it does not
+  reach `ps` or the shell history either; a NUL or a lone surrogate is refused before the paid
+  call, because the draft row that would carry it could not be stored afterwards.
 - The check's normalisation is written in `drafts/check.py` rather than shared with the summary
   check, so the two rule sets can evolve without one silently changing the other.

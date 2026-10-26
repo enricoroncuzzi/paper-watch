@@ -1802,11 +1802,15 @@ def test_draft_reads_the_point_of_view_from_a_file(
     assert sent == [{"pov": "I tried this on our own agent.", "language": "en"}]
 
 
-def test_draft_reads_the_point_of_view_from_stdin(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("flag", ["--pov", "--pov-file"])
+def test_draft_reads_the_point_of_view_from_stdin(
+    flag: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # `-` is stdin for either flag: `--pov -` must not send the one character "-" to the paid call.
     item_id, sent = _fake_draft_cli(monkeypatch)
 
     result = CliRunner().invoke(
-        app, ["draft", str(item_id), "--pov-file", "-", "--live"], input="I tried this.\n"
+        app, ["draft", str(item_id), flag, "-", "--live"], input="I tried this.\n"
     )
 
     assert result.exit_code == 0

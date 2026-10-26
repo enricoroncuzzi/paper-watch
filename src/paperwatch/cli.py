@@ -582,8 +582,11 @@ def _draft_pov(pov: str, pov_file: str | None) -> str:
     """The owner's point of view, from the flag, a file or stdin, and never from two at once.
 
     `--pov` is visible in `ps` to every user on the machine and stays in the shell history, so a
-    real point of view belongs in a file (`--pov-file PATH`) or on stdin (`--pov-file -`).
+    real point of view belongs in a file (`--pov-file PATH`) or on stdin (`--pov -` or
+    `--pov-file -`).
     """
+    if pov == "-" and pov_file is None:
+        pov, pov_file = "", "-"
     if pov_file is not None:
         if pov:
             raise typer.BadParameter("give the point of view with --pov or just --pov-file")
@@ -615,7 +618,7 @@ def draft(
     pov: str = typer.Option(
         "",
         "--pov",
-        help="Your own point of view, as text (visible in `ps`; prefer --pov-file)",
+        help="Your own point of view, as text (visible in `ps`), or - for stdin",
     ),
     pov_file: str | None = typer.Option(
         None,
