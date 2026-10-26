@@ -774,6 +774,17 @@ def test_a_sentence_ends_after_an_acronym_word() -> None:
     assert first_person(replace(GOOD, body=GOOD.body + " I tested it on AWS."), pov=pov) == []
 
 
+def test_an_abbreviation_does_not_split_the_sentence_checked_for_a_preprint() -> None:
+    preprint = replace(
+        SOURCE,
+        tier="vetted_preprint",
+        venue=None,
+        basis_label="vetted preprint via 36 Hugging Face upvotes",
+    )
+    body = "The authors report 41% fewer tokens, e.g. on 40 tasks."
+    assert kinds(replace(GOOD, body=body), preprint) == []
+
+
 @pytest.mark.parametrize(
     "pov",
     [
