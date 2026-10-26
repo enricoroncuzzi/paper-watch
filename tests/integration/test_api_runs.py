@@ -290,10 +290,10 @@ def test_limit_is_bounded(db_session: Session) -> None:
     assert client(db_session).get("/runs", params={"limit": 51}).status_code == 422
 
 
-def test_the_contract_names_version_0_7_and_the_page_routes(db_session: Session) -> None:
+def test_the_contract_names_version_0_8_and_the_page_routes(db_session: Session) -> None:
     document = client(db_session).app.openapi()
 
-    assert API_VERSION == "0.7"
+    assert API_VERSION == "0.8"
     # Every page route ships in the same version, so the page's client is generated once and its
     # thread, table and item types exist beside the card and draft types.
     assert set(document["paths"]) >= {

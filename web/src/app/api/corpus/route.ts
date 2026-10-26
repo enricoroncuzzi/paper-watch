@@ -11,6 +11,18 @@ const CURSOR_MAX_CHARS = 512;
 const LIMIT_MAX = 50;
 const TIERS = new Set(["peer_reviewed", "vetted_preprint", "lab_blog"]);
 const SOURCES = new Set(["arxiv", "feed"]);
+const DAY = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * `since` is a whole UTC day, so it takes the one shape a date filter can carry. Anything else is a
+ * 400 here instead of a round trip, and reading the day back catches one the calendar does not have
+ * (2026-02-30), which JavaScript would otherwise roll into the next month.
+ */
+function isDay(value: string): boolean {
+  if (!DAY.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+}
 
 /**
  * The corpus table's read path. The browser never holds the API token, so every filter, search and
@@ -42,6 +54,11 @@ export async function GET(request: Request): Promise<Response> {
       return Response.json({ kind: "error" }, { status: 400 });
     }
     query.set("profile", profile);
+  }
+  const since = raw.get("since");
+  if (since) {
+    if (!isDay(since)) return Response.json({ kind: "error" }, { status: 400 });
+    query.set("since", since);
   }
   const cursor = raw.get("cursor");
   if (cursor) {

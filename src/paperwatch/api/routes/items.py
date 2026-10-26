@@ -11,6 +11,7 @@ be added to the committed contract in the same commit.
 
 import base64
 import binascii
+import hashlib
 import json
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
@@ -38,6 +39,9 @@ CORPUS_MAX_LIMIT = 50
 # words no abstract holds.
 QUERY_MAX_CHARS = 200
 PROFILE_MAX_CHARS = 64
+# Long enough that two requests never share a digest by accident, short enough to keep the cursor
+# opaque and small.
+FINGERPRINT_CHARS = 12
 # The three tiers a reader can filter to, in the words the tabs print.
 CorpusTier = Literal["peer_reviewed", "vetted_preprint", "lab_blog"]
 # The two stored sources: an arXiv record, or a lab's own feed post.
@@ -117,19 +121,50 @@ class CorpusItemDetail(CorpusItemData):
 
 @dataclass(frozen=True)
 class _Cursor:
-    """A decoded cursor: a keyset position, or an offset into the full-text ranking."""
+    """A decoded cursor: a keyset position, or an offset into the full-text ranking.
+
+    `fingerprint` is the digest of the request that issued it. A cursor is a position inside one
+    result set, and the same offset means a different row under another query or filter, so the
+    route refuses a cursor whose digest is not the current request's.
+    """
 
     published_at: datetime | None = None
     item_id: UUID | None = None
     offset: int | None = None
+    fingerprint: str = ""
 
 
-def _encode_newest(row: CorpusItemData) -> str:
-    return _encode({"k": "newest", "p": row.published_at.isoformat(), "i": str(row.id)})
+def _encode_newest(row: CorpusItemData, fingerprint: str) -> str:
+    return _encode(
+        {"k": "newest", "p": row.published_at.isoformat(), "i": str(row.id), "f": fingerprint}
+    )
 
 
-def _encode_search(offset: int) -> str:
-    return _encode({"k": "search", "o": offset})
+def _encode_search(offset: int, fingerprint: str) -> str:
+    return _encode({"k": "search", "o": offset, "f": fingerprint})
+
+
+def _fingerprint(
+    search: str | None,
+    tier: CorpusTier | None,
+    source: CorpusSource | None,
+    profile: str | None,
+    since: date | None,
+) -> str:
+    """A short digest of the request a cursor belongs to: the cleaned query and every filter.
+
+    The page size is not part of it: a reader may ask for a wider page mid-walk, and the position
+    is the same position either way.
+    """
+    fields: list[str | None] = [
+        search,
+        tier,
+        source,
+        profile,
+        since.isoformat() if since is not None else None,
+    ]
+    raw = json.dumps(fields, separators=(",", ":")).encode()
+    return hashlib.sha256(raw).hexdigest()[:FINGERPRINT_CHARS]
 
 
 def _encode(values: dict[str, object]) -> str:
@@ -147,14 +182,16 @@ def _decode_cursor(value: str) -> _Cursor:
             raise ValueError("cursor is not an object")
         if data.get("k") == "newest":
             return _Cursor(
-                published_at=datetime.fromisoformat(str(data["p"])), item_id=UUID(str(data["i"]))
+                published_at=datetime.fromisoformat(str(data["p"])),
+                item_id=UUID(str(data["i"])),
+                fingerprint=str(data["f"]),
             )
         if data.get("k") == "search":
             offset = int(str(data["o"]))
             # Zero and anything past the cap are positions this API never issues; without the
             # upper bound a huge integer reaches Postgres and overflows a bigint instead of 422.
             if 0 < offset <= CORPUS_SEARCH_MAX:
-                return _Cursor(offset=offset)
+                return _Cursor(offset=offset, fingerprint=str(data["f"]))
     except (ValueError, KeyError, TypeError, binascii.Error):
         pass
     # A cursor is the API's own token; anything else is a client bug, and answering 422 keeps a
@@ -212,7 +249,10 @@ def make_items_router(
         response_model=CorpusData,
         responses={
             **GATE_RESPONSES,
-            422: {"model": Refusal, "description": "An unknown profile, tier or cursor."},
+            422: {
+                "model": Refusal,
+                "description": "An unknown profile or tier, or a cursor from another request.",
+            },
         },
         dependencies=[Security(BEARER)],
     )
@@ -234,9 +274,14 @@ def make_items_router(
             # an empty table that looks like a corpus without that topic.
             raise HTTPException(status_code=422, detail=f"unknown profile: {profile}")
         decoded = _decode_cursor(cursor) if cursor else _Cursor()
-        # A cursor belongs to the branch that issued it: a keyset position and a search offset are
-        # not interchangeable, and guessing one would page from the wrong place.
-        if cursor and (decoded.offset is not None) != (search is not None):
+        fingerprint = _fingerprint(search, tier, source, profile, since)
+        # A cursor belongs to the request that issued it: a keyset position and a search offset are
+        # not interchangeable, and the same offset under another query, filter or window is a row
+        # the caller never saw. Guessing one would page from the wrong place.
+        if cursor and (
+            (decoded.offset is not None) != (search is not None)
+            or decoded.fingerprint != fingerprint
+        ):
             raise HTTPException(status_code=422, detail="cursor does not match the request")
 
         with session_factory() as session:
@@ -256,9 +301,9 @@ def make_items_router(
         if not page.has_more or not rows:
             next_cursor = None
         elif search is not None:
-            next_cursor = _encode_search((decoded.offset or 0) + len(rows))
+            next_cursor = _encode_search((decoded.offset or 0) + len(rows), fingerprint)
         else:
-            next_cursor = _encode_newest(rows[-1])
+            next_cursor = _encode_newest(rows[-1], fingerprint)
         return CorpusData(items=rows, next_cursor=next_cursor, total=page.total)
 
     @router.get(

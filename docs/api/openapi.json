@@ -3,7 +3,7 @@
   "info": {
     "title": "Paper Watch API",
     "summary": "Ask questions about the stored AI-research corpus and stream cited answers.",
-    "version": "0.7"
+    "version": "0.8"
   },
   "paths": {
     "/runs": {
@@ -1055,7 +1055,7 @@
             }
           },
           "422": {
-            "description": "An unknown profile, tier or cursor.",
+            "description": "An unknown profile or tier, or a cursor from another request.",
             "content": {
               "application/json": {
                 "schema": {
