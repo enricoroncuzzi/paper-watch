@@ -951,11 +951,11 @@ copy.
    # as paperwatch, which must still see the database
    psql -d paperwatch -c 'select 1'
    # as the new account: the role, nothing else
-   sudo -u paperwatch-api -- psql -d paperwatch -Atc 'select current_user'
+   sudo -u paperwatch-api -- psql -U paperwatch_api -d paperwatch -Atc 'select current_user'
    ```
 
-   The last command must print `paperwatch_api`. If it prints `paperwatch`, the map line is wrong
-   and peer authentication fell through to the generic rule: stop and fix it before step 3.
+   The last command must print `paperwatch_api`. If peer authentication fails instead, the map line
+   is wrong: stop and fix it before step 3.
 
 3. **Give the account its checkout, its `uv` and its venv** at the same release tag the ingestion
    serves, exactly as section 15.1 shows. The model cache is created here on first start; nothing is

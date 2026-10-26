@@ -337,6 +337,11 @@ def _build_stubs(sandbox: Sandbox) -> None:
                     cat "{rec}/current_user.$MOVE_AS"
                 elif [ "$MOVE_AS" != {API} ]; then
                     printf 'paperwatch\\n'
+                # Without -U, libpq asks for a role named after the OS account, and no role is
+                # called {API}.
+                elif ! printf '%s\\n' "$*" | grep -q -- '-U {API_ROLE}'; then
+                    printf 'psql: error: FATAL:  role "{API}" does not exist\\n' >&2
+                    exit 2
                 elif loaded {API}; then
                     printf '{API_ROLE}\\n'
                 else
@@ -672,6 +677,7 @@ def test_switch_refuses_before_prepare(sandbox: Sandbox) -> None:
     result = sandbox.run("switch", "--yes")
     assert result.returncode == 1
     assert "prepare" in result.stderr
+    assert f"the {API} account, its " in result.stderr
     assert sandbox.records("systemctl") == []
     assert not sandbox.system_unit.exists()
 

@@ -222,7 +222,7 @@ prove_mapping() {
     as_user "$owner" psql -d paperwatch -c 'select 1' >/dev/null \
         || die "$owner can no longer reach the database: fix $pg_ident before going on"
     local who
-    who=$(as_user "$api" psql -d paperwatch -Atc 'select current_user') || who=
+    who=$(as_user "$api" psql -U "$api_role" -d paperwatch -Atc 'select current_user') || who=
     if [ "$who" != "$api_role" ]; then
         die "peer authentication maps $api to '${who:-nothing}', not '$api_role': the map line in $pg_ident is wrong, stop here"
     fi
@@ -330,7 +330,7 @@ wait_healthy() {  # manager
     [ "$tries" -ge 1 ] || tries=1
     say "waiting for the API on $api_url (up to ${ready_timeout}s; the first start downloads the model)"
     while [ "$i" -le "$tries" ]; do
-        if unit_active "$manager" && curl -fsS -o /dev/null --max-time 5 "$api_url/healthz"; then
+        if unit_active "$manager" && curl -fsS -o /dev/null --max-time 5 "$api_url/healthz" 2>/dev/null; then
             ok "the unit is active and $api_url/healthz answers"
             return 0
         fi
@@ -377,8 +377,12 @@ missing_prepare() {
     [ -x "$uv_bin" ] || parts+=("uv")
     [ -d "$api_checkout/.venv" ] || parts+=("its venv")
     [ -f "$api_env" ] || parts+=("its env file")
-    local IFS=', '
-    printf '%s' "${parts[*]}"
+    # "${parts[*]}" joins on one character only, so the separator is written out.
+    local i
+    for i in "${!parts[@]}"; do
+        [ "$i" -eq 0 ] || printf ', '
+        printf '%s' "${parts[$i]}"
+    done
 }
 
 # --- the swap, and the way back ------------------------------------------------------------
