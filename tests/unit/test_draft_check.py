@@ -354,7 +354,7 @@ def test_a_bare_domain_that_is_not_the_item_s_is_flagged() -> None:
     draft = replace(GOOD, body=GOOD.body + " The model card is on openai.com.")
     [flag] = check_draft(draft, SOURCE, pov=POV).flags
     assert flag.kind == "link"
-    assert "openai.com" in flag.text
+    assert flag.text == "openai.com"
 
 
 def test_a_bare_domain_of_the_item_or_the_code_is_allowed() -> None:

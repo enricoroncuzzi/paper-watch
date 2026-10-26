@@ -10,6 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
+import click
 import pytest
 import structlog
 import typer
@@ -1819,7 +1820,9 @@ def test_draft_takes_one_point_of_view(monkeypatch: pytest.MonkeyPatch) -> None:
         app, ["draft", str(item_id), "--pov", "one", "--pov-file", "-", "--live"]
     )
     assert result.exit_code == 2
-    assert "--pov or just --pov-file" in result.output
+    # Rich styles option names when it decides the output is a terminal (as on CI), splitting
+    # "--pov" into separately coloured pieces; compare the text a reader sees.
+    assert "--pov or just --pov-file" in click.unstyle(result.output)
 
 
 def test_draft_refuses_a_point_of_view_file_it_cannot_read(
