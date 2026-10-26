@@ -1653,9 +1653,17 @@ def test_draft_requires_live() -> None:
     assert result.exit_code == 2 and "pass --live" in result.output
 
 
-def test_draft_prints_the_draft_and_its_flags(monkeypatch: pytest.MonkeyPatch) -> None:
-    # The CLI is the way to inspect a draft without the page: the post as it would be copied, then
-    # every note the code wrote, numbered in the same order the page shows them.
+def _fake_draft_cli(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    hook: str = "A memory layer worth a look.",
+    body: str = "A replay buffer cut tokens per task by 45% on 40 coding tasks.",
+) -> tuple[object, list[dict[str, object]]]:
+    """Stub the store and the model, and record what the draft command sent the model.
+
+    The command is the way to inspect a draft without the page, and its point of view can arrive
+    three ways (flag, file, stdin); recording the prompt input is what proves which text was used.
+    """
     from paperwatch.drafts.generate import DraftText
     from paperwatch.store.repository import DraftItem
 
@@ -1721,19 +1729,31 @@ def test_draft_prints_the_draft_and_its_flags(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(cli, "Repository", Repo)
     monkeypatch.setattr(cli, "ChatCallLog", lambda factory: object())
     monkeypatch.setattr(cli, "make_chat_models", lambda settings, **kwargs: [object()])
-    monkeypatch.setattr(
-        cli,
-        "generate_draft",
-        lambda models, guard, source, *, pov, language: (
+
+    sent: list[dict[str, object]] = []
+
+    def generate(
+        models: object, guard: object, source: object, *, pov: str, language: str
+    ) -> tuple[object, str]:
+        sent.append({"pov": pov, "language": language})
+        return (
             DraftText(
-                hook="A memory layer worth a look.",
-                body="A replay buffer cut tokens per task by 45% on 40 coding tasks.",
+                hook=hook,
+                body=body,
                 hashtags=("agents", "memory"),
                 source_link=url,
             ),
             "vendor/model:free",
-        ),
-    )
+        )
+
+    monkeypatch.setattr(cli, "generate_draft", generate)
+    return item_id, sent
+
+
+def test_draft_prints_the_draft_and_its_flags(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The CLI is the way to inspect a draft without the page: the post as it would be copied, then
+    # every note the code wrote, numbered in the same order the page shows them.
+    item_id, _sent = _fake_draft_cli(monkeypatch)
 
     result = CliRunner().invoke(
         app, ["draft", str(item_id), "--pov", "I would test this.", "--live"]
@@ -1745,6 +1765,70 @@ def test_draft_prints_the_draft_and_its_flags(monkeypatch: pytest.MonkeyPatch) -
     assert "1. [number]" in result.output
     assert "45%" in result.output
     assert "counts: number 2 checked, 1 passed" in result.output
+
+
+def test_draft_reads_the_point_of_view_from_a_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A point of view on the command line is readable by every other user in `ps` and stays in the
+    # shell history, so the file (or stdin) is the way to keep it off both.
+    item_id, sent = _fake_draft_cli(monkeypatch)
+    path = tmp_path / "pov.txt"
+    path.write_text("I tried this on our own agent.\n", encoding="utf-8")
+
+    result = CliRunner().invoke(app, ["draft", str(item_id), "--pov-file", str(path), "--live"])
+
+    assert result.exit_code == 0
+    # A file written by an editor ends with a newline; it is not part of what the owner wrote.
+    assert sent == [{"pov": "I tried this on our own agent.", "language": "en"}]
+
+
+def test_draft_reads_the_point_of_view_from_stdin(monkeypatch: pytest.MonkeyPatch) -> None:
+    item_id, sent = _fake_draft_cli(monkeypatch)
+
+    result = CliRunner().invoke(
+        app, ["draft", str(item_id), "--pov-file", "-", "--live"], input="I tried this.\n"
+    )
+
+    assert result.exit_code == 0
+    assert sent == [{"pov": "I tried this.", "language": "en"}]
+
+
+def test_draft_takes_one_point_of_view(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Two sources for one field is a mistake, not a merge: say which flag to drop.
+    item_id, _sent = _fake_draft_cli(monkeypatch)
+    result = CliRunner().invoke(
+        app, ["draft", str(item_id), "--pov", "one", "--pov-file", "-", "--live"]
+    )
+    assert result.exit_code == 2
+    assert "--pov or just --pov-file" in result.output
+
+
+def test_draft_refuses_a_point_of_view_file_it_cannot_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    item_id, _sent = _fake_draft_cli(monkeypatch)
+    result = CliRunner().invoke(
+        app, ["draft", str(item_id), "--pov-file", str(tmp_path / "missing.txt"), "--live"]
+    )
+    assert result.exit_code == 2
+    assert "cannot read" in result.output
+
+
+def test_draft_rejects_a_point_of_view_a_draft_could_not_store(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A NUL is refused by Postgres on the write after the paid call; the same rule as the route
+    # stops it here, before the model is called.
+    item_id, sent = _fake_draft_cli(monkeypatch)
+    path = tmp_path / "pov.txt"
+    path.write_bytes(b"a NUL \x00 here")
+
+    result = CliRunner().invoke(app, ["draft", str(item_id), "--pov-file", str(path), "--live"])
+
+    assert result.exit_code == 2
+    assert "NUL" in result.output
+    assert sent == []
 
 
 def test_draft_refuses_an_unknown_item(monkeypatch: pytest.MonkeyPatch) -> None:

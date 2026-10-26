@@ -377,6 +377,10 @@ systemd records 1 and 3 as a failed unit, which is deliberate: both deserve a lo
 check reports the failed unit too. The problems themselves are in
 `journalctl --user -u paperwatch-ingest`.
 
+The API's journal keeps one access line per request with the method, the path and the status,
+but not the query string: a corpus search is `GET /items?q=...`, and the search text is the
+reader's, not the journal's (`src/paperwatch/logging.py` drops it).
+
 ## 11. Updating to a new release
 
 ```bash

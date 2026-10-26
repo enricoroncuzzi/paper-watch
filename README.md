@@ -109,6 +109,7 @@ over the corpus.
 uv run paperwatch serve --live         # the API on 127.0.0.1:8000; docs/api/README.md lists the routes
 uv run paperwatch suggest --live       # the ranked picks and the Rising shelf
 uv run paperwatch draft ITEM_ID --live   # one checked LinkedIn draft, with its notes
+uv run paperwatch draft ITEM_ID --pov-file NOTES.md --live   # its point of view from a file
 
 # With PW_API_AUTH=hmac and a 32+ character PW_API_HMAC_SECRET in .env, each token works once:
 curl -N -X POST localhost:8000/ask \
@@ -116,6 +117,10 @@ curl -N -X POST localhost:8000/ask \
   -H 'content-type: application/json' \
   -d '{"question": "which papers evaluate coding agents?"}'
 ```
+
+`--pov` puts the point of view on the command line, where every user on the machine reads it
+in `ps` and the shell keeps it in its history; `--pov-file PATH`, or `--pov-file -` for stdin,
+keeps it out of both.
 
 The API runs on the shared VPS behind a userspace tunnel and answers only its owner: every route
 but `GET /healthz` needs a credential (`PW_API_AUTH=oidc` for a Vercel OIDC token, or `hmac` with a

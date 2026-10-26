@@ -6,6 +6,7 @@ prompt is recognisable in the store instead of being mixed with new ones.
 """
 
 import html
+import re
 from collections.abc import Mapping
 
 from paperwatch.agent.prompts import source_block
@@ -29,6 +30,26 @@ def clean_language(value: str) -> str:
     if not cleaned.replace("-", "").isalpha():
         raise ValueError("language must be a language code such as en or pt-br")
     return cleaned
+
+
+# A lone surrogate is half of a character pair: nothing encodes it. The NUL cannot go through
+# Postgres text or JSONB at all.
+_SURROGATE = re.compile("[\ud800-\udfff]")
+
+
+def clean_pov(value: str) -> str:
+    """The owner's point of view, refused when a draft could never be stored with it.
+
+    Both characters fail after the provider call has been paid for: the draft row is written when
+    the model answers, and Postgres rejects a NUL in JSONB (it is in `inputs` and the check) and
+    cannot encode a lone surrogate. The route's validator and the CLI share this rule, so the
+    page and a terminal paste are refused the same way and neither spends a call.
+    """
+    if "\x00" in value:
+        raise ValueError("the point of view must not contain a NUL character")
+    if _SURROGATE.search(value):
+        raise ValueError("the point of view must not contain a lone surrogate")
+    return value
 
 
 DRAFT_SYSTEM_PROMPT = """You write one LinkedIn post for the owner of a private AI reading room.

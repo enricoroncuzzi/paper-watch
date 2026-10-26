@@ -726,6 +726,35 @@ def test_the_point_of_view_limit_and_language_are_enforced(db_session: Session) 
     )
 
 
+def test_a_point_of_view_a_draft_could_not_store_is_refused_before_the_call(
+    db_session: Session,
+) -> None:
+    # A NUL is rejected by Postgres on the JSONB write, and a lone surrogate cannot be encoded at
+    # all; both would fail after the provider call was paid for, so the request is refused instead.
+    item_id = seed_item(db_session)
+    api = client(db_session, draft_service(db_session, [scripted()]))
+
+    nul = api.post("/drafts", json={"item_id": str(item_id), "pov": "a NUL \x00 here"})
+    # The JSON escape for a lone surrogate is what the body carries; json.loads turns it into the
+    # character, which no UTF-8 encoder and no Postgres text column will take.
+    lone = api.post(
+        "/drafts",
+        content=f'{{"item_id": "{item_id}", "pov": "a lone \\ud800 surrogate"}}',
+        headers={"content-type": "application/json"},
+    )
+
+    assert (nul.status_code, lone.status_code) == (422, 422)
+    [nul_error] = nul.json()["detail"]
+    assert nul_error["loc"] == ["body", "pov"]
+    assert "NUL" in nul_error["msg"]
+    # A lone surrogate is refused one layer earlier, by the field's own unicode parsing, and the
+    # refusal must not echo it back: the echo is unencodable, which is how this 422 became a 500.
+    [lone_error] = lone.json()["detail"]
+    assert lone_error["loc"] == ["body", "pov"]
+    assert "surrogate" not in lone.text
+    assert drafts(db_session) == []
+
+
 def test_the_draft_list_limit_is_bounded(db_session: Session) -> None:
     seed_item(db_session)
     api = client(db_session, draft_service(db_session, [scripted()]))

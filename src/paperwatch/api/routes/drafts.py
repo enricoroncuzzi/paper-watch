@@ -36,7 +36,7 @@ from paperwatch.drafts.generate import (
     draft_text,
     generate_draft,
 )
-from paperwatch.drafts.prompts import LANGUAGE_MAX_CHARS, MAX_POV_CHARS, clean_language
+from paperwatch.drafts.prompts import LANGUAGE_MAX_CHARS, MAX_POV_CHARS, clean_language, clean_pov
 from paperwatch.llm.chat import (
     CallGuard,
     ChatCallStore,
@@ -114,6 +114,13 @@ class DraftRequest(BaseModel):
     # The API's bound; the page counts to the same number, and an empty point of view is allowed.
     pov: str = Field(default="", max_length=MAX_POV_CHARS)
     language: str = Field(default="en", min_length=2, max_length=LANGUAGE_MAX_CHARS)
+
+    @field_validator("pov")
+    @classmethod
+    def _pov(cls, value: str) -> str:
+        # Shared with the CLI: refusing here costs nothing, while the same text in a stored draft
+        # fails the write after the model call has been paid for.
+        return clean_pov(value)
 
     @field_validator("language")
     @classmethod
