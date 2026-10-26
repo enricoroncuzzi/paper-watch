@@ -75,7 +75,7 @@ _LOWER_US = re.compile(r"\bus\b")
 # after the stop, including markdown bold, may be one or two in a row.
 _CLOSERS = "\"')\\]\u201d\u2019*"
 _SENTENCE_END = re.compile(
-    rf"(?<![A-Z]\.)(?<=[.!?])\s+(?![a-z])"
+    rf"(?<!\b[A-Z]\.)(?<=[.!?])\s+(?![a-z])"
     rf"|(?<=[.!?][{_CLOSERS}])\s+(?![a-z])"
     rf"|(?<=[.!?][{_CLOSERS}][{_CLOSERS}])\s+(?![a-z])"
     r"|(?<=\u2026)\s+"

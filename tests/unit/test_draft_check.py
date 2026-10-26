@@ -762,6 +762,18 @@ def test_a_sentence_with_an_abbreviation_or_a_closer_is_whole(sentence: str) -> 
     assert first_person(replace(GOOD, body=GOOD.body + " " + sentence), pov=sentence) == []
 
 
+def test_a_sentence_ends_after_an_acronym() -> None:
+    # "GPU." ends a sentence: only a single capital initial such as "J." is an abbreviation.
+    pov = "I ran it on our GPU. It was slow."
+    claim = "I ran it on our GPU. The authors report 41% fewer tokens."
+    assert first_person(replace(GOOD, body=GOOD.body + " " + claim), pov=pov) == []
+
+
+def test_a_sentence_ends_after_an_acronym_word() -> None:
+    pov = "I tested it on AWS. It was slow."
+    assert first_person(replace(GOOD, body=GOOD.body + " I tested it on AWS."), pov=pov) == []
+
+
 @pytest.mark.parametrize(
     "pov",
     [
