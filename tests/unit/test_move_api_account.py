@@ -683,6 +683,19 @@ def test_status_says_a_checkout_it_cannot_read_is_unreadable(sandbox: Sandbox) -
     assert "not a git repository" in result.stderr
 
 
+def test_status_says_a_clone_on_no_release_tag_is_missing_not_unreadable(
+    sandbox: Sandbox,
+) -> None:
+    # A prepare stopped between the clone and the checkout leaves a clone no tag points at: git
+    # read it fine, so the step is not done yet rather than unreadable.
+    sandbox.prepare()
+    _git(sandbox.api_checkout, "tag", "-d", TAG)
+    result = sandbox.run("status")
+    assert result.returncode == 0
+    assert "step 3 checkout: missing" in result.stdout
+    assert "unreadable" not in result.stdout
+
+
 def test_prepare_reruns_after_a_failed_step_3_without_redoing_steps_1_and_2(
     tmp_path: Path, api: str
 ) -> None:

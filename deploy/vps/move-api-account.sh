@@ -579,7 +579,7 @@ cmd_tidy() {
 # --- status --------------------------------------------------------------------------------
 
 cmd_status() {
-    local tag prepared=1 tidied=1 active=no
+    local tag tag_status=0 prepared=1 tidied=1 active=no
     if account_exists "$api"; then
         say "step 1 account $api: done"
     else
@@ -592,18 +592,15 @@ cmd_status() {
         say "step 2 map line: missing"
         prepared=0
     fi
-    if tag=$(api_checkout_tag); then
-        say "step 3 checkout: done $tag"
-    else
+    tag=$(api_checkout_tag) || tag_status=$?
+    case $tag_status in
+        0) say "step 3 checkout: done $tag" ;;
         # A read git refused has already said why on stderr; the report says it was not a checkout
         # that is simply not there yet.
-        if [ -d "$api_checkout/.git" ]; then
-            say "step 3 checkout: unreadable"
-        else
-            say "step 3 checkout: missing"
-        fi
-        prepared=0
-    fi
+        2) say "step 3 checkout: unreadable" ;;
+        *) say "step 3 checkout: missing" ;;
+    esac
+    [ "$tag_status" -eq 0 ] || prepared=0
     if [ -x "$uv_bin" ] && [ -d "$api_checkout/.venv" ]; then
         say "step 3 environment: done"
     else
