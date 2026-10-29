@@ -82,6 +82,14 @@ die() {
     exit 1
 }
 
+# The release's unit is revealed into a root-only file to be compared byte for byte. Global rather
+# than local, so the trap still has a name for it after main returns.
+released_unit=
+cleanup() {
+    [ -z "$released_unit" ] || rm -f "$released_unit"
+}
+trap cleanup EXIT
+
 usage() {
     cat <<'USAGE'
 usage: update-api.sh paperwatch-vX.Y.Z
@@ -180,7 +188,27 @@ main() {
         die "cannot tell which release $checkout serves, so a failed update has no previous release to go back to: check it out by hand, then rerun"
     fi
 
-    die "$tag is a release tag, but this build stops before the update"
+    step "Checking $tag's unit against the installed one"
+    released_unit=$(mktemp "${TMPDIR:-/tmp}/paperwatch-update-api.XXXXXX") \
+        || die "cannot create a temporary file for the release's unit"
+    if ! git_as_api show "$tag:$unit_in_release" >"$released_unit" 2>/dev/null; then
+        die "$tag has no $unit_in_release, so it is not a Paper Watch release: nothing was changed"
+    fi
+    if ! cmp -s "$released_unit" "$system_unit"; then
+        die "$tag's $unit_in_release differs from $system_unit, and installing a unit is the owner's step, never this script's: install it by hand as docs/deploy/vps.md section 11.1 shows, then rerun. Nothing was changed."
+    fi
+    ok "$system_unit is the unit $tag publishes"
+
+    step "Checking out $tag and syncing its venv"
+    git_as_api checkout --quiet "$tag" || die "checking out $tag failed: nothing was restarted"
+    if [ "$(git_as_api describe --tags --exact-match 2>/dev/null)" != "$tag" ]; then
+        die "$checkout is not at $tag after the checkout: nothing was restarted"
+    fi
+    as_api_in "$checkout" "$uv_bin" sync --frozen --no-dev \
+        || die "uv sync failed for $tag: the API is still running $previous"
+    ok "the venv is synced for $tag"
+
+    die "$tag is checked out and synced, but this build stops before the restart"
 }
 
 main "$@"

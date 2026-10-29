@@ -424,3 +424,59 @@ def test_a_checkout_with_no_release_behind_it_is_refused(sandbox: Sandbox) -> No
     assert result.returncode == 1
     assert "previous release" in result.stderr
     assert sandbox.records("systemctl") == []
+
+
+# --- the release, its unit and the checkout ------------------------------------------------
+
+
+def test_a_tag_the_origin_does_not_have_is_refused(sandbox: Sandbox) -> None:
+    result = sandbox.run("paperwatch-v9.9.9")
+    assert result.returncode == 1
+    assert "paperwatch-v9.9.9" in result.stderr and "no release tag" in result.stderr
+    assert sandbox.checkout_tag() == OLD_TAG
+    assert sandbox.records("systemctl") == []
+
+
+def test_a_release_whose_unit_changed_stops_before_the_checkout_moves(tmp_path: Path) -> None:
+    # The comparison is against the tag's own file, not the checkout's copy: a release that changes
+    # the unit must not start on the old one, because a unit change is a compatibility change
+    # (memory, sandbox paths, the ExecStart line) and installing it is the owner's step.
+    sandbox = _sandbox(tmp_path, new_unit=CHANGED_UNIT)
+    before = _snapshot(sandbox.checkout)
+    result = sandbox.run(NEW_TAG)
+    assert result.returncode == 1
+    assert str(sandbox.system_unit) in result.stderr
+    assert "differs" in result.stderr and "11.1" in result.stderr
+    assert sandbox.checkout_tag() == OLD_TAG
+    assert _snapshot(sandbox.checkout) == before
+    assert sandbox.records("uv") == []
+    assert sandbox.records("systemctl") == []
+
+
+def test_a_release_with_the_installed_unit_moves_the_checkout_and_syncs_it(sandbox: Sandbox) -> None:
+    sandbox.run(NEW_TAG)
+    assert sandbox.checkout_tag() == NEW_TAG
+    assert "sync --frozen --no-dev" in sandbox.records("uv")
+    # The sync ran in the checkout's own project, which is what the stub's pyproject.toml check
+    # proves: a sync from root's directory would have failed instead.
+    assert (sandbox.checkout / ".venv").is_dir()
+
+
+def test_the_fetch_uses_the_clones_own_origin_and_no_url(sandbox: Sandbox) -> None:
+    # The caller names a tag and nothing else: a URL, a branch or a repository from the arguments
+    # or the environment would make this a way to run code from anywhere as the API's account.
+    sandbox.run(NEW_TAG, PW_UPDATE_REPOSITORY="https://example.invalid/other.git")
+    git_calls = sandbox.records("git")
+    assert any(call.endswith("fetch --tags --quiet origin") for call in git_calls)
+    assert not [call for call in git_calls if "://" in call]
+
+
+def test_every_repository_step_runs_as_the_api_account(sandbox: Sandbox) -> None:
+    sandbox.run(NEW_TAG)
+    accounts = [line.split("|", 1)[0] for line in sandbox.records("runuser")]
+    assert accounts, "the script ran no command as an account, so it did not use runuser"
+    assert set(accounts) == {API}
+    ran = "\n".join(sandbox.records("runuser"))
+    assert "git -C" in ran and "fetch --tags --quiet origin" in ran
+    assert "checkout --quiet paperwatch-v1.1.0" in ran
+    assert "uv sync --frozen --no-dev" in ran
