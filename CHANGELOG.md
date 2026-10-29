@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.16.0](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.15.1...paperwatch-v0.16.0) (2026-10-29)
+
+
+### Features
+
+* **deploy:** let the paperwatch login update the API to a release through one root-owned script ([#98](https://github.com/enricoroncuzzi/paper-watch/issues/98)) ([6df88b4](https://github.com/enricoroncuzzi/paper-watch/commit/6df88b4bdaed4b547c05be18548d87ecf3d3ef90))
+
+
+### Bug Fixes
+
+* **deploy:** read each checkout's release tag as the account that owns it ([#97](https://github.com/enricoroncuzzi/paper-watch/issues/97)) ([f8aff96](https://github.com/enricoroncuzzi/paper-watch/commit/f8aff96a1e9afee4bf85e28f85301e24dbc3008f))
+
 ## [0.15.1](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.15.0...paperwatch-v0.15.1) (2026-10-26)
 
 
