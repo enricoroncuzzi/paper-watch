@@ -48,10 +48,14 @@ It never installs a unit. A release whose `deploy/vps/paperwatch-api.service` di
 installed one stops the script before the checkout moves: a unit change is a compatibility change
 (a sandbox path, the `ExecStart` line, a memory cap), and installing it stays the owner's step.
 
-The script is installed `install -o root -g root -m 0755` from a checkout by the owner, and the
-drop-in is validated with `visudo -cf` and placed at mode 0440. A new release of the script itself
-is reinstalled the same way, by the owner: the command updates the API, never the root-owned
-program that runs it.
+The script is installed `install -o root -g root -m 0755` by the owner from a root-owned clone,
+`/usr/local/src/paper-watch`, that root fetches and checks out at the release tag itself. Neither
+`paperwatch`'s nor `paperwatch-api`'s checkout is an install source: whatever root installs from a
+copy an account can edit, that account can turn into root, so a compromised API account must not
+reach root through it either. The drop-in is compared with its one expected line, because
+`visudo -cf` checks only that it parses, then validated with `visudo -cf` and placed at mode 0440.
+A new release of the script itself is reinstalled the same way, by the owner: the command updates
+the API, never the root-owned program that runs it.
 
 ## Consequences
 
@@ -70,5 +74,5 @@ program that runs it.
   survive sudo's clean environment; the HMAC path mints its own tokens. The check says so in its
   output rather than passing silently.
 - `docs/deploy/vps.md` section 11 now ends the routine update with the one command, and section 11.1
-  is the one-time install. The install is the owner's, and running a copy from a checkout through
-  sudo is not: `paperwatch` could edit that copy.
+  is the one-time install. The install is the owner's, from root's own clone, and running or
+  installing a copy from either account's checkout is not: that account could edit the copy.

@@ -1,7 +1,7 @@
 # The routine update's login, `paperwatch`, may run exactly one root command: the API update
-# script. That script is installed root-owned at the path below, never from a checkout the login can
-# edit, and it checks its own release-tag argument, which it must: a sudo entry that names a
-# command also permits any argument to it.
+# script. That script is installed root-owned at the path below, from root's own clone and never
+# from a checkout the login or the API's account can edit, and it checks its own release-tag
+# argument, which it must: a sudo entry that names a command also permits any argument to it.
 #
 # sudo's env_reset stays on and this line grants no SETENV, so the caller cannot hand the script a
 # path, account, URL or timeout through the environment. Install as root with visudo -cf, then at

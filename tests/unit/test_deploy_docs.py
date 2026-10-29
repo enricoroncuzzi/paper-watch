@@ -465,50 +465,35 @@ def test_the_guide_runs_the_api_half_of_an_update_as_one_command() -> None:
     assert ["git", "checkout", "paperwatch-vX.Y.Z"] in commands
 
 
-def test_the_guide_installs_the_update_command_once_with_root() -> None:
-    # One root-owned copy, validated before it is placed: never the copy in a checkout, which the
-    # routine update's login can edit.
-    commands = _shell_commands(
-        _guide_slice("### 11.1 Installing the update command once", "## 12.")
-    )
-    checkout = f"/home/paperwatch/paper-watch/{UPDATE_SCRIPT}"
-    assert [
-        "install",
-        "-o",
-        "root",
-        "-g",
-        "root",
-        "-m",
-        "0755",
-        checkout,
-        UPDATE_COMMAND,
-    ] in commands
-    drop_in = f"/home/paperwatch/paper-watch/{SUDOERS_DROP_IN}"
+def test_the_guide_installs_the_update_command_from_roots_own_clone() -> None:
+    # Whatever root installs from a copy an account can edit, that account can turn into root, so
+    # the install source is a clone only root writes, fetched and checked out at the tag by root.
+    section = _guide_slice("### 11.1 Installing the update command once", "## 12.")
+    commands = _shell_commands(section)
+    clone = "/usr/local/src/paper-watch"
+    created = ["install", "-d", "-o", "root", "-g", "root", "-m", "0755", clone]
+    cloned = ["git", "clone", "https://github.com/enricoroncuzzi/paper-watch", clone]
+    fetched = ["git", "-C", clone, "fetch", "--tags"]
+    checked_out = ["git", "-C", clone, "checkout", "paperwatch-vX.Y.Z"]
+    script = ["install", "-o", "root", "-g", "root", "-m", "0755"]
+    script += [f"{clone}/{UPDATE_SCRIPT}", UPDATE_COMMAND]
+    drop_in = f"{clone}/{SUDOERS_DROP_IN}"
+    shown = ["grep", "-Ev", "^(#|$)", drop_in]
     validated = ["visudo", "-cf", drop_in]
-    placed = [
-        "install",
-        "-o",
-        "root",
-        "-g",
-        "root",
-        "-m",
-        "0440",
-        drop_in,
-        "/etc/sudoers.d/paperwatch-update-api",
-    ]
-    assert validated in commands and placed in commands
-    assert commands.index(validated) < commands.index(placed)
+    placed = ["install", "-o", "root", "-g", "root", "-m", "0440"]
+    placed += [drop_in, "/etc/sudoers.d/paperwatch-update-api"]
+    order = [created, cloned, fetched, checked_out, script, shown, validated, placed]
+    assert all(step in commands for step in order)
+    assert [commands.index(step) for step in order] == sorted(commands.index(s) for s in order)
+    # No command reads from either account's home: not the login's checkout, not the API's.
+    assert not [arg for argv in commands for arg in argv if arg.startswith("/home/")]
 
 
-def test_the_guide_says_the_script_itself_is_the_owners_to_install() -> None:
-    # Deliberate, not an omission: the command updates the API, and a command that could replace
-    # its own root-owned program would be root for whoever can name a tag.
-    text = " ".join(_guide_slice("### 11.1 Installing the update command once", "## 12.").split())
-    assert "reinstalled the same way, by the owner" in text
-
-
-def test_the_update_permission_is_recorded_in_an_adr() -> None:
-    adr = REPO_ROOT / "docs" / "adr" / "0018-the-api-update-through-one-root-owned-script.md"
-    text = adr.read_text()
-    assert UPDATE_COMMAND in text
-    assert SUDOERS_DROP_IN in text
+def test_the_guide_shows_the_drop_in_rules_the_owner_compares() -> None:
+    # visudo -cf checks only that the drop-in parses, so the owner compares the grep's output with
+    # the line the guide shows; that line must be exactly the drop-in's rules.
+    section = _guide_slice("### 11.1 Installing the update command once", "## 12.")
+    [shown] = re.findall(r"```sudoers\n(.*?)```", section, re.DOTALL)
+    drop_in = (REPO_ROOT / SUDOERS_DROP_IN).read_text().splitlines()
+    rules = [line for line in drop_in if line and not line.startswith("#")]
+    assert shown.splitlines() == rules

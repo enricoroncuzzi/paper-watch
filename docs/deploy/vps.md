@@ -435,31 +435,46 @@ counts: `check.sh` says `WAIT` while one is open).
 The API's checkout, its venv and its system unit are the API account's and root's, while the
 routine update runs as `paperwatch`. Handing that login root would undo ADR 0017's account
 boundary, so one root-owned script and one sudoers line let it run exactly that command and nothing
-else (ADR 0018). Install both once, as the owner, from the release's checkout on the server:
+else (ADR 0018). Install both once, as the owner, from a clone only root can write: never from
+`/home/paperwatch/paper-watch` or `/home/paperwatch-api/paper-watch`, because whatever installs from
+those copies gives root to whoever can edit them. Root clones it once, and fetches and checks out
+the release itself:
 
 ```bash
-# as root, from the ingestion's checkout on the server
+# as root, once: the directory and everything the clone writes are root's alone
+install -d -o root -g root -m 0755 /usr/local/src/paper-watch
+git clone https://github.com/enricoroncuzzi/paper-watch /usr/local/src/paper-watch
+```
+
+```bash
+# as root, on the first install and on every reinstall
+git -C /usr/local/src/paper-watch fetch --tags
+git -C /usr/local/src/paper-watch checkout paperwatch-vX.Y.Z
 install -o root -g root -m 0755 \
-        /home/paperwatch/paper-watch/deploy/vps/update-api.sh /usr/local/sbin/paperwatch-update-api
-visudo -cf /home/paperwatch/paper-watch/deploy/vps/sudoers-paperwatch-update-api
+        /usr/local/src/paper-watch/deploy/vps/update-api.sh /usr/local/sbin/paperwatch-update-api
+grep -Ev '^(#|$)' /usr/local/src/paper-watch/deploy/vps/sudoers-paperwatch-update-api
+visudo -cf /usr/local/src/paper-watch/deploy/vps/sudoers-paperwatch-update-api
 install -o root -g root -m 0440 \
-        /home/paperwatch/paper-watch/deploy/vps/sudoers-paperwatch-update-api \
+        /usr/local/src/paper-watch/deploy/vps/sudoers-paperwatch-update-api \
         /etc/sudoers.d/paperwatch-update-api
 ```
 
-`visudo -cf` parses the drop-in before sudo can read it, and 0440 keeps it root-owned and
-unwritable, which sudo requires. The file installs one line:
+The `grep` prints the drop-in's rules, and it must print exactly this one line and nothing else;
+stop if it differs. `visudo -cf` only checks that the file parses, not what it grants, so that
+comparison is the owner's:
 
 ```sudoers
 paperwatch ALL=(root) NOPASSWD: /usr/local/sbin/paperwatch-update-api
 ```
 
-The script validates its own release-tag argument, because a sudoers command entry permits any
-argument to the command it names; sudo's `env_reset` stays on and the entry grants no `SETENV`, so
-no environment variable reaches the script from the caller. Two things stay the owner's on purpose:
-the script is installed root-owned and is never run from a checkout the `paperwatch` login can
-edit, and a new release of the script itself is reinstalled the same way, by the owner (root), not
-by the command: the command updates the API, not the root-owned program that runs it.
+0440 keeps the drop-in root-owned and unwritable, which sudo requires. The script validates its own
+release-tag argument, because a sudoers command entry permits any argument to the command it names;
+sudo's `env_reset` stays on and the entry grants no `SETENV`, so no environment variable reaches the
+script from the caller. Two things stay the owner's on purpose: the script is installed root-owned,
+from root's own clone, and is never run or installed from a checkout `paperwatch` or
+`paperwatch-api` can edit, and a new release of the script itself is reinstalled with the block
+above, by the owner (root), not by the command: the command updates the API, not the root-owned
+program that runs it.
 
 ## 12. Browsing the database from the Mac
 
