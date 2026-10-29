@@ -478,7 +478,7 @@ def test_the_guide_installs_the_update_command_from_roots_own_clone() -> None:
     script = ["install", "-o", "root", "-g", "root", "-m", "0755"]
     script += [f"{clone}/{UPDATE_SCRIPT}", UPDATE_COMMAND]
     drop_in = f"{clone}/{SUDOERS_DROP_IN}"
-    shown = ["grep", "-Ev", "^(#|$)", drop_in]
+    shown = ["grep", "-Ev", "^(#( |$)|$)", drop_in]
     validated = ["visudo", "-cf", drop_in]
     placed = ["install", "-o", "root", "-g", "root", "-m", "0440"]
     placed += [drop_in, "/etc/sudoers.d/paperwatch-update-api"]
@@ -495,5 +495,5 @@ def test_the_guide_shows_the_drop_in_rules_the_owner_compares() -> None:
     section = _guide_slice("### 11.1 Installing the update command once", "## 12.")
     [shown] = re.findall(r"```sudoers\n(.*?)```", section, re.DOTALL)
     drop_in = (REPO_ROOT / SUDOERS_DROP_IN).read_text().splitlines()
-    rules = [line for line in drop_in if line and not line.startswith("#")]
+    rules = [line for line in drop_in if not re.fullmatch(r"(#( .*)?)?", line)]
     assert shown.splitlines() == rules

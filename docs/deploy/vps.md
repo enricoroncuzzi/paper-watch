@@ -452,7 +452,7 @@ git -C /usr/local/src/paper-watch fetch --tags
 git -C /usr/local/src/paper-watch checkout paperwatch-vX.Y.Z
 install -o root -g root -m 0755 \
         /usr/local/src/paper-watch/deploy/vps/update-api.sh /usr/local/sbin/paperwatch-update-api
-grep -Ev '^(#|$)' /usr/local/src/paper-watch/deploy/vps/sudoers-paperwatch-update-api
+grep -Ev '^(#( |$)|$)' /usr/local/src/paper-watch/deploy/vps/sudoers-paperwatch-update-api
 visudo -cf /usr/local/src/paper-watch/deploy/vps/sudoers-paperwatch-update-api
 install -o root -g root -m 0440 \
         /usr/local/src/paper-watch/deploy/vps/sudoers-paperwatch-update-api \
@@ -460,7 +460,8 @@ install -o root -g root -m 0440 \
 ```
 
 The `grep` prints the drop-in's rules, and it must print exactly this one line and nothing else;
-stop if it differs. `visudo -cf` only checks that the file parses, not what it grants, so that
+stop if it differs. It hides only `# ` comments and blank lines, so an `#include` or `#includedir`
+line, which sudo reads as a directive, still shows. `visudo -cf` only checks that the file parses, not what it grants, so that
 comparison is the owner's:
 
 ```sudoers

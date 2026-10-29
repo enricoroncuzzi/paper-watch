@@ -13,6 +13,7 @@ record that depended on `REC` would prove the opposite of what it claims.
 
 import hashlib
 import os
+import re
 import shutil
 import subprocess
 import textwrap
@@ -588,7 +589,7 @@ def test_no_run_prints_a_secret(sandbox: Sandbox) -> None:
 
 def _sudoers_rules() -> list[str]:
     lines = [line.strip() for line in SUDOERS.read_text().splitlines()]
-    return [line for line in lines if line and not line.startswith("#")]
+    return [line for line in lines if not re.fullmatch(r"(#( .*)?)?", line)]
 
 
 def test_the_sudoers_drop_in_grants_exactly_one_command() -> None:
