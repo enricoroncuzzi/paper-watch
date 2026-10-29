@@ -388,6 +388,8 @@ reader's, not the journal's (`src/paperwatch/logging.py` drops it).
 
 ## 11. Updating to a new release
 
+The ingestion's half is the account's own commands, as section 3 installed it:
+
 ```bash
 cd ~/paper-watch
 git fetch --tags
@@ -396,10 +398,28 @@ uv sync --frozen --no-dev
 uv run --frozen --no-dev --env-file ~/.config/paperwatch/env alembic upgrade head
 ```
 
-The API serves its own checkout, `/home/paperwatch-api/paper-watch`, so a release is fetched twice:
-run the same `git fetch --tags`, `git checkout` and `uv sync --frozen --no-dev` there as the API's
-account, then `sudo systemctl restart paperwatch-api`. The migration stays the ingestion's alone,
-because that is the account with the owner role.
+The API serves its own checkout, `/home/paperwatch-api/paper-watch`, from its own account, so its
+half is one command. Run it as `paperwatch`, with the narrow sudo permission section 11.1 installs
+once:
+
+```bash
+sudo /usr/local/sbin/paperwatch-update-api paperwatch-vX.Y.Z
+```
+
+That command fetches the tags from the API checkout's existing origin, checks the release's
+`deploy/vps/paperwatch-api.service` against the installed unit, checks the tag out and runs
+`uv sync --frozen --no-dev` as `paperwatch-api`, restarts `paperwatch-api`, waits up to five
+minutes for `/healthz` and runs the release's `deploy/vps/api-check.sh` as the API's account. When
+any of that fails it checks the previous release back out, syncs and restarts it, and exits
+non-zero. It never installs a unit: if the release's unit differs from
+`/etc/systemd/system/paperwatch-api.service` it stops before touching the checkout, and the owner
+installs the unit by hand (section 15.3), then reruns.
+
+The migration stays the ingestion's alone, because that is the account with the owner role. An
+ingestion run does not hold the API's half back: the two units have no ordering and no relationship
+(ADR 0013, ADR 0017), and restarting the API neither stops nor delays a run. With
+`PW_API_AUTH=oidc` the acceptance check says it skipped its authenticated lines, because the script
+cannot pass a token through sudo's clean environment; run section 15.4 by hand when you want them.
 
 The timers keep pointing at the same path, so the next run uses the new code and nothing needs
 re-enabling. Run `systemctl --user daemon-reload` only when a unit file itself changed (copy the
@@ -409,6 +429,53 @@ from 3 h to 17 h), so updating to it means copying both files and running `daemo
 the next 06:00. Never edit files in the checkout: the next `git checkout` would refuse to
 overwrite them. Do not migrate while an ingestion or a dump is in progress (a follow-up window
 counts: `check.sh` says `WAIT` while one is open).
+
+### 11.1 Installing the update command once
+
+The API's checkout, its venv and its system unit are the API account's and root's, while the
+routine update runs as `paperwatch`. Handing that login root would undo ADR 0017's account
+boundary, so one root-owned script and one sudoers line let it run exactly that command and nothing
+else (ADR 0018). Install both once, as the owner, from a clone only root can write: never from
+`/home/paperwatch/paper-watch` or `/home/paperwatch-api/paper-watch`, because whatever installs from
+those copies gives root to whoever can edit them. Root clones it once, and fetches and checks out
+the release itself:
+
+```bash
+# as root, once: the directory and everything the clone writes are root's alone
+install -d -o root -g root -m 0755 /usr/local/src/paper-watch
+git clone https://github.com/enricoroncuzzi/paper-watch /usr/local/src/paper-watch
+```
+
+```bash
+# as root, on the first install and on every reinstall
+git -C /usr/local/src/paper-watch fetch --tags
+git -C /usr/local/src/paper-watch checkout paperwatch-vX.Y.Z
+install -o root -g root -m 0755 \
+        /usr/local/src/paper-watch/deploy/vps/update-api.sh /usr/local/sbin/paperwatch-update-api
+grep -Ev '^(#( |$)|$)' /usr/local/src/paper-watch/deploy/vps/sudoers-paperwatch-update-api
+visudo -cf /usr/local/src/paper-watch/deploy/vps/sudoers-paperwatch-update-api
+install -o root -g root -m 0440 \
+        /usr/local/src/paper-watch/deploy/vps/sudoers-paperwatch-update-api \
+        /etc/sudoers.d/paperwatch-update-api
+```
+
+The `grep` prints the drop-in's rules, and it must print exactly this one line and nothing else;
+stop if it differs. It hides only `# ` comments and blank lines, so an `#include` or `#includedir`
+line, which sudo reads as a directive, still shows. `visudo -cf` only checks that the file parses,
+not what it grants, so that comparison is the owner's:
+
+```sudoers
+paperwatch ALL=(root) NOPASSWD: /usr/local/sbin/paperwatch-update-api
+```
+
+0440 keeps the drop-in root-owned and unwritable, which sudo requires. The script validates its own
+release-tag argument, because a sudoers command entry permits any argument to the command it names;
+sudo's `env_reset` stays on and the entry grants no `SETENV`, so no environment variable reaches the
+script from the caller. Two things stay the owner's on purpose: the script is installed root-owned,
+from root's own clone, and is never run or installed from a checkout `paperwatch` or
+`paperwatch-api` can edit, and a new release of the script itself is reinstalled with the block
+above, by the owner (root), not by the command: the command updates the API, not the root-owned
+program that runs it.
 
 ## 12. Browsing the database from the Mac
 

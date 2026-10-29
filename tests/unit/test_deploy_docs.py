@@ -440,3 +440,60 @@ def test_the_guide_gives_each_of_the_two_roles_its_grants() -> None:
     # roles, because a bad line in either file would lock out the ingestion.
     assert "pg_reload_conf()" in guide and "pg_ctl reload" in guide
     assert "psql -d paperwatch -c 'select 1'" in guide
+
+
+# --- the routine API update (ADR 0018) -----------------------------------------------------
+
+UPDATE_COMMAND = "/usr/local/sbin/paperwatch-update-api"
+UPDATE_SCRIPT = "deploy/vps/update-api.sh"
+SUDOERS_DROP_IN = "deploy/vps/sudoers-paperwatch-update-api"
+
+
+def _guide_slice(start: str, end: str) -> str:
+    guide = GUIDE.read_text()
+    return guide[guide.index(start) : guide.index(end)]
+
+
+def test_the_guide_runs_the_api_half_of_an_update_as_one_command() -> None:
+    # The routine update runs over ssh as `paperwatch`, which has no root: the API's half is one
+    # command with the release tag and nothing else, and the ingestion's half stays the account's
+    # own commands. Section 11 is read as commands, so prose cannot stand in for them.
+    commands = _shell_commands(_guide_slice("## 11. Updating to a new release", "## 12."))
+    assert ["sudo", UPDATE_COMMAND, "paperwatch-vX.Y.Z"] in commands
+    # The ingestion's fetch, checkout, sync and migration are still section 11's own block.
+    assert ["git", "fetch", "--tags"] in commands
+    assert ["git", "checkout", "paperwatch-vX.Y.Z"] in commands
+
+
+def test_the_guide_installs_the_update_command_from_roots_own_clone() -> None:
+    # Whatever root installs from a copy an account can edit, that account can turn into root, so
+    # the install source is a clone only root writes, fetched and checked out at the tag by root.
+    section = _guide_slice("### 11.1 Installing the update command once", "## 12.")
+    commands = _shell_commands(section)
+    clone = "/usr/local/src/paper-watch"
+    created = ["install", "-d", "-o", "root", "-g", "root", "-m", "0755", clone]
+    cloned = ["git", "clone", "https://github.com/enricoroncuzzi/paper-watch", clone]
+    fetched = ["git", "-C", clone, "fetch", "--tags"]
+    checked_out = ["git", "-C", clone, "checkout", "paperwatch-vX.Y.Z"]
+    script = ["install", "-o", "root", "-g", "root", "-m", "0755"]
+    script += [f"{clone}/{UPDATE_SCRIPT}", UPDATE_COMMAND]
+    drop_in = f"{clone}/{SUDOERS_DROP_IN}"
+    shown = ["grep", "-Ev", "^(#( |$)|$)", drop_in]
+    validated = ["visudo", "-cf", drop_in]
+    placed = ["install", "-o", "root", "-g", "root", "-m", "0440"]
+    placed += [drop_in, "/etc/sudoers.d/paperwatch-update-api"]
+    order = [created, cloned, fetched, checked_out, script, shown, validated, placed]
+    assert all(step in commands for step in order)
+    assert [commands.index(step) for step in order] == sorted(commands.index(s) for s in order)
+    # No command reads from either account's home: not the login's checkout, not the API's.
+    assert not [arg for argv in commands for arg in argv if arg.startswith("/home/")]
+
+
+def test_the_guide_shows_the_drop_in_rules_the_owner_compares() -> None:
+    # visudo -cf checks only that the drop-in parses, so the owner compares the grep's output with
+    # the line the guide shows; that line must be exactly the drop-in's rules.
+    section = _guide_slice("### 11.1 Installing the update command once", "## 12.")
+    [shown] = re.findall(r"```sudoers\n(.*?)```", section, re.DOTALL)
+    drop_in = (REPO_ROOT / SUDOERS_DROP_IN).read_text().splitlines()
+    rules = [line for line in drop_in if not re.fullmatch(r"(#( .*)?)?", line)]
+    assert shown.splitlines() == rules
