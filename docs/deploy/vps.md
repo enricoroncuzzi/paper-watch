@@ -461,8 +461,8 @@ install -o root -g root -m 0440 \
 
 The `grep` prints the drop-in's rules, and it must print exactly this one line and nothing else;
 stop if it differs. It hides only `# ` comments and blank lines, so an `#include` or `#includedir`
-line, which sudo reads as a directive, still shows. `visudo -cf` only checks that the file parses, not what it grants, so that
-comparison is the owner's:
+line, which sudo reads as a directive, still shows. `visudo -cf` only checks that the file parses,
+not what it grants, so that comparison is the owner's:
 
 ```sudoers
 paperwatch ALL=(root) NOPASSWD: /usr/local/sbin/paperwatch-update-api
