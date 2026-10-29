@@ -38,6 +38,8 @@ api_check=$checkout/deploy/vps/api-check.sh
 api_url=http://127.0.0.1:8000
 ready_timeout=300
 poll=5
+# Root's own temporary directory, fixed for the same reason as every other path here.
+tmp_dir=/tmp
 test_mode=0
 if [ "${PW_UPDATE_UNPRIVILEGED:-0}" = 1 ]; then
     test_mode=1
@@ -51,6 +53,7 @@ if [ "${PW_UPDATE_UNPRIVILEGED:-0}" = 1 ]; then
     api_url=${PW_UPDATE_API_URL:-$api_url}
     ready_timeout=${PW_UPDATE_READY_TIMEOUT:-$ready_timeout}
     poll=${PW_UPDATE_POLL:-$poll}
+    tmp_dir=${TMPDIR:-/tmp}
 fi
 # The commands run as the API's account get this PATH and nothing else. Under sudo it is the system
 # path; the tests point it at their stubs, which is the only reason it is ever different.
@@ -281,7 +284,7 @@ main() {
     fi
 
     step "Checking $tag's unit against the installed one"
-    released_unit=$(mktemp "${TMPDIR:-/tmp}/paperwatch-update-api.XXXXXX") \
+    released_unit=$(mktemp "$tmp_dir/paperwatch-update-api.XXXXXX") \
         || die "cannot create a temporary file for the release's unit"
     if ! git_as_api show "$tag:$unit_in_release" >"$released_unit" 2>/dev/null; then
         die "$tag has no $unit_in_release, so it is not a Paper Watch release: nothing was changed"
