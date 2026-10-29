@@ -440,3 +440,73 @@ def test_the_guide_gives_each_of_the_two_roles_its_grants() -> None:
     # roles, because a bad line in either file would lock out the ingestion.
     assert "pg_reload_conf()" in guide and "pg_ctl reload" in guide
     assert "psql -d paperwatch -c 'select 1'" in guide
+
+
+# --- the routine API update (ADR 0018) -----------------------------------------------------
+
+UPDATE_COMMAND = "/usr/local/sbin/paperwatch-update-api"
+UPDATE_SCRIPT = "deploy/vps/update-api.sh"
+SUDOERS_DROP_IN = "deploy/vps/sudoers-paperwatch-update-api"
+
+
+def _guide_slice(start: str, end: str) -> str:
+    guide = GUIDE.read_text()
+    return guide[guide.index(start) : guide.index(end)]
+
+
+def test_the_guide_runs_the_api_half_of_an_update_as_one_command() -> None:
+    # The routine update runs over ssh as `paperwatch`, which has no root: the API's half is one
+    # command with the release tag and nothing else, and the ingestion's half stays the account's
+    # own commands. Section 11 is read as commands, so prose cannot stand in for them.
+    commands = _shell_commands(_guide_slice("## 11. Updating to a new release", "## 12."))
+    assert ["sudo", UPDATE_COMMAND, "paperwatch-vX.Y.Z"] in commands
+    # The ingestion's fetch, checkout, sync and migration are still section 11's own block.
+    assert ["git", "fetch", "--tags"] in commands
+    assert ["git", "checkout", "paperwatch-vX.Y.Z"] in commands
+
+
+def test_the_guide_installs_the_update_command_once_with_root() -> None:
+    # One root-owned copy, validated before it is placed: never the copy in a checkout, which the
+    # routine update's login can edit.
+    commands = _shell_commands(
+        _guide_slice("### 11.1 Installing the update command once", "## 12.")
+    )
+    assert [
+        "install",
+        "-o",
+        "root",
+        "-g",
+        "root",
+        "-m",
+        "0755",
+        UPDATE_SCRIPT,
+        UPDATE_COMMAND,
+    ] in commands
+    validated = ["visudo", "-cf", SUDOERS_DROP_IN]
+    placed = [
+        "install",
+        "-o",
+        "root",
+        "-g",
+        "root",
+        "-m",
+        "0440",
+        SUDOERS_DROP_IN,
+        "/etc/sudoers.d/paperwatch-update-api",
+    ]
+    assert validated in commands and placed in commands
+    assert commands.index(validated) < commands.index(placed)
+
+
+def test_the_guide_says_the_script_itself_is_the_owners_to_install() -> None:
+    # Deliberate, not an omission: the command updates the API, and a command that could replace
+    # its own root-owned program would be root for whoever can name a tag.
+    text = " ".join(_guide_slice("### 11.1 Installing the update command once", "## 12.").split())
+    assert "reinstalled the same way, by the owner" in text
+
+
+def test_the_update_permission_is_recorded_in_an_adr() -> None:
+    adr = REPO_ROOT / "docs" / "adr" / "0018-the-api-update-through-one-root-owned-script.md"
+    text = adr.read_text()
+    assert UPDATE_COMMAND in text
+    assert SUDOERS_DROP_IN in text
