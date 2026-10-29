@@ -119,10 +119,6 @@ map_line_present() {
         '$1 == map && $2 == sys && $3 == role { found = 1 } END { exit !found }' "$1"
 }
 
-api_checkout_tag() {
-    git -C "$api_checkout" describe --tags --exact-match 2>/dev/null
-}
-
 env_value() {
     awk -v key="$2" 'index($0, key "=") == 1 { print substr($0, length(key) + 2); exit }' "$1"
 }
@@ -146,6 +142,41 @@ as_api_in() {  # directory command...
     shift
     quoted=$(printf '%q ' "$@")
     runuser -u "$api" -- env "HOME=$api_home" bash -c "cd $(printf '%q' "$dir") && $quoted"
+}
+
+# --- reading a checkout's tag --------------------------------------------------------------
+
+# Neither checkout is root's, and git refuses to read a repository owned by another uid ("detected
+# dubious ownership"), so a tag is read by the account that owns that checkout, as step 3's clone,
+# fetch and checkout already are. Root never runs git on either one and no global safe.directory is
+# added.
+#
+# The read is `git tag --points-at HEAD` rather than `describe --tags --exact-match` because
+# describe exits 128 both for a commit no tag points at and for every real failure, so the two
+# cannot be told apart and one of them has to be guessed; the listing exits 0 with nothing to print
+# on a commit no tag points at. Git's own words are left on stderr, and the caller gets which case
+# it was: 0 has the tag on stdout, 1 means no tag points at HEAD, 2 is a read that failed.
+checkout_tag() {  # checkout command...
+    local checkout=$1 tag
+    shift
+    # A checkout that is not there yet is not a failed read: the caller reports the step as missing.
+    [ -d "$checkout/.git" ] || return 1
+    tag=$("$@" git -C "$checkout" tag --points-at HEAD) || return 2
+    [ -n "$tag" ] || return 1
+    # A release checkout carries one tag; if a commit carries several, the first is enough.
+    printf '%s\n' "${tag%%$'\n'*}"
+}
+
+# The tag the ingestion serves, which is what step 3 puts the API's checkout on: both accounts
+# serve one release, and a checkout that drifts is a different program halfway through a run.
+release_tag() {
+    checkout_tag "$owner_checkout" as_user "$owner"
+}
+
+# The tag the API's checkout has checked out. The caller decides whether a failed read is a stop
+# (`prepare`) or a step that is not done yet (`status`, `switch`).
+api_checkout_tag() {
+    checkout_tag "$api_checkout" as_api
 }
 
 user_manager() {
@@ -210,12 +241,6 @@ env_point() {
 
 # --- prepare: steps 1 to 4 -----------------------------------------------------------------
 
-# The tag is read from the ingestion's checkout rather than chosen here: both accounts serve one
-# release, and a checkout that drifts is a different program halfway through a run.
-release_tag() {
-    git -C "$owner_checkout" describe --tags --exact-match 2>/dev/null
-}
-
 prove_mapping() {
     # A bad line in either file locks the ingestion out of the database it owns, so the owner's
     # own connection is proven before the new account's.
@@ -256,10 +281,15 @@ cmd_prepare() {
     prove_mapping
 
     step "Step 3: its checkout, its uv and its venv"
-    local tag
-    if ! tag=$(release_tag); then
-        die "$owner_checkout has no release tag to copy: check out the release the ingestion serves first"
-    fi
+    # A read that fails is a stop, and the message says which failure it was: a commit no tag points
+    # at is the operator's release to check out, anything else is git's own refusal, printed above.
+    local tag status=0
+    tag=$(release_tag) || status=$?
+    case $status in
+        0) ;;
+        1) die "$owner_checkout has no release tag to copy: check out the release the ingestion serves first" ;;
+        *) die "git could not read the tag of $owner_checkout: its own error is above, so fix that before going on" ;;
+    esac
     if [ -d "$api_checkout/.git" ]; then
         ok "$api_checkout is already cloned"
     else
@@ -565,7 +595,13 @@ cmd_status() {
     if tag=$(api_checkout_tag); then
         say "step 3 checkout: done $tag"
     else
-        say "step 3 checkout: missing"
+        # A read git refused has already said why on stderr; the report says it was not a checkout
+        # that is simply not there yet.
+        if [ -d "$api_checkout/.git" ]; then
+            say "step 3 checkout: unreadable"
+        else
+            say "step 3 checkout: missing"
+        fi
         prepared=0
     fi
     if [ -x "$uv_bin" ] && [ -d "$api_checkout/.venv" ]; then
