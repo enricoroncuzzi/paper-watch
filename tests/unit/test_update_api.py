@@ -581,3 +581,33 @@ def test_no_run_prints_a_secret(sandbox: Sandbox) -> None:
         output = result.stdout + result.stderr
         for secret in SECRETS:
             assert secret not in output
+
+
+# --- the sudoers drop-in -------------------------------------------------------------------
+
+
+def _sudoers_rules() -> list[str]:
+    lines = [line.strip() for line in SUDOERS.read_text().splitlines()]
+    return [line for line in lines if line and not line.startswith("#")]
+
+
+def test_the_sudoers_drop_in_grants_exactly_one_command() -> None:
+    # The account boundary of ADR 0017 stays intact: `paperwatch` gets one program, not root.
+    assert _sudoers_rules() == [f"paperwatch ALL=(root) NOPASSWD: {INSTALLED_PATH}"]
+
+
+def test_the_sudoers_drop_in_has_no_wildcard_or_setenv() -> None:
+    text = SUDOERS.read_text()
+    # A wildcard, a second command or SETENV would each hand the login more than the one script.
+    assert not set("*?[]") & set(text), "the drop-in must not widen the rule with a wildcard"
+    [rule] = _sudoers_rules()
+    assert "SETENV" not in rule
+    assert "env_keep" not in rule
+    assert rule.split() == ["paperwatch", "ALL=(root)", "NOPASSWD:", INSTALLED_PATH]
+
+
+def test_the_drop_in_is_installed_as_root_owned_files_not_scripts() -> None:
+    # A sudoers file is data: sudo refuses one that is group or world writable, and the guide
+    # installs this copy 0440 for that reason.
+    assert oct(SUDOERS.stat().st_mode & 0o777) == "0o644"
+    assert oct(SCRIPT.stat().st_mode & 0o777) == "0o755"

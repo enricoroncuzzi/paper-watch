@@ -1,0 +1,10 @@
+# The routine update's login, `paperwatch`, may run exactly one root command: the API update
+# script. That script is installed root-owned at the path below, never from a checkout the login can
+# edit, and it checks its own release-tag argument, which it must: a sudo entry that names a
+# command also permits any argument to it.
+#
+# sudo's env_reset stays on and this line grants no SETENV, so the caller cannot hand the script a
+# path, account, URL or timeout through the environment. Install as root with visudo -cf, then at
+# mode 0440 in /etc/sudoers.d as docs/deploy/vps.md section 11.1 shows. A new release of the script
+# itself is reinstalled the same way, by the owner: this command updates the API, not itself.
+paperwatch ALL=(root) NOPASSWD: /usr/local/sbin/paperwatch-update-api
