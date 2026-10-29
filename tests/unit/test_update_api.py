@@ -15,7 +15,6 @@ import hashlib
 import os
 import shutil
 import subprocess
-import sys
 import textwrap
 from dataclasses import dataclass
 from pathlib import Path
@@ -270,6 +269,12 @@ def _build_stubs(sandbox: Sandbox) -> None:
         "curl",
         f"""
         [ -f {rec}/healthy ] && exit 0
+        # A release that does not come up leaves the port silent until the rollback puts the
+        # previous one back, which is what `previous.answers` models.
+        if [ -f {rec}/previous.answers ]; then
+            tag=$(git -C {sandbox.checkout} describe --tags --exact-match 2>/dev/null)
+            [ "$tag" = {OLD_TAG} ] && exit 0
+        fi
         exit 22
         """,
     )
@@ -279,7 +284,7 @@ def _build_stubs(sandbox: Sandbox) -> None:
     uv.parent.mkdir(parents=True)
     uv.write_text(
         "#!/bin/sh\n"
-        f'printf \'%s\\n\' "$*" >> {rec}/uv\n'
+        f"printf '%s\\n' \"$*\" >> {rec}/uv\n"
         "if [ ! -f pyproject.toml ]; then\n"
         "    printf 'error: no project found in %s\\n' \"$PWD\" >&2\n"
         "    exit 2\n"
@@ -453,7 +458,9 @@ def test_a_release_whose_unit_changed_stops_before_the_checkout_moves(tmp_path: 
     assert sandbox.records("systemctl") == []
 
 
-def test_a_release_with_the_installed_unit_moves_the_checkout_and_syncs_it(sandbox: Sandbox) -> None:
+def test_a_release_with_the_installed_unit_moves_the_checkout_and_syncs_it(
+    sandbox: Sandbox,
+) -> None:
     sandbox.run(NEW_TAG)
     assert sandbox.checkout_tag() == NEW_TAG
     assert "sync --frozen --no-dev" in sandbox.records("uv")
@@ -480,3 +487,97 @@ def test_every_repository_step_runs_as_the_api_account(sandbox: Sandbox) -> None
     assert "git -C" in ran and "fetch --tags --quiet origin" in ran
     assert "checkout --quiet paperwatch-v1.1.0" in ran
     assert "uv sync --frozen --no-dev" in ran
+
+
+# --- the restart, the health wait, the acceptance check and the rollback --------------------
+
+
+def test_a_good_release_is_restarted_and_accepted(sandbox: Sandbox) -> None:
+    result = sandbox.run(NEW_TAG)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert sandbox.checkout_tag() == NEW_TAG
+    assert sandbox.records("systemctl").count("restart paperwatch-api") == 1
+    assert "all checks passed" in result.stdout
+    assert NEW_TAG in result.stdout
+
+
+def test_the_acceptance_check_runs_from_the_checkout_as_the_api_account(sandbox: Sandbox) -> None:
+    result = sandbox.run(NEW_TAG)
+    assert result.returncode == 0, result.stdout + result.stderr
+    ran = "\n".join(sandbox.records("runuser"))
+    assert "api-check.sh http://127.0.0.1:8000" in ran
+    # The token is minted by the release's own project, as section 15.4 does, and the token itself
+    # never reaches an argv or the output.
+    minted = [call for call in sandbox.records("uv") if "api-token" in call]
+    assert minted == [
+        f"run --frozen --no-dev --env-file {sandbox.api_env} paperwatch api-token --live"
+    ]
+    assert "fake-minted-token" not in result.stdout + result.stderr
+
+
+def test_a_release_that_never_answers_healthz_is_put_back(sandbox: Sandbox) -> None:
+    # The new release does not come up; its predecessor does. The rollback is the whole point of
+    # the script: the API answers again, and the command still fails so the caller knows.
+    sandbox.healthy(answers=False)
+    (sandbox.rec / "previous.answers").write_text("")
+    result = sandbox.run(NEW_TAG)
+    assert result.returncode == 1
+    assert sandbox.checkout_tag() == OLD_TAG
+    assert sandbox.records("systemctl").count("restart paperwatch-api") == 2
+    assert [call for call in sandbox.records("uv") if call.startswith("sync")] == [
+        "sync --frozen --no-dev",
+        "sync --frozen --no-dev",
+    ]
+    assert "serves paperwatch-v1.0.0 again" in result.stderr
+
+
+def test_a_failed_acceptance_check_puts_the_previous_release_back(sandbox: Sandbox) -> None:
+    sandbox.accept(passes=False)
+    result = sandbox.run(NEW_TAG)
+    assert result.returncode == 1
+    assert "FAIL: healthz answers" in result.stdout + result.stderr
+    assert sandbox.checkout_tag() == OLD_TAG
+    assert sandbox.records("systemctl").count("restart paperwatch-api") == 2
+    assert "serves paperwatch-v1.0.0 again" in result.stderr
+
+
+def test_a_failed_restart_puts_the_previous_release_back(sandbox: Sandbox) -> None:
+    # One restart fails, the next one (the rollback's) succeeds: a systemd that refuses once must
+    # not leave the API on code the caller was told had failed.
+    (sandbox.rec / "restart.fails").write_text("")
+    result = sandbox.run(NEW_TAG)
+    assert result.returncode == 1
+    assert sandbox.checkout_tag() == OLD_TAG
+    assert sandbox.records("systemctl").count("restart paperwatch-api") == 2
+    assert (sandbox.rec / "active").exists()
+    assert "serves paperwatch-v1.0.0 again" in result.stderr
+
+
+def test_a_rollback_that_does_not_answer_reports_the_api_as_down(sandbox: Sandbox) -> None:
+    # Nothing answers, so the caller is told the API is down and gets the journal rather than a
+    # cheerful summary: whoever reads that terminal has one place to look.
+    sandbox.healthy(answers=False)
+    result = sandbox.run(NEW_TAG)
+    assert result.returncode == 1
+    assert "did not finish" in result.stderr
+    assert "fake journal line" in result.stderr
+    assert sandbox.checkout_tag() == OLD_TAG
+
+
+def test_the_release_already_served_is_synced_and_restarted(sandbox: Sandbox) -> None:
+    # Rerunning after a fix is a normal update, not an error: the venv is synced and the unit
+    # restarted, and the way back is the same tag.
+    result = sandbox.run(OLD_TAG)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert sandbox.checkout_tag() == OLD_TAG
+    assert sandbox.records("systemctl").count("restart paperwatch-api") == 1
+    assert "already on" in result.stdout
+
+
+def test_no_run_prints_a_secret(sandbox: Sandbox) -> None:
+    for outcome in (True, False):
+        sandbox.accept(passes=outcome)
+        result = sandbox.run(NEW_TAG)
+        output = result.stdout + result.stderr
+        for secret in SECRETS:
+            assert secret not in output

@@ -59,6 +59,11 @@ if [ "$test_mode" = 1 ]; then
     api_path=$PATH
 fi
 
+# Assigned in main: the release asked for, and the one the checkout serves now. Global because the
+# failure path below needs them, and bash scoping would otherwise hide main's own copies from it.
+tag=
+previous=
+
 # --- output --------------------------------------------------------------------------------
 
 say() {
@@ -144,6 +149,94 @@ previous_release() {
     git_as_api describe --tags --abbrev=0 --match 'paperwatch-v*' 2>/dev/null
 }
 
+# --- the restart, and the two ways of proving it -------------------------------------------
+
+# Bounded on purpose: a unit that is restarting never answers, and the way back is worth more than
+# waiting. The count is iteration based so a stubbed sleep cannot spin forever.
+wait_healthy() {
+    local tries=$((ready_timeout / poll)) i=1
+    [ "$tries" -ge 1 ] || tries=1
+    say "waiting for the API on $api_url/healthz (up to ${ready_timeout}s)"
+    while [ "$i" -le "$tries" ]; do
+        if systemctl is-active --quiet paperwatch-api \
+            && curl -fsS -o /dev/null --max-time 5 "$api_url/healthz" 2>/dev/null; then
+            ok "the unit is active and $api_url/healthz answers"
+            return 0
+        fi
+        i=$((i + 1))
+        if [ "$i" -le "$tries" ]; then
+            sleep "$poll"
+        fi
+    done
+    return 1
+}
+
+# Section 15.4's acceptance check, from the release's own checkout. An HMAC token is single use, so
+# the check mints one per authenticated request and receives a command, never a token. An OIDC
+# token cannot be minted here and sudo's clean environment carries none, so the check runs without
+# one and says that it skipped its authenticated lines.
+run_acceptance() {
+    if [ ! -x "$api_check" ]; then
+        warn "the release has no executable $api_check, so nothing accepted this release"
+        return 1
+    fi
+    local auth=
+    if [ -f "$api_env" ]; then
+        auth=$(env_value "$api_env" PW_API_AUTH)
+    fi
+    if [ "$auth" = hmac ]; then
+        as_api_in "$checkout" env \
+            "PW_CHECK_TOKEN_CMD=$uv_bin run --frozen --no-dev --env-file $api_env paperwatch api-token --live" \
+            "$api_check" "$api_url"
+    else
+        as_api_in "$checkout" "$api_check" "$api_url"
+    fi
+}
+
+show_evidence() {
+    warn "the evidence, for the failure above"
+    systemctl status --no-pager --lines=0 paperwatch-api >&2 || true
+    journalctl -u paperwatch-api -n 50 --no-pager >&2 || true
+}
+
+# --- the way back --------------------------------------------------------------------------
+
+# Every step is attempted only after the one before it worked, so a checkout that would not move is
+# reported as the checkout it is rather than as an API that died. The acceptance check is not rerun:
+# the release that was already accepted is the one coming back.
+rollback() {  # reason
+    step "Rolling back to $previous"
+    if ! git_as_api checkout --quiet "$previous"; then
+        warn "could not check out $previous: the API is still on $tag"
+        show_evidence
+        return 1
+    fi
+    if ! as_api_in "$checkout" "$uv_bin" sync --frozen --no-dev; then
+        warn "uv sync failed for $previous, so its venv is not that release's"
+        show_evidence
+        return 1
+    fi
+    if ! systemctl restart paperwatch-api; then
+        warn "could not restart paperwatch-api on $previous"
+        show_evidence
+        return 1
+    fi
+    if ! wait_healthy; then
+        warn "the API does not answer /healthz on $previous either"
+        show_evidence
+        return 1
+    fi
+    ok "the API answers on $api_url again, serving $previous"
+}
+
+release_failed() {  # reason
+    warn "$1"
+    if rollback; then
+        die "the update to $tag failed, so the API serves $previous again: fix the cause, then rerun"
+    fi
+    die "the update to $tag failed and the rollback to $previous did not finish: read the evidence above before going on"
+}
+
 # --- entry point ---------------------------------------------------------------------------
 
 main() {
@@ -156,7 +249,7 @@ main() {
         usage >&2
         exit 2
     fi
-    local tag=$1
+    tag=$1
     # The same shape release-please publishes. It is checked here, not in the sudoers line: a sudo
     # command entry permits any argument, so the script is the boundary.
     if [[ ! $tag =~ ^paperwatch-v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -183,7 +276,6 @@ main() {
         die "origin has no release tag $tag: check the release name, then rerun"
     fi
 
-    local previous
     if ! previous=$(previous_release); then
         die "cannot tell which release $checkout serves, so a failed update has no previous release to go back to: check it out by hand, then rerun"
     fi
@@ -200,15 +292,30 @@ main() {
     ok "$system_unit is the unit $tag publishes"
 
     step "Checking out $tag and syncing its venv"
-    git_as_api checkout --quiet "$tag" || die "checking out $tag failed: nothing was restarted"
+    git_as_api checkout --quiet "$tag" || release_failed "checking out $tag failed"
     if [ "$(git_as_api describe --tags --exact-match 2>/dev/null)" != "$tag" ]; then
-        die "$checkout is not at $tag after the checkout: nothing was restarted"
+        release_failed "$checkout is not at $tag after the checkout"
     fi
     as_api_in "$checkout" "$uv_bin" sync --frozen --no-dev \
-        || die "uv sync failed for $tag: the API is still running $previous"
+        || release_failed "uv sync failed for $tag"
     ok "the venv is synced for $tag"
 
-    die "$tag is checked out and synced, but this build stops before the restart"
+    step "Restarting paperwatch-api on $tag"
+    systemctl restart paperwatch-api || release_failed "restarting paperwatch-api failed"
+    if ! wait_healthy; then
+        release_failed "the API did not answer /healthz on $tag within ${ready_timeout}s"
+    fi
+
+    step "Running the acceptance check"
+    if ! run_acceptance; then
+        release_failed "the acceptance check failed on $tag"
+    fi
+
+    step "Updated"
+    say "The API serves $tag from $checkout."
+    if [ "$previous" = "$tag" ]; then
+        say "It was already on $tag: the venv was synced and the unit restarted."
+    fi
 }
 
 main "$@"
