@@ -471,6 +471,7 @@ def test_the_guide_installs_the_update_command_once_with_root() -> None:
     commands = _shell_commands(
         _guide_slice("### 11.1 Installing the update command once", "## 12.")
     )
+    checkout = f"/home/paperwatch/paper-watch/{UPDATE_SCRIPT}"
     assert [
         "install",
         "-o",
@@ -479,10 +480,11 @@ def test_the_guide_installs_the_update_command_once_with_root() -> None:
         "root",
         "-m",
         "0755",
-        UPDATE_SCRIPT,
+        checkout,
         UPDATE_COMMAND,
     ] in commands
-    validated = ["visudo", "-cf", SUDOERS_DROP_IN]
+    drop_in = f"/home/paperwatch/paper-watch/{SUDOERS_DROP_IN}"
+    validated = ["visudo", "-cf", drop_in]
     placed = [
         "install",
         "-o",
@@ -491,7 +493,7 @@ def test_the_guide_installs_the_update_command_once_with_root() -> None:
         "root",
         "-m",
         "0440",
-        SUDOERS_DROP_IN,
+        drop_in,
         "/etc/sudoers.d/paperwatch-update-api",
     ]
     assert validated in commands and placed in commands

@@ -408,11 +408,12 @@ sudo /usr/local/sbin/paperwatch-update-api paperwatch-vX.Y.Z
 
 That command fetches the tags from the API checkout's existing origin, checks the release's
 `deploy/vps/paperwatch-api.service` against the installed unit, checks the tag out and runs
-`uv sync --frozen --no-dev` as `paperwatch-api`, restarts `paperwatch-api`, waits for `/healthz`
-and runs the release's `deploy/vps/api-check.sh` as the API's account. When any of that fails it
-checks the previous release back out, syncs and restarts it, and exits non-zero. It never installs
-a unit: if the release's unit differs from `/etc/systemd/system/paperwatch-api.service` it stops
-before touching the checkout, and the owner installs the unit by hand (section 15.3), then reruns.
+`uv sync --frozen --no-dev` as `paperwatch-api`, restarts `paperwatch-api`, waits up to five
+minutes for `/healthz` and runs the release's `deploy/vps/api-check.sh` as the API's account. When
+any of that fails it checks the previous release back out, syncs and restarts it, and exits
+non-zero. It never installs a unit: if the release's unit differs from
+`/etc/systemd/system/paperwatch-api.service` it stops before touching the checkout, and the owner
+installs the unit by hand (section 15.3), then reruns.
 
 The migration stays the ingestion's alone, because that is the account with the owner role. An
 ingestion run does not hold the API's half back: the two units have no ordering and no relationship
@@ -434,13 +435,15 @@ counts: `check.sh` says `WAIT` while one is open).
 The API's checkout, its venv and its system unit are the API account's and root's, while the
 routine update runs as `paperwatch`. Handing that login root would undo ADR 0017's account
 boundary, so one root-owned script and one sudoers line let it run exactly that command and nothing
-else (ADR 0018). Install both once, as the owner, from a checkout of a release that contains them:
+else (ADR 0018). Install both once, as the owner, from the release's checkout on the server:
 
 ```bash
-# as root, from a checkout of the release
-install -o root -g root -m 0755 deploy/vps/update-api.sh /usr/local/sbin/paperwatch-update-api
-visudo -cf deploy/vps/sudoers-paperwatch-update-api
-install -o root -g root -m 0440 deploy/vps/sudoers-paperwatch-update-api \
+# as root, from the ingestion's checkout on the server
+install -o root -g root -m 0755 \
+        /home/paperwatch/paper-watch/deploy/vps/update-api.sh /usr/local/sbin/paperwatch-update-api
+visudo -cf /home/paperwatch/paper-watch/deploy/vps/sudoers-paperwatch-update-api
+install -o root -g root -m 0440 \
+        /home/paperwatch/paper-watch/deploy/vps/sudoers-paperwatch-update-api \
         /etc/sudoers.d/paperwatch-update-api
 ```
 

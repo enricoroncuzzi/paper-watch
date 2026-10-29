@@ -451,7 +451,7 @@ def test_a_release_whose_unit_changed_stops_before_the_checkout_moves(tmp_path: 
     result = sandbox.run(NEW_TAG)
     assert result.returncode == 1
     assert str(sandbox.system_unit) in result.stderr
-    assert "differs" in result.stderr and "11.1" in result.stderr
+    assert "differs" in result.stderr and "15.3" in result.stderr
     assert sandbox.checkout_tag() == OLD_TAG
     assert _snapshot(sandbox.checkout) == before
     assert sandbox.records("uv") == []
@@ -608,6 +608,6 @@ def test_the_sudoers_drop_in_has_no_wildcard_or_setenv() -> None:
 
 def test_the_drop_in_is_installed_as_root_owned_files_not_scripts() -> None:
     # A sudoers file is data: sudo refuses one that is group or world writable, and the guide
-    # installs this copy 0440 for that reason.
-    assert oct(SUDOERS.stat().st_mode & 0o777) == "0o644"
-    assert oct(SCRIPT.stat().st_mode & 0o777) == "0o755"
+    # installs this copy 0440 for that reason. The executable bits are what a checkout can prove.
+    assert os.access(SCRIPT, os.X_OK)
+    assert not os.access(SUDOERS, os.X_OK)

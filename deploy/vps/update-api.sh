@@ -14,7 +14,7 @@
 #
 # It never installs a unit. When the release's deploy/vps/paperwatch-api.service differs from
 # /etc/systemd/system/paperwatch-api.service it stops before touching the checkout and says the
-# owner has to install the unit by hand (section 11.1).
+# owner has to install the unit by hand (section 15.3).
 #
 # An ingestion run does not hold this back and is not waited for: the API and the ingestion have no
 # ordering and no relationship (ADR 0013, 0017), and a restart of the API neither stops nor delays
@@ -113,7 +113,7 @@ it, then exits non-zero.
 
 It stops before touching the checkout when the release's deploy/vps/paperwatch-api.service differs
 from the installed /etc/systemd/system/paperwatch-api.service: install that unit by hand first
-(docs/deploy/vps.md section 11.1).
+(docs/deploy/vps.md section 15.3).
 USAGE
 }
 
@@ -237,7 +237,8 @@ release_failed() {  # reason
     if rollback; then
         die "the update to $tag failed, so the API serves $previous again: fix the cause, then rerun"
     fi
-    die "the update to $tag failed and the rollback to $previous did not finish: read the evidence above before going on"
+    die "the update to $tag failed and the rollback to $previous did not finish:" \
+        "read the evidence above before going on"
 }
 
 # --- entry point ---------------------------------------------------------------------------
@@ -280,7 +281,8 @@ main() {
     fi
 
     if ! previous=$(previous_release); then
-        die "cannot tell which release $checkout serves, so a failed update has no previous release to go back to: check it out by hand, then rerun"
+        die "cannot tell which release $checkout serves, so a failed update has no previous release to go back to:" \
+            "check it out by hand, then rerun"
     fi
 
     step "Checking $tag's unit against the installed one"
@@ -290,7 +292,8 @@ main() {
         die "$tag has no $unit_in_release, so it is not a Paper Watch release: nothing was changed"
     fi
     if ! cmp -s "$released_unit" "$system_unit"; then
-        die "$tag's $unit_in_release differs from $system_unit, and installing a unit is the owner's step, never this script's: install it by hand as docs/deploy/vps.md section 11.1 shows, then rerun. Nothing was changed."
+        die "$tag's $unit_in_release differs from $system_unit, and installing a unit is the owner's step, never this script's:" \
+            "install it by hand as docs/deploy/vps.md section 15.3 shows, then rerun. Nothing was changed."
     fi
     ok "$system_unit is the unit $tag publishes"
 
