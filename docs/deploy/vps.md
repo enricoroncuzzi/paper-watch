@@ -960,6 +960,8 @@ copy.
 3. **Give the account its checkout, its `uv` and its venv** at the same release tag the ingestion
    serves, exactly as section 15.1 shows. The model cache is created here on first start; nothing is
    copied from `/home/paperwatch/.cache/paperwatch-models`, and the ingestion keeps its own copy.
+   The script reads each checkout's tag as the account that owns it, because git refuses a
+   repository owned by another user (`dubious ownership`), and it never sets `safe.directory`.
 
 4. **Move the env file.** As root, write the file section 15.2 shows, with the same values the old
    `~/.config/paperwatch/api.env` holds and `PW_LOCAL_EMBEDDING_CACHE_DIR` pointing at

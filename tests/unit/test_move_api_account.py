@@ -312,6 +312,40 @@ def _build_stubs(sandbox: Sandbox) -> None:
         exec "$@"
         """,
     )
+    # git refuses a repository owned by another uid, as it does on the server ("detected dubious
+    # ownership"), and the tree's files all belong to the test runner: the stub models the server's
+    # ownership instead, a checkout under home/<account>/ belonging to that account and the
+    # fixture's release to root, and records who asked so a test can prove who read a tag.
+    (sandbox.bin / "git").write_text(
+        f"""#!{sys.executable}
+import os
+import subprocess
+import sys
+
+args = sys.argv[1:]
+who = os.environ.get("MOVE_AS", "root")
+with open(os.path.join(os.environ["REC"], "git"), "a") as log:
+    log.write(who + " git " + " ".join(args) + "\\n")
+# A read that fails for a reason of its own, which the script has to repeat rather than guess.
+if os.path.exists(os.path.join(os.environ["REC"], "git.fails")):
+    sys.stderr.write("fatal: not a git repository (or any of the parent directories): .git\\n")
+    sys.exit(128)
+owner = None
+if "-C" in args:
+    checkout = args[args.index("-C") + 1]
+    path = os.path.realpath(checkout).split(os.sep)
+    home = os.path.realpath(os.environ["PW_MOVE_ROOT"]).split(os.sep)
+    under_home = path[: len(home)] == home and path[len(home) : len(home) + 1] == ["home"]
+    owner = path[len(home) + 1] if under_home else "root"
+# A clone's source is the fixture's own repository rather than a checkout, and it makes a
+# repository the caller owns, so it is not what this models.
+if owner is not None and owner != who and "clone" not in args:
+    sys.stderr.write("fatal: detected dubious ownership in repository at '" + checkout + "'\\n")
+    sys.exit(128)
+sys.exit(subprocess.run(["{REAL_GIT}", *args], env=os.environ).returncode)
+"""
+    )
+    sandbox.bin.joinpath("git").chmod(0o755)
     # Postgres answers from the map it last loaded, which is what a reload changes: the file on
     # disk alone grants nothing.
     _stub(
@@ -607,6 +641,77 @@ def test_prepare_uses_the_release_tag_the_ingestion_serves(sandbox: Sandbox) -> 
     assert unit.read_text() == UNIT_FROM_CHECKOUT
     # The environment is the committed lock and nothing else, as section 3 installs it.
     assert "uv sync --frozen --no-dev" in sandbox.records("uv")
+
+
+def test_prepare_reads_the_release_tag_as_the_account_that_owns_the_checkout(
+    sandbox: Sandbox,
+) -> None:
+    # git refuses a repository owned by another uid ("detected dubious ownership"), and root owns
+    # neither checkout: a tag is read by the account whose repository it is, as step 3's clone,
+    # fetch and checkout already are. Root reading it is the server's "has no release tag" stop.
+    sandbox.prepare()
+    reads = sandbox.records("git")
+    assert f"{OWNER} git -C {sandbox.path(f'home/{OWNER}/paper-watch')} " in "\n".join(reads)
+    assert not [line for line in reads if line.startswith("root ")]
+
+
+def test_status_reads_the_api_checkout_tag_as_the_account_that_owns_it(sandbox: Sandbox) -> None:
+    sandbox.prepare()
+    result = sandbox.run("status")
+    assert result.returncode == 0, result.stderr
+    assert f"step 3 checkout: done {TAG}" in result.stdout
+    assert f"{API} git -C {sandbox.api_checkout} " in "\n".join(sandbox.records("git"))
+
+
+def test_prepare_repeats_what_git_said_when_the_tag_read_really_fails(sandbox: Sandbox) -> None:
+    # The operator is reading one terminal: a read that fails for a reason git knows is reported in
+    # git's words, not as a checkout that is on no release tag.
+    (sandbox.rec / "git.fails").write_text("")
+    result = sandbox.run("prepare")
+    assert result.returncode == 1
+    assert "not a git repository" in result.stderr
+    assert "no release tag" not in result.stderr
+    assert not sandbox.api_checkout.exists()
+
+
+def test_status_says_a_checkout_it_cannot_read_is_unreadable(sandbox: Sandbox) -> None:
+    sandbox.prepare()
+    (sandbox.rec / "git.fails").write_text("")
+    result = sandbox.run("status")
+    assert result.returncode == 0
+    assert "step 3 checkout: unreadable" in result.stdout
+    assert "not a git repository" in result.stderr
+
+
+def test_status_says_a_clone_on_no_release_tag_is_missing_not_unreadable(
+    sandbox: Sandbox,
+) -> None:
+    # A prepare stopped between the clone and the checkout leaves a clone no tag points at: git
+    # read it fine, so the step is not done yet rather than unreadable.
+    sandbox.prepare()
+    _git(sandbox.api_checkout, "tag", "-d", TAG)
+    result = sandbox.run("status")
+    assert result.returncode == 0
+    assert "step 3 checkout: missing" in result.stdout
+    assert "unreadable" not in result.stdout
+
+
+def test_prepare_reruns_after_a_failed_step_3_without_redoing_steps_1_and_2(
+    tmp_path: Path, api: str
+) -> None:
+    # The owner's rerun after the server stopped in step 3: the account and its map line are found
+    # done and skipped, and only the checkout is made.
+    sandbox = _sandbox(tmp_path, api)
+    ingestion = sandbox.path(f"home/{OWNER}/paper-watch")
+    _git(ingestion, "tag", "-d", TAG)
+    assert sandbox.run("prepare").returncode == 1
+    assert not sandbox.api_checkout.exists()
+    _git(ingestion, "tag", TAG)
+    result = sandbox.run("prepare")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert len(sandbox.records("useradd")) == 1
+    assert len([line for line in sandbox.map_lines() if line[1:2] == [API]]) == 1
+    assert _git(sandbox.api_checkout, "describe", "--tags", "--exact-match").strip() == TAG
 
 
 def test_prepare_refuses_when_the_ingestion_checkout_is_not_on_a_release_tag(
