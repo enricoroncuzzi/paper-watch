@@ -1506,8 +1506,8 @@ _OAI_FIXTURES = Path("tests/fixtures/oai")
 
 
 def _answered_now(name: str) -> str:
-    # A fixture as a live server answers it now, so the page is never mistaken for a copy cached
-    # before its day ended.
+    # A fixture stamped as answered now, as a live server would, so it passes the 15-minute
+    # freshness check instead of being refused as a cached copy.
     stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     text = (_OAI_FIXTURES / name).read_text()
     return re.sub(
