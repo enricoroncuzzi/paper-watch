@@ -2,9 +2,10 @@
 
 import signal
 import time
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from itertools import pairwise
 from pathlib import Path
+from urllib.parse import parse_qsl
 
 import httpx
 import pytest
@@ -75,6 +76,20 @@ def _page(*records: str, resumption: str = "") -> str:
         '<request verb="ListRecords">https://oaipmh.arxiv.org/oai</request>'
         f"<ListRecords>{''.join(records)}{tok}</ListRecords></OAI-PMH>"
     )
+
+
+# The test clock: a few minutes after the fixtures' responseDates, so their pages are fresh answers.
+CLOCK = datetime(2026, 10, 16, 8, 5, tzinfo=UTC)
+
+
+@pytest.fixture(autouse=True)
+def _frozen_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("paperwatch.sources.arxiv._utc_now", lambda: CLOCK)
+
+
+def _form(request: httpx.Request) -> dict[str, str]:
+    # Every OAI request is a POST whose parameters ride in the form body.
+    return dict(parse_qsl(request.content.decode()))
 
 
 def _client(handler: object) -> httpx.Client:
@@ -150,7 +165,7 @@ def test_request_shape_then_resumption_token() -> None:
     calls: list[dict[str, str]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        calls.append(dict(request.url.params))
+        calls.append(_form(request))
         return httpx.Response(200, text=CS_PAGE1 if len(calls) == 1 else CS_PAGE2)
 
     src = ArxivOaiSource(_client(handler), AGENTIC, pause_s=0)
@@ -170,8 +185,8 @@ def test_pages_are_yielded_before_the_next_request() -> None:
     calls: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        calls.append(request.url.params.get("resumptionToken", "first"))
-        if "resumptionToken" not in request.url.params:
+        calls.append(_form(request).get("resumptionToken", "first"))
+        if "resumptionToken" not in _form(request):
             return httpx.Response(200, text=_page(_record("oai:arXiv.org:1"), resumption="tok"))
         return httpx.Response(200, text=_page(_record("oai:arXiv.org:2", raw_id="2510.00002")))
 
@@ -244,7 +259,7 @@ def test_record_matching_two_profiles_is_yielded_once() -> None:
 
 def test_mapping_from_the_real_record() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, text=CS_PAGE1 if "set=cs" in str(request.url) else CS_PAGE2)
+        return httpx.Response(200, text=CS_PAGE1 if _form(request).get("set") == "cs" else CS_PAGE2)
 
     src = ArxivOaiSource(_client(handler), AGENTIC, pause_s=0)
     items = _flat(list(src.harvest(DAY)))
@@ -306,7 +321,7 @@ def test_authors_drop_nested_affiliations() -> None:
 
 def test_cross_listed_record_is_yielded_once_across_sets() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        params = request.url.params
+        params = _form(request)
         if params.get("set") == "stat:stat:ML":
             return httpx.Response(200, text=STATML_DAY)
         if "resumptionToken" in params:
@@ -325,7 +340,7 @@ def test_real_cs_fixture_yields_only_matching_papers() -> None:
     # category and also has no term; the term rule drops both here. The category rule on its own
     # is covered by test_category_filter_drops_records_outside_every_profile.
     def handler(request: httpx.Request) -> httpx.Response:
-        if "resumptionToken" in request.url.params:
+        if "resumptionToken" in _form(request):
             return httpx.Response(200, text=CS_PAGE2)
         return httpx.Response(200, text=CS_PAGE1)
 
@@ -360,7 +375,7 @@ def test_an_html_error_page_does_not_abort_the_other_set(body: str) -> None:
     calls: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        set_spec = request.url.params.get("set", "")
+        set_spec = _form(request).get("set", "")
         calls.append(set_spec)
         if set_spec == "cs":
             return httpx.Response(200, text=body)
@@ -384,7 +399,7 @@ def test_a_stale_resumption_token_marks_the_day_incomplete() -> None:
     stale = "expired"  # a token value, not a credential
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.params.get("resumptionToken") == stale:
+        if _form(request).get("resumptionToken") == stale:
             calls.append("stale")
             return httpx.Response(200, text=BAD_TOKEN)
         calls.append("first")
@@ -403,7 +418,7 @@ def test_a_failing_set_does_not_abort_the_other_set() -> None:
     calls: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        set_spec = request.url.params.get("set", "")
+        set_spec = _form(request).get("set", "")
         calls.append(set_spec)
         if set_spec == "cs":
             raise httpx.ReadTimeout("the cs page timed out")
@@ -417,13 +432,16 @@ def test_a_failing_set_does_not_abort_the_other_set() -> None:
     assert len(src.failures) == 1 and "cs" in src.failures[0]
 
 
-def test_a_quiet_real_page_is_complete_and_not_a_failure() -> None:
+def test_a_quiet_real_page_is_complete_and_not_a_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     # The captured 2026-10-29 page answers the day with records that fall outside every profile.
     # That is a quiet day, not an incomplete one: no failure and no retry.
+    monkeypatch.setattr(
+        "paperwatch.sources.arxiv._utc_now", lambda: datetime(2026, 10, 30, 7, tzinfo=UTC)
+    )
     calls: list[dict[str, str]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        calls.append(dict(request.url.params))
+        calls.append(_form(request))
         return httpx.Response(200, text=QUIET_DAY)
 
     src = ArxivOaiSource(_client(handler), AGENTIC, pause_s=0)
@@ -432,35 +450,44 @@ def test_a_quiet_real_page_is_complete_and_not_a_failure() -> None:
     assert calls[0]["from"] == calls[0]["until"] == "2026-10-29"
 
 
-@pytest.mark.parametrize(
-    ("text", "day"),
-    [
-        # The captured 2026-10-29 page as the CDN would hold it had it been cached during 10-29.
-        (
-            QUIET_DAY.replace("2026-10-30T07:00:06Z", "2026-10-29T07:00:06Z"),
-            date(2026, 10, 29),
-        ),
-        # An empty answer cached while its day was still today.
-        (NO_RECORDS, date(2026, 10, 16)),
-    ],
-)
-def test_a_page_answered_before_its_day_ended_is_a_failed_request(text: str, day: date) -> None:
-    # A finished day's page that arXiv answered while the day was still filling is a stale cached
-    # copy: taking it would mark the day complete and lose the records that came after it.
-    src = ArxivOaiSource(
-        _client(lambda request: httpx.Response(200, text=text)), AGENTIC, pause_s=0
+def test_a_fresh_page_is_taken() -> None:
+    # Answered seconds after the request was sent: a live answer, harvested as it is.
+    xml = _page(_record("oai:arXiv.org:1")).replace(
+        "2026-10-16T08:00:00Z", (CLOCK + timedelta(seconds=4)).strftime("%Y-%m-%dT%H:%M:%SZ")
     )
-    assert list(src.harvest(day)) == []
-    assert len(src.failures) == 1 and "before the day ended" in src.failures[0]
-
-
-def test_a_page_of_today_is_taken_although_today_has_not_ended() -> None:
-    # Today is never marked complete, so its page is harvested as it is rather than refused.
-    xml = _page(_record("oai:arXiv.org:1"))
     src = ArxivOaiSource(_client(lambda request: httpx.Response(200, text=xml)), AGENTIC, pause_s=0)
-    ids = [i.external_id for i in _flat(list(src.harvest(datetime.now(UTC).date())))]  # type: ignore[union-attr]
+    ids = [i.external_id for i in _flat(list(src.harvest(DAY)))]  # type: ignore[union-attr]
     assert ids == ["2510.00001"]
     assert src.failures == []
+
+
+def test_a_cached_copy_is_a_failed_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The 2026-11-01 shape: the 10-29 cs page answered at 10-30T07:00:06Z, served two days later.
+    # Taking it would complete the day without what reached it after the copy was made.
+    monkeypatch.setattr(
+        "paperwatch.sources.arxiv._utc_now", lambda: datetime(2026, 11, 1, 6, tzinfo=UTC)
+    )
+    src = ArxivOaiSource(
+        _client(lambda request: httpx.Response(200, text=QUIET_DAY)), AGENTIC, pause_s=0
+    )
+    assert list(src.harvest(date(2026, 10, 29))) == []
+    assert len(src.failures) == 1 and "a cached copy" in src.failures[0]
+
+
+def test_a_page_sixteen_minutes_older_than_its_request_is_refused_and_fifteen_is_not(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stamp = datetime(2026, 10, 16, 8, tzinfo=UTC)
+    for minutes, failed in ((15, False), (16, True)):
+        monkeypatch.setattr(
+            "paperwatch.sources.arxiv._utc_now",
+            lambda m=minutes: stamp + timedelta(minutes=m),
+        )
+        src = ArxivOaiSource(
+            _client(lambda request: httpx.Response(200, text=NO_RECORDS)), AGENTIC, pause_s=0
+        )
+        assert list(src.harvest(DAY)) == []
+        assert bool(src.failures) is failed
 
 
 def test_a_page_without_a_response_date_is_a_failed_request() -> None:
@@ -472,16 +499,20 @@ def test_a_page_without_a_response_date_is_a_failed_request() -> None:
     assert len(src.failures) == 1 and "responseDate" in src.failures[0]
 
 
-def test_requests_ask_caches_to_revalidate_and_allow_sixty_seconds() -> None:
+def test_every_request_is_a_form_post_with_a_sixty_second_timeout() -> None:
+    # A GET of the same query was served from arXiv's CDN cache for two days; a POST is not cached.
     seen: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(request)
-        return httpx.Response(200, text=NO_RECORDS)
+        return httpx.Response(200, text=CS_PAGE1 if len(seen) == 1 else CS_PAGE2)
 
     list(ArxivOaiSource(_client(handler), AGENTIC, pause_s=0).harvest(DAY))
-    assert seen[0].headers["Cache-Control"] == "no-cache"
-    assert seen[0].headers["Pragma"] == "no-cache"
+    assert [r.method for r in seen] == ["POST", "POST"]
+    assert all(r.url.query == b"" for r in seen)
+    assert all(r.headers["Content-Type"] == "application/x-www-form-urlencoded" for r in seen)
+    assert _form(seen[0])["from"] == "2026-10-06"
+    assert _form(seen[1]) == {"verb": "ListRecords", "resumptionToken": "cs-token-2"}
     assert seen[0].extensions["timeout"] == {
         "connect": 60.0,
         "read": 60.0,
@@ -548,7 +579,7 @@ def test_a_refusal_after_its_retry_stops_the_harvest(status: int) -> None:
     calls: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        calls.append(request.url.params.get("set", ""))
+        calls.append(_form(request).get("set", ""))
         return httpx.Response(status)
 
     src = ArxivOaiSource(_client(handler), ALL_PROFILES, pause_s=0, retry_wait_s=0)
@@ -563,7 +594,7 @@ def test_two_failed_requests_in_a_row_stop_the_harvest_across_days() -> None:
     calls: list[tuple[str, str]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        set_spec, day = request.url.params.get("set", ""), request.url.params.get("from", "")
+        set_spec, day = _form(request).get("set", ""), _form(request).get("from", "")
         calls.append((set_spec, day))
         if (set_spec, day) in {("stat:stat:ML", "2026-10-06"), ("cs", "2026-10-07")}:
             raise httpx.ReadTimeout("timed out")
@@ -581,7 +612,7 @@ def test_one_failed_request_then_a_success_keeps_harvesting() -> None:
     # The 2026-10-31 shape: one request times out and the next answers. The blip only leaves its
     # day incomplete, and a later blip is again a first failure, not a second in a row.
     def handler(request: httpx.Request) -> httpx.Response:
-        set_spec, day = request.url.params.get("set", ""), request.url.params.get("from", "")
+        set_spec, day = _form(request).get("set", ""), _form(request).get("from", "")
         if set_spec == "stat:stat:ML" and day in ("2026-10-06", "2026-10-07"):
             raise httpx.ReadTimeout("timed out")
         return httpx.Response(200, text=NO_RECORDS)
@@ -629,7 +660,7 @@ def test_requests_and_retries_are_paced_by_a_monotonic_clock(
         starts.append(clock["t"])
         if len(calls) == 1:
             return httpx.Response(503)  # a retry must also keep the pause
-        if "resumptionToken" in request.url.params:
+        if "resumptionToken" in _form(request):
             return httpx.Response(200, text=_page(_record("oai:arXiv.org:2", raw_id="2510.00002")))
         return httpx.Response(200, text=_page(_record("oai:arXiv.org:1"), resumption="tok"))
 
@@ -647,7 +678,7 @@ def test_a_repeated_resumption_token_degrades_arxiv_naming_set_and_day() -> None
 
     def handler(request: httpx.Request) -> httpx.Response:
         # A distinct record per page, so each page carries something new.
-        calls.append(request.url.params.get("resumptionToken", "first"))
+        calls.append(_form(request).get("resumptionToken", "first"))
         return httpx.Response(
             200,
             text=_page(
@@ -676,7 +707,7 @@ def test_a_page_cap_degrades_arxiv_naming_set_and_day(monkeypatch) -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         # A distinct record per page, so each page carries something new.
-        calls.append(request.url.params.get("resumptionToken", "first"))
+        calls.append(_form(request).get("resumptionToken", "first"))
         return httpx.Response(
             200,
             text=_page(
@@ -713,7 +744,7 @@ def test_an_abab_a_resumption_token_sequence_is_a_loop() -> None:
     calls: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        calls.append(request.url.params.get("resumptionToken", "first"))
+        calls.append(_form(request).get("resumptionToken", "first"))
         nxt = "A" if len(calls) == 1 else ("B" if len(calls) == 2 else "A")
         tokens.append(nxt)
         return httpx.Response(

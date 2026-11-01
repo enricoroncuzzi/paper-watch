@@ -4,6 +4,7 @@ from collections.abc import Callable, Iterator, Mapping
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from unittest.mock import DEFAULT, MagicMock
+from urllib.parse import parse_qsl
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -1514,16 +1515,21 @@ def _answered_now(name: str) -> str:
     )
 
 
+def _form(request: httpx.Request) -> dict[str, str]:
+    # arXiv OAI requests are POSTs whose parameters ride in the form body.
+    return dict(parse_qsl(request.content.decode()))
+
+
 def _stall_handler(failing_day: str) -> Callable[[httpx.Request], httpx.Response]:
-    # The 2026-10-31 shape: the 10-29 cs page is the cached quiet page, 10-30 has two cs pages,
+    # The 2026-10-31 shape: the 10-29 cs page is the quiet page, 10-30 has two cs pages,
     # and the stat.ML request for `failing_day` times out.
-    quiet = (_OAI_FIXTURES / "quiet_day_2026_10_29.xml").read_text()
+    quiet = _answered_now("quiet_day_2026_10_29.xml")
     first = _answered_now("cs_page1.xml")
     second = _answered_now("cs_page2.xml")
     empty = _answered_now("noRecordsMatch.xml")
 
     def handler(request: httpx.Request) -> httpx.Response:
-        params = dict(request.url.params)
+        params = _form(request)
         if params.get("resumptionToken") == "cs-token-2":
             return httpx.Response(200, text=second)
         day, set_spec = params.get("from"), params.get("set")
@@ -1577,17 +1583,45 @@ def test_a_failed_arxiv_set_keeps_the_cursor_and_still_harvests_later_days(
     assert "cursor not advanced: arxiv" in problems
 
 
+def test_a_cached_overlap_page_keeps_the_cursor_on_the_overlap_day(db_session: Session) -> None:
+    # The 10-29 overlap re-read gets the copy arXiv's CDN made at 10-30T07:00:06Z: it cannot show
+    # what reached 10-29 since, so the day stays incomplete while 10-30 and 10-31 are harvested.
+    cached = (_OAI_FIXTURES / "quiet_day_2026_10_29.xml").read_text()
+    fresh = _stall_handler("never")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        params = _form(request)
+        if params.get("from") == "2026-10-29" and params.get("set") == "cs":
+            return httpx.Response(200, text=cached)
+        return fresh(request)
+
+    repo = Repository(db_session)
+    repo.advance_cursor("arxiv", datetime(2026, 10, 30, tzinfo=UTC))
+    db_session.commit()
+    src = fake_sources([])
+    src.arxiv = _real_arxiv(handler)
+    res = run(db_session, src, now=datetime(2026, 11, 1, 6, tzinfo=UTC))
+    assert res.counts["fetched_arxiv"] == 3
+    assert repo.cursor("arxiv") == datetime(2026, 10, 30, tzinfo=UTC)
+    letter = db_session.scalars(
+        select(DeadLetter).where(DeadLetter.source == "arxiv", DeadLetter.ref == "window")
+    ).one()
+    assert "cs on 2026-10-29" in letter.error and "a cached copy" in letter.error
+    problems = db_session.get_one(Run, res.run_id).health["problems"]
+    assert "cursor not advanced: arxiv" in problems
+
+
 def test_a_failed_overlap_reread_does_not_resolve_an_open_outage_letter(
     db_session: Session,
 ) -> None:
     # The overlap day did not answer, so it must not close the open outage letter. If the next day
     # then fails too, the harvest stops, and the handler must find the same letter open rather than
     # opening a second one for the same continuing outage.
-    quiet = (_OAI_FIXTURES / "quiet_day_2026_10_29.xml").read_text()
+    quiet = _answered_now("quiet_day_2026_10_29.xml")
     empty = _answered_now("noRecordsMatch.xml")
 
     def handler(request: httpx.Request) -> httpx.Response:
-        params = dict(request.url.params)
+        params = _form(request)
         day, set_spec = params.get("from"), params.get("set")
         if day == "2026-10-29" and set_spec == "stat:stat:ML":
             raise httpx.ReadTimeout("The read operation timed out")
@@ -1656,7 +1690,7 @@ def test_a_stopped_harvest_letter_names_the_days_earlier_failed_set(db_session: 
     empty = _answered_now("noRecordsMatch.xml")
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.params.get("from") == "2026-10-30":
+        if _form(request).get("from") == "2026-10-30":
             raise httpx.ReadTimeout("The read operation timed out")
         return httpx.Response(200, text=empty)
 
@@ -1680,7 +1714,7 @@ def test_a_refusing_arxiv_stops_the_harvest_and_keeps_the_cursor(db_session: Ses
     asked: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        asked.append(request.url.params.get("from", ""))
+        asked.append(_form(request).get("from", ""))
         return httpx.Response(429)
 
     src = fake_sources([])
@@ -1708,7 +1742,7 @@ def test_a_first_run_that_misses_its_first_day_pins_the_cursor(db_session: Sessi
     empty = _answered_now("noRecordsMatch.xml")
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.params.get("from") == first_day:
+        if _form(request).get("from") == first_day:
             raise httpx.ReadTimeout("the first day timed out")
         return httpx.Response(200, text=empty)
 

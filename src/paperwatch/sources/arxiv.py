@@ -44,9 +44,10 @@ _REFUSALS = frozenset({429, 503})
 # and 11-01 runs lost the uncached stat:stat:ML request to two 30 s read timeouts in a row. 60 s is
 # over ten times the measured worst and still half of REQUEST_DEADLINE_S.
 OAI_TIMEOUT_S = 60.0
-# Asked of every cache on the way. arXiv's CDN ignored both on 2026-11-01 and still served a page
-# cached two days earlier, so the responseDate check in `_parse_page` is the guard that holds.
-_NO_CACHE = {"Cache-Control": "no-cache", "Pragma": "no-cache"}
+# How much older than its request a page's responseDate may be. A live answer is stamped while it
+# is being served, seconds after the request; arXiv's CDN served a GET for 2026-10-29 on 11-01 with
+# responseDate 2026-10-30T07:00:06Z, so a page this much older is a cached copy, never an answer.
+MAX_RESPONSE_AGE = timedelta(minutes=15)
 
 
 class HarvestStopped(RuntimeError):
@@ -54,8 +55,8 @@ class HarvestStopped(RuntimeError):
 
 
 class UnreadablePage(ValueError):
-    """A response that is not a usable OAI-PMH page: an HTML error page, a stale token or a page
-    cached before its day was over."""
+    """A response that is not a usable OAI-PMH page: an HTML error page, a stale token or a
+    cached copy of an earlier answer."""
 
 
 def arxiv_base_id(raw: str) -> str:
@@ -150,13 +151,16 @@ def _published_at(version: ET.Element) -> datetime:
     return parsed.astimezone(UTC)
 
 
-def _refuse_early_answer(root: ET.Element, day: date) -> None:
-    """Raise `UnreadablePage` for a page of a finished day that was answered before it ended.
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
 
-    arXiv's CDN serves the same ListRecords URL from its cache for days, so a page cached while
-    `day` was still today, and still filling, would otherwise mark the day complete and lose the
-    records that arrived after it. Today itself is never complete, so its pages are taken as they
-    are.
+
+def _refuse_stale_answer(root: ET.Element, sent_at: datetime) -> None:
+    """Raise `UnreadablePage` for a page answered more than `MAX_RESPONSE_AGE` before `sent_at`.
+
+    A cached page of a day, the overlap day included, would mark it complete without the records
+    that reached it after the copy was made. POST already keeps arXiv's CDN out of the way; this
+    makes sure a copy that still arrives can never complete a day.
     """
     stamp = (root.findtext(f"{_OAI}responseDate") or "").strip()
     try:
@@ -165,10 +169,10 @@ def _refuse_early_answer(root: ET.Element, day: date) -> None:
         raise UnreadablePage(f"OAI-PMH response has no usable responseDate: {stamp!r}") from None
     if answered.tzinfo is None:
         answered = answered.replace(tzinfo=UTC)
-    day_end = datetime(day.year, day.month, day.day, tzinfo=UTC) + timedelta(days=1)
-    if day_end <= datetime.now(UTC) and answered < day_end:
+    if answered < sent_at - MAX_RESPONSE_AGE:
         raise UnreadablePage(
-            f"OAI-PMH page for {day.isoformat()} was answered at {stamp}, before the day ended"
+            f"OAI-PMH page answered at {stamp} for a request sent at {sent_at.isoformat()}: "
+            "a cached copy"
         )
 
 
@@ -190,6 +194,8 @@ class ArxivOaiSource:
         self._sets = oai_sets(profiles)
         # Start of the last request attempt, for the pacing rule; None before the first.
         self._last_request: float | None = None
+        # Wall-clock start of the last request attempt, which its page's responseDate must match.
+        self._sent_at = _utc_now()
         # (categories, term patterns) per profile, so a page filters without recompiling.
         self._match_terms = [
             (set(p.categories), [_term_pattern(t) for t in p.terms]) for p in profiles
@@ -212,22 +218,27 @@ class ArxivOaiSource:
             if wait > 0:
                 time.sleep(wait)
         self._last_request = time.monotonic()
+        self._sent_at = _utc_now()
 
-    def _get(self, params: dict[str, str]) -> str:
+    def _post(self, params: dict[str, str]) -> str:
         # One retry after Retry-After or retry_wait_s, then the exception reaches the harvest,
         # which keeps this (set, day) incomplete and either moves on or stops for the run.
+        # POST, which OAI-PMH allows for every verb: arXiv's CDN answered a GET for 2026-10-29 cs
+        # on 2026-11-01 from a two-day-old cache entry (x-cache HIT, age 210460), while three POSTs
+        # of the same query were x-cache MISS with fresh responseDates. A redirect would turn the
+        # POST into another request, so none is followed.
         resp = send_with_retries(
             self._client,
-            "GET",
+            "POST",
             ARXIV_OAI_URL,
-            params=params,
+            data=params,
+            follow_redirects=False,
             attempts=2,
             min_wait_s=self._retry_wait_s,
             max_wait_s=self._retry_wait_s,
             before_request=self._pace,
             max_bytes=MAX_ARXIV_BODY_BYTES,
             timeout=OAI_TIMEOUT_S,
-            headers=_NO_CACHE,
         )
         return resp.text
 
@@ -274,7 +285,7 @@ class ArxivOaiSource:
             version=_version_number(ordered[-1]),
         )
 
-    def _parse_page(self, text: str, day: date) -> tuple[list[SourceItem], str]:
+    def _parse_page(self, text: str) -> tuple[list[SourceItem], str]:
         if "<!DOCTYPE" in text:
             # OAI-PMH never carries a DTD; refusing one blocks entity-amplification bodies
             # before expat sees them.
@@ -282,7 +293,7 @@ class ArxivOaiSource:
         # ElementTree is safe here: expat >= 2.4.1 bounds entity amplification, external
         # entities are not resolved, and a DOCTYPE is refused above.
         root = ET.fromstring(text)  # noqa: S314 - see the comment above
-        _refuse_early_answer(root, day)
+        _refuse_stale_answer(root, self._sent_at)
         error = root.find(f"{_OAI}error")
         if error is not None:
             code = error.get("code") or "unknown"
@@ -354,10 +365,10 @@ class ArxivOaiSource:
                     else {"verb": "ListRecords", "resumptionToken": token}
                 )
                 try:
-                    items, token = self._parse_page(self._get(params), day)
+                    items, token = self._parse_page(self._post(params))
                 except (httpx.HTTPError, OSError, ET.ParseError, UnreadablePage) as exc:
                     # A transport failure, a corrupt or HTML body (a CDN error page), a stale
-                    # resumption token or a page cached before its day ended must not abandon the
+                    # resumption token or a cached copy of an earlier answer must not abandon the
                     # other sets or the later days: the day stays incomplete and the cursor stays
                     # before it for the next run. A refusal or a second failure in a row stops the
                     # harvest instead. Any other OAI error still raises, because a request this
