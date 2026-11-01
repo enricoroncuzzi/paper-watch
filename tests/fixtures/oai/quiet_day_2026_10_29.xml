@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<OAI-PMH xmlns="http://www.openarchives.org/OAI/2.0/"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://www.openarchives.org/OAI/2.0/ http://www.openarchives.org/OAI/2.0/OAI-PMH.xsd">
+    <responseDate>2026-10-30T07:00:06Z</responseDate>
+                <request verb="ListRecords" metadataPrefix="arXivRaw" from="2026-10-29" until="2026-10-29" set="cs">http://oaipmh.arxiv.org/oai</request>
+
+
+    <ListRecords>
+                    <record>
+                <header>
+        <identifier>oai:arXiv.org:1803.10353</identifier>
+        <datestamp>2026-10-29</datestamp>
+            <setSpec>math:math:AP</setSpec>
+            <setSpec>cs:cs:NA</setSpec>
+            <setSpec>math:math:NA</setSpec>
+    </header>
+
+            <metadata>
+                        <arXivRaw xmlns="http://arxiv.org/OAI/arXivRaw/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://arxiv.org/OAI/arXivRaw/ https://oaipmh.arxiv.org/OAI/arXivRaw.xsd">
+        <id>1803.10353</id>
+        <submitter>Aaron Yeiser</submitter>
+            <version version="v1">
+                <date>Tue, 27 Mar 2018 22:44:32 GMT</date>
+                <size>4733kb</size>
+                    <source_type>D</source_type>
+            </version>
+            <version version="v2">
+                <date>Thu, 29 Mar 2018 05:52:16 GMT</date>
+                <size>4733kb</size>
+                    <source_type>D</source_type>
+            </version>
+        <title>A spectral element method for meshes with skinny elements</title>
+        <authors>Aaron Yeiser, Alex Townsend</authors>
+        <categories>math.AP cs.NA math.NA</categories>
+            <license>http://arxiv.org/licenses/nonexclusive-distrib/1.0/</license>
+            <abstract>When numerically solving partial differential equations (PDEs), the first step is often to discretize the geometry using a mesh and to solve a corresponding discretization of the PDE. Standard finite and spectral element methods require that the underlying mesh has no skinny elements for numerical stability. Here, we develop a novel spectral element method that is numerically stable on meshes that contain skinny elements, while also allowing for high degree polynomials on each element. Our method is particularly useful for PDEs for which anisotropic mesh elements are beneficial and we demonstrate it with a Navier--Stokes simulation. Code for our method can be found at &lt;https://github.com/ay2718/spectral-pde-solver&gt;.</abstract>
+    </arXivRaw>
+
+            </metadata>
+        </record>
+
+                    <record>
+                <header>
+        <identifier>oai:arXiv.org:2610.37068</identifier>
+        <datestamp>2026-10-29</datestamp>
+            <setSpec>cs:cs:CL</setSpec>
+    </header>
+
+            <metadata>
+                        <arXivRaw xmlns="http://arxiv.org/OAI/arXivRaw/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://arxiv.org/OAI/arXivRaw/ https://oaipmh.arxiv.org/OAI/arXivRaw.xsd">
+        <id>2610.37068</id>
+        <submitter>Xiao-Ming Fu</submitter>
+            <version version="v1">
+                <date>Tue, 27 Oct 2026 11:34:03 GMT</date>
+                <size>59kb</size>
+            </version>
+        <title>Hierarchical Low-Rank Reparameterization for Parameter-Efficient Fine-Tuning</title>
+        <authors>Rong Huang, Yi Xiong, Yuan-Yuan Cheng, and Xiao-Ming Fu</authors>
+        <categories>cs.CL</categories>
+            <comments>14 pages, 2 figures, 10 tables, including references and appendices</comments>
+            <license>http://arxiv.org/licenses/nonexclusive-distrib/1.0/</license>
+            <abstract>Parameter-efficient fine-tuning (PEFT) methods adapt large models by introducing a small number of trainable parameters. However, we find that these parameters still contain redundancy and can be further compressed while maintaining strong task performance. To this end, we propose a novel hierarchical low-rank reparameterization method. Its core idea is to reorganize the trainable parameters of PEFT methods into an approximately square matrix and then express it via a low-rank decomposition, which can be applied recursively. This forms a multi-level structure with factors compressed level by level, drastically reducing the number of trainable parameters. In our experiments, we combine this reparameterization with LoRA, DoRA, MoSA, and RaSA. We evaluate commonsense reasoning on LLaMA-3.1-8B and Qwen2.5-7B, with additional GSM8K math reasoning experiments on LLaMA-3.1-8B. Under comparable trainable-parameter budgets, our method combined with LoRA or DoRA achieves better performance. Furthermore,when the parameter count of the original methods is compressed by approximately an order of magnitude, our method can still maintain competitive task performance and even surpass the corresponding baselines in average accuracy across the eight commonsense reasoning benchmarks.</abstract>
+    </arXivRaw>
+
+            </metadata>
+        </record>
+
+                    <record>
+                <header>
+        <identifier>oai:arXiv.org:2610.37425</identifier>
+        <datestamp>2026-10-29</datestamp>
+            <setSpec>math:math:NA</setSpec>
+            <setSpec>cs:cs:NA</setSpec>
+            <setSpec>math:math:PR</setSpec>
+    </header>
+
+            <metadata>
+                        <arXivRaw xmlns="http://arxiv.org/OAI/arXivRaw/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://arxiv.org/OAI/arXivRaw/ https://oaipmh.arxiv.org/OAI/arXivRaw.xsd">
+        <id>2610.37425</id>
+        <submitter>Quanfan Zhu</submitter>
+            <version version="v1">
+                <date>Tue, 27 Oct 2026 15:37:30 GMT</date>
+                <size>48kb</size>
+            </version>
+        <title>Phase-type representations for Strong Stability Preserving Runge--Kutta methods</title>
+        <authors>Haijun Yu, Quanfan Zhu, Zhanyang Weng</authors>
+        <categories>math.NA cs.NA math.PR</categories>
+            <msc-class>65L06, 65L20, 60J27, 60E15</msc-class>
+            <license>http://arxiv.org/licenses/nonexclusive-distrib/1.0/</license>
+            <abstract>We develop a phase-type (PH) representation of strong stability preserving (SSP) Runge--Kutta (RK) methods. This representation provides a probabilistic interpretation of the RK coefficients and translates the chain order conditions into absorption-time moment identities. Using moment ratio bounds for PH distributions, we prove the conjectured optimal SSP coefficients for general implicit RK methods of orders two and three. The equality characterizations also establish uniqueness of the optimal RK tableaux.</abstract>
+    </arXivRaw>
+
+            </metadata>
+        </record>
+
+    </ListRecords>
+</OAI-PMH>

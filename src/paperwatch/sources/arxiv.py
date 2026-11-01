@@ -10,7 +10,7 @@ is announced and seen again when it is revised, which the Atom query interface n
 import re
 import time
 from collections.abc import Iterator
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from email.utils import parsedate_to_datetime
 from xml.etree import ElementTree as ET
 
@@ -31,6 +31,32 @@ _VERSION = re.compile(r"v(\d+)$")
 # set is a couple of pages at the server's page size, so 200 is far above any honest answer.
 MAX_PAGES_PER_DAY = 200
 log = structlog.get_logger()
+
+
+# Failed (set, day) requests in a row that stop the harvest for the run: one blip is tolerated,
+# a second in a row looks like an outage, and asking for every later day would hammer it.
+MAX_FAILED_IN_A_ROW = 2
+# The server itself saying "not now": still refused after its Retry-After, it is never asked again
+# in this run.
+_REFUSALS = frozenset({429, 503})
+# Connect and read timeout of one OAI request. Uncached ListRecords calls measured on 2026-11-01
+# answered their first byte in at most 4.4 s (cs and stat:stat:ML for 2026-10-30), yet the 10-31
+# and 11-01 runs lost the uncached stat:stat:ML request to two 30 s read timeouts in a row. 60 s is
+# over ten times the measured worst and still half of REQUEST_DEADLINE_S.
+OAI_TIMEOUT_S = 60.0
+# How much older than its request a page's responseDate may be. A live answer is stamped while it
+# is being served, seconds after the request; arXiv's CDN served a GET for 2026-10-29 on 11-01 with
+# responseDate 2026-10-30T07:00:06Z, so a page this much older is a cached copy, never an answer.
+MAX_RESPONSE_AGE = timedelta(minutes=15)
+
+
+class HarvestStopped(RuntimeError):
+    """arXiv refused or kept failing, so the rest of this run's harvest is not asked for."""
+
+
+class UnreadablePage(ValueError):
+    """A response that is not a usable OAI-PMH page: an HTML error page, a stale token or a
+    cached copy of an earlier answer."""
 
 
 def arxiv_base_id(raw: str) -> str:
@@ -125,6 +151,31 @@ def _published_at(version: ET.Element) -> datetime:
     return parsed.astimezone(UTC)
 
 
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _refuse_stale_answer(root: ET.Element, sent_at: datetime) -> None:
+    """Raise `UnreadablePage` for a page answered more than `MAX_RESPONSE_AGE` before `sent_at`.
+
+    A cached page of a day, the overlap day included, would mark it complete without the records
+    that reached it after the copy was made. POST already keeps arXiv's CDN out of the way; this
+    makes sure a copy that still arrives can never complete a day.
+    """
+    stamp = (root.findtext(f"{_OAI}responseDate") or "").strip()
+    try:
+        answered = datetime.fromisoformat(stamp)
+    except ValueError:
+        raise UnreadablePage(f"OAI-PMH response has no usable responseDate: {stamp!r}") from None
+    if answered.tzinfo is None:
+        answered = answered.replace(tzinfo=UTC)
+    if answered < sent_at - MAX_RESPONSE_AGE:
+        raise UnreadablePage(
+            f"OAI-PMH page answered at {stamp} for a request sent at {sent_at.isoformat()}: "
+            "a cached copy"
+        )
+
+
 class ArxivOaiSource:
     # Matches the source field written onto every SourceItem.
     name = "arxiv"
@@ -143,12 +194,20 @@ class ArxivOaiSource:
         self._sets = oai_sets(profiles)
         # Start of the last request attempt, for the pacing rule; None before the first.
         self._last_request: float | None = None
+        # Wall-clock start of the last request attempt, which its page's responseDate must match.
+        self._sent_at = _utc_now()
         # (categories, term patterns) per profile, so a page filters without recompiling.
         self._match_terms = [
             (set(p.categories), [_term_pattern(t) for t in p.terms]) for p in profiles
         ]
         # Records skipped during the most recent harvest, for the run to dead-letter.
         self.rejected: list[RejectedEntry] = []
+        # (set, day) pages that could not be read during the most recent harvest(day). The
+        # caller keeps that day incomplete and the cursor before it, then retries next run.
+        self.failures: list[str] = []
+        # Spans harvest(day) calls, so an outage that starts on one day and continues into the
+        # next still stops the run.
+        self._failed_in_a_row = 0
 
     def _pace(self) -> None:
         # Space request starts by pause_s on a monotonic clock, retries included; the
@@ -159,20 +218,27 @@ class ArxivOaiSource:
             if wait > 0:
                 time.sleep(wait)
         self._last_request = time.monotonic()
+        self._sent_at = _utc_now()
 
-    def _get(self, params: dict[str, str]) -> str:
-        # One retry after Retry-After or retry_wait_s, then the exception propagates so the
-        # run degrades and the source stops for the day.
+    def _post(self, params: dict[str, str]) -> str:
+        # One retry after Retry-After or retry_wait_s, then the exception reaches the harvest,
+        # which keeps this (set, day) incomplete and either moves on or stops for the run.
+        # POST, which OAI-PMH allows for every verb: arXiv's CDN answered a GET for 2026-10-29 cs
+        # on 2026-11-01 from a two-day-old cache entry (x-cache HIT, age 210460), while three POSTs
+        # of the same query were x-cache MISS with fresh responseDates. A redirect would turn the
+        # POST into another request, so none is followed.
         resp = send_with_retries(
             self._client,
-            "GET",
+            "POST",
             ARXIV_OAI_URL,
-            params=params,
+            data=params,
+            follow_redirects=False,
             attempts=2,
             min_wait_s=self._retry_wait_s,
             max_wait_s=self._retry_wait_s,
             before_request=self._pace,
             max_bytes=MAX_ARXIV_BODY_BYTES,
+            timeout=OAI_TIMEOUT_S,
         )
         return resp.text
 
@@ -223,19 +289,23 @@ class ArxivOaiSource:
         if "<!DOCTYPE" in text:
             # OAI-PMH never carries a DTD; refusing one blocks entity-amplification bodies
             # before expat sees them.
-            raise ValueError("OAI-PMH response carries a DOCTYPE, which arXiv never sends")
+            raise UnreadablePage("OAI-PMH response carries a DOCTYPE, which arXiv never sends")
         # ElementTree is safe here: expat >= 2.4.1 bounds entity amplification, external
         # entities are not resolved, and a DOCTYPE is refused above.
         root = ET.fromstring(text)  # noqa: S314 - see the comment above
+        _refuse_stale_answer(root, self._sent_at)
         error = root.find(f"{_OAI}error")
         if error is not None:
             code = error.get("code") or "unknown"
             if code == "noRecordsMatch":
                 return [], ""  # a quiet datestamp day, not a failure
-            raise ValueError(f"OAI-PMH error {code}: {(error.text or '').strip()}")
+            detail = f"OAI-PMH error {code}: {(error.text or '').strip()}"
+            if code == "badResumptionToken":
+                raise UnreadablePage(detail)
+            raise ValueError(detail)
         listed = root.find(f"{_OAI}ListRecords")
         if listed is None:
-            raise ValueError("OAI-PMH response has no ListRecords element")
+            raise UnreadablePage("OAI-PMH response has no ListRecords element")
         items: list[SourceItem] = []
         for record in listed.findall(f"{_OAI}record"):
             header = record.find(f"{_OAI}header")
@@ -267,6 +337,7 @@ class ArxivOaiSource:
         """
         # rejected describes one harvest; clear it so callers never read stale rows.
         self.rejected = []
+        self.failures = []
         # Base ids already yielded in this call: a paper cross-listed into two sets is
         # yielded once, at the version its single arXivRaw record lists (its highest).
         seen: set[str] = set()
@@ -293,7 +364,27 @@ class ArxivOaiSource:
                     if first
                     else {"verb": "ListRecords", "resumptionToken": token}
                 )
-                items, token = self._parse_page(self._get(params))
+                try:
+                    items, token = self._parse_page(self._post(params))
+                except (httpx.HTTPError, OSError, ET.ParseError, UnreadablePage) as exc:
+                    # A transport failure, a corrupt or HTML body (a CDN error page), a stale
+                    # resumption token or a cached copy of an earlier answer must not abandon the
+                    # other sets or the later days: the day stays incomplete and the cursor stays
+                    # before it for the next run. A refusal or a second failure in a row stops the
+                    # harvest instead. Any other OAI error still raises, because a request this
+                    # server rejects is a bug, not a blip.
+                    self._failed_in_a_row += 1
+                    refused = (
+                        isinstance(exc, httpx.HTTPStatusError)
+                        and exc.response.status_code in _REFUSALS
+                    )
+                    if refused or self._failed_in_a_row >= MAX_FAILED_IN_A_ROW:
+                        raise HarvestStopped(
+                            f"arXiv harvest stopped at {set_spec} on {day.isoformat()}: {exc!r}"
+                        ) from exc
+                    self._mark_failed(day, set_spec, exc)
+                    break
+                self._failed_in_a_row = 0
                 pages += 1
                 page: list[SourceItem] = []
                 for item in items:
@@ -312,3 +403,9 @@ class ArxivOaiSource:
                         f"on {day.isoformat()} at page {pages}"
                     )
                 used.add(token)
+
+    def _mark_failed(self, day: date, set_spec: str, exc: BaseException) -> None:
+        """Record one unreadable (set, day) page without making the whole harvest fatal."""
+        message = f"{set_spec} on {day.isoformat()}: {exc!r}"
+        self.failures.append(message)
+        log.warning("arxiv_page_failed", set=set_spec, day=day.isoformat(), error=repr(exc))

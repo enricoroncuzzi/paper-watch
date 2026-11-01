@@ -48,11 +48,14 @@ page, comment count, organisation and listing time on the item, and appends a `s
 row with the numbers (upvotes, comments, stars, citations) whenever they changed since that item's
 latest snapshot; a failure there is a warning, never an item's failed admission. It then writes a
 run row with counts, tokens and a health verdict, advances each feed's cursor only when it fully
-succeeded and the arXiv cursor after each completed day, and releases the lock.
+succeeded and the arXiv cursor after each completed day up to the first day with a failed page,
+and releases the lock.
 A source outage stops that source for the run, is recorded as a dead letter over the whole missed
 window, and makes the run `partial` without stopping the others; for a lab feed only a second miss
 in a row does, because the first miss is a health warning and the next run retries the same window,
-so one missed day loses nothing. A malformed entry is skipped and recorded once.
+so one missed day loses nothing. For arXiv one failed page leaves only its day incomplete (later
+days are still harvested), while a refusal or a second failure in a row stops the harvest
+(`docs/learn/02`). A malformed entry is skipped and recorded once.
 
 A run started with `--followup` (the scheduled unit does; a manual run does not) then finishes the
 papers Semantic Scholar refused: it waits 5, 10, 20 and 40 minutes and then every 30, until nothing

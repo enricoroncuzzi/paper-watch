@@ -511,6 +511,7 @@ def run_ingestion(
             # arXiv announces Sunday-Thursday evenings US Eastern, so weekend datestamps are
             # normally empty; a quiet Saturday or Sunday is not a broken source.
             arxiv_expected = any(day.weekday() in (1, 2, 3, 4) for day in days)
+            arxiv_incomplete = False
             arxiv_stopped_early = False
             # The cursor reads above opened a transaction; a network block must never run inside
             # one, so it is ended before the first page is asked for (each later page commits its
@@ -532,13 +533,39 @@ def run_ingestion(
                             repo.add_dead_letter(run_id, bad.source, bad.ref, bad.error)
                             counts["malformed"] += 1
                             causes.add("malformed")
-                    if day < now.date():
+                    if sources.arxiv.failures:
+                        # A page that could not be read leaves only its own day incomplete. Later
+                        # days are still harvested so the run makes progress, but the cursor stops
+                        # before the first missed day so the next run retries it with no gap.
+                        arxiv_incomplete = True
+                        causes.add("arxiv")
+                        if not repo.has_open_dead_letter("arxiv", "window"):
+                            repo.add_dead_letter(
+                                run_id,
+                                "arxiv",
+                                "window",
+                                "; ".join(sources.arxiv.failures),
+                                window=(_midnight(first_day), now),
+                            )
+                    if not arxiv_incomplete and day < now.date():
                         # A completed past day advances the cursor to the next day's midnight;
                         # today is never marked complete.
                         repo.advance_cursor("arxiv", _midnight(day) + timedelta(days=1))
                     session.commit()
-                    # A completed day is a source that answered: any open outage letter is over.
-                    repo.resolve_open_dead_letters("arxiv", "window", at=now)
+                    if not arxiv_incomplete:
+                        # A completed day is a source that answered: any open outage letter is over.
+                        repo.resolve_open_dead_letters("arxiv", "window", at=now)
+                    session.commit()
+                if arxiv_incomplete:
+                    if repo.cursor("arxiv") != arxiv_cursor:
+                        # Earlier days completed before the failure, so the cursor did move.
+                        arxiv_stopped_early = True
+                    elif "arxiv" not in stuck:
+                        stuck.append("arxiv")
+                    if repo.cursor("arxiv") is None:
+                        # Pin the first day, so the next run retries it instead of starting at
+                        # its own lookback floor one day later and dropping it.
+                        repo.advance_cursor("arxiv", _midnight(first_day))
                     session.commit()
             except Exception as exc:  # noqa: BLE001 - one source must not abort the run
                 # A failure can leave the session in a dead transaction (a payload Postgres, or the
@@ -563,7 +590,7 @@ def run_ingestion(
                         run_id,
                         "arxiv",
                         "window",
-                        repr(exc),
+                        "; ".join([*sources.arxiv.failures, repr(exc)]),
                         window=(_midnight(first_day), now),
                     )
                 if repo.cursor("arxiv") is None:
