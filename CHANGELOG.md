@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.1](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.16.0...paperwatch-v0.16.1) (2026-11-01)
+
+
+### Bug Fixes
+
+* **sources:** resume the arXiv harvest after cached pages and read timeouts ([#105](https://github.com/enricoroncuzzi/paper-watch/issues/105)) ([83f2858](https://github.com/enricoroncuzzi/paper-watch/commit/83f28582faacb7558cbd8f1291e60a5b23b689c6))
+
 ## [0.16.0](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.15.1...paperwatch-v0.16.0) (2026-10-29)
 
 
