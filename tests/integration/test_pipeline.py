@@ -1567,6 +1567,55 @@ def test_a_failed_arxiv_set_keeps_the_cursor_and_still_harvests_later_days(
     assert res.status == "succeeded"
 
 
+def test_a_failed_overlap_reread_does_not_resolve_an_open_outage_letter(
+    db_session: Session,
+) -> None:
+    # The overlap day is a warning, but it still did not answer: it must not close the open outage
+    # letter. If the next day then fails too, the harvest stops, and the handler must find the same
+    # letter open rather than opening a second one for the same continuing outage.
+    quiet = (_OAI_FIXTURES / "quiet_day_2026_10_29.xml").read_text()
+    empty = (_OAI_FIXTURES / "noRecordsMatch.xml").read_text()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        params = dict(request.url.params)
+        day, set_spec = params.get("from"), params.get("set")
+        if day == "2026-10-29" and set_spec == "stat:stat:ML":
+            raise httpx.ReadTimeout("The read operation timed out")
+        if day == "2026-10-30" and set_spec == "cs":
+            raise httpx.ReadTimeout("The read operation timed out")
+        if day == "2026-10-29" and set_spec == "cs":
+            return httpx.Response(200, text=quiet)
+        return httpx.Response(200, text=empty)
+
+    repo = Repository(db_session)
+    earlier = repo.start_run(NOW, NOW, at=NOW)
+    repo.add_dead_letter(
+        earlier,
+        "arxiv",
+        "window",
+        "ReadTimeout('The read operation timed out')",
+        window=(datetime(2026, 10, 29, tzinfo=UTC), datetime(2026, 10, 31, 6, tzinfo=UTC)),
+    )
+    repo.advance_cursor("arxiv", datetime(2026, 10, 30, tzinfo=UTC))
+    db_session.commit()
+    src = fake_sources([])
+    src.arxiv = _real_arxiv(handler)
+    res = run(db_session, src, now=datetime(2026, 11, 1, 6, tzinfo=UTC))
+    letters = list(
+        db_session.scalars(
+            select(DeadLetter).where(
+                DeadLetter.source == "arxiv",
+                DeadLetter.ref == "window",
+                DeadLetter.resolved_at.is_(None),
+            )
+        )
+    )
+    assert len(letters) == 1 and letters[0].run_id == earlier
+    assert repo.cursor("arxiv") == datetime(2026, 10, 30, tzinfo=UTC)
+    problems = db_session.get_one(Run, res.run_id).health["problems"]
+    assert "cursor not advanced: arxiv" in problems
+
+
 def test_a_failed_day_from_the_cursor_on_pins_the_cursor(db_session: Session) -> None:
     # 10-30 is past the cursor, so no earlier run has it: its failed stat.ML request keeps the
     # cursor at 10-30 while 10-31 is still harvested, and the next run retries the day.

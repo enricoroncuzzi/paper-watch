@@ -567,8 +567,10 @@ def run_ingestion(
                         # today is never marked complete.
                         repo.advance_cursor("arxiv", _midnight(day) + timedelta(days=1))
                     session.commit()
-                    if not arxiv_incomplete:
+                    if not arxiv_incomplete and not sources.arxiv.failures:
                         # A completed day is a source that answered: any open outage letter is over.
+                        # A failed overlap re-read did not answer, so it must not close the letter
+                        # and then have the next failed day open a duplicate one.
                         repo.resolve_open_dead_letters("arxiv", "window", at=now)
                     session.commit()
                 if arxiv_incomplete:
