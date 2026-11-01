@@ -33,6 +33,22 @@ MAX_PAGES_PER_DAY = 200
 log = structlog.get_logger()
 
 
+# Failed (set, day) requests in a row that stop the harvest for the run: one blip is tolerated,
+# a second in a row looks like an outage, and asking for every later day would hammer it.
+MAX_FAILED_IN_A_ROW = 2
+# The server itself saying "not now": still refused after its Retry-After, it is never asked again
+# in this run.
+_REFUSALS = frozenset({429, 503})
+
+
+class HarvestStopped(RuntimeError):
+    """arXiv refused or kept failing, so the rest of this run's harvest is not asked for."""
+
+
+class UnreadablePage(ValueError):
+    """A response that is not a usable OAI-PMH page: an HTML error page or a stale token."""
+
+
 def arxiv_base_id(raw: str) -> str:
     """Return the version-free arXiv id, accepting a URL or a bare id."""
     return _VERSION.sub("", raw.rstrip("/").split("/abs/")[-1])
@@ -149,6 +165,12 @@ class ArxivOaiSource:
         ]
         # Records skipped during the most recent harvest, for the run to dead-letter.
         self.rejected: list[RejectedEntry] = []
+        # (set, day) pages that could not be read during the most recent harvest(day). The
+        # caller keeps that day incomplete and the cursor before it, then retries next run.
+        self.failures: list[str] = []
+        # Spans harvest(day) calls, so an outage that starts on one day and continues into the
+        # next still stops the run.
+        self._failed_in_a_row = 0
 
     def _pace(self) -> None:
         # Space request starts by pause_s on a monotonic clock, retries included; the
@@ -161,8 +183,8 @@ class ArxivOaiSource:
         self._last_request = time.monotonic()
 
     def _get(self, params: dict[str, str]) -> str:
-        # One retry after Retry-After or retry_wait_s, then the exception propagates so the
-        # run degrades and the source stops for the day.
+        # One retry after Retry-After or retry_wait_s, then the exception reaches the harvest,
+        # which keeps this (set, day) incomplete and either moves on or stops for the run.
         resp = send_with_retries(
             self._client,
             "GET",
@@ -223,7 +245,7 @@ class ArxivOaiSource:
         if "<!DOCTYPE" in text:
             # OAI-PMH never carries a DTD; refusing one blocks entity-amplification bodies
             # before expat sees them.
-            raise ValueError("OAI-PMH response carries a DOCTYPE, which arXiv never sends")
+            raise UnreadablePage("OAI-PMH response carries a DOCTYPE, which arXiv never sends")
         # ElementTree is safe here: expat >= 2.4.1 bounds entity amplification, external
         # entities are not resolved, and a DOCTYPE is refused above.
         root = ET.fromstring(text)  # noqa: S314 - see the comment above
@@ -232,10 +254,13 @@ class ArxivOaiSource:
             code = error.get("code") or "unknown"
             if code == "noRecordsMatch":
                 return [], ""  # a quiet datestamp day, not a failure
-            raise ValueError(f"OAI-PMH error {code}: {(error.text or '').strip()}")
+            detail = f"OAI-PMH error {code}: {(error.text or '').strip()}"
+            if code == "badResumptionToken":
+                raise UnreadablePage(detail)
+            raise ValueError(detail)
         listed = root.find(f"{_OAI}ListRecords")
         if listed is None:
-            raise ValueError("OAI-PMH response has no ListRecords element")
+            raise UnreadablePage("OAI-PMH response has no ListRecords element")
         items: list[SourceItem] = []
         for record in listed.findall(f"{_OAI}record"):
             header = record.find(f"{_OAI}header")
@@ -267,6 +292,7 @@ class ArxivOaiSource:
         """
         # rejected describes one harvest; clear it so callers never read stale rows.
         self.rejected = []
+        self.failures = []
         # Base ids already yielded in this call: a paper cross-listed into two sets is
         # yielded once, at the version its single arXivRaw record lists (its highest).
         seen: set[str] = set()
@@ -293,7 +319,26 @@ class ArxivOaiSource:
                     if first
                     else {"verb": "ListRecords", "resumptionToken": token}
                 )
-                items, token = self._parse_page(self._get(params))
+                try:
+                    items, token = self._parse_page(self._get(params))
+                except (httpx.HTTPError, OSError, ET.ParseError, UnreadablePage) as exc:
+                    # A transport failure, a corrupt or HTML body (a CDN error page) or a stale
+                    # resumption token must not abandon the other sets or the later days: the day
+                    # stays incomplete and the cursor stays before it for the next run. A refusal
+                    # or a second failure in a row stops the harvest instead. Any other OAI error
+                    # still raises, because a request this server rejects is a bug, not a blip.
+                    self._failed_in_a_row += 1
+                    refused = (
+                        isinstance(exc, httpx.HTTPStatusError)
+                        and exc.response.status_code in _REFUSALS
+                    )
+                    if refused or self._failed_in_a_row >= MAX_FAILED_IN_A_ROW:
+                        raise HarvestStopped(
+                            f"arXiv harvest stopped at {set_spec} on {day.isoformat()}: {exc!r}"
+                        ) from exc
+                    self._mark_failed(day, set_spec, exc)
+                    break
+                self._failed_in_a_row = 0
                 pages += 1
                 page: list[SourceItem] = []
                 for item in items:
@@ -312,3 +357,9 @@ class ArxivOaiSource:
                         f"on {day.isoformat()} at page {pages}"
                     )
                 used.add(token)
+
+    def _mark_failed(self, day: date, set_spec: str, exc: BaseException) -> None:
+        """Record one unreadable (set, day) page without making the whole harvest fatal."""
+        message = f"{set_spec} on {day.isoformat()}: {exc!r}"
+        self.failures.append(message)
+        log.warning("arxiv_page_failed", set=set_spec, day=day.isoformat(), error=repr(exc))

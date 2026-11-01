@@ -11,8 +11,13 @@ import pytest
 
 from paperwatch.config import ARXIV_OAI_PREFIX
 from paperwatch.domain import Profile, RejectedEntry, load_profiles
-from paperwatch.sources.arxiv import ArxivOaiSource, _split_authors, arxiv_base_id, oai_sets
-from paperwatch.sources.base import BodyTooLarge
+from paperwatch.sources.arxiv import (
+    ArxivOaiSource,
+    HarvestStopped,
+    _split_authors,
+    arxiv_base_id,
+    oai_sets,
+)
 
 FIXTURES = Path("tests/fixtures/oai")
 CS_PAGE1 = (FIXTURES / "cs_page1.xml").read_text()
@@ -20,6 +25,10 @@ CS_PAGE2 = (FIXTURES / "cs_page2.xml").read_text()
 STATML_DAY = (FIXTURES / "statml_day.xml").read_text()
 NO_RECORDS = (FIXTURES / "noRecordsMatch.xml").read_text()
 BAD_TOKEN = (FIXTURES / "badResumptionToken.xml").read_text()
+# The real 2026-10-29 cs page arXiv served from its cache on 2026-10-31 and 2026-11-01: three
+# records, none in a profile, and no resumption token. A complete day that legitimately yields
+# nothing, not a failure.
+QUIET_DAY = (FIXTURES / "quiet_day_2026_10_29.xml").read_text()
 DELETED = (FIXTURES / "deleted.xml").read_text()
 ALL_PROFILES = load_profiles(Path("config/profiles.yaml"))
 # Only the agentic profile is cs, so a harness against it makes one set sequence.
@@ -326,29 +335,101 @@ def test_real_cs_fixture_yields_only_matching_papers() -> None:
 
 
 def test_a_doctype_body_is_rejected_before_parsing() -> None:
-    # OAI-PMH never carries a DTD; refusing one blocks the billion-laughs shape up front.
+    # OAI-PMH never carries a DTD; refusing one blocks the billion-laughs shape up front. The
+    # refusal is one unreadable page, so the day is recorded incomplete rather than parsed.
     xml = (
         '<?xml version="1.0"?>'
         '<!DOCTYPE OAI-PMH [<!ENTITY x "y">]>'
         '<OAI-PMH xmlns="http://www.openarchives.org/OAI/2.0/"><ListRecords/></OAI-PMH>'
     )
-    with pytest.raises(ValueError, match="DOCTYPE"):
-        _harvest(xml)
+    src = ArxivOaiSource(_client(lambda request: httpx.Response(200, text=xml)), AGENTIC, pause_s=0)
+    assert list(src.harvest(DAY)) == []
+    assert len(src.failures) == 1 and "DOCTYPE" in src.failures[0]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "<!DOCTYPE html><html><body>503 Service Unavailable</body></html>",
+        "<html><body>503 Service Unavailable</body></html>",
+    ],
+)
+def test_an_html_error_page_does_not_abort_the_other_set(body: str) -> None:
+    # A CDN or maintenance page answered with 200 is one unreadable (set, day), not a fatal
+    # harvest: the other set is still asked and its records still reach the caller.
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        set_spec = request.url.params.get("set", "")
+        calls.append(set_spec)
+        if set_spec == "cs":
+            return httpx.Response(200, text=body)
+        return httpx.Response(200, text=STATML_DAY)
+
+    src = ArxivOaiSource(_client(handler), ALL_PROFILES, pause_s=0)
+    assert _flat(list(src.harvest(DAY)))
+    assert calls == ["cs", "stat:stat:ML"]
+    assert len(src.failures) == 1 and src.failures[0].startswith("cs on 2026-10-06")
 
 
 def test_no_records_match_yields_nothing_and_does_not_raise() -> None:
     assert _harvest(NO_RECORDS) == []
 
 
-def test_bad_resumption_token_raises_naming_the_code() -> None:
+def test_a_stale_resumption_token_marks_the_day_incomplete() -> None:
+    # A token the server no longer accepts ends that (set, day) as unreadable: the page already
+    # read is still delivered, the failure is recorded so the cursor stays before the day, and
+    # the next run asks for the day again from its first page.
+    calls: list[str] = []
+    stale = "expired"  # a token value, not a credential
+
     def handler(request: httpx.Request) -> httpx.Response:
-        if "resumptionToken" in request.url.params:
+        if request.url.params.get("resumptionToken") == stale:
+            calls.append("stale")
             return httpx.Response(200, text=BAD_TOKEN)
-        return httpx.Response(200, text=_page(_record("oai:arXiv.org:1"), resumption="stale"))
+        calls.append("first")
+        return httpx.Response(200, text=_page(_record("oai:arXiv.org:1"), resumption=stale))
 
     src = ArxivOaiSource(_client(handler), AGENTIC, pause_s=0)
-    with pytest.raises(ValueError, match="badResumptionToken"):
-        list(src.harvest(DAY))
+    ids = [i.external_id for i in _flat(list(src.harvest(DAY)))]  # type: ignore[union-attr]
+    assert ids == ["2510.00001"]
+    assert calls == ["first", "stale"]
+    assert len(src.failures) == 1 and "badResumptionToken" in src.failures[0]
+
+
+def test_a_failing_set_does_not_abort_the_other_set() -> None:
+    # One set's page failing after its retries must not stop the whole harvest: the other set is
+    # still asked and its records still reach the caller, so a day is only marked incomplete.
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        set_spec = request.url.params.get("set", "")
+        calls.append(set_spec)
+        if set_spec == "cs":
+            raise httpx.ReadTimeout("the cs page timed out")
+        return httpx.Response(200, text=STATML_DAY)
+
+    src = ArxivOaiSource(_client(handler), ALL_PROFILES, pause_s=0, retry_wait_s=0)
+    items = _flat(list(src.harvest(DAY)))  # type: ignore[union-attr]
+    assert items
+    # The failed set was retried once (attempts=2) and then skipped, not fatal.
+    assert calls == ["cs", "cs", "stat:stat:ML"]
+    assert len(src.failures) == 1 and "cs" in src.failures[0]
+
+
+def test_a_quiet_real_page_is_complete_and_not_a_failure() -> None:
+    # The captured 2026-10-29 page answers the day with records that fall outside every profile.
+    # That is a quiet day, not an incomplete one: no failure and no retry.
+    calls: list[dict[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(dict(request.url.params))
+        return httpx.Response(200, text=QUIET_DAY)
+
+    src = ArxivOaiSource(_client(handler), AGENTIC, pause_s=0)
+    assert list(src.harvest(date(2026, 10, 29))) == []
+    assert src.failures == []
+    assert calls[0]["from"] == calls[0]["until"] == "2026-10-29"
 
 
 def test_deleted_record_is_skipped_and_not_rejected() -> None:
@@ -402,17 +483,55 @@ def test_retry_after_is_honored_then_the_request_succeeds(monkeypatch: pytest.Mo
     assert 7.0 in sleeps  # the server's Retry-After wins over the fallback wait
 
 
-def test_two_retryable_failures_raise_after_two_attempts() -> None:
-    calls: list[int] = []
+@pytest.mark.parametrize("status", [429, 503])
+def test_a_refusal_after_its_retry_stops_the_harvest(status: int) -> None:
+    # The server asked us to back off and still refuses after the one wait: no other set or day
+    # is asked for in this run, so a busy arXiv is never hammered.
+    calls: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        calls.append(1)
-        return httpx.Response(429)
+        calls.append(request.url.params.get("set", ""))
+        return httpx.Response(status)
 
-    src = ArxivOaiSource(_client(handler), AGENTIC, pause_s=0, retry_wait_s=0)
-    with pytest.raises(httpx.HTTPStatusError):
+    src = ArxivOaiSource(_client(handler), ALL_PROFILES, pause_s=0, retry_wait_s=0)
+    with pytest.raises(HarvestStopped, match=str(status)):
         list(src.harvest(DAY))
-    assert len(calls) == 2  # attempts=2: one retry, then the exception propagates
+    assert calls == ["cs", "cs"]  # attempts=2: one retry, then the harvest stops
+
+
+def test_two_failed_requests_in_a_row_stop_the_harvest_across_days() -> None:
+    # The second set of one day and the first set of the next both time out: an outage, not a
+    # blip, so the harvest stops instead of walking every remaining day.
+    calls: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        set_spec, day = request.url.params.get("set", ""), request.url.params.get("from", "")
+        calls.append((set_spec, day))
+        if (set_spec, day) in {("stat:stat:ML", "2026-10-06"), ("cs", "2026-10-07")}:
+            raise httpx.ReadTimeout("timed out")
+        return httpx.Response(200, text=NO_RECORDS)
+
+    src = ArxivOaiSource(_client(handler), ALL_PROFILES, pause_s=0, retry_wait_s=0)
+    assert list(src.harvest(DAY)) == []
+    assert len(src.failures) == 1
+    with pytest.raises(HarvestStopped, match="cs on 2026-10-07"):
+        list(src.harvest(date(2026, 10, 7)))
+    assert ("stat:stat:ML", "2026-10-07") not in calls
+
+
+def test_one_failed_request_then_a_success_keeps_harvesting() -> None:
+    # The 2026-10-31 shape: one request times out and the next answers. The blip only leaves its
+    # day incomplete, and a later blip is again a first failure, not a second in a row.
+    def handler(request: httpx.Request) -> httpx.Response:
+        set_spec, day = request.url.params.get("set", ""), request.url.params.get("from", "")
+        if set_spec == "stat:stat:ML" and day in ("2026-10-06", "2026-10-07"):
+            raise httpx.ReadTimeout("timed out")
+        return httpx.Response(200, text=NO_RECORDS)
+
+    src = ArxivOaiSource(_client(handler), ALL_PROFILES, pause_s=0, retry_wait_s=0)
+    for day in (DAY, date(2026, 10, 7), date(2026, 10, 8)):
+        assert list(src.harvest(day)) == []
+    assert src.failures == []
 
 
 def test_missing_retry_after_uses_the_configured_wait(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -524,8 +643,8 @@ def test_the_arxiv_cap_reaches_the_source(monkeypatch) -> None:
     src = ArxivOaiSource(
         _client(lambda request: httpx.Response(200, text=_page())), AGENTIC, pause_s=0
     )
-    with pytest.raises(BodyTooLarge):
-        list(src.harvest(DAY))
+    assert list(src.harvest(DAY)) == []
+    assert len(src.failures) == 1 and "BodyTooLarge" in src.failures[0]
 
 
 def test_an_abab_a_resumption_token_sequence_is_a_loop() -> None:

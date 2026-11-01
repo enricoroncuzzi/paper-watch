@@ -22,6 +22,17 @@ Real captures (the record list is trimmed; for the two cs pages the
   real-fixture test both dropped records fail the term filter; the category
   rule is pinned separately by the synthetic
   `test_category_filter_drops_records_outside_every_profile`.
+- `quiet_day_2026_10_29.xml` - the `set=cs&from=2026-10-29&until=2026-10-29`
+  page arXiv served from its cache on 2026-10-31 and 2026-11-01 (its
+  `responseDate` is `2026-10-30T07:00:06Z`, so the CDN kept it for two days).
+  It is complete: three records, none in a profile, and no resumption token.
+  Captured on 2026-11-01 and whitespace-trimmed; the record list is untouched.
+  It pins that a quiet real day is not an incomplete one, and it is the page
+  the 2026-10-31 stall's only completed request returned. The request after it
+  failed: that run (`6a6194e6`) left the open `arxiv`/`window` dead letter with
+  error `ReadTimeout('The read operation timed out')`, attempts 1, window start
+  2026-10-29T00:00Z, created 2026-10-31T05:02:13Z, about two minutes after this
+  page was served at 05:00:10Z.
 
 Hand-written (element shapes copied from the real responses):
 

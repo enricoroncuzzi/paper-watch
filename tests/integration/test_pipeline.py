@@ -47,6 +47,7 @@ from paperwatch.llm.classifier import Classifier, FakeClassifier
 from paperwatch.llm.embedder import Embedder, FakeEmbedder
 from paperwatch.llm.ledger import Ledger
 from paperwatch.retrieval.hybrid import hybrid_search
+from paperwatch.sources.arxiv import ArxivOaiSource
 from paperwatch.sources.feeds import Feed, FeedSource
 from paperwatch.sources.hf_daily import HF_URL, HfDailySource, HfPaper
 from paperwatch.store.db import make_session_factory
@@ -152,6 +153,7 @@ def fake_sources(papers: list[SourceItem], feed_items: list[SourceItem] | None =
     )
     s.arxiv.papers = list(papers)  # mutable: a test changes it between runs
     s.arxiv.rejected = []  # filled by the real client when a record cannot be parsed
+    s.arxiv.failures = []  # filled by the real client when a page cannot be read
     s.arxiv.harvest.side_effect = _serve_papers(s)
     # Signal sources report outages through these flags instead of raising (Task 4).
     s.hf.degraded, s.hf.failure = False, None
@@ -1496,6 +1498,148 @@ def test_weekday_window_with_no_items_is_flagged(db_session: Session) -> None:
     res = run(db_session, src, now=wednesday, since_override=wednesday)
     problems = db_session.get_one(Run, res.run_id).health["problems"]
     assert "arxiv fetched 0 items" in problems
+
+
+_OAI_FIXTURES = Path("tests/fixtures/oai")
+
+
+def _stall_handler(failing_day: str) -> Callable[[httpx.Request], httpx.Response]:
+    # The 2026-10-31 shape: the 10-29 cs page is the cached quiet page, 10-30 has two cs pages,
+    # and the stat.ML request for `failing_day` times out.
+    quiet = (_OAI_FIXTURES / "quiet_day_2026_10_29.xml").read_text()
+    first = (_OAI_FIXTURES / "cs_page1.xml").read_text()
+    second = (_OAI_FIXTURES / "cs_page2.xml").read_text()
+    empty = (_OAI_FIXTURES / "noRecordsMatch.xml").read_text()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        params = dict(request.url.params)
+        if params.get("resumptionToken") == "cs-token-2":
+            return httpx.Response(200, text=second)
+        day, set_spec = params.get("from"), params.get("set")
+        if day == failing_day and set_spec == "stat:stat:ML":
+            raise httpx.ReadTimeout("The read operation timed out")
+        if day == "2026-10-29" and set_spec == "cs":
+            return httpx.Response(200, text=quiet)
+        if day == "2026-10-30" and set_spec == "cs":
+            return httpx.Response(200, text=first)
+        return httpx.Response(200, text=empty)
+
+    return handler
+
+
+def _real_arxiv(handler: Callable[[httpx.Request], httpx.Response]) -> ArxivOaiSource:
+    return ArxivOaiSource(
+        httpx.Client(transport=httpx.MockTransport(handler)),
+        PROFILES,
+        pause_s=0,
+        retry_wait_s=0,
+    )
+
+
+def test_a_failed_arxiv_set_keeps_the_cursor_and_still_harvests_later_days(
+    db_session: Session,
+) -> None:
+    # Reproduction of the 2026-10-31 stall: with the production cursor at 10-30, 10-29 is only the
+    # overlap re-read of a day the 10-30 run completed, and its stat.ML request times out. The
+    # harvest must still reach 10-30 and 10-31, and the failed re-read loses nothing, so the
+    # cursor advances, the run is healthy with a warning, and the old outage letter is resolved.
+    repo = Repository(db_session)
+    earlier = repo.start_run(NOW, NOW, at=NOW)
+    repo.add_dead_letter(
+        earlier,
+        "arxiv",
+        "window",
+        "ReadTimeout('The read operation timed out')",
+        window=(datetime(2026, 10, 29, tzinfo=UTC), datetime(2026, 10, 31, 6, tzinfo=UTC)),
+    )
+    repo.advance_cursor("arxiv", datetime(2026, 10, 30, tzinfo=UTC))
+    db_session.commit()
+    src = fake_sources([])
+    src.arxiv = _real_arxiv(_stall_handler("2026-10-29"))
+    res = run(db_session, src, now=datetime(2026, 11, 1, 6, tzinfo=UTC))
+    # 10-30's two cs pages still arrived after the 10-29 set failed: one and two papers.
+    assert res.counts["fetched_arxiv"] == 3
+    assert repo.cursor("arxiv") == datetime(2026, 11, 1, tzinfo=UTC)
+    assert not repo.has_open_dead_letter("arxiv", "window")
+    health = db_session.get_one(Run, res.run_id).health
+    assert health["problems"] == []
+    assert any("arxiv overlap re-read failed" in warning for warning in health["warnings"])
+    assert res.status == "succeeded"
+
+
+def test_a_failed_day_from_the_cursor_on_pins_the_cursor(db_session: Session) -> None:
+    # 10-30 is past the cursor, so no earlier run has it: its failed stat.ML request keeps the
+    # cursor at 10-30 while 10-31 is still harvested, and the next run retries the day.
+    repo = Repository(db_session)
+    repo.advance_cursor("arxiv", datetime(2026, 10, 30, tzinfo=UTC))
+    db_session.commit()
+    src = fake_sources([])
+    src.arxiv = _real_arxiv(_stall_handler("2026-10-30"))
+    now = datetime(2026, 11, 1, 6, tzinfo=UTC)
+    res = run(db_session, src, now=now)
+    assert res.counts["fetched_arxiv"] == 3
+    assert repo.cursor("arxiv") == datetime(2026, 10, 30, tzinfo=UTC)
+    assert repo.has_open_dead_letter("arxiv", "window")
+    problems = db_session.get_one(Run, res.run_id).health["problems"]
+    assert "status=partial" in problems
+    assert "cursor not advanced: arxiv" in problems
+
+    # Once 10-30 answers, the next run advances past the missed day and closes the letter.
+    src.arxiv = _real_arxiv(_stall_handler("never"))
+    run(db_session, src, now=now + timedelta(days=1))
+    assert repo.cursor("arxiv") == datetime(2026, 11, 2, tzinfo=UTC)
+    assert not repo.has_open_dead_letter("arxiv", "window")
+
+
+def test_a_refusing_arxiv_stops_the_harvest_and_keeps_the_cursor(db_session: Session) -> None:
+    # arXiv still answers 429 after its Retry-After: the run asks for nothing more, the cursor
+    # stays at the first missed day and the run reports the stuck cursor.
+    asked: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        asked.append(request.url.params.get("from", ""))
+        return httpx.Response(429)
+
+    src = fake_sources([])
+    src.arxiv = ArxivOaiSource(
+        httpx.Client(transport=httpx.MockTransport(handler)),
+        PROFILES,
+        pause_s=0,
+        retry_wait_s=0,
+    )
+    repo = Repository(db_session)
+    repo.advance_cursor("arxiv", datetime(2026, 10, 30, tzinfo=UTC))
+    db_session.commit()
+    res = run(db_session, src, now=datetime(2026, 11, 1, 6, tzinfo=UTC))
+    assert asked == ["2026-10-29", "2026-10-29"]
+    assert repo.cursor("arxiv") == datetime(2026, 10, 30, tzinfo=UTC)
+    problems = db_session.get_one(Run, res.run_id).health["problems"]
+    assert "cursor not advanced: arxiv" in problems
+
+
+def test_a_first_run_that_misses_its_first_day_pins_the_cursor(db_session: Session) -> None:
+    # With no cursor yet, the next run would start at its own lookback floor one day later and
+    # never ask for the missed day again; pinning it keeps the day in the next window.
+    now = datetime(2026, 11, 1, 6, tzinfo=UTC)
+    first_day = (now - timedelta(days=7)).date().isoformat()
+    empty = (Path("tests/fixtures/oai") / "noRecordsMatch.xml").read_text()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.params.get("from") == first_day:
+            raise httpx.ReadTimeout("the first day timed out")
+        return httpx.Response(200, text=empty)
+
+    src = fake_sources([])
+    src.arxiv = ArxivOaiSource(
+        httpx.Client(transport=httpx.MockTransport(handler)),
+        PROFILES,
+        pause_s=0,
+        retry_wait_s=0,
+    )
+    res = run(db_session, src, now=now)
+    assert Repository(db_session).cursor("arxiv") == datetime(2026, 10, 25, tzinfo=UTC)
+    problems = db_session.get_one(Run, res.run_id).health["problems"]
+    assert "cursor not advanced: arxiv" in problems
 
 
 def test_malformed_arxiv_entry_is_dead_lettered_once_and_cursor_advances(
