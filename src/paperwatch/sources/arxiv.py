@@ -10,7 +10,7 @@ is announced and seen again when it is revised, which the Atom query interface n
 import re
 import time
 from collections.abc import Iterator
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from email.utils import parsedate_to_datetime
 from xml.etree import ElementTree as ET
 
@@ -39,6 +39,14 @@ MAX_FAILED_IN_A_ROW = 2
 # The server itself saying "not now": still refused after its Retry-After, it is never asked again
 # in this run.
 _REFUSALS = frozenset({429, 503})
+# Connect and read timeout of one OAI request. Uncached ListRecords calls measured on 2026-11-01
+# answered their first byte in at most 4.4 s (cs and stat:stat:ML for 2026-10-30), yet the 10-31
+# and 11-01 runs lost the uncached stat:stat:ML request to two 30 s read timeouts in a row. 60 s is
+# over ten times the measured worst and still half of REQUEST_DEADLINE_S.
+OAI_TIMEOUT_S = 60.0
+# Asked of every cache on the way. arXiv's CDN ignored both on 2026-11-01 and still served a page
+# cached two days earlier, so the responseDate check in `_parse_page` is the guard that holds.
+_NO_CACHE = {"Cache-Control": "no-cache", "Pragma": "no-cache"}
 
 
 class HarvestStopped(RuntimeError):
@@ -46,7 +54,8 @@ class HarvestStopped(RuntimeError):
 
 
 class UnreadablePage(ValueError):
-    """A response that is not a usable OAI-PMH page: an HTML error page or a stale token."""
+    """A response that is not a usable OAI-PMH page: an HTML error page, a stale token or a page
+    cached before its day was over."""
 
 
 def arxiv_base_id(raw: str) -> str:
@@ -141,6 +150,28 @@ def _published_at(version: ET.Element) -> datetime:
     return parsed.astimezone(UTC)
 
 
+def _refuse_early_answer(root: ET.Element, day: date) -> None:
+    """Raise `UnreadablePage` for a page of a finished day that was answered before it ended.
+
+    arXiv's CDN serves the same ListRecords URL from its cache for days, so a page cached while
+    `day` was still today, and still filling, would otherwise mark the day complete and lose the
+    records that arrived after it. Today itself is never complete, so its pages are taken as they
+    are.
+    """
+    stamp = (root.findtext(f"{_OAI}responseDate") or "").strip()
+    try:
+        answered = datetime.fromisoformat(stamp)
+    except ValueError:
+        raise UnreadablePage(f"OAI-PMH response has no usable responseDate: {stamp!r}") from None
+    if answered.tzinfo is None:
+        answered = answered.replace(tzinfo=UTC)
+    day_end = datetime(day.year, day.month, day.day, tzinfo=UTC) + timedelta(days=1)
+    if day_end <= datetime.now(UTC) and answered < day_end:
+        raise UnreadablePage(
+            f"OAI-PMH page for {day.isoformat()} was answered at {stamp}, before the day ended"
+        )
+
+
 class ArxivOaiSource:
     # Matches the source field written onto every SourceItem.
     name = "arxiv"
@@ -195,6 +226,8 @@ class ArxivOaiSource:
             max_wait_s=self._retry_wait_s,
             before_request=self._pace,
             max_bytes=MAX_ARXIV_BODY_BYTES,
+            timeout=OAI_TIMEOUT_S,
+            headers=_NO_CACHE,
         )
         return resp.text
 
@@ -241,7 +274,7 @@ class ArxivOaiSource:
             version=_version_number(ordered[-1]),
         )
 
-    def _parse_page(self, text: str) -> tuple[list[SourceItem], str]:
+    def _parse_page(self, text: str, day: date) -> tuple[list[SourceItem], str]:
         if "<!DOCTYPE" in text:
             # OAI-PMH never carries a DTD; refusing one blocks entity-amplification bodies
             # before expat sees them.
@@ -249,6 +282,7 @@ class ArxivOaiSource:
         # ElementTree is safe here: expat >= 2.4.1 bounds entity amplification, external
         # entities are not resolved, and a DOCTYPE is refused above.
         root = ET.fromstring(text)  # noqa: S314 - see the comment above
+        _refuse_early_answer(root, day)
         error = root.find(f"{_OAI}error")
         if error is not None:
             code = error.get("code") or "unknown"
@@ -320,13 +354,14 @@ class ArxivOaiSource:
                     else {"verb": "ListRecords", "resumptionToken": token}
                 )
                 try:
-                    items, token = self._parse_page(self._get(params))
+                    items, token = self._parse_page(self._get(params), day)
                 except (httpx.HTTPError, OSError, ET.ParseError, UnreadablePage) as exc:
-                    # A transport failure, a corrupt or HTML body (a CDN error page) or a stale
-                    # resumption token must not abandon the other sets or the later days: the day
-                    # stays incomplete and the cursor stays before it for the next run. A refusal
-                    # or a second failure in a row stops the harvest instead. Any other OAI error
-                    # still raises, because a request this server rejects is a bug, not a blip.
+                    # A transport failure, a corrupt or HTML body (a CDN error page), a stale
+                    # resumption token or a page cached before its day ended must not abandon the
+                    # other sets or the later days: the day stays incomplete and the cursor stays
+                    # before it for the next run. A refusal or a second failure in a row stops the
+                    # harvest instead. Any other OAI error still raises, because a request this
+                    # server rejects is a bug, not a blip.
                     self._failed_in_a_row += 1
                     refused = (
                         isinstance(exc, httpx.HTTPStatusError)

@@ -432,6 +432,64 @@ def test_a_quiet_real_page_is_complete_and_not_a_failure() -> None:
     assert calls[0]["from"] == calls[0]["until"] == "2026-10-29"
 
 
+@pytest.mark.parametrize(
+    ("text", "day"),
+    [
+        # The captured 2026-10-29 page as the CDN would hold it had it been cached during 10-29.
+        (
+            QUIET_DAY.replace("2026-10-30T07:00:06Z", "2026-10-29T07:00:06Z"),
+            date(2026, 10, 29),
+        ),
+        # An empty answer cached while its day was still today.
+        (NO_RECORDS, date(2026, 10, 16)),
+    ],
+)
+def test_a_page_answered_before_its_day_ended_is_a_failed_request(text: str, day: date) -> None:
+    # A finished day's page that arXiv answered while the day was still filling is a stale cached
+    # copy: taking it would mark the day complete and lose the records that came after it.
+    src = ArxivOaiSource(
+        _client(lambda request: httpx.Response(200, text=text)), AGENTIC, pause_s=0
+    )
+    assert list(src.harvest(day)) == []
+    assert len(src.failures) == 1 and "before the day ended" in src.failures[0]
+
+
+def test_a_page_of_today_is_taken_although_today_has_not_ended() -> None:
+    # Today is never marked complete, so its page is harvested as it is rather than refused.
+    xml = _page(_record("oai:arXiv.org:1"))
+    src = ArxivOaiSource(_client(lambda request: httpx.Response(200, text=xml)), AGENTIC, pause_s=0)
+    ids = [i.external_id for i in _flat(list(src.harvest(datetime.now(UTC).date())))]  # type: ignore[union-attr]
+    assert ids == ["2510.00001"]
+    assert src.failures == []
+
+
+def test_a_page_without_a_response_date_is_a_failed_request() -> None:
+    xml = _page(_record("oai:arXiv.org:1")).replace(
+        "<responseDate>2026-10-16T08:00:00Z</responseDate>", ""
+    )
+    src = ArxivOaiSource(_client(lambda request: httpx.Response(200, text=xml)), AGENTIC, pause_s=0)
+    assert list(src.harvest(DAY)) == []
+    assert len(src.failures) == 1 and "responseDate" in src.failures[0]
+
+
+def test_requests_ask_caches_to_revalidate_and_allow_sixty_seconds() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, text=NO_RECORDS)
+
+    list(ArxivOaiSource(_client(handler), AGENTIC, pause_s=0).harvest(DAY))
+    assert seen[0].headers["Cache-Control"] == "no-cache"
+    assert seen[0].headers["Pragma"] == "no-cache"
+    assert seen[0].extensions["timeout"] == {
+        "connect": 60.0,
+        "read": 60.0,
+        "write": 60.0,
+        "pool": 60.0,
+    }
+
+
 def test_deleted_record_is_skipped_and_not_rejected() -> None:
     src = ArxivOaiSource(
         _client(lambda request: httpx.Response(200, text=DELETED)), AGENTIC, pause_s=0

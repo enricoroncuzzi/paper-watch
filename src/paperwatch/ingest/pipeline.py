@@ -511,11 +511,6 @@ def run_ingestion(
             # arXiv announces Sunday-Thursday evenings US Eastern, so weekend datestamps are
             # normally empty; a quiet Saturday or Sunday is not a broken source.
             arxiv_expected = any(day.weekday() in (1, 2, 3, 4) for day in days)
-            # Days before the cursor were completed by an earlier run; only the overlap re-reads
-            # them. A --since run or a first run has no such days.
-            completed_before = (
-                arxiv_cursor.date() if arxiv_cursor is not None and since_override is None else None
-            )
             arxiv_incomplete = False
             arxiv_stopped_early = False
             # The cursor reads above opened a transaction; a network block must never run inside
@@ -538,17 +533,7 @@ def run_ingestion(
                             repo.add_dead_letter(run_id, bad.source, bad.ref, bad.error)
                             counts["malformed"] += 1
                             causes.add("malformed")
-                    if (
-                        sources.arxiv.failures
-                        and completed_before is not None
-                        and day < completed_before
-                    ):
-                        # A failed overlap re-read loses nothing: an earlier run already harvested
-                        # the day, so it must not hold the cursor back or keep the run unhealthy.
-                        warnings.append(
-                            "arxiv overlap re-read failed: " + "; ".join(sources.arxiv.failures)
-                        )
-                    elif sources.arxiv.failures:
+                    if sources.arxiv.failures:
                         # A page that could not be read leaves only its own day incomplete. Later
                         # days are still harvested so the run makes progress, but the cursor stops
                         # before the first missed day so the next run retries it with no gap.
@@ -567,10 +552,8 @@ def run_ingestion(
                         # today is never marked complete.
                         repo.advance_cursor("arxiv", _midnight(day) + timedelta(days=1))
                     session.commit()
-                    if not arxiv_incomplete and not sources.arxiv.failures:
+                    if not arxiv_incomplete:
                         # A completed day is a source that answered: any open outage letter is over.
-                        # A failed overlap re-read did not answer, so it must not close the letter
-                        # and then have the next failed day open a duplicate one.
                         repo.resolve_open_dead_letters("arxiv", "window", at=now)
                     session.commit()
                 if arxiv_incomplete:
@@ -607,7 +590,7 @@ def run_ingestion(
                         run_id,
                         "arxiv",
                         "window",
-                        repr(exc),
+                        "; ".join([*sources.arxiv.failures, repr(exc)]),
                         window=(_midnight(first_day), now),
                     )
                 if repo.cursor("arxiv") is None:

@@ -1,4 +1,5 @@
 import dataclasses
+import re
 from collections.abc import Callable, Iterator, Mapping
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -1503,13 +1504,23 @@ def test_weekday_window_with_no_items_is_flagged(db_session: Session) -> None:
 _OAI_FIXTURES = Path("tests/fixtures/oai")
 
 
+def _answered_now(name: str) -> str:
+    # A fixture as a live server answers it now, so the page is never mistaken for a copy cached
+    # before its day ended.
+    stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    text = (_OAI_FIXTURES / name).read_text()
+    return re.sub(
+        r"<responseDate>[^<]*</responseDate>", f"<responseDate>{stamp}</responseDate>", text
+    )
+
+
 def _stall_handler(failing_day: str) -> Callable[[httpx.Request], httpx.Response]:
     # The 2026-10-31 shape: the 10-29 cs page is the cached quiet page, 10-30 has two cs pages,
     # and the stat.ML request for `failing_day` times out.
     quiet = (_OAI_FIXTURES / "quiet_day_2026_10_29.xml").read_text()
-    first = (_OAI_FIXTURES / "cs_page1.xml").read_text()
-    second = (_OAI_FIXTURES / "cs_page2.xml").read_text()
-    empty = (_OAI_FIXTURES / "noRecordsMatch.xml").read_text()
+    first = _answered_now("cs_page1.xml")
+    second = _answered_now("cs_page2.xml")
+    empty = _answered_now("noRecordsMatch.xml")
 
     def handler(request: httpx.Request) -> httpx.Response:
         params = dict(request.url.params)
@@ -1539,10 +1550,10 @@ def _real_arxiv(handler: Callable[[httpx.Request], httpx.Response]) -> ArxivOaiS
 def test_a_failed_arxiv_set_keeps_the_cursor_and_still_harvests_later_days(
     db_session: Session,
 ) -> None:
-    # Reproduction of the 2026-10-31 stall: with the production cursor at 10-30, 10-29 is only the
+    # Reproduction of the 2026-10-31 stall: with the production cursor at 10-30, 10-29 is the
     # overlap re-read of a day the 10-30 run completed, and its stat.ML request times out. The
-    # harvest must still reach 10-30 and 10-31, and the failed re-read loses nothing, so the
-    # cursor advances, the run is healthy with a warning, and the old outage letter is resolved.
+    # harvest must still reach 10-30 and 10-31, but the overlap day can hold a record only this
+    # re-read would see, so the cursor stays at 10-29's end and the outage letter stays open.
     repo = Repository(db_session)
     earlier = repo.start_run(NOW, NOW, at=NOW)
     repo.add_dead_letter(
@@ -1559,22 +1570,21 @@ def test_a_failed_arxiv_set_keeps_the_cursor_and_still_harvests_later_days(
     res = run(db_session, src, now=datetime(2026, 11, 1, 6, tzinfo=UTC))
     # 10-30's two cs pages still arrived after the 10-29 set failed: one and two papers.
     assert res.counts["fetched_arxiv"] == 3
-    assert repo.cursor("arxiv") == datetime(2026, 11, 1, tzinfo=UTC)
-    assert not repo.has_open_dead_letter("arxiv", "window")
-    health = db_session.get_one(Run, res.run_id).health
-    assert health["problems"] == []
-    assert any("arxiv overlap re-read failed" in warning for warning in health["warnings"])
-    assert res.status == "succeeded"
+    assert repo.cursor("arxiv") == datetime(2026, 10, 30, tzinfo=UTC)
+    assert repo.has_open_dead_letter("arxiv", "window")
+    problems = db_session.get_one(Run, res.run_id).health["problems"]
+    assert "status=partial" in problems
+    assert "cursor not advanced: arxiv" in problems
 
 
 def test_a_failed_overlap_reread_does_not_resolve_an_open_outage_letter(
     db_session: Session,
 ) -> None:
-    # The overlap day is a warning, but it still did not answer: it must not close the open outage
-    # letter. If the next day then fails too, the harvest stops, and the handler must find the same
-    # letter open rather than opening a second one for the same continuing outage.
+    # The overlap day did not answer, so it must not close the open outage letter. If the next day
+    # then fails too, the harvest stops, and the handler must find the same letter open rather than
+    # opening a second one for the same continuing outage.
     quiet = (_OAI_FIXTURES / "quiet_day_2026_10_29.xml").read_text()
-    empty = (_OAI_FIXTURES / "noRecordsMatch.xml").read_text()
+    empty = _answered_now("noRecordsMatch.xml")
 
     def handler(request: httpx.Request) -> httpx.Response:
         params = dict(request.url.params)
@@ -1640,6 +1650,30 @@ def test_a_failed_day_from_the_cursor_on_pins_the_cursor(db_session: Session) ->
     assert not repo.has_open_dead_letter("arxiv", "window")
 
 
+def test_a_stopped_harvest_letter_names_the_days_earlier_failed_set(db_session: Session) -> None:
+    # 10-30 cs times out, then 10-30 stat.ML times out too and stops the harvest: the outage letter
+    # must name both failed requests, not only the one that stopped it.
+    empty = _answered_now("noRecordsMatch.xml")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.params.get("from") == "2026-10-30":
+            raise httpx.ReadTimeout("The read operation timed out")
+        return httpx.Response(200, text=empty)
+
+    repo = Repository(db_session)
+    repo.advance_cursor("arxiv", datetime(2026, 10, 30, tzinfo=UTC))
+    db_session.commit()
+    src = fake_sources([])
+    src.arxiv = _real_arxiv(handler)
+    run(db_session, src, now=datetime(2026, 11, 1, 6, tzinfo=UTC))
+    letter = db_session.scalars(
+        select(DeadLetter).where(DeadLetter.source == "arxiv", DeadLetter.ref == "window")
+    ).one()
+    assert "cs on 2026-10-30" in letter.error
+    assert "HarvestStopped" in letter.error and "stat:stat:ML on 2026-10-30" in letter.error
+    assert repo.cursor("arxiv") == datetime(2026, 10, 30, tzinfo=UTC)
+
+
 def test_a_refusing_arxiv_stops_the_harvest_and_keeps_the_cursor(db_session: Session) -> None:
     # arXiv still answers 429 after its Retry-After: the run asks for nothing more, the cursor
     # stays at the first missed day and the run reports the stuck cursor.
@@ -1671,7 +1705,7 @@ def test_a_first_run_that_misses_its_first_day_pins_the_cursor(db_session: Sessi
     # never ask for the missed day again; pinning it keeps the day in the next window.
     now = datetime(2026, 11, 1, 6, tzinfo=UTC)
     first_day = (now - timedelta(days=7)).date().isoformat()
-    empty = (Path("tests/fixtures/oai") / "noRecordsMatch.xml").read_text()
+    empty = _answered_now("noRecordsMatch.xml")
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.params.get("from") == first_day:
