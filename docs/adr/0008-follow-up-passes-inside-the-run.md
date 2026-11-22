@@ -64,8 +64,8 @@ passes. A manual `paperwatch ingest --live` never waits.
   letter was opened by an earlier run (keyed on the letter's `run_id`, never on its existence), it
   is the second day in a row and a failure. The same rule now decides a lab feed's first miss. A
   refusal is the only reason a recovered pass may clear: an answer S2 got wrong (a short or
-  badly unpaired answer, a deterministic error) is recorded as an anomaly and stays in the verdict, so a
-  clean retry of the refused ids cannot hide it (review S4).
+  badly unpaired answer, a deterministic error) is recorded as an anomaly and stays in the
+  verdict, so a clean retry of the refused ids cannot hide it (review S4).
 - **The morning check.** `check.sh` prints `WAIT` while `next_at` is in the future (counting no
   failure), `FAIL follow-up did not complete (killed?)` once it has passed, and
   `WAIT follow-up pass N running` for the minutes a pass itself takes (a 20-minute grace, longer
