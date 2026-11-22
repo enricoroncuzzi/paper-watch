@@ -1516,7 +1516,9 @@ class _SuggestRepo:
     """The repository the `suggest` command reads: one pick and one Rising item, no summaries."""
 
     def __init__(self) -> None:
-        now = datetime(2026, 11, 2, 9, tzinfo=UTC)
+        # Relative to the real clock: `suggest` ages items against `datetime.now`, so a fixed
+        # date would fall out of the window and print nothing.
+        now = datetime.now(UTC)
         self.pick = Candidate(
             item_id=uuid4(),
             source="arxiv",
