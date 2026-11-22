@@ -17,7 +17,7 @@ config:
 graph TD;
 	__start__([<p>__start__</p>]):::first
 	agent(agent)
-	tools(tools)
+	tools(tools<hr/><small><em>__tools = search_corpus, get_item, compare_items</em></small>)
 	check(check)
 	__end__([<p>__end__</p>]):::last
 	__start__ --> agent;
