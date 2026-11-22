@@ -1012,6 +1012,103 @@ def test_s2_row_for_an_id_not_asked_about_is_unpaired() -> None:
 
 
 @respx.mock
+def test_s2_one_unpaired_row_in_a_full_answer_is_a_warning_not_a_degradation() -> None:
+    # The shape S2 has answered with since 2026-11-17: 500 rows for 500 ids, every row naming its
+    # own id except one, which names a paper nobody asked for (2601.05111 went missing, and
+    # 2601.05999 stands in its place). That is S2 failing one paper, not an answer this client
+    # cannot read: the 499 pairs are kept, the one id stays due, and the run is not marked bad.
+    ids = [f"2601.{i:05d}" for i in range(500)]
+    lost = ids[137]
+    rows: list[dict[str, object] | None] = [_s2_row(a, citations=2) for a in ids]
+    rows[137] = _s2_row("2601.05999", citations=9)
+    respx.post(S2_BATCH_URL).mock(return_value=httpx.Response(200, json=rows))
+    src = SemanticScholarSource(httpx.Client(), None, pause_s=0)
+    with capture_logs() as logs:
+        out = src.lookup(ids)
+    assert set(out) == set(ids) - {lost}
+    assert src.checked_ids == set(ids) - {lost}
+    assert src.degraded is False
+    assert src.failure is None
+    assert src.anomaly is None
+    # Still said in the log, naming the unpaired label, so a recurring one can be recognised.
+    [warning] = [entry for entry in logs if entry["event"] == "s2_unpaired_rows"]
+    assert warning["log_level"] == "warning"
+    assert warning["labels"] == ["2601.05999"]
+    assert (warning["unpaired"], warning["rows"], warning["ids"]) == (1, 500, 500)
+    assert not [entry for entry in logs if entry["event"] == "s2_answer_anomaly"]
+
+
+@respx.mock
+def test_s2_unpaired_rows_up_to_the_tolerance_are_kept_quiet() -> None:
+    # The tolerance is the same one the short-answer check uses: max(2, 5% of the chunk), so 25 of
+    # 500. Right at it the answer is still tolerated, one more and it is degraded.
+    ids = [f"2601.{i:05d}" for i in range(500)]
+
+    def answer(unpaired: int) -> list[dict[str, object] | None]:
+        rows: list[dict[str, object] | None] = [_s2_row(a) for a in ids]
+        for k in range(unpaired):
+            rows[k] = _s2_row(f"2699.{k:05d}")
+        return rows
+
+    route = respx.post(S2_BATCH_URL)
+    route.mock(return_value=httpx.Response(200, json=answer(25)))
+    src = SemanticScholarSource(httpx.Client(), None, pause_s=0)
+    src.lookup(ids)
+    assert src.degraded is False
+    assert src.checked_ids == set(ids[25:])
+
+    route.mock(return_value=httpx.Response(200, json=answer(26)))
+    src.lookup(ids)
+    assert src.degraded is True
+    assert src.anomaly is not None and "26 rows matched no requested id" in src.anomaly
+    assert src.checked_ids == set(ids[26:])
+
+
+@respx.mock
+def test_s2_null_row_is_still_checked_beside_a_tolerated_unpaired_row() -> None:
+    # An id S2 knows but has no record for comes back as null. An unpaired row elsewhere in the
+    # same full-length answer must not stop that null being attributed, or the id would stay due
+    # and be re-asked every day.
+    ids = [f"2601.{i:05d}" for i in range(500)]
+    rows: list[dict[str, object] | None] = [_s2_row(a) for a in ids]
+    rows[10] = None
+    rows[20] = _s2_row("2601.05999")
+    respx.post(S2_BATCH_URL).mock(return_value=httpx.Response(200, json=rows))
+    src = SemanticScholarSource(httpx.Client(), None, pause_s=0)
+    src.lookup(ids)
+    assert src.degraded is False
+    assert src.checked_ids == set(ids) - {ids[20]}
+
+
+@respx.mock
+def test_s2_unpaired_rows_do_not_hide_a_short_answer() -> None:
+    # 475 rows for 500 ids with 25 of them unpaired leaves 50 ids without an answer: each
+    # allowance alone would pass, together they are a broken answer.
+    ids = [f"2601.{i:05d}" for i in range(500)]
+    rows: list[dict[str, object] | None] = [_s2_row(a) for a in ids[:475]]
+    for k in range(25):
+        rows[k] = _s2_row(f"2699.{k:05d}")
+    respx.post(S2_BATCH_URL).mock(return_value=httpx.Response(200, json=rows))
+    src = SemanticScholarSource(httpx.Client(), None, pause_s=0)
+    src.lookup(ids)
+    assert src.degraded is True
+    assert "475 rows for 500 ids" in str(src.failure)
+
+
+@respx.mock
+def test_s2_unpaired_rows_are_degraded_when_they_outnumber_the_paired_ones() -> None:
+    # Two rows for two ids where one names somebody else: the tolerance floor of 2 would wave this
+    # through, but half the answer not pairing is not a lined-up answer.
+    respx.post(S2_BATCH_URL).mock(
+        return_value=httpx.Response(200, json=[_s2_row("2510.00001"), _s2_row("2510.00099")])
+    )
+    src = SemanticScholarSource(httpx.Client(), None, pause_s=0)
+    src.lookup(["2510.00001", "2510.00002"])
+    assert src.degraded is True
+    assert src.checked_ids == {"2510.00001"}
+
+
+@respx.mock
 def test_s2_row_naming_a_version_still_pairs() -> None:
     # The request strips vN, but S2 may echo the versioned id back; it is the same paper.
     respx.post(S2_BATCH_URL).mock(

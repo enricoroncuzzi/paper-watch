@@ -29,6 +29,11 @@ S2_JITTER = 0.2
 # chunk: asking the rest of a 12 500-paper re-check would spend an hour on refusals alone. They
 # stay refused (and so due) for the next pass instead.
 S2_REFUSED_CHUNKS = 2
+# A chunk's answer may leave out or fail to pair this many ids before it is no longer the shape
+# this client understands: 5% of the chunk, never fewer than 2 (25 of 500). One rule for both a
+# short answer and unpaired rows, so a chunk is judged the same whichever way S2 got it wrong.
+S2_TOLERATED_FRACTION = 20
+S2_TOLERATED_FLOOR = 2
 _VERSION = re.compile(r"v\d+$")
 # S2's 400 body when no id in the chunk is indexed yet, routine for papers announced the
 # same day: the chunk was checked and simply has no signals.
@@ -83,6 +88,10 @@ def _row_arxiv_id(paper: dict[str, Any]) -> str | None:
         return None
     value = external.get("ArXiv")
     return _base_id(value) if isinstance(value, str) and value else None
+
+
+def _tolerated(chunk_len: int) -> int:
+    return max(S2_TOLERATED_FLOOR, chunk_len // S2_TOLERATED_FRACTION)
 
 
 def _row_label(paper: dict[str, Any]) -> str:
@@ -202,10 +211,15 @@ class SemanticScholarSource:
                         continue
                     by_id[base] = paper
                 # Position is trusted for the normal null row only where the answer lines up with
-                # the request: same length, every row naming the id at its position. A short
-                # answer has already shifted, so a null there could not be attributed.
+                # the request: same length, every row naming the id at its position. A row naming
+                # an id nobody asked for is no evidence of a shift (it stands in for one requested
+                # id, as in the 2026-11-17 answers), so it does not break the line-up; a row for
+                # a requested id at the wrong position does. A short answer has already shifted,
+                # so a null there could not be attributed.
                 lines_up = len(rows) == len(chunk) and all(
-                    paper is None or _row_arxiv_id(paper) == wanted[pos]
+                    paper is None
+                    or (base := _row_arxiv_id(paper)) == wanted[pos]
+                    or base not in known
                     for pos, paper in enumerate(rows)
                 )
                 for pos, aid in enumerate(chunk):
@@ -216,14 +230,32 @@ class SemanticScholarSource:
                     elif lines_up and rows[pos] is None:
                         self.checked_ids.add(aid)
                 problems: list[str] = []
+                tolerated = _tolerated(len(chunk))
                 if unpaired:
                     # Up to three values, so a one-off answer is named without a wall of ids.
-                    problems.append(
-                        f"{unpaired} rows matched no requested id: " + ", ".join(unpaired_labels)
+                    message = f"{unpaired} rows matched no requested id: " + ", ".join(
+                        unpaired_labels
                     )
+                    # Measured from 2026-11-17: S2 answers one id (2601.05111, some days
+                    # 1905.02269) with a row naming a different paper while the other 499 pair.
+                    # That is S2 failing one paper, not an unreadable answer, and a verdict that
+                    # is red every day for it would hide a real failure. The requested id is left
+                    # unchecked (so a later run asks again) and the row is only a warning, as long
+                    # as the paired rows are the clear majority and the unpaired ones few.
+                    if unpaired <= tolerated and unpaired < len(by_id):
+                        log.warning(
+                            "s2_unpaired_rows",
+                            labels=unpaired_labels,
+                            unpaired=unpaired,
+                            rows=len(rows),
+                            ids=len(chunk),
+                        )
+                    else:
+                        problems.append(message)
                 # One omitted id is S2 not knowing that paper, but a much shorter answer is not
                 # the shape this client understands: flag it and keep whatever rows did pair.
-                if len(chunk) - len(rows) > max(2, len(chunk) // 20):
+                # Unpaired rows do not count as answers here, so the two allowances never stack.
+                if len(chunk) - (len(rows) - unpaired) > tolerated:
                     problems.append(f"{len(rows)} rows for {len(chunk)} ids")
                 if problems:
                     self.degraded = True
