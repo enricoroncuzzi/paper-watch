@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.2](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.16.1...paperwatch-v0.16.2) (2026-11-22)
+
+
+### Bug Fixes
+
+* **sources:** stop a few unpaired Semantic Scholar rows degrading the run ([#123](https://github.com/enricoroncuzzi/paper-watch/issues/123)) ([653a541](https://github.com/enricoroncuzzi/paper-watch/commit/653a5415cf785922b76778efd021e74e50c57283))
+
 ## [0.16.1](https://github.com/enricoroncuzzi/paper-watch/compare/paperwatch-v0.16.0...paperwatch-v0.16.1) (2026-11-01)
 
 
