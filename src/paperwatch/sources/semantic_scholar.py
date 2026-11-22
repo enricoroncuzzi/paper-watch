@@ -211,10 +211,15 @@ class SemanticScholarSource:
                         continue
                     by_id[base] = paper
                 # Position is trusted for the normal null row only where the answer lines up with
-                # the request: same length, every row naming the id at its position. A short
-                # answer has already shifted, so a null there could not be attributed.
+                # the request: same length, every row naming the id at its position. A row naming
+                # an id nobody asked for is no evidence of a shift (it stands in for one requested
+                # id, as in the 2026-11-17 answers), so it does not break the line-up; a row for
+                # a requested id at the wrong position does. A short answer has already shifted,
+                # so a null there could not be attributed.
                 lines_up = len(rows) == len(chunk) and all(
-                    paper is None or _row_arxiv_id(paper) == wanted[pos]
+                    paper is None
+                    or (base := _row_arxiv_id(paper)) == wanted[pos]
+                    or base not in known
                     for pos, paper in enumerate(rows)
                 )
                 for pos, aid in enumerate(chunk):
@@ -249,7 +254,8 @@ class SemanticScholarSource:
                         problems.append(message)
                 # One omitted id is S2 not knowing that paper, but a much shorter answer is not
                 # the shape this client understands: flag it and keep whatever rows did pair.
-                if len(chunk) - len(rows) > tolerated:
+                # Unpaired rows do not count as answers here, so the two allowances never stack.
+                if len(chunk) - (len(rows) - unpaired) > tolerated:
                     problems.append(f"{len(rows)} rows for {len(chunk)} ids")
                 if problems:
                     self.degraded = True

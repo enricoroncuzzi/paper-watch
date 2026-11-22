@@ -1065,6 +1065,37 @@ def test_s2_unpaired_rows_up_to_the_tolerance_are_kept_quiet() -> None:
 
 
 @respx.mock
+def test_s2_null_row_is_still_checked_beside_a_tolerated_unpaired_row() -> None:
+    # An id S2 knows but has no record for comes back as null. An unpaired row elsewhere in the
+    # same full-length answer must not stop that null being attributed, or the id would stay due
+    # and be re-asked every day.
+    ids = [f"2601.{i:05d}" for i in range(500)]
+    rows: list[dict[str, object] | None] = [_s2_row(a) for a in ids]
+    rows[10] = None
+    rows[20] = _s2_row("2601.05999")
+    respx.post(S2_BATCH_URL).mock(return_value=httpx.Response(200, json=rows))
+    src = SemanticScholarSource(httpx.Client(), None, pause_s=0)
+    src.lookup(ids)
+    assert src.degraded is False
+    assert src.checked_ids == set(ids) - {ids[20]}
+
+
+@respx.mock
+def test_s2_unpaired_rows_do_not_hide_a_short_answer() -> None:
+    # 475 rows for 500 ids with 25 of them unpaired leaves 50 ids without an answer: each
+    # allowance alone would pass, together they are a broken answer.
+    ids = [f"2601.{i:05d}" for i in range(500)]
+    rows: list[dict[str, object] | None] = [_s2_row(a) for a in ids[:475]]
+    for k in range(25):
+        rows[k] = _s2_row(f"2699.{k:05d}")
+    respx.post(S2_BATCH_URL).mock(return_value=httpx.Response(200, json=rows))
+    src = SemanticScholarSource(httpx.Client(), None, pause_s=0)
+    src.lookup(ids)
+    assert src.degraded is True
+    assert "475 rows for 500 ids" in str(src.failure)
+
+
+@respx.mock
 def test_s2_unpaired_rows_are_degraded_when_they_outnumber_the_paired_ones() -> None:
     # Two rows for two ids where one names somebody else: the tolerance floor of 2 would wave this
     # through, but half the answer not pairing is not a lined-up answer.

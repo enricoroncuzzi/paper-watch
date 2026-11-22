@@ -475,8 +475,8 @@ def run_ingestion(
             s2_pending: set[str] = set()
             followed: dict[str, object] | None = None
             s2_problems: list[str] = []
-            # A non-refusal S2 problem (a short or unpaired answer) seen in this run. Sticky on
-            # purpose: a later pass that answers cleanly must not hide it (review S4).
+            # A non-refusal S2 problem (a short or badly unpaired answer) seen in this run. Sticky
+            # on purpose: a later pass that answers cleanly must not hide it (review S4).
             s2_anomaly: str | None = None
             # Targets whose admission failed this run: a follow-up pass never retries them.
             failed_admissions: set[uuid.UUID] = set()
