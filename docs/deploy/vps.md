@@ -337,8 +337,16 @@ What the captain sees:
 
 A run's counts normally show `"s2_unchecked": 1` (observed 2026-10-23): one arXiv paper in the
 corpus is not in Semantic Scholar's index at all, so it is left unanswered and asked again next
-run. That is expected and does not make a run unhealthy; a much larger count comes with a
-degraded `s2` source and its own `FAIL`. `"s2_refused"` is normally 0: a non-zero count means
+run. Since 2026-11-17 the same count can come from Semantic Scholar answering one paper (2601.05111,
+on some days 1905.02269) with a row that names a different paper: the journal then has an
+`s2_unpaired_rows` warning with the row's label, the other rows are paired as usual, and the
+unpaired paper stays due. Both are expected and do not make a run unhealthy or open a dead letter
+(a letter an earlier run left closes on the next clean call). A chunk is only degraded, with its
+own `FAIL`, when the answer is not the shape the client understands: a row that is not an object,
+a body that is not a list, an answer shorter than the request by more than the tolerance, or more
+unpaired rows than the tolerance or as many unpaired rows as paired ones. The tolerance is 2 ids or
+5% of the chunk (25 of 500), whichever is larger; a much larger `s2_unchecked` count comes with a
+degraded chunk. `"s2_refused"` is normally 0: a non-zero count means
 Semantic Scholar refused (throttled) those papers, not that it does not know them, and with
 `--followup` it reaches 0 as soon as a pass is answered.
 

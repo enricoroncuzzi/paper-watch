@@ -52,6 +52,7 @@ from paperwatch.retrieval.hybrid import hybrid_search
 from paperwatch.sources.arxiv import ArxivOaiSource
 from paperwatch.sources.feeds import Feed, FeedSource
 from paperwatch.sources.hf_daily import HF_URL, HfDailySource, HfPaper
+from paperwatch.sources.semantic_scholar import S2_BATCH_URL, SemanticScholarSource
 from paperwatch.store.db import make_session_factory
 from paperwatch.store.models import DeadLetter, Item, Run, SignalSnapshot, TierHistory
 from paperwatch.store.repository import Repository
@@ -3075,6 +3076,41 @@ def test_a_pass_asks_only_the_refused_ids(db_session: Session) -> None:
     assert asked == [["2510.1", "2510.2", "2510.3"], ["2510.2"]]
     # The id S2 does not know is still counted as unchecked, and it is not a refusal.
     assert res.counts["s2_unchecked"] == 1 and res.counts["s2_refused"] == 0
+
+
+@respx.mock
+def test_one_unpaired_s2_row_leaves_the_run_healthy_and_closes_the_old_letter(
+    db_session: Session,
+) -> None:
+    # S2's answer since 2026-11-17: one row names a paper nobody asked for and every other row
+    # pairs. The run must not be partial or unhealthy for that, must not open a letter, and must
+    # close the one an earlier degraded run left, while the unpaired id stays due.
+    papers = [paper(f"2510.{i}", "Agent harness") for i in range(1, 31)]
+    src = fake_sources(papers)
+    src.hf.papers.return_value = {}
+    src.s2.degraded, src.s2.failure = True, "s2 chunk at 0: 1 rows matched no requested id: x"
+    first = run(db_session, src)
+    assert first.status == "partial"
+    repo = Repository(db_session)
+    assert repo.has_open_dead_letter("s2", "signals")
+
+    ids = [p.external_id for p in papers]
+    rows: list[dict[str, object] | None] = [
+        {"externalIds": {"ArXiv": a}, "venue": "arXiv.org", "citationCount": 0} for a in ids
+    ]
+    rows[4] = {"externalIds": {"ArXiv": "2601.05999"}, "venue": "arXiv.org", "citationCount": 0}
+    respx.post(S2_BATCH_URL).mock(return_value=httpx.Response(200, json=rows))
+    src.s2 = SemanticScholarSource(httpx.Client(), None, pause_s=0)
+    day2 = NOW + timedelta(days=1)
+    res = run(db_session, src, now=day2)
+    assert res.status == "succeeded"
+    assert res.health is not None and res.health.healthy and res.health.problems == ()
+    assert res.counts["signal_failures"] == 0
+    assert res.counts["s2_unchecked"] == 1 and res.counts["s2_refused"] == 0
+    assert not repo.has_open_dead_letter("s2", "signals")
+    # The one unpaired id is the only one not re-checked, so the next run asks again.
+    assert row(db_session, ids[4]).s2_checked_at is None
+    assert row(db_session, ids[5]).s2_checked_at == day2
 
 
 def test_an_id_s2_does_not_know_never_starts_a_loop(db_session: Session) -> None:
